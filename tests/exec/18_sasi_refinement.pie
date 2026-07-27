@@ -1,0 +1,46 @@
+-- EXPECT: positive\nzero\nnegative\n6
+fn sign_str : i64 -> () ! [IO]
+  | n ->
+      if n > 0
+        syscall(1, 1, "positive\n" as i64, 9)
+      else if n == 0
+        syscall(1, 1, "zero\n" as i64, 5)
+      else
+        syscall(1, 1, "negative\n" as i64, 9)
+fn refined_sum : (i64, i64) -> i64
+  | (a, b) ->
+      if a > 0
+        a + b
+      else
+        0
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      sign_str(42)
+      sign_str(0)
+      sign_str(-7)
+      print_i64_nl(refined_sum(3, 3))
+      syscall(231, 0)
