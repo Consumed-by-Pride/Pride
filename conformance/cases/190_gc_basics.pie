@@ -1,0 +1,23 @@
+-- EXPECT-CLEAN
+fn header_size : () -> i64
+  | () -> 32i64   -- GcHeader size on x86-64
+
+fn object_size : i64 -> i64
+  | user_bytes ->
+    let total : i64 = user_bytes + 32i64   -- header + data
+    (total + 7i64) & (0i64 - 8i64)         -- align to 8
+
+fn is_marked : u32 -> bool
+  | flags -> (flags & 0x00000001u32) != 0u32
+
+fn is_pinned : u32 -> bool
+  | flags -> (flags & 0x00000002u32) != 0u32
+
+fn set_marked : u32 -> u32
+  | flags -> flags | 0x00000001u32
+
+fn clear_marked : u32 -> u32
+  | flags -> flags & (0xFFFFFFFFu32 ^ 0x00000001u32)
+
+fn gc_young_gen : u32 -> bool
+  | flags -> (flags & 0x00000008u32) != 0u32

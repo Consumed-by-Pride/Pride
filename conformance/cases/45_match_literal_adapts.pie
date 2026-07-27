@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+fn f : i8 -> i8
+  | n ->
+      match n
+        | 0 -> 10
+        | _ -> 20

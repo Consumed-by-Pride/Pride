@@ -1,0 +1,108 @@
+mod fmt.parse_float.float_stream
+
+use os.linux
+
+-- Digit stream over a byte slice for float parsing.
+
+-- Abstracts over the raw input pointer so the parser does not do raw pointer
+-- arithmetic. Also tracks whether we have consumed a decimal point.
+
+struct FloatStream
+  ptr      : *u8   -- start of input
+  len      : i64   -- total bytes
+  pos      : i64   -- current read position
+  exp_shift : i64  -- decimal point position relative to start of mantissa digits
+
+fn stream_new : (ptr, i64) -> FloatStream
+  | (p, n) -> FloatStream { ptr: p as *u8, len: n, pos: 0i64, exp_shift: 0i64 }
+
+fn stream_from_cstr : ptr -> FloatStream
+  | s -> stream_new(s, os.linux.strlen(s) as i64)
+
+fn stream_at_end : *FloatStream -> bool
+  | s -> s.pos >= s.len
+
+fn stream_peek : *FloatStream -> i64
+  | s -> if s.pos >= s.len then -1i64 else s.ptr[s.pos] as i64
+
+fn stream_peek2 : *FloatStream -> i64
+  | s -> if s.pos + 1i64 >= s.len then -1i64 else s.ptr[s.pos + 1i64] as i64
+
+fn stream_advance : *FloatStream -> ()
+  | s -> if s.pos < s.len then s.pos = s.pos + 1i64
+
+fn stream_skip_chars : (*FloatStream, u8) -> i64
+  | (s, c) ->
+    let mut count : i64 = 0i64
+    while s.pos < s.len && s.ptr[s.pos] == c
+      s.pos = s.pos + 1i64; count = count + 1i64
+    count
+
+fn stream_is_digit : *FloatStream -> bool
+  | s ->
+    if s.pos >= s.len then false
+    else s.ptr[s.pos] >= 48u8 && s.ptr[s.pos] <= 57u8
+
+fn stream_is_hexdigit : *FloatStream -> bool
+  | s ->
+    if s.pos >= s.len then false
+    else
+      let c = s.ptr[s.pos]
+      (c >= 48u8 && c <= 57u8) || (c >= 65u8 && c <= 70u8) || (c >= 97u8 && c <= 102u8)
+
+fn stream_read_digit : *FloatStream -> i64
+  | s ->
+    if s.pos >= s.len then -1i64
+    else
+      let c = s.ptr[s.pos]
+      if c >= 48u8 && c <= 57u8
+        s.pos = s.pos + 1i64; c as i64 - 48i64
+      else -1i64
+
+fn stream_read_hexdigit : *FloatStream -> i64
+  | s ->
+    if s.pos >= s.len then -1i64
+    else
+      let c = s.ptr[s.pos]
+      if c >= 48u8 && c <= 57u8 then s.pos = s.pos + 1i64; c as i64 - 48i64
+      else if c >= 65u8 && c <= 70u8 then s.pos = s.pos + 1i64; c as i64 - 55i64
+      else if c >= 97u8 && c <= 102u8 then s.pos = s.pos + 1i64; c as i64 - 87i64
+      else -1i64
+
+fn stream_remaining : *FloatStream -> i64
+  | s -> s.len - s.pos
+
+fn stream_slice : (*FloatStream, i64, i64) -> (*u8, i64)
+  | (s, start, end_) ->
+    let clamped_start = if start < 0i64 then 0i64 else if start > s.len then s.len else start
+    let clamped_end   = if end_   < clamped_start then clamped_start else if end_ > s.len then s.len else end_
+    ((s.ptr as i64 + clamped_start) as *u8, clamped_end - clamped_start)
+
+fn stream_current_slice : *FloatStream -> (*u8, i64)
+  | s -> ((s.ptr as i64 + s.pos) as *u8, s.len - s.pos)
+
+-- Skip whitespace (spaces, tabs, newlines) at start
+fn stream_skip_whitespace : *FloatStream -> ()
+  | s ->
+    while s.pos < s.len
+      let c = s.ptr[s.pos]
+      if c == 32u8 || c == 9u8 || c == 10u8 || c == 13u8 then s.pos = s.pos + 1i64
+      else s.len   -- break
+
+-- Try to match a literal string at current position. Returns true and advances if matched.
+fn stream_match : (*FloatStream, ptr, i64) -> bool
+  | (s, lit, lit_len) ->
+    if s.pos + lit_len > s.len then false
+    else
+      let res = os.linux.memcmp((s.ptr as i64 + s.pos) as ptr, lit, lit_len as u64)
+      if res == 0i32 then s.pos = s.pos + lit_len; true else false
+
+-- Case-insensitive single char match
+fn stream_match_char_ci : (*FloatStream, u8) -> bool
+  | (s, c) ->
+    if s.pos >= s.len then false
+    else
+      let sc = s.ptr[s.pos]
+      let lc = if sc >= 65u8 && sc <= 90u8 then sc + 32u8 else sc
+      let lm = if c  >= 65u8 && c  <= 90u8 then c  + 32u8 else c
+      if lc == lm then s.pos = s.pos + 1i64; true else false

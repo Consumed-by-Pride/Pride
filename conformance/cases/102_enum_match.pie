@@ -1,0 +1,9 @@
+-- EXPECT-COUNT: lint-warn=0
+-- EXPECT-COUNT: resolve=0
+enum Color
+  Red
+  Green
+  Blue
+
+fn tag_color : Color -> i32
+  | _ -> 0

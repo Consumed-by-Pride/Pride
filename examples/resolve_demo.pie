@@ -1,0 +1,35 @@
+-- A fully self-contained program: every name is declared in-file,
+-- so name resolution should report ZERO errors.
+
+type Vec3 = struct
+  x : f32
+  y : f32
+  z : f32
+
+let origin = 0
+
+fn square : i32 -> i32
+  | n -> n * n
+
+-- mutual recursion (resolved via hoisting)
+fn is_even : i32 -> bool
+  | 0 -> true
+  | n -> is_odd(n - 1)
+
+fn is_odd : i32 -> bool
+  | 0 -> false
+  | n -> is_even(n - 1)
+
+fn sum_to : i32 -> i32
+  | n ->
+      let mut total = origin
+      for i in 0..n
+        total = total + i
+      total
+
+fn classify : i32 -> i32
+  | n ->
+      match n
+        | 0        -> origin
+        | k, k > 0 -> square(k)
+        | _        -> 0

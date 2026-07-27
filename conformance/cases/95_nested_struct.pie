@@ -1,0 +1,10 @@
+-- EXPECT-CLEAN
+type Inner = struct
+  val : i64
+
+type Outer = struct
+  inner : Inner
+  tag   : i64
+
+fn get_val : Outer -> i64
+  | o -> o.inner.val

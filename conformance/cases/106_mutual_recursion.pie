@@ -1,0 +1,10 @@
+-- Test: mutually recursive functions
+fn is_even : i64 -> bool
+  | n ->
+    if n == 0i64 then true
+    else is_odd(n - 1i64)
+
+fn is_odd : i64 -> bool
+  | n ->
+    if n == 0i64 then false
+    else is_even(n - 1i64)

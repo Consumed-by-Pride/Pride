@@ -1,0 +1,22 @@
+-- EXPECT-CLEAN
+fn round_robin : (i64, i64) -> i64
+  | (current, total) ->
+    if total == 0i64 then 0i64
+    else (current + 1i64) % total
+
+fn stack_aligned16 : i64 -> i64
+  | n -> (n + 15i64) & (0i64 - 16i64)
+
+fn fiber_is_runnable : i32 -> bool
+  | state -> state == 2i32   -- READY
+
+fn fiber_is_done : i32 -> bool
+  | state -> state == 4i32   -- DONE
+
+fn fiber_is_blocked : i32 -> bool
+  | state -> state == 3i32   -- WAITING
+
+fn fiber_next_id : (i64, i64) -> i64
+  | (cur, pool_size) ->
+    if pool_size == 0i64 then -1i64
+    else (cur + 1i64) % pool_size

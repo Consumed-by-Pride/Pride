@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+fn classify : i32 -> i32
+  | n, n < 0 -> 0i32 - 1i32
+  | n, n == 0 -> 0i32
+  | n, n < 10 -> 1i32
+  | _ -> 2i32

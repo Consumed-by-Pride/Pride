@@ -1,0 +1,6 @@
+-- EXPECT: type-warn 6:15 call argument type does not match
+type IorL = i32 ∪ i64
+fn want : IorL -> i32
+  | _x -> 0
+fn caller : bool -> i32
+  | b -> want(b)

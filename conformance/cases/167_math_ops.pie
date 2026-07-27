@@ -1,0 +1,27 @@
+-- EXPECT-CLEAN
+fn gcd : (i64, i64) -> i64
+  | (a, b) ->
+    if b == 0i64 then a
+    else gcd(b, a % b)
+
+fn lcm : (i64, i64) -> i64
+  | (a, b) ->
+    let g : i64 = gcd(a, b)
+    if g == 0i64 then 0i64
+    else (a / g) * b
+
+fn abs64 : i64 -> i64
+  | x -> if x < 0i64 then 0i64 - x else x
+
+fn clamp : (i64, i64, i64) -> i64
+  | (x, lo, hi) -> if x < lo then lo else if x > hi then hi else x
+
+fn is_power_of_two : u64 -> bool
+  | n -> n > 0u64 && (n & (n - 1u64)) == 0u64
+
+fn next_power_of_two : u64 -> u64
+  | n ->
+    let mut p : u64 = 1u64
+    while p < n
+      p = p * 2u64
+    p

@@ -1,0 +1,112 @@
+-- stdlib/string.pie — String: heap-allocated growable UTF-8 string
+-- Pride standard library.
+--
+-- Distinct from built-in Str (borrowed ptr+len slice). String owns its memory.
+-- Layout: ptr(ptr) + len(usize) + cap(usize)
+
+fn malloc_str : usize -> ptr #extern("malloc") #cc(c)
+fn free_str   : ptr   -> ()  #extern("free")   #cc(c)
+fn memcpy_str : (ptr, ptr, usize) -> ptr #extern("memcpy") #cc(c)
+fn memcmp_str : (ptr, ptr, usize) -> i32 #extern("memcmp") #cc(c)
+
+struct String
+  ptr : ptr
+  len : usize
+  cap : usize
+
+fn str_new : () -> String
+  | () -> String { ptr: 0 as ptr, len: 0, cap: 0 }
+
+fn str_grow : (*String, usize) -> ()
+  | (s, new_cap) ->
+      let p2 = malloc_str(new_cap + 1)
+      if s.len > 0
+        memcpy_str(p2, s.ptr, s.len)
+      if s.cap > 0
+        free_str(s.ptr)
+      s.ptr = p2
+      s.cap = new_cap
+
+fn str_reserve : (*String, usize) -> ()
+  | (s, n) ->
+      let need = s.len + n
+      if need > s.cap
+        let nc  = if s.cap == 0 then n + 8 else s.cap * 2
+        let nc2 = if nc < need then need else nc
+        str_grow(s, nc2)
+
+fn str_push_byte : (*String, u8) -> ()
+  | (s, b) ->
+      str_reserve(s, 1)
+      let dst = ((s.ptr as usize) + s.len) as *u8
+      *dst = b as i64
+      s.len = s.len + 1
+
+fn str_push_str : (*String, ptr, usize) -> ()
+  | (s, p, n) ->
+      if n > 0
+        str_reserve(s, n)
+        let dst = ((s.ptr as usize) + s.len) as ptr
+        memcpy_str(dst, p, n)
+        s.len = s.len + n
+
+fn str_len : *String -> usize
+  | (s) -> s.len
+
+-- Return null-terminated pointer (adds '\0' without incrementing len).
+fn str_as_ptr : *String -> ptr
+  | (s) ->
+      str_reserve(s, 1)
+      let term = ((s.ptr as usize) + s.len) as *u8
+      *term = 0i64
+      s.ptr
+
+fn str_clear : *String -> ()
+  | (s) -> s.len = 0
+
+fn str_free : *String -> ()
+  | (s) ->
+      if s.cap > 0 then free_str(s.ptr)
+      s.ptr = 0 as ptr
+      s.len = 0
+      s.cap = 0
+
+fn str_eq : (*String, *String) -> bool
+  | (a, b) ->
+      if a.len != b.len then false
+      else if a.len == 0 then true
+      else memcmp_str(a.ptr, b.ptr, a.len) == 0
+
+fn str_concat : (*String, *String) -> String
+  | (a, b) ->
+      let s = str_new()
+      str_push_str(&s, a.ptr, a.len)
+      str_push_str(&s, b.ptr, b.len)
+      s
+
+fn str_byte_at : (*String, usize) -> u8
+  | (s, i) ->
+      let p = ((s.ptr as usize) + i) as *u8
+      (*p) as u8
+
+-- Append decimal representation of an i64.
+fn str_push_i64 : (*String, i64) -> ()
+  | (s, n) ->
+      if n == 0
+        str_push_byte(s, 48u8)
+      else
+        let mut buf : [u8; 20] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        let mut x   : i64 = if n < 0 then 0 - n else n
+        let mut pos : usize = 19
+        while x > 0
+          buf[pos] = (48 + x % 10) as u8
+          x   = x / 10
+          pos = pos - 1
+        if n < 0
+          buf[pos] = 45u8
+          pos = pos - 1
+        let start = pos + 1
+        let mut i : usize = start
+        while i <= 19
+          str_push_byte(s, buf[i])
+          i = i + 1

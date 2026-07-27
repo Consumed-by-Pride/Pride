@@ -1,0 +1,25 @@
+-- EXPECT-CLEAN
+fn sum_until : (*i64, i64, i64) -> i64
+  | (arr, n, limit) ->
+    let mut total : i64 = 0i64
+    let mut i : i64 = 0i64
+    'sum: while i < n
+      total = total + arr[i]
+      if total >= limit then break 'sum
+      i = i + 1i64
+    total
+
+fn first_zero_row : (*i64, i64, i64) -> i64
+  | (mat, rows, cols) ->
+    let mut result : i64 = -1i64
+    let mut r : i64 = 0i64
+    'rowscan: while r < rows
+      let mut c : i64 = 0i64
+      while c < cols
+        if mat[r * cols + c] != 0i64 then
+          r = r + 1i64
+          continue 'rowscan
+        c = c + 1i64
+      result = r
+      break 'rowscan
+    result

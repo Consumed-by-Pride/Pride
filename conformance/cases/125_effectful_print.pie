@@ -1,0 +1,6 @@
+-- Test: effect system basic
+effect IO
+  print : *u8 -> ()
+
+fn greet : *u8 -> () ! [IO]
+  | name -> perform IO.print(name)

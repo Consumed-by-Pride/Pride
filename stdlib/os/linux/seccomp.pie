@@ -1,0 +1,206 @@
+mod os.linux.seccomp
+
+-- seccomp(2) BPF filter interface.
+
+-- §1  SECCOMP MODES (already in os/linux.pie — re-exported for namespacing)
+const MODE_DISABLED : u32 = 0u32
+const MODE_STRICT   : u32 = 1u32
+const MODE_FILTER   : u32 = 2u32
+
+-- §2  SECCOMP COMMANDS
+const SET_MODE_STRICT      : u32 = 0u32
+const SET_MODE_FILTER      : u32 = 1u32
+const GET_ACTION_AVAIL     : u32 = 2u32
+const GET_NOTIF_SIZES      : u32 = 3u32
+
+-- §3  FILTER FLAGS
+const FILTER_FLAG_TSYNC           : u32 = 1u32
+const FILTER_FLAG_LOG             : u32 = 2u32
+const FILTER_FLAG_SPEC_ALLOW      : u32 = 4u32
+const FILTER_FLAG_NEW_LISTENER    : u32 = 8u32
+const FILTER_FLAG_TSYNC_ESRCH     : u32 = 16u32
+const FILTER_FLAG_WAIT_KILLABLE_RECV : u32 = 32u32
+
+-- §4  RETURN ACTIONS (what happens when filter matches)
+const RET_KILL_PROCESS : u32 = 2147418112u32  -- 0x80000000
+const RET_KILL_THREAD  : u32 = 0u32
+const RET_KILL         : u32 = 0u32
+const RET_TRAP         : u32 = 196608u32       -- 0x00030000
+const RET_ERRNO        : u32 = 327680u32       -- 0x00050000
+const RET_USER_NOTIF   : u32 = 1073741824u32   -- 0x7fc00000
+const RET_TRACE        : u32 = 1879048192u32   -- 0x7ff00000
+const RET_LOG          : u32 = 2130706432u32   -- 0x7ffc0000
+const RET_ALLOW        : u32 = 2147418112u32   -- 0x7fff0000
+const RET_ACTION_FULL  : u32 = 4294901760u32   -- 0xffff0000
+const RET_DATA         : u32 = 65535u32        -- 0x0000ffff
+
+fn ret_errno_val : u16 -> u32 | e -> RET_ERRNO | e as u32
+
+-- §5  BPF SOCK FILTER (classic BPF for seccomp)
+struct SockFilter
+  code : u16   -- BPF opcode
+  jt   : u8    -- jump-true offset
+  jf   : u8    -- jump-false offset
+  k    : u32   -- generic operand
+
+struct SockFprog
+  len    : u16
+  __pad  : u16
+  __pad2 : u32
+  filter : ptr   -- *SockFilter
+
+-- §6  BPF OPCODES (classic BPF)
+-- Classes
+const BPF_LD  : u16 = 0x00u16
+const BPF_LDX : u16 = 0x01u16
+const BPF_ST  : u16 = 0x02u16
+const BPF_STX : u16 = 0x03u16
+const BPF_ALU : u16 = 0x04u16
+const BPF_JMP : u16 = 0x05u16
+const BPF_RET : u16 = 0x06u16
+const BPF_MISC: u16 = 0x07u16
+
+-- LD/LDX size
+const BPF_W   : u16 = 0x00u16   -- 32-bit word
+const BPF_H   : u16 = 0x08u16   -- 16-bit halfword
+const BPF_B   : u16 = 0x10u16   -- 8-bit byte
+const BPF_DW  : u16 = 0x18u16   -- 64-bit (eBPF only)
+
+-- LD/LDX mode
+const BPF_IMM : u16 = 0x00u16
+const BPF_ABS : u16 = 0x20u16
+const BPF_IND : u16 = 0x40u16
+const BPF_MEM : u16 = 0x60u16
+const BPF_LEN : u16 = 0x80u16
+const BPF_MSH : u16 = 0xa0u16
+
+-- ALU operations
+const BPF_ADD : u16 = 0x00u16
+const BPF_SUB : u16 = 0x10u16
+const BPF_MUL : u16 = 0x20u16
+const BPF_DIV : u16 = 0x30u16
+const BPF_OR  : u16 = 0x40u16
+const BPF_AND : u16 = 0x50u16
+const BPF_LSH : u16 = 0x60u16
+const BPF_RSH : u16 = 0x70u16
+const BPF_NEG : u16 = 0x80u16
+const BPF_MOD : u16 = 0x90u16
+const BPF_XOR : u16 = 0xa0u16
+
+-- JMP operations
+const BPF_JA  : u16 = 0x00u16
+const BPF_JEQ : u16 = 0x10u16
+const BPF_JGT : u16 = 0x20u16
+const BPF_JGE : u16 = 0x30u16
+const BPF_JSET: u16 = 0x40u16
+
+-- Source
+const BPF_K   : u16 = 0x00u16   -- use k field
+const BPF_X   : u16 = 0x08u16   -- use register X
+
+-- Instruction builder macros (as functions)
+fn bpf_stmt : (u16, u32) -> SockFilter
+  | (code, k) -> SockFilter { code: code, jt: 0u8, jf: 0u8, k: k }
+
+fn bpf_jump : (u16, u32, u8, u8) -> SockFilter
+  | (code, k, jt, jf) -> SockFilter { code: code, jt: jt, jf: jf, k: k }
+
+-- Common seccomp BPF patterns
+fn bpf_ld_abs_w : u32 -> SockFilter
+  | off -> bpf_stmt(BPF_LD | BPF_W | BPF_ABS, off)
+
+fn bpf_jmp_eq : (u32, u8, u8) -> SockFilter
+  | (k, jt, jf) -> bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, k, jt, jf)
+
+fn bpf_jmp_neq : (u32, u8, u8) -> SockFilter
+  | (k, jt, jf) -> bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, k, jf, jt)
+
+fn bpf_ret_k : u32 -> SockFilter
+  | k -> bpf_stmt(BPF_RET | BPF_K, k)
+
+fn bpf_ret_allow : () -> SockFilter | () -> bpf_ret_k(RET_ALLOW)
+fn bpf_ret_kill  : () -> SockFilter | () -> bpf_ret_k(RET_KILL_PROCESS)
+fn bpf_ret_errno : u16 -> SockFilter | e -> bpf_ret_k(ret_errno_val(e))
+fn bpf_ret_trap  : () -> SockFilter  | () -> bpf_ret_k(RET_TRAP)
+
+-- §7  SECCOMP DATA (the data structure passed to the BPF filter)
+-- Offsets within struct seccomp_data that BPF programs load from
+struct SeccompData
+  nr             : i32    -- syscall number
+  arch           : u32    -- AUDIT_ARCH_* (see §8)
+  instruction_pointer : u64
+  args0          : u64
+  args1          : u64
+  args2          : u64
+  args3          : u64
+  args4          : u64
+  args5          : u64
+
+-- Byte offsets for BPF_LD_ABS
+const SECCOMP_DATA_NR_OFF    : u32 = 0u32
+const SECCOMP_DATA_ARCH_OFF  : u32 = 4u32
+const SECCOMP_DATA_IP_OFF    : u32 = 8u32
+const SECCOMP_DATA_ARGS0_OFF : u32 = 16u32
+const SECCOMP_DATA_ARGS1_OFF : u32 = 24u32
+const SECCOMP_DATA_ARGS2_OFF : u32 = 32u32
+const SECCOMP_DATA_ARGS3_OFF : u32 = 40u32
+const SECCOMP_DATA_ARGS4_OFF : u32 = 48u32
+const SECCOMP_DATA_ARGS5_OFF : u32 = 56u32
+
+-- §8  AUDIT ARCH CONSTANTS
+const AUDIT_ARCH_X86_64   : u32 = 3221225534u32  -- 0xC000003E (AUDIT_ARCH_X86_64)
+const AUDIT_ARCH_AARCH64  : u32 = 3221225655u32  -- 0xC00000B7
+const AUDIT_ARCH_RISCV64  : u32 = 3221225715u32  -- 0xC00000F3
+const AUDIT_ARCH_I386     : u32 = 1073741827u32  -- 0x40000003
+const AUDIT_ARCH_ARM      : u32 = 1073741864u32  -- 0x40000028
+const AUDIT_ARCH_MIPS64   : u32 = 2147483656u32  -- 0x80000008
+
+-- §9  NOTIFY (seccomp user notification — kernel 5.0+)
+
+struct SeccompNotif
+  id   : u64
+  pid  : u32
+  flags : u32
+  data : SeccompData
+
+struct SeccompNotifResp
+  id    : u64
+  val   : i64
+  error_ : i32
+  flags : u32
+
+struct SeccompNotifSizes
+  seccomp_notif      : u16
+  seccomp_notif_resp : u16
+  seccomp_data       : u16
+
+const SECCOMP_USER_NOTIF_FLAG_CONTINUE : u32 = 1u32
+
+-- §10  CONVENIENCE: build a minimal allow-all filter
+
+fn seccomp_allow_all_filter : (*SockFilter, i64) -> i64
+  | (filter, max_insns) ->
+    if max_insns < 1i64 then -1i64
+    else
+      filter[0i64] = bpf_ret_allow()
+      1i64
+
+-- Build a filter that allows all syscalls except those in a blacklist
+-- Returns number of instructions written, or -1 if buffer too small.
+fn seccomp_kill_syscalls : (*SockFilter, i64, *i32, i64) -> i64
+  | (filter, max_insns, kill_nrs, nr_kill) ->
+    let needed = nr_kill * 2i64 + 3i64
+    if max_insns < needed then -1i64
+    else
+      let mut n : i64 = 0i64
+      -- Load syscall number
+      filter[n] = bpf_ld_abs_w(SECCOMP_DATA_NR_OFF); n = n + 1i64
+      -- For each syscall to kill: if equal → kill
+      let mut i : i64 = 0i64
+      while i < nr_kill
+        filter[n] = bpf_jmp_neq(kill_nrs[i] as u32, 0u8, 1u8); n = n + 1i64
+        filter[n] = bpf_ret_kill(); n = n + 1i64
+        i = i + 1i64
+      -- Default: allow
+      filter[n] = bpf_ret_allow(); n = n + 1i64
+      n

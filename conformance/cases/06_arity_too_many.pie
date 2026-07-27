@@ -1,0 +1,5 @@
+-- EXPECT: type-warn 5:11 too many arguments
+fn g : i32 -> i32
+  | a -> a
+fn f : i32 -> i32
+  | x -> g(x, x)

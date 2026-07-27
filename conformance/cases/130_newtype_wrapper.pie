@@ -1,0 +1,9 @@
+-- Test: newtype wrapper
+newtype Meters : f64
+newtype Seconds : f64
+
+fn speed : (Meters, Seconds) -> f64
+  | (d, t) -> d as f64 / t as f64
+
+fn distance : (f64, Seconds) -> Meters
+  | (s, t) -> s * t as f64 as Meters

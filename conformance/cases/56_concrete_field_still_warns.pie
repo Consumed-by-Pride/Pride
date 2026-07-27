@@ -1,0 +1,7 @@
+-- EXPECT: type-warn 6:22 struct field value type does not match
+struct P
+  x : i32
+fn f : i32 -> i32
+  | n ->
+      let p = P { x: true }
+      n

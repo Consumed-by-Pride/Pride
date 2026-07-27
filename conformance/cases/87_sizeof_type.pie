@@ -1,0 +1,7 @@
+-- EXPECT-CLEAN
+type V = struct
+  x : i32
+fn a : () -> u64
+  | () -> sizeof(V)
+fn b : () -> u64
+  | () -> alignof(*i32)

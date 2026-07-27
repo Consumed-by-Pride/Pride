@@ -1,0 +1,8 @@
+-- EXPECT-CLEAN
+fn open   #[extern("open")]   : (ptr, i32) -> i32
+fn read   #[extern("read")]   : (i32, ptr, i64) -> i64
+fn write  #[extern("write")]  : (i32, ptr, i64) -> i64
+fn close  #[extern("close")]  : i32 -> i32
+fn lseek  #[extern("lseek")]  : (i32, i64, i32) -> i64
+fn do_write : (i32, *u8, i64) -> i64
+  | (fd, buf, len) -> write(fd, buf, len)

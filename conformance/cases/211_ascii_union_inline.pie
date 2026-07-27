@@ -1,0 +1,16 @@
+-- EXPECT-CLEAN
+type Status = i64 | bool | *u8
+type IntPair = (i64, i64)
+type StrOrInt = *u8 | i64
+
+fn swap : (i64, i64) -> (i64, i64)
+  | (a, b) -> (b, a)
+
+fn id_f64 : f64 -> f64 | x -> x
+fn id_bool : bool -> bool | b -> b
+
+fn classify : i64 -> i64
+  | n, n > 100i64  -> 3i64
+  | n, n > 10i64   -> 2i64
+  | n, n > 0i64    -> 1i64
+  | _              -> 0i64

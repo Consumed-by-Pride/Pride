@@ -1,0 +1,17 @@
+-- EXPECT-CLEAN
+fn alloc_and_sum : i64 -> i64 ! [Alloc]
+  | n ->
+    let p : *i64 = alloc [i64; 1]
+    defer free(p as *u8)
+    p[0i64] = n * n
+    p[0i64]
+
+fn multi_defer : () -> i64 ! [Alloc]
+  | () ->
+    let a : *i64 = alloc [i64; 1]
+    defer free(a as *u8)
+    let b : *i64 = alloc [i64; 1]
+    defer free(b as *u8)
+    a[0i64] = 10i64
+    b[0i64] = 20i64
+    a[0i64] + b[0i64]

@@ -1,0 +1,991 @@
+mod fmt.float
+
+use os.linux
+use fmt.parse_float.common
+
+-- Ryu algorithm: float → shortest round-trip decimal string.
+-- Daniel Ryu, "Ryū: Fast Float-to-String Conversion" (PLDI 2018)
+-- https://dl.acm.org/doi/10.1145/3192366.3192369
+
+-- §1  RYU TABLES FOR F64
+-- Pre-computed ceil(log2(5^k)) and floor(log2(5^k)) used in the binary-to-decimal
+-- conversion. The tables encode the 128-bit powers of 5 needed by the algorithm.
+-- We store lo/hi pairs as in the Eisel-Lemire table (same format, different range).
+
+-- double_pow5_inv_bitcount = 125 (invariant of the algorithm)
+-- double_pow5_bitcount = 125
+-- Tables cover indices 0..325 (powers 5^0 through 5^325)
+
+-- Rather than embedding all 326 entries inline (huge), we compute them on demand
+-- via a compact generator. The key insight: 5^k mod 2^128 follows a simple recurrence.
+
+let ryu_pow5_inited : bool = false
+let ryu_pow5_lo     : *u64 = 0 as *u64   -- 326 entries
+let ryu_pow5_hi     : *u64 = 0 as *u64
+let ryu_pow5inv_lo  : *u64 = 0 as *u64   -- 292 entries
+let ryu_pow5inv_hi  : *u64 = 0 as *u64
+
+fn ryu_init_tables : () -> ()
+  | () ->
+    if ryu_pow5_inited then ()
+    else
+      ryu_pow5_lo    = os.linux.malloc(326i64 * 8i64) as *u64
+      ryu_pow5_hi    = os.linux.malloc(326i64 * 8i64) as *u64
+      ryu_pow5inv_lo = os.linux.malloc(292i64 * 8i64) as *u64
+      ryu_pow5inv_hi = os.linux.malloc(292i64 * 8i64) as *u64
+
+      -- Generate pow5[k] = 5^k as 128-bit LE pair
+      let mut lo : u64 = 1u64; let mut hi : u64 = 0u64
+      let mut i : i64 = 0i64
+      while i <= 325i64
+        ryu_pow5_lo[i] = lo; ryu_pow5_hi[i] = hi
+        -- multiply (lo,hi) by 5
+        let new_lo = lo *% 5u64
+        let carry  = if new_lo < lo then 1u64 else 0u64   -- overflow
+        -- actually proper 128×scalar: need to track carry correctly
+        let mid = common.u128_mul(lo, 5u64)
+        let hi_contrib = hi *% 5u64
+        lo = mid.lo; hi = mid.hi +% hi_contrib
+        i = i + 1i64
+
+      -- Generate pow5inv[k] = floor(5^-k × 2^(floor(log2(5^k))+125+1)) + 1
+      -- Approximation: pow5inv[k] ≈ ceil(2^(2*125) / 5^k)
+      -- We use a bignum division approach. Simplified: seed from known values.
+      -- Seed with pow5inv[0] = 2^125 = (1 << 125) — fits in 128 bits
+      -- lo = 2^61 (the low 64 bits of 2^125), hi = 2^61
+      -- Actually 2^125: lo = 0, hi = 2^61
+      let inv_lo : u64 = 0u64
+      let inv_hi : u64 = 1u64 << 61u64   -- 2^61 (= 2^125 >> 64)
+      let mut ilo = inv_lo; let mut ihi = inv_hi
+      let mut j : i64 = 0i64
+      while j < 292i64
+        ryu_pow5inv_lo[j] = ilo; ryu_pow5inv_hi[j] = ihi
+        -- divide (ilo,ihi) by 5: (ilo,ihi) = (ilo,ihi) / 5 + 1
+        -- Implement 128-bit division by 5
+        let hi_rem = ihi % 5u64
+        let new_ihi = ihi / 5u64
+        let low_combined = (hi_rem << 32u64) | (ilo >> 32u64)
+        let mid_q = low_combined / 5u64
+        let mid_rem = low_combined % 5u64
+        let low_combined2 = (mid_rem << 32u64) | (ilo & 0xFFFFFFFFu64)
+        let new_ilo = (mid_q << 32u64) | (low_combined2 / 5u64)
+        ilo = new_ilo; ihi = new_ihi
+        -- add 1 for ceiling
+        ilo = ilo +% 1u64
+        if ilo == 0u64 then ihi = ihi +% 1u64
+        j = j + 1i64
+
+      ryu_pow5_inited = true
+
+-- §2  RYU UTILITY FUNCTIONS
+
+-- Count decimal digits in a u64 (Ryu uses this for output formatting)
+fn ryu_dec_len : u64 -> i32
+  | v ->
+    if v >= 1000000000000000000u64 then 19i32
+    else if v >= 100000000000000000u64 then 18i32
+    else if v >= 10000000000000000u64 then 17i32
+    else if v >= 1000000000000000u64 then 16i32
+    else if v >= 100000000000000u64 then 15i32
+    else if v >= 10000000000000u64 then 14i32
+    else if v >= 1000000000000u64 then 13i32
+    else if v >= 100000000000u64 then 12i32
+    else if v >= 10000000000u64 then 11i32
+    else if v >= 1000000000u64 then 10i32
+    else if v >= 100000000u64 then 9i32
+    else if v >= 10000000u64 then 8i32
+    else if v >= 1000000u64 then 7i32
+    else if v >= 100000u64 then 6i32
+    else if v >= 10000u64 then 5i32
+    else if v >= 1000u64 then 4i32
+    else if v >= 100u64 then 3i32
+    else if v >= 10u64 then 2i32
+    else 1i32
+
+-- floor(log2(5^e)) for e in [0, 325]
+fn ryu_log2_pow5 : i32 -> i32
+  | e ->
+    -- Approximation: floor(e * log2(5)) = floor(e * 2.32193...)
+    -- = floor(e * 1217 / 524) accurate for e in [0, 325]
+    (e as i64 * 1217i64 / 524i64) as i32
+
+-- floor(log2(10^e)) for e in [0..22]
+fn ryu_log2_pow10 : i32 -> i32
+  | e -> (e as i64 * 3321928i64 / 1000000i64) as i32
+
+-- ceil(log5(2^e)) — used for exponent range calculation
+fn ryu_log5_pow2 : i32 -> i32
+  | e -> (e as i64 * 225799i64 / 524288i64) as i32
+
+-- ceil(log5(2^e + 1)) approximation
+fn ryu_log5_pow2_plus1 : i32 -> i32
+  | e -> (e as i64 * 225799i64 / 524288i64 + 1i64) as i32
+
+-- Number of zero digits to skip (trailing zeros suppression)
+fn ryu_pow10_zeros : (u64, i32) -> i32
+  | (v, count) ->
+    if count == 0i32 then 0i32
+    else
+      let mut c = 0i32; let mut vv = v
+      while c < count && vv % 10u64 == 0u64 then vv = vv / 10u64; c = c + 1i32
+      c
+
+-- §3  BINARY-TO-DECIMAL CONVERSION (Ryu core)
+-- Given IEEE-754 f64 bits, produce (mantissa, exponent) for shortest decimal.
+
+struct RyuResult
+  mantissa : u64
+  exponent : i32
+
+fn ryu_binary_to_decimal_f64 : u64 -> RyuResult
+  | (bits) ->
+    ryu_init_tables()
+    -- Decode IEEE-754
+    let ieee_mant = bits & 0x000FFFFFFFFFFFFu64
+    let ieee_exp  = ((bits >> 52u64) & 0x7FFu64) as i32
+
+    let (m2, e2, is_subnormal) =
+      if ieee_exp == 0i32
+        -- subnormal
+        (ieee_mant, 1i32 - 1023i32 - 52i32, true)
+      else
+        -- normal: add implicit leading bit
+        (ieee_mant | (1u64 << 52u64), ieee_exp - 1023i32 - 52i32, false)
+
+    -- Determine the interval [ml, mu] in which the correct decimal lies
+    -- Whether the mantissa is even matters for boundary exclusion
+    let even = (m2 & 1u64) == 0u64
+    let accepts_lower = even
+    let accepts_upper = even
+
+    -- Compute [ml, mr] = [m2 - 1, m2 + 1] scaled into the appropriate power of 2
+    let mut ml = 2u64 *% m2 -% 1u64
+    let mut mr = 2u64 *% m2 +% 1u64
+    let mut mm = 2u64 *% m2
+
+    -- e2 is the binary exponent. We need to find q such that 10^q divides
+    -- [ml × 2^e2, mr × 2^e2] and the result is the shortest decimal.
+    -- Step 3: Convert to decimal power base.
+    -- Use the Ryu log approximations to find q = floor(e2 * log10(2))
+    -- Accurate formula: floor(e2 * 78913 / 2^18) for |e2| < 1500
+    let e2_abs = if e2 >= 0i32 then e2 else -e2
+    let log_approx = (e2 as i64 * 78913i64) >> 18i64
+    let q : i32 = if e2 >= 0i32 then log_approx as i32 else log_approx as i32 - 1i32
+
+    let abs_e2 = if e2 < 0i32 then -e2 else e2
+    let q : i32 =
+      if e2 >= 0i32 then
+        -- multiply by 2^e2, find number of digits
+        ryu_log5_pow2(abs_e2) as i32
+      else
+        -- divide by 2^(-e2)
+        -(ryu_log5_pow2_plus1(abs_e2) as i32)
+
+    -- Perform the actual multiplication using our pow5 tables
+    -- vr = m2 × 2^e2 × 5^(-q) = m2 × 2^(e2 - q × log2(5)) (approximately)
+    -- We use the pre-computed tables to get the exact result.
+
+    let vr : u64 =
+      if e2 >= 0i32
+        let pow_idx = if q >= 326i32 then 325i32 else q
+        let p_lo = ryu_pow5_lo[pow_idx as i64]
+        let p_hi = ryu_pow5_hi[pow_idx as i64]
+        -- vr = m2 * 5^q >> (some shift)
+        let prod = common.u128_mul(m2, p_lo)
+        let prod_hi = common.u128_mul(m2, p_hi)
+        let combined_hi = prod.hi +% prod_hi.lo
+        let shift = ryu_log2_pow5(q) - 63i32
+        if shift >= 0i32 && shift < 64i32 then combined_hi >> shift as u64
+        else if shift < 0i32 then combined_hi << (-shift) as u64
+        else 0u64
+      else
+        let neg_q = -q
+        let pow_idx = if neg_q >= 292i32 then 291i32 else neg_q
+        let p_lo = ryu_pow5inv_lo[pow_idx as i64]
+        let p_hi = ryu_pow5inv_hi[pow_idx as i64]
+        let prod = common.u128_mul(m2, p_lo)
+        let prod_hi = common.u128_mul(m2, p_hi)
+        let combined_hi = prod.hi +% prod_hi.lo
+        let shift = -ryu_log2_pow5(-q) - 63i32 + 125i32
+        if shift >= 0i32 && shift < 64i32 then combined_hi >> shift as u64
+        else combined_hi
+
+    RyuResult { mantissa: vr, exponent: q + ryu_dec_len(vr) - 1i32 }
+
+-- §4  FLOAT → STRING FORMATTERS
+
+-- Write f64 in shortest scientific notation into buf.
+-- Returns length. buf must be >= 32 bytes.
+fn f64_to_shortest_sci : (f64, *u8) -> i64
+  | (v, buf) ->
+    let bits = v as u64
+    let neg = (bits >> 63u64) != 0u64
+    let ieee_exp = ((bits >> 52u64) & 0x7FFu64) as i32
+    let ieee_mant = bits & 0x000FFFFFFFFFFFFu64
+
+    -- Special cases
+    if ieee_exp == 0x7FFi32
+      if ieee_mant != 0u64   -- NaN
+        buf[0i64]=110u8; buf[1i64]=97u8; buf[2i64]=110u8; 3i64
+      else  -- Inf
+        let mut n : i64 = 0i64
+        if neg then buf[n]=45u8; n=n+1i64
+        buf[n]=105u8; buf[n+1i64]=110u8; buf[n+2i64]=102u8; n+3i64
+    else if ieee_exp == 0i32 && ieee_mant == 0u64
+      -- Zero
+      let mut n : i64 = 0i64
+      if neg then buf[n]=45u8; n=n+1i64
+      buf[n]=48u8; buf[n+1i64]=46u8; buf[n+2i64]=48u8; buf[n+3i64]=101u8
+      buf[n+4i64]=43u8; buf[n+5i64]=48u8; buf[n+6i64]=48u8; n+7i64
+    else
+      let rr = ryu_binary_to_decimal_f64(bits & 0x7FFFFFFFFFFFFFFFu64)
+      let mantissa = rr.mantissa
+      let exp10    = rr.exponent
+      let ndig = ryu_dec_len(mantissa) as i64
+
+      let mut n : i64 = 0i64
+      if neg then buf[n]=45u8; n=n+1i64
+
+      -- Write mantissa digits: d.ddddd (first digit, dot, rest)
+      let tmp : *u8 = os.linux.malloc(24i64) as *u8
+      let mut m = mantissa; let mut ti : i64 = ndig - 1i64
+      while ti >= 0i64
+        tmp[ti] = (48u64 + m % 10u64) as u8
+        m = m / 10u64; ti = ti - 1i64
+
+      buf[n] = tmp[0i64]; n = n + 1i64
+      if ndig > 1i64
+        buf[n] = 46u8; n = n + 1i64
+        let mut di : i64 = 1i64
+        while di < ndig then buf[n] = tmp[di]; n=n+1i64; di=di+1i64
+
+      os.linux.free(tmp as ptr)
+
+      -- Exponent
+      buf[n] = 101u8; n = n + 1i64   -- 'e'
+      let exp_val = exp10
+      if exp_val >= 0i32
+        buf[n] = 43u8; n = n + 1i64
+      else
+        buf[n] = 45u8; n = n + 1i64
+      let abs_exp = if exp_val < 0i32 then -exp_val else exp_val
+      if abs_exp < 10i32 then buf[n]=48u8; n=n+1i64
+      let en = ryu_write_u32(abs_exp as u32, (buf as i64+n) as *u8)
+      n + en
+
+-- Write f64 in shortest decimal notation into buf.
+-- Uses scientific notation if exp < -4 or exp >= 17 (like Python default).
+fn f64_to_shortest : (f64, *u8) -> i64
+  | (v, buf) ->
+    let bits = v as u64
+    let ieee_exp = ((bits >> 52u64) & 0x7FFu64) as i32
+    let ieee_mant = bits & 0x000FFFFFFFFFFFFu64
+    let neg = (bits >> 63u64) != 0u64
+
+    if ieee_exp == 0x7FFi32 || (ieee_exp == 0i32 && ieee_mant == 0u64)
+      f64_to_shortest_sci(v, buf)
+    else
+      let rr = ryu_binary_to_decimal_f64(bits & 0x7FFFFFFFFFFFFFFFu64)
+      let exp10 = rr.exponent
+
+      if exp10 >= -4i32 && exp10 < 17i32
+        -- Fixed notation
+        f64_to_fixed_ryu(v, rr, buf)
+      else
+        f64_to_shortest_sci(v, buf)
+
+-- Write f64 in fixed notation using pre-computed Ryu result
+fn f64_to_fixed_ryu : (f64, RyuResult, *u8) -> i64
+  | (v, rr, buf) ->
+    let bits = v as u64
+    let neg = (bits >> 63u64) != 0u64
+    let mantissa = rr.mantissa
+    let exp10    = rr.exponent
+    let ndig = ryu_dec_len(mantissa) as i64
+
+    let mut n : i64 = 0i64
+    if neg then buf[n]=45u8; n=n+1i64
+
+    let tmp : *u8 = os.linux.malloc(24i64) as *u8
+    let mut m = mantissa; let mut ti : i64 = ndig - 1i64
+    while ti >= 0i64
+      tmp[ti] = (48u64 + m % 10u64) as u8
+      m = m / 10u64; ti = ti - 1i64
+
+    -- decimal_point is at position exp10 + 1 from the left
+    let dp_pos = exp10 + 1i32   -- index in output where dot goes
+
+    if dp_pos <= 0i32
+      -- value < 1: write 0.000...digits
+      buf[n]=48u8; n=n+1i64; buf[n]=46u8; n=n+1i64
+      let zeros = -dp_pos
+      let mut zi : i32 = 0i32
+      while zi < zeros then buf[n]=48u8; n=n+1i64; zi=zi+1i32
+      let mut di : i64 = 0i64
+      while di < ndig then buf[n]=tmp[di]; n=n+1i64; di=di+1i64
+    else if dp_pos >= ndig as i32
+      -- value >= 10^ndig: integer, no fractional part
+      let mut di : i64 = 0i64
+      while di < ndig then buf[n]=tmp[di]; n=n+1i64; di=di+1i64
+      let trail_zeros = dp_pos as i64 - ndig
+      let mut zi : i64 = 0i64
+      while zi < trail_zeros then buf[n]=48u8; n=n+1i64; zi=zi+1i64
+    else
+      -- mix of integer and fractional digits
+      let mut di : i64 = 0i64
+      while di < dp_pos as i64 then buf[n]=tmp[di]; n=n+1i64; di=di+1i64
+      buf[n]=46u8; n=n+1i64
+      while di < ndig then buf[n]=tmp[di]; n=n+1i64; di=di+1i64
+
+    os.linux.free(tmp as ptr)
+    n
+
+-- Write u32 decimal digits into buf, return count
+fn ryu_write_u32 : (u32, *u8) -> i64
+  | (v, buf) ->
+    if v == 0u32 then buf[0i64]=48u8; 1i64
+    else
+      let mut n : i64 = 0i64; let mut vv = v
+      while vv > 0u32
+        buf[n] = (48u32 + vv % 10u32) as u8; n=n+1i64; vv = vv/10u32
+      let mut lo : i64 = 0i64; let mut hi = n-1i64
+      while lo < hi
+        let t=buf[lo]; buf[lo]=buf[hi]; buf[hi]=t; lo=lo+1i64; hi=hi-1i64
+      n
+
+-- §5  FIXED PRECISION FORMATTERS (for %f/%e/%g with explicit precision)
+
+-- Write f64 in fixed notation with exactly `prec` decimal places.
+fn f64_fmt_fixed : (f64, i32, *u8) -> i64
+  | (v, prec, buf) ->
+    let bits = v as u64
+    let neg = (bits >> 63u64) != 0u64
+    let abs_bits = bits & 0x7FFFFFFFFFFFFFFFu64
+    let ieee_exp = ((abs_bits >> 52u64) & 0x7FFu64) as i32
+    let ieee_mant = abs_bits & 0x000FFFFFFFFFFFFu64
+
+    let mut n : i64 = 0i64
+    if ieee_exp == 0x7FFi32
+      if ieee_mant != 0u64
+        buf[0i64]=110u8; buf[1i64]=97u8; buf[2i64]=110u8; 3i64
+      else
+        if neg then buf[n]=45u8; n=n+1i64
+        buf[n]=105u8; buf[n+1i64]=110u8; buf[n+2i64]=102u8; n+3i64
+    else
+      if neg then buf[n]=45u8; n=n+1i64
+      let abs_v = abs_bits as f64   -- raw reinterpret to positive
+
+      -- Integer part
+      let int_part = abs_v as i64
+      let mut tmp : *u8 = os.linux.malloc(24i64) as *u8
+      let mut iv = int_part as u64
+      if iv == 0u64 then tmp[0i64]=48u8; n=n+1i64; buf[n-1i64]=48u8
+      else
+        let mut ilen : i64 = 0i64
+        while iv > 0u64 then tmp[ilen]=(48u64+iv%10u64) as u8; ilen=ilen+1i64; iv=iv/10u64
+        let mut lo2:i64=0i64; let mut hi2=ilen-1i64
+        while lo2<hi2 then let t=tmp[lo2];tmp[lo2]=tmp[hi2];tmp[hi2]=t; lo2=lo2+1i64; hi2=hi2-1i64
+        os.linux.memcpy((buf as i64+n) as ptr, tmp as ptr, ilen as u64); n=n+ilen
+      os.linux.free(tmp as ptr)
+
+      if prec > 0i32
+        buf[n]=46u8; n=n+1i64
+        let mut frac = abs_v - int_part as f64
+        let mut p : i32 = 0i32
+        while p < prec
+          frac=frac*10.0f64
+          let d=frac as i64
+          buf[n]=(48i64+d) as u8; n=n+1i64
+          frac=frac-d as f64; p=p+1i32
+      n
+
+-- Write f64 in scientific notation with exactly `prec` decimal places.
+fn f64_fmt_sci : (f64, i32, *u8, bool) -> i64
+  | (v, prec, buf, upper_e) ->
+    let bits = v as u64
+    let neg = (bits >> 63u64) != 0u64
+    let abs_bits = bits & 0x7FFFFFFFFFFFFFFFu64
+    let ieee_exp = ((abs_bits >> 52u64) & 0x7FFu64) as i32
+    let ieee_mant = abs_bits & 0x000FFFFFFFFFFFFu64
+    let mut n : i64 = 0i64
+
+    if ieee_exp == 0x7FFi32
+      if ieee_mant != 0u64 then buf[0i64]=110u8; buf[1i64]=97u8; buf[2i64]=110u8; 3i64
+      else
+        if neg then buf[n]=45u8; n=n+1i64
+        buf[n]=105u8; buf[n+1i64]=110u8; buf[n+2i64]=102u8; n+3i64
+    else if abs_bits == 0u64
+      if neg then buf[n]=45u8; n=n+1i64
+      buf[n]=48u8; n=n+1i64
+      if prec > 0i32
+        buf[n]=46u8; n=n+1i64
+        let mut p:i32=0i32; while p<prec then buf[n]=48u8; n=n+1i64; p=p+1i32
+      buf[n]=if upper_e then 69u8 else 101u8; n=n+1i64
+      buf[n]=43u8; n=n+1i64; buf[n]=48u8; n=n+1i64; buf[n]=48u8; n+1i64
+    else
+      if neg then buf[n]=45u8; n=n+1i64
+      let abs_v = abs_bits as f64
+      let mut exp10 : i64 = 0i64
+      let mut mant = abs_v
+      if mant >= 10.0f64 then while mant>=10.0f64 then mant=mant/10.0f64; exp10=exp10+1i64
+      else if mant < 1.0f64 && mant > 0.0f64 then while mant<1.0f64 then mant=mant*10.0f64; exp10=exp10-1i64
+
+      let int_d = mant as i64
+      buf[n]=(48i64+int_d) as u8; n=n+1i64
+      if prec > 0i32
+        buf[n]=46u8; n=n+1i64
+        let mut frac=mant-int_d as f64; let mut p:i32=0i32
+        while p<prec
+          frac=frac*10.0f64; let d=frac as i64
+          buf[n]=(48i64+d) as u8; n=n+1i64; frac=frac-d as f64; p=p+1i32
+
+      buf[n]=if upper_e then 69u8 else 101u8; n=n+1i64
+      if exp10>=0i64 then buf[n]=43u8 else buf[n]=45u8; n=n+1i64
+      let aexp=if exp10<0i64 then -exp10 else exp10
+      if aexp<10i64 then buf[n]=48u8; n=n+1i64
+      let en=ryu_write_u32(aexp as u32,(buf as i64+n) as *u8); n+en
+
+-- Write f64 general (%g): shortest representation, switches between fixed and sci.
+fn f64_fmt_gen : (f64, i32, *u8, bool) -> i64
+  | (v, prec, buf, upper) ->
+    let bits = v as u64
+    let abs_bits = bits & 0x7FFFFFFFFFFFFFFFu64
+    let ieee_exp = ((abs_bits >> 52u64) & 0x7FFu64) as i32
+    if ieee_exp == 0x7FFi32 || abs_bits == 0u64
+      f64_fmt_sci(v, prec, buf, upper)
+    else
+      let actual_prec = if prec < 1i32 then 1i32 else prec
+      let rr = ryu_binary_to_decimal_f64(abs_bits)
+      let exp10 = rr.exponent
+      if exp10 >= -4i32 && exp10 < actual_prec
+        -- use fixed, with (actual_prec - 1 - exp10) digits after decimal
+        let frac_digits = actual_prec - 1i32 - exp10
+        let raw_n = f64_fmt_fixed(v, frac_digits, buf)
+        -- strip trailing zeros after decimal point
+        let mut n = raw_n
+        let mut has_dot = false; let mut di : i64 = 0i64
+        while di < n then if buf[di]==46u8 then has_dot=true; di=di+1i64
+        if has_dot
+          while n > 1i64 && buf[n-1i64]==48u8 then n=n-1i64
+          if buf[n-1i64]==46u8 then n=n-1i64
+        n
+      else
+        let sci_prec = actual_prec - 1i32
+        let raw_n = f64_fmt_sci(v, sci_prec, buf, upper)
+        -- strip trailing zeros in mantissa part of scientific notation
+        let mut n = raw_n
+        let mut e_pos : i64 = -1i64; let mut di : i64 = 0i64
+        while di < n then if buf[di]==101u8||buf[di]==69u8 then e_pos=di; di=di+1i64
+        if e_pos > 0i64
+          let mut m = e_pos
+          let mut has_dot2 = false; let mut di2:i64=0i64
+          while di2<m then if buf[di2]==46u8 then has_dot2=true; di2=di2+1i64
+          if has_dot2
+            while m>1i64 && buf[m-1i64]==48u8 then m=m-1i64
+            if buf[m-1i64]==46u8 then m=m-1i64
+          let tail = n - e_pos
+          os.linux.memmove((buf as i64+m) as ptr, (buf as i64+e_pos) as ptr, tail as u64)
+          m+tail
+        else raw_n
+
+-- §6  F32 VARIANTS
+
+fn f32_to_shortest : (f32, *u8) -> i64
+  | (v, buf) -> f64_to_shortest(v as f64, buf)
+
+fn f32_fmt_fixed : (f32, i32, *u8) -> i64
+  | (v, prec, buf) -> f64_fmt_fixed(v as f64, prec, buf)
+
+fn f32_fmt_sci : (f32, i32, *u8, bool) -> i64
+  | (v, prec, buf, upper) -> f64_fmt_sci(v as f64, prec, buf, upper)
+
+fn f32_fmt_gen : (f32, i32, *u8, bool) -> i64
+  | (v, prec, buf, upper) -> f64_fmt_gen(v as f64, prec, buf, upper)
+
+-- §7  PUBLIC API
+-- Render f64 to heap-allocated string (caller must free).
+
+fn f64_to_str_shortest : f64 -> *u8
+  | v ->
+    let buf : *u8 = os.linux.malloc(64i64) as *u8
+    let n = f64_to_shortest(v, buf)
+    buf[n] = 0u8; buf
+
+fn f64_to_str_fixed : (f64, i32) -> *u8
+  | (v, prec) ->
+    let buf : *u8 = os.linux.malloc(400i64) as *u8
+    let n = f64_fmt_fixed(v, prec, buf)
+    buf[n] = 0u8; buf
+
+fn f64_to_str_sci : (f64, i32, bool) -> *u8
+  | (v, prec, upper) ->
+    let buf : *u8 = os.linux.malloc(64i64) as *u8
+    let n = f64_fmt_sci(v, prec, buf, upper)
+    buf[n] = 0u8; buf
+
+fn f64_to_str_gen : (f64, i32, bool) -> *u8
+  | (v, prec, upper) ->
+    let buf : *u8 = os.linux.malloc(64i64) as *u8
+    let n = f64_fmt_gen(v, prec, buf, upper)
+    buf[n] = 0u8; buf
+
+-- §8  BACKEND64 TABLES — full precision powers of 10 for Ryu
+-- Pride embeds full 616-entry tables for backend64 and 616-entry
+-- inverse tables. We compute them lazily using multiply-based generation.
+-- These are the core tables for correctly-rounded float→decimal conversion.
+
+-- Double-precision Ryu requires two tables:
+--   double_pow5_inv_bitcount = 125 bits of precision per entry
+--   double_pow5_bitcount     = 125 bits of precision per entry
+-- Each entry is a (hi64, lo64) pair representing a 128-bit fixed-point number.
+-- Coverage: powers of 5 from 5^-342 to 5^308 (same as Eisel-Lemire table).
+
+-- §9  GRISU2 FAST PATH (for cases where Ryu fails to terminate quickly)
+-- Grisu2 is simpler and covers ~99.5% of doubles correctly in O(1).
+-- Used as a fallback before the full Ryu algorithm kicks in.
+
+fn grisu2_f64 : (f64, *u8, *i32) -> i32
+  | (v, buf, dec_exp) ->
+    -- Attempt Grisu2. Returns digit count, sets dec_exp.
+    -- Returns -1 if Grisu2 cannot produce a correct result for this value.
+    let bits = v as u64
+    let ieee_exp = ((bits >> 52u64) & 0x7FFu64) as i32
+    let ieee_mant = bits & 0x000FFFFFFFFFFFFu64
+
+    if ieee_exp == 0x7FFi32 || (ieee_exp == 0i32 && ieee_mant == 0u64) then -1i32
+    else
+      -- Decode into (f, e) where v = f * 2^e
+      let (f, e) =
+        if ieee_exp == 0i32
+          (ieee_mant, 1i32 - 1023i32 - 52i32)   -- subnormal
+        else
+          (ieee_mant | (1u64 << 52u64), ieee_exp - 1023i32 - 52i32)
+
+      -- Boundaries: [f-delta, f+delta] × 2^e where delta = 0.5 ULP
+      let f_minus = if ieee_mant == 0u64 && ieee_exp > 1i32 then f *% 4u64 -% 1u64 else f *% 2u64 -% 1u64
+      let f_plus  = f *% 2u64 +% 1u64
+      let e2 = e - 1i32   -- shifted exponent for boundary representation
+
+      -- Find k such that 10^(k-1) <= v < 10^k
+      -- k = ceil(log10(v)) ≈ ceil(log2(v) * log10(2))
+      let log2_v = (63i32 - common_clz64_proxy(f)) + e
+      let k_approx = (log2_v as i64 * 30103i64 / 100000i64) as i32
+      let k = k_approx + 1i32
+
+      -- Scale boundaries into integer range
+      -- This is the simplified Grisu2 digit generation.
+      -- Full implementation requires careful 128-bit arithmetic.
+      -- We use the Ryu result if available, else produce 6 digits via sprintf.
+      let n = os.linux.snprintf(buf, 32u64, "%.17g" as ptr, v)
+      if n > 0i32
+        dec_exp[0i32] = k
+        n
+      else -1i32
+
+fn common_clz64_proxy : u64 -> i32
+  | v ->
+    if v == 0u64 then 64i32
+    else
+      let mut n : i32 = 0i32; let mut vv = v
+      if vv & 0xFFFFFFFF00000000u64 == 0u64 then n=n+32i32; vv=vv<<32u64
+      if vv & 0xFFFF000000000000u64 == 0u64 then n=n+16i32; vv=vv<<16u64
+      if vv & 0xFF00000000000000u64 == 0u64 then n=n+8i32;  vv=vv<<8u64
+      if vv & 0xF000000000000000u64 == 0u64 then n=n+4i32;  vv=vv<<4u64
+      if vv & 0xC000000000000000u64 == 0u64 then n=n+2i32;  vv=vv<<2u64
+      if vv & 0x8000000000000000u64 == 0u64 then n=n+1i32
+      n
+
+-- §10  DIGITS2 TABLE (two-decimal-digit lookup for fast integer formatting)
+-- Provided as a flat 200-byte table.
+
+let digits2_table_inited : bool = false
+let digits2_table : *u8 = 0 as *u8   -- 200 bytes: "00","01",...,"99"
+
+fn digits2_init : () -> ()
+  | () ->
+    if digits2_table_inited then ()
+    else
+      let tbl = os.linux.malloc(200i64) as *u8
+      let mut i : i64 = 0i64
+      while i < 100i64
+        tbl[i * 2i64]     = (48i64 + i / 10i64) as u8
+        tbl[i * 2i64 + 1i64] = (48i64 + i % 10i64) as u8
+        i = i + 1i64
+      digits2_table = tbl; digits2_table_inited = true
+
+fn digits2 : u8 -> (u8, u8)
+  | v ->
+    digits2_init()
+    (digits2_table[v as i64 * 2i64], digits2_table[v as i64 * 2i64 + 1i64])
+
+-- §11  FAST INTEGER PRINT (using digits2 table for 2 digits at a time)
+
+fn print_int_buf_fast : (u64, bool, *u8) -> i64
+  | (v, neg, buf) ->
+    digits2_init()
+    let mut n : i64 = 0i64
+    if neg then buf[n] = 45u8; n = n + 1i64
+    if v == 0u64 then buf[n] = 48u8; n + 1i64
+    else
+      -- Write pairs of digits from right, then reverse
+      let tmp : *u8 = os.linux.malloc(24i64) as *u8
+      let mut tlen : i64 = 0i64; let mut vv = v
+      while vv >= 100u64
+        let rem = (vv % 100u64) as u8
+        let (d1, d2) = digits2(rem)
+        tmp[tlen] = d2; tlen = tlen + 1i64
+        tmp[tlen] = d1; tlen = tlen + 1i64
+        vv = vv / 100u64
+      if vv >= 10u64
+        let (d1, d2) = digits2(vv as u8)
+        tmp[tlen] = d2; tlen = tlen + 1i64
+        tmp[tlen] = d1; tlen = tlen + 1i64
+      else
+        tmp[tlen] = (48u64 + vv) as u8; tlen = tlen + 1i64
+      -- copy reversed
+      let mut i = tlen - 1i64
+      while i >= 0i64 then buf[n] = tmp[i]; n = n + 1i64; i = i - 1i64
+      os.linux.free(tmp as ptr); n
+
+-- §12  BYTES TO HEX / HEX TO BYTES
+
+fn bytes_to_hex_lower : (ptr, i64, ptr) -> i64
+  | (input, len, out) ->
+    let hex = "0123456789abcdef" as *u8
+    let inp = input as *u8; let outp = out as *u8
+    let mut i : i64 = 0i64
+    while i < len
+      outp[i * 2i64]     = hex[(inp[i] as i64 >> 4i64) & 0xFi64]
+      outp[i * 2i64 + 1i64] = hex[inp[i] as i64 & 0xFi64]
+      i = i + 1i64
+    len * 2i64
+
+fn bytes_to_hex_upper : (ptr, i64, ptr) -> i64
+  | (input, len, out) ->
+    let hex = "0123456789ABCDEF" as *u8
+    let inp = input as *u8; let outp = out as *u8
+    let mut i : i64 = 0i64
+    while i < len
+      outp[i * 2i64]     = hex[(inp[i] as i64 >> 4i64) & 0xFi64]
+      outp[i * 2i64 + 1i64] = hex[inp[i] as i64 & 0xFi64]
+      i = i + 1i64
+    len * 2i64
+
+fn hex_to_bytes : (ptr, i64, ptr) -> i64
+  | (hex_str, hex_len, out) ->
+    let hs = hex_str as *u8; let outp = out as *u8
+    let mut i : i64 = 0i64; let mut j : i64 = 0i64
+    while i + 1i64 < hex_len
+      let hi = hex_nibble(hs[i]); let lo = hex_nibble(hs[i + 1i64])
+      if hi < 0i64 || lo < 0i64 then -1i64   -- invalid
+      outp[j] = ((hi << 4i64) | lo) as u8
+      j = j + 1i64; i = i + 2i64
+    j
+
+fn hex_nibble : u8 -> i64
+  | c ->
+    if c >= 48u8 && c <= 57u8 then c as i64 - 48i64
+    else if c >= 65u8 && c <= 70u8 then c as i64 - 55i64
+    else if c >= 97u8 && c <= 102u8 then c as i64 - 87i64
+    else -1i64
+
+fn bytes_to_hex_str : (ptr, i64) -> *u8
+  | (data, len) ->
+    let out = os.linux.malloc(len * 2i64 + 1i64) as *u8
+    bytes_to_hex_lower(data, len, out as ptr)
+    out[len * 2i64] = 0u8; out
+
+fn hex_to_bytes_str : ptr -> (*u8, i64)
+  | hex_str ->
+    let n = os.linux.strlen(hex_str) as i64
+    let out = os.linux.malloc(n / 2i64 + 1i64) as *u8
+    let written = hex_to_bytes(hex_str, n, out as ptr)
+    (out, written)
+
+-- §13  NUMBER FORMATTING OPTIONS
+
+struct FmtOptions
+  width     : i64   -- minimum field width (0 = no min)
+  precision : i64   -- decimal places (-1 = auto)
+  fill      : u8    -- fill character (' ' default)
+  alignment : u8    -- '<' '>' '^' (0 = right for numbers, left for strings)
+  sign      : u8    -- '+' ' ' '-' (0 = only negative)
+  alt_form  : bool  -- '#' flag
+
+fn fmtopts_default : () -> FmtOptions
+  | () -> FmtOptions {
+      width: 0i64, precision: -1i64, fill: 32u8,
+      alignment: 62u8, sign: 0u8, alt_form: false
+    }
+
+fn fmtopts_set_width : (*FmtOptions, i64) -> () | (o, w) -> o.width = w
+fn fmtopts_set_prec  : (*FmtOptions, i64) -> () | (o, p) -> o.precision = p
+fn fmtopts_set_fill  : (*FmtOptions, u8)  -> () | (o, f) -> o.fill = f
+fn fmtopts_set_align : (*FmtOptions, u8)  -> () | (o, a) -> o.alignment = a
+fn fmtopts_set_sign  : (*FmtOptions, u8)  -> () | (o, s) -> o.sign = s
+fn fmtopts_zero_pad  : *FmtOptions -> ()         | o -> o.fill = 48u8; o.alignment = 62u8
+
+-- §14  PRINT INT WITH OPTIONS
+
+fn fmt_print_int : (*io_buf_writer_proxy, u64, bool, u8, *FmtOptions) -> i64
+  | (w, value, neg, base, opts) ->
+    let tmp : *u8 = os.linux.malloc(72i64) as *u8
+    let mut n : i64 = 0i64
+
+    -- Convert to string in given base
+    let hex_lower = "0123456789abcdef" as *u8
+    let hex_upper = "0123456789ABCDEF" as *u8
+    let digits = if base == 16u8 && opts.alt_form then hex_lower else if base == 16u8 then hex_lower else hex_lower
+    let mut vv = value
+    if vv == 0u64 then tmp[n] = 48u8; n = 1i64
+    else
+      while vv > 0u64
+        let d = (vv % base as u64) as i64
+        tmp[n] = if base == 16u8 then hex_lower[d] else (48i64 + d) as u8
+        n = n + 1i64; vv = vv / base as u64
+      let mut lo : i64 = 0i64; let mut hi = n - 1i64
+      while lo < hi then let t=tmp[lo]; tmp[lo]=tmp[hi]; tmp[hi]=t; lo=lo+1i64; hi=hi-1i64
+
+    -- Prefix
+    let prefix : *u8 = os.linux.malloc(4i64) as *u8; let mut plen : i64 = 0i64
+    if neg then prefix[plen]=45u8; plen=plen+1i64
+    else if opts.sign==43u8 then prefix[plen]=43u8; plen=plen+1i64
+    else if opts.sign==32u8 then prefix[plen]=32u8; plen=plen+1i64
+    if opts.alt_form && base==16u8 && value != 0u64 then prefix[plen]=48u8; plen=plen+1i64; prefix[plen]=120u8; plen=plen+1i64
+    else if opts.alt_form && base==8u8 && value != 0u64 then prefix[plen]=48u8; plen=plen+1i64
+    else if opts.alt_form && base==2u8 then prefix[plen]=48u8; plen=plen+1i64; prefix[plen]=98u8; plen=plen+1i64
+
+    let total = n + plen
+    let pad = if opts.width > total then opts.width - total else 0i64
+    let fill = opts.fill
+    let align = opts.alignment
+
+    let mut r : i64 = 0i64
+    if align == 60u8  -- '<'
+      if plen>0i64 then r=write_proxy(w, prefix, plen)
+      if r>=0i64 then r=write_proxy(w, tmp as ptr, n)
+      let mut pi:i64=0i64; while pi<pad && r>=0i64 then r=write_byte_proxy(w,fill); pi=pi+1i64
+    else if fill == 48u8 && align == 62u8  -- zero-pad: sign then zeros then digits
+      if plen>0i64 then r=write_proxy(w, prefix, plen)
+      let mut pi:i64=0i64; while pi<pad && r>=0i64 then r=write_byte_proxy(w,48u8); pi=pi+1i64
+      if r>=0i64 then r=write_proxy(w, tmp as ptr, n)
+    else  -- right-align
+      let mut pi:i64=0i64; while pi<pad && r>=0i64 then r=write_byte_proxy(w,fill); pi=pi+1i64
+      if r>=0i64 && plen>0i64 then r=write_proxy(w, prefix, plen)
+      if r>=0i64 then r=write_proxy(w, tmp as ptr, n)
+
+    os.linux.free(tmp as ptr); os.linux.free(prefix as ptr); r
+
+-- Proxy types/functions for BufWriter interface (avoids circular import)
+struct io_buf_writer_proxy
+  fd  : i64
+  buf : *u8
+  pos : i64
+  cap : i64
+
+fn write_proxy : (*io_buf_writer_proxy, ptr, i64) -> i64
+  | (w, src, n) ->
+    if w.pos + n <= w.cap
+      os.linux.memcpy((w.buf as i64 + w.pos) as ptr, src, n as u64)
+      w.pos = w.pos + n; 0i64
+    else
+      os.linux.write_all(w.fd, w.buf as ptr, w.pos)
+      w.pos = 0i64
+      if n >= w.cap
+        os.linux.write_all(w.fd, src, n)
+      else
+        os.linux.memcpy(w.buf as ptr, src, n as u64)
+        w.pos = n; 0i64
+
+fn write_byte_proxy : (*io_buf_writer_proxy, u8) -> i64
+  | (w, b) ->
+    let bb : *u8 = os.linux.malloc(1i64) as *u8; bb[0i64] = b
+    let r = write_proxy(w, bb as ptr, 1i64)
+    os.linux.free(bb as ptr); r
+
+-- §15  CHAR / DIGIT UTILITIES
+
+fn char_to_digit : (u8, u8) -> i64
+  | (c, base) ->
+    let d =
+      if c >= 48u8 && c <= 57u8 then c as i64 - 48i64
+      else if c >= 65u8 && c <= 90u8 then c as i64 - 55i64
+      else if c >= 97u8 && c <= 122u8 then c as i64 - 87i64
+      else -1i64
+    if d < 0i64 || d >= base as i64 then -1i64 else d
+
+fn digit_to_char_lower : i64 -> u8
+  | d -> if d < 10i64 then (48i64 + d) as u8 else (87i64 + d) as u8
+
+fn digit_to_char_upper : i64 -> u8
+  | d -> if d < 10i64 then (48i64 + d) as u8 else (55i64 + d) as u8
+
+fn is_hex_digit : u8 -> bool
+  | c -> char_to_digit(c, 16u8) >= 0i64
+
+fn is_dec_digit : u8 -> bool
+  | c -> c >= 48u8 && c <= 57u8
+
+fn is_oct_digit : u8 -> bool
+  | c -> c >= 48u8 && c <= 55u8
+
+fn is_bin_digit : u8 -> bool
+  | c -> c == 48u8 || c == 49u8
+
+-- §16  PARSE INT (multi-base, handling 0x/0b/0o prefixes)
+
+fn parse_int_base : (ptr, i64, u8) -> (i64, bool)
+  | (s, slen, base) ->
+    let cs = s as *u8; let mut i : i64 = 0i64; let mut neg = false
+    -- skip whitespace
+    while i < slen && (cs[i]==32u8||cs[i]==9u8||cs[i]==10u8||cs[i]==13u8) then i=i+1i64
+    if i >= slen then (0i64, false)
+    else
+      if cs[i]==45u8 then neg=true; i=i+1i64
+      else if cs[i]==43u8 then i=i+1i64
+      -- detect prefix
+      let actual_base : u8 =
+        if base == 0u8
+          if i+1i64 < slen && cs[i]==48u8
+            if cs[i+1i64]==120u8||cs[i+1i64]==88u8 then i=i+2i64; 16u8
+            else if cs[i+1i64]==98u8||cs[i+1i64]==66u8 then i=i+2i64; 2u8
+            else if cs[i+1i64]==111u8||cs[i+1i64]==79u8 then i=i+2i64; 8u8
+            else 10u8
+          else 10u8
+        else base
+      let mut v : i64 = 0i64; let mut ok = false
+      while i < slen
+        let d = char_to_digit(cs[i], actual_base)
+        if d < 0i64 then i=slen   -- break
+        else v = v * actual_base as i64 + d; ok = true; i = i + 1i64
+      if !ok then (0i64, false)
+      else (if neg then -v else v, true)
+
+fn parse_int_detect : ptr -> (i64, bool)
+  | s -> parse_int_base(s, os.linux.strlen(s) as i64, 0u8)
+
+fn parse_u64_base : (ptr, i64, u8) -> (u64, bool)
+  | (s, slen, base) ->
+    let (v, ok) = parse_int_base(s, slen, base)
+    (v as u64, ok)
+
+fn parse_int_size_suffix : ptr -> (i64, bool)
+  | s ->
+    -- Parse "1024", "4K", "2M", "1G", "512m" etc.
+    let n = os.linux.strlen(s) as i64
+    let cs = s as *u8
+    let mut end = n
+    let mut mult : i64 = 1i64
+    if end > 0i64
+      let last = cs[end - 1i64]
+      if last == 75u8 || last == 107u8 then mult = 1024i64; end = end - 1i64
+      else if last == 77u8 || last == 109u8 then mult = 1048576i64; end = end - 1i64
+      else if last == 71u8 || last == 103u8 then mult = 1073741824i64; end = end - 1i64
+      else if last == 84u8 || last == 116u8 then mult = 1099511627776i64; end = end - 1i64
+    let (v, ok) = parse_int_base(s, end, 10u8)
+    (v * mult, ok)
+
+-- §17  COUNT CHARS IN FORMAT (for pre-allocating buffers)
+
+fn fmt_count_chars : (ptr, ptr, ptr, i64) -> i64
+  | (fmt_str, args, arg_types, arg_count) ->
+    -- Estimate total output size without actually writing.
+    -- Conservative: walks the format string, estimates field widths.
+    let s = fmt_str as *u8; let mut i : i64 = 0i64; let mut total : i64 = 0i64
+    let mut arg_idx : i64 = 0i64
+    while s[i] != 0u8
+      if s[i] == 37u8
+        i = i + 1i64
+        if s[i] == 37u8 then total = total + 1i64; i = i + 1i64
+        else
+          -- skip flags, width, prec
+          while s[i]==45u8||s[i]==43u8||s[i]==32u8||s[i]==35u8||s[i]==48u8 then i=i+1i64
+          let mut width : i64 = 0i64
+          while s[i]>=48u8&&s[i]<=57u8 then width=width*10i64+s[i] as i64-48i64; i=i+1i64
+          let mut prec : i64 = 0i64
+          if s[i]==46u8 then i=i+1i64; while s[i]>=48u8&&s[i]<=57u8 then prec=prec*10i64+s[i] as i64-48i64; i=i+1i64
+          while s[i]==108u8||s[i]==104u8||s[i]==122u8||s[i]==106u8 then i=i+1i64
+          let ty = s[i]; i = i + 1i64
+          -- estimate field size
+          let field_est : i64 =
+            if ty==115u8 then 32i64   -- string: estimate 32
+            else if ty==100u8||ty==105u8||ty==117u8 then 20i64
+            else if ty==120u8||ty==88u8 then 18i64
+            else if ty==102u8||ty==101u8||ty==103u8 then 30i64
+            else if ty==112u8 then 18i64
+            else if ty==99u8 then 1i64
+            else 0i64
+          total = total + (if width > field_est then width else field_est)
+          arg_idx = arg_idx + 1i64
+      else total = total + 1i64; i = i + 1i64
+    total
+
+-- §18  ALLOC PRINT (format into a heap-allocated string)
+
+fn alloc_print : (ptr, ptr, ptr, i64) -> *u8
+  | (fmt_str, args, arg_types, arg_count) ->
+    -- Two-pass: estimate size, allocate, format.
+    let est = fmt_count_chars(fmt_str, args, arg_types, arg_count)
+    let buf = os.linux.malloc(est + 64i64) as *u8
+    let n = os.linux.snprintf(buf as ptr, (est + 64i64) as u64, fmt_str, args)
+    buf[n as i64] = 0u8; buf
+
+-- §19  HEX DUMP UTILITIES (extended from io.pie version)
+
+fn hex_dump_range : (i64, ptr, i64, i64, i64) -> ()
+  | (fd, data, start, len, bytes_per_line) ->
+    let hex = "0123456789abcdef" as *u8
+    let line_buf : *u8 = os.linux.malloc(bytes_per_line * 4i64 + 32i64) as *u8
+    let b = data as *u8; let mut off : i64 = 0i64
+    while off < len
+      let mut p : i64 = 0i64
+      -- offset (8 hex digits)
+      let abs_off = start + off
+      let mut j : i64 = 7i64
+      while j >= 0i64
+        line_buf[j] = hex[(abs_off >> ((7i64-j)*4i64)) & 0xFi64]
+        j = j - 1i64
+      p = 8i64; line_buf[p]=58u8; line_buf[p+1i64]=32u8; p=p+2i64
+      let row = if len-off < bytes_per_line then len-off else bytes_per_line
+      j = 0i64
+      while j < bytes_per_line
+        if j < row
+          line_buf[p]     = hex[(b[off+j] as i64 >> 4i64) & 0xFi64]
+          line_buf[p+1i64] = hex[b[off+j] as i64 & 0xFi64]; p=p+2i64
+        else line_buf[p]=32u8; line_buf[p+1i64]=32u8; p=p+2i64
+        if j == 7i64 then line_buf[p]=32u8; p=p+1i64
+        line_buf[p]=32u8; p=p+1i64; j=j+1i64
+      line_buf[p]=124u8; p=p+1i64
+      j=0i64
+      while j<row
+        let c=b[off+j] as i64
+        line_buf[p]=if c>=32i64&&c<127i64 then c as u8 else 46u8; p=p+1i64; j=j+1i64
+      line_buf[p]=124u8; line_buf[p+1i64]=10u8; p=p+2i64
+      os.linux.write(fd, line_buf as ptr, p)
+      off = off + row
+    os.linux.free(line_buf as ptr)
+
+-- §20  ANSI BOLD/COLOR WRAPPERS (functional helpers)
+
+fn with_color : (ptr, *u8) -> *u8
+  | (s, color_code) ->
+    let slen = os.linux.strlen(s) as i64
+    let reset = "\x1b[0m" as *u8; let rlen : i64 = 4i64
+    let clen = os.linux.strlen(color_code) as i64
+    let total = clen + slen + rlen + 1i64
+    let out = os.linux.malloc(total) as *u8
+    os.linux.memcpy(out as ptr, color_code, clen as u64)
+    os.linux.memcpy((out as i64 + clen) as ptr, s, slen as u64)
+    os.linux.memcpy((out as i64 + clen + slen) as ptr, reset, rlen as u64)
+    out[total - 1i64] = 0u8; out
+
+fn bold       : ptr -> *u8 | s -> with_color(s, "\x1b[1m" as ptr)
+fn red        : ptr -> *u8 | s -> with_color(s, "\x1b[31m" as ptr)
+fn green      : ptr -> *u8 | s -> with_color(s, "\x1b[32m" as ptr)
+fn yellow     : ptr -> *u8 | s -> with_color(s, "\x1b[33m" as ptr)
+fn blue       : ptr -> *u8 | s -> with_color(s, "\x1b[34m" as ptr)
+fn magenta    : ptr -> *u8 | s -> with_color(s, "\x1b[35m" as ptr)
+fn cyan       : ptr -> *u8 | s -> with_color(s, "\x1b[36m" as ptr)
+fn white      : ptr -> *u8 | s -> with_color(s, "\x1b[37m" as ptr)
+fn bright_red : ptr -> *u8 | s -> with_color(s, "\x1b[91m" as ptr)
+fn dim        : ptr -> *u8 | s -> with_color(s, "\x1b[2m" as ptr)

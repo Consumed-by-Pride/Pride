@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+let arith = rewrite
+  | x + 0 ↦ x
+  | x * 1 ↦ x
+fn apply_it : i64 -> i64
+  | n -> n |> arith

@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+effect State
+  get : () -> i32
+fn run : () -> i32 ! [State]
+  | () -> State.get()
+fn handler_main : () -> i32
+  | () ->
+      handle run()
+        | State.get() -> resume(42)

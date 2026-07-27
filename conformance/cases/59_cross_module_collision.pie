@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+mod a
+  fn f : i32 -> i32
+    | n -> n
+mod b
+  fn f : i32 -> i32
+    | n -> n + 1
+fn caller : i32 -> i32
+  | n -> a::f(b::f(n))

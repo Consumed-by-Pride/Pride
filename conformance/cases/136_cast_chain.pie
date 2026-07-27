@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+fn byte_to_word : u8 -> u64
+  | b -> b as u64
+
+fn word_to_byte : u64 -> u8
+  | w -> w as u8
+
+fn float_round : f64 -> i32
+  | x -> x as i32

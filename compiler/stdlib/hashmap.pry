@@ -1,0 +1,144 @@
+-- stdlib/hashmap.pry — HashMap: open-addressing Robin Hood hash table
+-- Keys: i64, Values: i64. Generic via monomorphizer.
+--
+-- Bucket: key(i64,8B) + val(i64,8B) + dist(i32,4B) + used(bool,1B) + pad(3B) = 24B
+
+fn malloc_hm : usize -> ptr #extern("malloc") #cc(c)
+fn free_hm   : ptr   -> ()  #extern("free")   #cc(c)
+fn memset_hm : (ptr, i32, usize) -> ptr #extern("memset") #cc(c)
+
+let HM_BUCKET : usize = 24
+
+struct HashMap
+  buckets : ptr
+  cap     : usize
+  len     : usize
+
+fn hm_new : () -> HashMap
+  | () -> HashMap { buckets: 0 as ptr, cap: 0, len: 0 }
+
+-- Bucket field accessors (byte offsets into raw memory)
+fn hm_baddr : (ptr, usize) -> usize
+  | (base, idx) -> (base as usize) + idx * HM_BUCKET
+
+fn hm_key_ptr  : (ptr, usize) -> *i64
+  | (base, idx) -> hm_baddr(base, idx) as *i64
+
+fn hm_val_ptr  : (ptr, usize) -> *i64
+  | (base, idx) -> (hm_baddr(base, idx) + 8) as *i64
+
+fn hm_dist_ptr : (ptr, usize) -> *i32
+  | (base, idx) -> (hm_baddr(base, idx) + 16) as *i32
+
+fn hm_used_ptr : (ptr, usize) -> *bool
+  | (base, idx) -> (hm_baddr(base, idx) + 20) as *bool
+
+-- FNV-1a hash of i64 key, modulo cap
+fn hm_hash : (i64, usize) -> usize
+  | (k, cap) ->
+      let h  = 14695981039346656037 as usize
+      let h2 = h ^ (k as usize)
+      (h2 * 1099511628211) % cap
+
+fn hm_grow : *HashMap -> ()
+  | (m) ->
+      let nc    = if m.cap == 0 then 16 else m.cap * 2
+      let nbytes = nc * HM_BUCKET
+      let nb    = malloc_hm(nbytes)
+      memset_hm(nb, 0, nbytes)
+      if m.cap > 0
+        let mut i : usize = 0
+        while i < m.cap
+          let used = *hm_used_ptr(m.buckets, i)
+          if used
+            let k2 = *hm_key_ptr(m.buckets, i)
+            let v2 = *hm_val_ptr(m.buckets, i)
+            let mut slot : usize = hm_hash(k2, nc)
+            let mut dist : i32 = 0
+            let mut ins  : bool = false
+            while !ins
+              let slot_used = *hm_used_ptr(nb, slot)
+              if !slot_used
+                *hm_key_ptr(nb, slot)  = k2
+                *hm_val_ptr(nb, slot)  = v2
+                *hm_dist_ptr(nb, slot) = dist
+                *hm_used_ptr(nb, slot) = true
+                ins = true
+              else
+                dist = dist + 1
+                slot = (slot + 1) % nc
+          i = i + 1
+        free_hm(m.buckets)
+      m.buckets = nb
+      m.cap     = nc
+
+fn hm_insert : (*HashMap, i64, i64) -> ()
+  | (m, k, v) ->
+      if m.cap == 0 || m.len * 100 >= m.cap * 75
+        hm_grow(m)
+      let mut slot  : usize = hm_hash(k, m.cap)
+      let mut dist  : i32   = 0
+      let mut ins_k : i64   = k
+      let mut ins_v : i64   = v
+      let mut done  : bool  = false
+      while !done
+        let used = *hm_used_ptr(m.buckets, slot)
+        if !used
+          *hm_key_ptr(m.buckets, slot)  = ins_k
+          *hm_val_ptr(m.buckets, slot)  = ins_v
+          *hm_dist_ptr(m.buckets, slot) = dist
+          *hm_used_ptr(m.buckets, slot) = true
+          m.len = m.len + 1
+          done = true
+        else if *hm_key_ptr(m.buckets, slot) == ins_k
+          *hm_val_ptr(m.buckets, slot) = ins_v
+          done = true
+        else
+          if *hm_dist_ptr(m.buckets, slot) < dist
+            let tk = *hm_key_ptr(m.buckets, slot)
+            let tv = *hm_val_ptr(m.buckets, slot)
+            let td = *hm_dist_ptr(m.buckets, slot)
+            *hm_key_ptr(m.buckets, slot)  = ins_k
+            *hm_val_ptr(m.buckets, slot)  = ins_v
+            *hm_dist_ptr(m.buckets, slot) = dist
+            ins_k = tk
+            ins_v = tv
+            dist  = td
+          dist = dist + 1
+          slot = (slot + 1) % m.cap
+
+fn hm_get : (*HashMap, i64) -> (bool, i64)
+  | (m, k) ->
+      if m.cap == 0
+        (false, 0i64)
+      else
+        let mut slot : usize = hm_hash(k, m.cap)
+        let mut dist : i32   = 0
+        let mut res  : (bool, i64) = (false, 0i64)
+        let mut srch : bool  = true
+        while srch
+          let used = *hm_used_ptr(m.buckets, slot)
+          if !used || *hm_dist_ptr(m.buckets, slot) < dist
+            srch = false
+          else if *hm_key_ptr(m.buckets, slot) == k
+            res  = (true, *hm_val_ptr(m.buckets, slot))
+            srch = false
+          else
+            dist = dist + 1
+            slot = (slot + 1) % m.cap
+        res
+
+fn hm_contains : (*HashMap, i64) -> bool
+  | (m, k) ->
+      let (ok, _) = hm_get(m, k)
+      ok
+
+fn hm_len : *HashMap -> usize
+  | (m) -> m.len
+
+fn hm_free : *HashMap -> ()
+  | (m) ->
+      if m.cap > 0 then free_hm(m.buckets)
+      m.buckets = 0 as ptr
+      m.cap = 0
+      m.len = 0

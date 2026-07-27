@@ -1,0 +1,7 @@
+-- EXPECT-CLEAN
+mod geom
+  struct Point<T>
+    x : T
+    y : T
+fn origin_x : geom::Point<i32> -> i32
+  | p -> p.x

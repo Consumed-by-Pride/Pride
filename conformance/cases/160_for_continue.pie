@@ -1,0 +1,10 @@
+-- EXPECT-CLEAN
+fn sum_odds : i64 -> i64
+  | n ->
+    let mut s : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i < n
+      i = i + 1i64
+      if i % 2i64 == 0i64 then continue
+      s = s + i
+    s
