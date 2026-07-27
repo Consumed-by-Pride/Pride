@@ -1,0 +1,18 @@
+-- EXPECT-CLEAN
+fn scoped_allocs : i64 -> i64 ! [Alloc]
+  | n ->
+    let a : *i64 = alloc [i64; 1]
+    defer free(a as *u8)
+    a[0i64] = n
+    let b : *i64 = alloc [i64; 1]
+    defer free(b as *u8)
+    b[0i64] = n * 2i64
+    a[0i64] + b[0i64]
+
+fn defer_return_early : (i64, *i64) -> i64 ! [Alloc]
+  | (n, _out) ->
+    let tmp : *i64 = alloc [i64; 1]
+    defer free(tmp as *u8)
+    tmp[0i64] = n + 1i64
+    if n < 0i64 then 0i64
+    else tmp[0i64]

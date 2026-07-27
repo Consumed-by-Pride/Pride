@@ -1,0 +1,13 @@
+-- EXPECT-CLEAN
+effect IO
+  read_byte  : () -> i32
+  write_byte : i32 -> ()
+  flush      : () -> ()
+
+fn copy_bytes : i64 -> () ! [IO]
+  | n ->
+    let mut i : i64 = 0i64
+    while i < n
+      let b : i32 = IO.read_byte()
+      IO.write_byte(b)
+      i = i + 1i64

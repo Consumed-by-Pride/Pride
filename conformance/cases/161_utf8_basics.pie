@@ -1,0 +1,13 @@
+-- EXPECT-CLEAN
+fn utf8_ascii_count : (*u8, i64) -> i64
+  | (buf, len) ->
+    let mut count : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i < len
+      let b : u8 = buf[i]
+      if b < 128u8 then count = count + 1i64
+      i = i + 1i64
+    count
+
+fn count_bytes : (*u8, i64) -> i64
+  | (_buf, len) -> len

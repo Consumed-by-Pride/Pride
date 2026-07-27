@@ -1,0 +1,10 @@
+-- Code-as-data quotation sigils (v.md §13)
+-- Each sigil quotes its operand as a distinct representation.
+
+let as_tree  = ~Tree (x + y * z)        -- Code-as-Tree:  full AST of the expr
+let as_data  = ~Data my_vec3f           -- Code-as-Data:  operand as raw data
+let as_bytes = ~Bytes my_function       -- Code-as-Bytes: operand as byte seq
+
+-- sigils compose with the rest of the grammar:
+let folded   = ~Tree (1 + 2 + 3) |> arith*   -- quoted, folded, fixpoint-applied
+let nested   = ~Bytes (f(x) + g(y))

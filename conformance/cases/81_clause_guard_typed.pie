@@ -1,0 +1,4 @@
+-- EXPECT: type-warn 3:10 clause guard is not a bool
+fn f : i32 -> i32
+  | n, n + 1 -> 1
+  | _ -> 0

@@ -1,0 +1,8 @@
+-- EXPECT-CLEAN
+fn with_scope : i64 -> i64 ! [Alloc]
+  | n ->
+    let p : *i64 = alloc [i64; 1]
+    p[0] = n
+    let result : i64 = p[0] + 1i64
+    free p
+    result

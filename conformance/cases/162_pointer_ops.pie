@@ -1,0 +1,22 @@
+-- EXPECT-CLEAN
+fn sum_array : (*i64, i64) -> i64
+  | (p, n) ->
+    let mut s : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i < n
+      s = s + p[i]
+      i = i + 1i64
+    s
+
+fn fill_array : (*i64, i64, i64) -> ()
+  | (p, n, val) ->
+    let mut i : i64 = 0i64
+    while i < n
+      p[i] = val
+      i = i + 1i64
+
+fn swap : (*i64, *i64) -> ()
+  | (a, b) ->
+    let tmp : i64 = *a
+    *a = *b
+    *b = tmp

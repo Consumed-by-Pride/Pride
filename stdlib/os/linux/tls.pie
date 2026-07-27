@@ -1,0 +1,313 @@
+mod os.linux.tls
+
+use os.linux
+use os.linux.structs
+
+-- Thread-Local Storage (TLS) layout for x86-64 Linux.
+
+-- Implements ELF TLS Variant II (used by x86-64, aarch64 in modified form).
+-- Reference: https://www.akkadia.org/drepper/tls.pdf
+-- §0  BACKGROUND
+-- ELF TLS Variant II layout (x86-64):
+--   Low address                               High address
+--   ←---TLS blocks---|---ABI TCB---|---Pride TCB---→
+--                    ^
+--                    TP (thread pointer, %fs on x86-64) points here.
+-- The ABI TCB (Thread Control Block) is a fixed-size structure.
+-- On x86-64 its first word is a self-pointer (points to itself).
+-- The TLS blocks hold thread-local variables.
+-- The DTV (Dynamic Thread Vector) enables multiple DSO TLS blocks.
+
+-- §1  CONSTANTS
+
+const TCB_SELF_POINTER_OFFSET : i64 = 0i64   -- first word of ABI TCB = &TCB
+const TCB_DTV_POINTER_OFFSET  : i64 = 8i64   -- second word = DTV pointer (glibc compat)
+const TCB_SIZE                : i64 = 16i64  -- two words on x86-64
+
+-- Alignment requirements
+const TLS_BLOCK_ALIGN_MIN : i64 = 16i64   -- minimum alignment of TLS block
+const TLS_TCB_ALIGN       : i64 = 16i64   -- TCB alignment
+
+-- Maximum static TLS size (conservative limit)
+const TLS_STATIC_MAX_SIZE : i64 = 131072i64  -- 128 KiB
+
+-- §2  TLS VARIABLE ACCESS (architecture-specific)
+-- On x86-64: thread pointer = %fs base, accessed via arch_prctl(ARCH_GET_FS)
+-- The TP points to the ABI TCB. TLS variables are at negative offsets from TP.
+
+fn tls_get_thread_pointer : () -> ptr
+  | () ->
+    -- Read %fs base (the thread pointer) via arch_prctl
+    let tp : *ptr = os.linux.malloc(8i64) as *ptr
+    os.linux.arch_prctl(os.linux.ARCH_GET_FS, tp as i64)
+    let v = tp[0i64]; os.linux.free(tp as ptr); v
+
+fn tls_set_thread_pointer : ptr -> i64
+  | tp ->
+    os.linux.arch_prctl(os.linux.ARCH_SET_FS, tp as i64)
+
+-- §3  TLS BLOCK DESCRIPTOR
+-- Describes one TLS segment (from a PT_TLS ELF program header).
+
+struct TlsSegment
+  init_data   : ptr    -- pointer to initialization image (from PT_TLS p_filesz bytes)
+  init_size   : i64    -- size of initialization image (p_filesz)
+  alloc_size  : i64    -- total allocation size (p_memsz, >= init_size)
+  alignment   : i64    -- p_align
+  offset      : i64    -- offset of this segment's variables from thread pointer (negative)
+
+-- §4  ABI TCB STRUCT (x86-64 glibc-compatible layout)
+-- Must be at the address the TP points to.
+
+struct AbiTcb
+  self     : ptr    -- must be &this (glibc requirement)
+  dtv      : ptr    -- DTV pointer (NULL for static TLS only)
+  __padding : u64   -- can be used for anything
+
+-- §5  DTV (Dynamic Thread Vector)
+-- Array of pointers to each module's TLS block.
+-- dtv[-1] = generation counter (u64)
+-- dtv[0]  = length (u64)
+-- dtv[1]  = pointer to module 1's TLS block
+-- ...
+
+struct DtvEntry
+  val : ptr   -- pointer to TLS block for module i, or 0 if not yet allocated
+
+-- §6  STATIC TLS ALLOCATOR
+-- Allocates the full TLS area for a single-module (no dynamic loading) program.
+-- This is what we use for the Pride runtime.
+
+struct TlsArea
+  block     : ptr    -- allocated memory (page-aligned)
+  block_sz  : i64    -- total allocation size
+  tcb       : ptr    -- pointer to ABI TCB within block
+  tp        : ptr    -- thread pointer (= tcb on Variant II x86-64)
+  tls_start : ptr    -- start of TLS data (at negative offset from tp)
+  tls_size  : i64    -- total TLS data size
+
+fn tls_area_alloc : (ptr, i64, i64, i64) -> TlsArea
+  | (init_image, init_sz, tls_sz, tls_align) ->
+    -- Layout (Variant II, x86-64):
+    --   [tls_block (tls_sz bytes, aligned)] [ABI TCB (16 bytes)]
+    --   tp points to start of ABI TCB.
+    --   TLS variables are at tp - tls_sz .. tp - 1.
+    let align    = if tls_align < TLS_BLOCK_ALIGN_MIN then TLS_BLOCK_ALIGN_MIN else tls_align
+    let tcb_sz   = os.linux.structs.align_up_i64(TCB_SIZE, TLS_TCB_ALIGN)
+    let tls_padded = os.linux.structs.align_up_i64(tls_sz, align)
+    let total    = tls_padded + tcb_sz + 64i64   -- 64 bytes guard
+    
+    -- Allocate page-aligned memory
+    let raw = os.linux.mmap(0 as ptr, total,
+                            os.linux.PROT_READ | os.linux.PROT_WRITE,
+                            os.linux.MAP_PRIVATE | os.linux.MAP_ANONYMOUS,
+                            -1i64, 0i64)
+    if raw as i64 == os.linux.MAP_FAILED
+      TlsArea { block: 0 as ptr, block_sz: 0i64, tcb: 0 as ptr, tp: 0 as ptr, tls_start: 0 as ptr, tls_size: 0i64 }
+    else
+      os.linux.memset(raw, 0i32, total as u64)
+      
+      -- TLS block at raw, TCB just after
+      let tls_block = raw
+      let tcb_ptr = (raw as i64 + tls_padded) as ptr
+      
+      -- Copy initialization image into TLS block
+      if init_sz > 0i64 && init_image as i64 != 0i64
+        os.linux.memcpy(tls_block, init_image, init_sz as u64)
+      
+      -- Set up ABI TCB: self pointer = &tcb
+      let abi = tcb_ptr as *AbiTcb
+      abi.self = tcb_ptr
+      abi.dtv  = 0 as ptr
+      
+      TlsArea {
+        block:     raw,
+        block_sz:  total,
+        tcb:       tcb_ptr,
+        tp:        tcb_ptr,    -- TP = TCB start on Variant II
+        tls_start: tls_block,
+        tls_size:  tls_sz
+      }
+
+fn tls_area_free : *TlsArea -> ()
+  | area ->
+    if area.block as i64 != 0i64
+      os.linux.munmap(area.block, area.block_sz)
+    area.block = 0 as ptr; area.block_sz = 0i64
+
+fn align_up_i64 : (i64, i64) -> i64 | (n, a) -> (n + a - 1i64) & (-a)
+
+-- §7  THREAD TLS INIT (call this after creating a new thread's stack)
+-- Install TLS for the new thread and set the thread pointer.
+
+fn tls_install_for_thread : *TlsArea -> i64
+  | area ->
+    if area.tp as i64 == 0i64 then -(os.linux.EINVAL)
+    else tls_set_thread_pointer(area.tp)
+
+-- §8  PTHREAD-COMPATIBLE TLS KEY MANAGEMENT
+-- Implements a minimal TLS key store without libc.
+-- Keys map to per-thread values stored in a thread-local array.
+
+const TLS_KEY_MAX : i64 = 128i64   -- max number of TLS keys
+
+-- The global key table (destructors). One entry per key slot.
+let tls_key_destructors : ptr = 0 as ptr   -- *ptr[TLS_KEY_MAX]
+let tls_key_inuse        : ptr = 0 as ptr  -- *bool[TLS_KEY_MAX]
+let tls_key_initialized  : bool = false
+let tls_key_next         : i64 = 0i64
+
+fn tls_keys_init : () -> ()
+  | () ->
+    if !tls_key_initialized
+      tls_key_destructors = os.linux.malloc(TLS_KEY_MAX * 8i64)
+      tls_key_inuse        = os.linux.malloc(TLS_KEY_MAX)
+      os.linux.memset(tls_key_destructors, 0i32, (TLS_KEY_MAX * 8i64) as u64)
+      os.linux.memset(tls_key_inuse, 0i32, TLS_KEY_MAX as u64)
+      tls_key_initialized = true
+
+fn tls_key_create : ptr -> i64
+  | destructor ->
+    tls_keys_init()
+    let inuse = tls_key_inuse as *u8
+    let mut i : i64 = 0i64
+    while i < TLS_KEY_MAX
+      if inuse[i] == 0u8
+        inuse[i] = 1u8
+        (tls_key_destructors as *ptr)[i] = destructor
+        i
+      i = i + 1i64
+    -(os.linux.EAGAIN)   -- EAGAIN: no slots available
+
+fn tls_key_delete : i64 -> i64
+  | key ->
+    if key < 0i64 || key >= TLS_KEY_MAX then -(os.linux.EINVAL)
+    else
+      (tls_key_inuse as *u8)[key] = 0u8
+      (tls_key_destructors as *ptr)[key] = 0 as ptr
+      0i64
+
+fn tls_key_valid : i64 -> bool
+  | key ->
+    tls_keys_init()
+    key >= 0i64 && key < TLS_KEY_MAX && (tls_key_inuse as *u8)[key] != 0u8
+
+-- §9  PER-THREAD KEY-VALUE STORE
+-- Each thread needs its own key-value array.
+-- We store it as a block of TLS_KEY_MAX pointers embedded in the TLS area.
+
+struct ThreadSpecific
+  values : ptr   -- *ptr[TLS_KEY_MAX]
+
+fn thread_specific_new : () -> ThreadSpecific
+  | () ->
+    let v = os.linux.malloc(TLS_KEY_MAX * 8i64)
+    os.linux.memset(v, 0i32, (TLS_KEY_MAX * 8i64) as u64)
+    ThreadSpecific { values: v }
+
+fn thread_specific_free : *ThreadSpecific -> ()
+  | ts ->
+    tls_keys_init()
+    let vals = ts.values as *ptr
+    let inuse = tls_key_inuse as *u8
+    let dtors = tls_key_destructors as *ptr
+    -- Call destructors for non-null values (POSIX 1003.1c requirement: up to PTHREAD_DESTRUCTOR_ITERATIONS times)
+    let mut i : i64 = 0i64
+    while i < TLS_KEY_MAX
+      if inuse[i] != 0u8 && vals[i] as i64 != 0i64 && dtors[i] as i64 != 0i64
+        let dtor = dtors[i] as fn(ptr) -> ()
+        let v = vals[i]; vals[i] = 0 as ptr
+        dtor(v)
+      i = i + 1i64
+    os.linux.free(ts.values)
+    ts.values = 0 as ptr
+
+fn thread_specific_set : (*ThreadSpecific, i64, ptr) -> i64
+  | (ts, key, value) ->
+    if !tls_key_valid(key) then -(os.linux.EINVAL)
+    else
+      (ts.values as *ptr)[key] = value; 0i64
+
+fn thread_specific_get : (*ThreadSpecific, i64) -> ptr
+  | (ts, key) ->
+    if !tls_key_valid(key) then 0 as ptr
+    else (ts.values as *ptr)[key]
+
+-- §10  ELF PT_TLS SEGMENT PARSER
+-- Reads PT_TLS from the current executable's ELF headers.
+
+struct ElfPtTls
+  vaddr    : u64   -- virtual address of TLS block template
+  filesz   : u64   -- initialized data size
+  memsz    : u64   -- total size including BSS
+  align_   : u64   -- required alignment
+
+fn parse_pt_tls_from_phdr : (ptr, u16) -> (ElfPtTls, bool)
+  | (phdr_ptr, phnum) ->
+    -- ELF64 Phdr layout:
+    --  0: p_type(u32), p_flags(u32)
+    --  8: p_offset(u64), p_vaddr(u64), p_paddr(u64)
+    -- 32: p_filesz(u64), p_memsz(u64), p_align(u64)
+    let PT_TLS : u32 = 7u32
+    let phdr_entry_size : i64 = 56i64
+    let mut i : i64 = 0i64
+    while i < phnum as i64
+      let phdr = (phdr_ptr as i64 + i * phdr_entry_size) as ptr
+      let p_type = (phdr as *u32)[0u32]
+      if p_type == PT_TLS
+        let vaddr  = ((phdr as i64 + 8i64)  as *u64)[0i64]
+        let filesz = ((phdr as i64 + 24i64) as *u64)[0i64]
+        let memsz  = ((phdr as i64 + 32i64) as *u64)[0i64]
+        let align_ = ((phdr as i64 + 40i64) as *u64)[0i64]
+        (ElfPtTls { vaddr: vaddr, filesz: filesz, memsz: memsz, align_: align_ }, true)
+      i = i + 1i64
+    (ElfPtTls { vaddr: 0u64, filesz: 0u64, memsz: 0u64, align_: 0u64 }, false)
+
+-- §11  RUNTIME INITIALIZATION
+-- Called by the Pride runtime before user code runs on each thread.
+
+fn tls_runtime_init : () -> i64
+  | () ->
+    -- Read PT_TLS from /proc/self/exe ELF headers
+    -- For simple static programs with no TLS variables, this is a no-op.
+    -- Full implementation would parse ELF headers from AT_PHDR auxv entry.
+    tls_keys_init(); 0i64
+
+-- §12  VALIDATION HELPERS
+
+fn tls_block_validate : (*TlsArea) -> bool
+  | area ->
+    area.block as i64 != 0i64 &&
+    area.tcb as i64 != 0i64 &&
+    area.tp as i64 != 0i64 &&
+    area.block_sz > 0i64
+
+fn tls_key_range_validate : i64 -> bool
+  | key -> key >= 0i64 && key < TLS_KEY_MAX
+
+-- §13  UNIT TESTS
+-- Test 1: TLS area allocation and TP installation
+--   let area = tls_area_alloc(0 as ptr, 0i64, 1024i64, 16i64)
+--   assert(tls_block_validate(&area))
+--   assert(area.tp == area.tcb)
+--   -- TCB self pointer must point to itself (Variant II ABI)
+--   let abi = area.tcb as *AbiTcb
+--   assert(abi.self == area.tcb)
+--   tls_area_free(&area)
+-- Test 2: TLS key create/set/get/delete cycle
+--   tls_keys_init()
+--   let key = tls_key_create(0 as ptr)
+--   assert(key >= 0i64)
+--   assert(tls_key_valid(key))
+--   let mut ts = thread_specific_new()
+--   thread_specific_set(&ts, key, 0xDEADBEEFi64 as ptr)
+--   let v = thread_specific_get(&ts, key)
+--   assert(v as i64 == 0xDEADBEEFi64)
+--   thread_specific_free(&ts)
+--   tls_key_delete(key)
+--   assert(!tls_key_valid(key))
+-- Test 3: Key range validation
+--   assert(tls_key_range_validate(0i64))
+--   assert(tls_key_range_validate(TLS_KEY_MAX - 1i64))
+--   assert(!tls_key_range_validate(-1i64))
+--   assert(!tls_key_range_validate(TLS_KEY_MAX))

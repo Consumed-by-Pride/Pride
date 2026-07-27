@@ -1,0 +1,3 @@
+-- EXPECT-CLEAN
+fn apply<A, B> : (A -> B ! [..r], A) -> B ! [..r]
+  | (g, x) -> g(x)

@@ -1,0 +1,8 @@
+-- EXPECT-CLEAN
+fn add_n : (i64, i64) -> i64
+  | (x, n) -> x + n
+
+fn make_adder_result : i64 -> i64
+  | offset ->
+    let f = fn | (x) -> x + offset
+    f(10i64)

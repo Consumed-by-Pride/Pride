@@ -1,0 +1,12 @@
+-- Test: defer with scope cleanup
+fn with_cleanup : i64 -> i64 ! [Alloc]
+  | n ->
+    let buf : *u8 = alloc [u8; n]
+    defer free(buf)
+    let mut sum : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i < n
+      buf[i] = (i % 256i64) as u8
+      sum = sum + buf[i] as i64
+      i = i + 1i64
+    sum

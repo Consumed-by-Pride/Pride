@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+fn guarded_div : (i32, i32) -> i32
+  | (a, b) ->
+    assume b != 0
+    a / b
+
+fn abort_path : i32 -> i32
+  | 0 -> trap
+  | n -> n

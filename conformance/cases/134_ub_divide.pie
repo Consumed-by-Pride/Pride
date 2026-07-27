@@ -1,0 +1,8 @@
+-- EXPECT-CLEAN
+fn safe_div : (i32, i32) -> i32 ! [UB]
+  | (_, 0) -> ub! "division by zero"
+  | (a, b) -> a / b
+
+fn mod_check : (i32, i32) -> i32 ! [UB]
+  | (_, 0) -> ub! "mod by zero"
+  | (a, b) -> a % b

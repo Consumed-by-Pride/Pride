@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+fn apply2 : (i64, i64, (i64, i64) -> i64) -> i64
+  | (a, b, f) -> f(a, b)
+
+fn test : i64 -> i64
+  | n ->
+      let add = fn | (x, y) -> x + y
+      let mul = fn | (x, y) -> x * y
+      apply2(n, n, add) + apply2(n, 2i64, mul)

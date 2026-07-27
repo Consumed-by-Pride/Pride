@@ -1,0 +1,117 @@
+-- stdlib/bufio.pie — Buffered I/O (BufReader, BufWriter)
+-- Wraps File from io.pie with a buffer for efficient line-at-a-time I/O.
+
+fn malloc_bio : usize -> ptr  #extern("malloc") #cc(c)
+fn free_bio   : ptr   -> ()   #extern("free")   #cc(c)
+
+let BUFIO_CAP : usize = 4096
+
+-- ─── BufReader ───────────────────────────────────────────────────────────────
+struct BufReader
+  file  : File
+  buf   : ptr     -- *u8 internal read buffer
+  start : usize   -- first valid byte index
+  end2  : usize   -- one past last valid byte
+  eof   : bool
+
+fn bufreader_new : File -> BufReader
+  | (f) ->
+      let b = malloc_bio(BUFIO_CAP)
+      BufReader { file: f, buf: b, start: 0, end2: 0, eof: false }
+
+fn bufreader_fill : *BufReader -> ()
+  | (br) ->
+      if br.start >= br.end2
+        br.start = 0
+        br.end2 = file_read(&br.file, br.buf, BUFIO_CAP)
+        if br.end2 == 0 then br.eof = true
+
+-- Read one byte. Returns (true, byte) or (false, 0) on EOF.
+fn bufreader_read_byte : *BufReader -> (bool, u8)
+  | (br) ->
+      bufreader_fill(br)
+      if br.eof || br.start >= br.end2 then (false, 0u8)
+      else
+        let b = *((br.buf as usize + br.start) as *u8)
+        br.start = br.start + 1
+        (true, b)
+
+-- Read a line into dst String (appends, does not clear).
+-- Returns true if a line was read (possibly empty), false on EOF.
+fn bufreader_read_line : (*BufReader, *String) -> bool
+  | (br, dst) ->
+      let mut read_any : bool = false
+      let mut done     : bool = false
+      while !done
+        let (ok, b) = bufreader_read_byte(br)
+        if !ok
+          done = true
+        else if b == 10u8   -- '\n'
+          read_any = true
+          done = true
+        else
+          str_push_byte(dst, b)
+          read_any = true
+      read_any
+
+fn bufreader_close : *BufReader -> ()
+  | (br) ->
+      file_close(&br.file)
+      if br.buf != 0 as ptr then free_bio(br.buf)
+      br.buf = 0 as ptr
+
+-- ─── BufWriter ───────────────────────────────────────────────────────────────
+struct BufWriter
+  file  : File
+  buf   : ptr
+  used  : usize
+
+fn bufwriter_new : File -> BufWriter
+  | (f) ->
+      let b = malloc_bio(BUFIO_CAP)
+      BufWriter { file: f, buf: b, used: 0 }
+
+fn bufwriter_flush : *BufWriter -> ()
+  | (bw) ->
+      if bw.used > 0
+        file_write(&bw.file, bw.buf, bw.used)
+        bw.used = 0
+
+fn bufwriter_write_byte : (*BufWriter, u8) -> ()
+  | (bw, b) ->
+      if bw.used >= BUFIO_CAP then bufwriter_flush(bw)
+      *((bw.buf as usize + bw.used) as *u8) = b as i64
+      bw.used = bw.used + 1
+
+fn bufwriter_write : (*BufWriter, ptr, usize) -> ()
+  | (bw, p, n) ->
+      let mut i : usize = 0
+      while i < n
+        bufwriter_write_byte(bw, *((p as usize + i) as *u8))
+        i = i + 1
+
+fn bufwriter_write_str : (*BufWriter, *u8, usize) -> ()
+  | (bw, s, n) -> bufwriter_write(bw, s as ptr, n)
+
+fn bufwriter_close : *BufWriter -> ()
+  | (bw) ->
+      bufwriter_flush(bw)
+      file_close(&bw.file)
+      if bw.buf != 0 as ptr then free_bio(bw.buf)
+      bw.buf = 0 as ptr
+
+-- ─── Convenience: read entire file as String ─────────────────────────────────
+fn read_file_to_string : *u8 -> String
+  | (path) ->
+      let f = file_open(path, "r" as *u8)
+      let s = str_new()
+      if file_is_open(f)
+        let br = bufreader_new(f)
+        let mut line = str_new()
+        while bufreader_read_line(&br, &line)
+          str_push_str(&s, line.ptr, line.len)
+          str_push_byte(&s, 10u8)
+          str_clear(&line)
+        str_free(&line)
+        bufreader_close(&br)
+      s

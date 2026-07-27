@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+fn puts #[extern("puts")] #[cc(c)] : ptr -> i32
+fn malloc #[extern("malloc")] : i64 -> ptr
+fn free #[extern("free")] : ptr -> ()
+fn f : i32 -> i32
+  | n -> n

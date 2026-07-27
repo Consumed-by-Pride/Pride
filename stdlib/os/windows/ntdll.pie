@@ -1,0 +1,225 @@
+mod os.windows.ntdll
+
+-- ntdll.dll — NT native API declarations.
+
+-- These are below the Win32 layer — used for operations that have no Win32 equivalent
+-- or that require lower overhead. ntdll functions use NTSTATUS return codes.
+
+-- §1  CORE NT TYPES
+
+-- UNICODE_STRING — used everywhere in NT API
+struct UnicodeString
+  length          : u16
+  maximum_length  : u16
+  __pad           : u32
+  buffer          : ptr   -- *u16
+
+-- OBJECT_ATTRIBUTES — used in NtCreateFile, NtOpenFile, etc.
+struct ObjectAttributes
+  length                    : u32
+  __pad                     : u32
+  root_directory            : ptr
+  object_name               : ptr   -- *UnicodeString
+  attributes                : u32
+  security_descriptor       : ptr
+  security_quality_of_service : ptr
+
+const OBJ_INHERIT            : u32 = 2u32
+const OBJ_PERMANENT          : u32 = 16u32
+const OBJ_EXCLUSIVE          : u32 = 32u32
+const OBJ_CASE_INSENSITIVE   : u32 = 64u32
+const OBJ_OPENIF             : u32 = 128u32
+const OBJ_OPENLINK           : u32 = 256u32
+const OBJ_KERNEL_HANDLE      : u32 = 512u32
+const OBJ_FORCE_ACCESS_CHECK : u32 = 1024u32
+const OBJ_VALID_ATTRIBUTES   : u32 = 1994u32
+
+-- IO_STATUS_BLOCK — output for async NT I/O
+struct IoStatusBlock
+  status_or_pointer : u64   -- union: NTSTATUS or *void
+  information       : u64   -- bytes transferred, etc.
+
+-- §2  FILE INFO CLASS (used in NtQueryInformationFile / NtSetInformationFile)
+const FileDirectoryInformation          : u32 = 1u32
+const FileFullDirectoryInformation      : u32 = 2u32
+const FileBothDirectoryInformation      : u32 = 3u32
+const FileBasicInformation              : u32 = 4u32
+const FileStandardInformation           : u32 = 5u32
+const FileInternalInformation           : u32 = 6u32
+const FileEaInformation                 : u32 = 7u32
+const FileAccessInformation             : u32 = 8u32
+const FileNameInformation               : u32 = 9u32
+const FileRenameInformation             : u32 = 10u32
+const FileLinkInformation               : u32 = 11u32
+const FileNamesInformation              : u32 = 12u32
+const FileDispositionInformation        : u32 = 13u32
+const FilePositionInformation           : u32 = 14u32
+const FileFullEaInformation             : u32 = 15u32
+const FileModeInformation               : u32 = 16u32
+const FileAlignmentInformation          : u32 = 17u32
+const FileAllInformation                : u32 = 18u32
+const FileAllocationInformation         : u32 = 19u32
+const FileEndOfFileInformation          : u32 = 20u32
+const FileAlternateNameInformation      : u32 = 21u32
+const FileStreamInformation             : u32 = 22u32
+const FilePipeInformation               : u32 = 23u32
+const FilePipeLocalInformation          : u32 = 24u32
+const FilePipeRemoteInformation         : u32 = 25u32
+const FileMailslotQueryInformation      : u32 = 26u32
+const FileMailslotSetInformation        : u32 = 27u32
+const FileCompressionInformation        : u32 = 28u32
+const FileObjectIdInformation           : u32 = 29u32
+const FileCompletionInformation         : u32 = 30u32
+const FileMoveClusterInformation        : u32 = 31u32
+const FileQuotaInformation              : u32 = 32u32
+const FileReparsePointInformation       : u32 = 33u32
+const FileNetworkOpenInformation        : u32 = 34u32
+const FileAttributeTagInformation       : u32 = 35u32
+const FileTrackingInformation           : u32 = 36u32
+const FileIdBothDirectoryInformation    : u32 = 37u32
+const FileIdFullDirectoryInformation    : u32 = 38u32
+const FileValidDataLengthInformation    : u32 = 39u32
+const FileShortNameInformation          : u32 = 40u32
+const FileIoCompletionNotificationInformation : u32 = 41u32
+const FileIoStatusBlockRangeInformation : u32 = 42u32
+const FileIoPriorityHintInformation     : u32 = 43u32
+const FileSfioReserveInformation        : u32 = 44u32
+const FileSfioVolumeInformation         : u32 = 45u32
+const FileHardLinkInformation           : u32 = 46u32
+const FileProcessIdsUsingFileInformation : u32 = 47u32
+const FileNormalizedNameInformation     : u32 = 48u32
+const FileNetworkPhysicalNameInformation : u32 = 49u32
+const FileIdGlobalTxDirectoryInformation : u32 = 50u32
+const FileIsRemoteDeviceInformation     : u32 = 51u32
+const FileUnusedInformation             : u32 = 52u32
+const FileNumaNodeInformation           : u32 = 53u32
+const FileStandardLinkInformation       : u32 = 54u32
+const FileRemoteProtocolInformation     : u32 = 55u32
+const FileReplaceCompletionInformation  : u32 = 61u32
+const FileDispositionInformationEx      : u32 = 64u32
+const FileStatInformation               : u32 = 68u32
+const FileIdExtdBothDirectoryInformation : u32 = 69u32
+const FileCaseSensitiveInformation      : u32 = 71u32
+const FileLinkInformationEx             : u32 = 72u32
+const FileRenameInformationEx           : u32 = 73u32
+
+-- §3  FILE INFORMATION STRUCTS
+
+struct FileBasicInformationData
+  creation_time   : i64
+  last_access_time : i64
+  last_write_time  : i64
+  change_time      : i64
+  file_attributes  : u32
+  __pad            : u32
+
+struct FileStandardInformationData
+  allocation_size  : u64
+  end_of_file      : u64
+  number_of_links  : u32
+  delete_pending   : u8
+  directory        : u8
+  __pad            : u16
+
+struct FilePositionInformationData
+  current_byte_offset : u64
+
+struct FileEndOfFileInformationData
+  end_of_file : u64
+
+struct FileAllocationInformationData
+  allocation_size : u64
+
+struct FileRenameInformationData
+  replace_if_exists : u8
+  root_directory    : ptr
+  file_name_length  : u32
+  file_name         : u16   -- FileNameLength bytes follow
+
+struct FileDispositionInformationData
+  delete_file : u8
+
+struct FileIdBothDirInformationData
+  next_entry_offset : u32
+  file_index        : u32
+  creation_time     : i64
+  last_access_time  : i64
+  last_write_time   : i64
+  change_time       : i64
+  end_of_file       : i64
+  allocation_size   : i64
+  file_attributes   : u32
+  file_name_length  : u32
+  ea_size           : u32
+  short_name_length : u8
+  short_name        : u16   -- 12 u16 chars
+  file_id           : u64
+  file_name         : u16   -- FileNameLength bytes follow
+
+struct FileNameInformationData
+  file_name_length : u32
+  file_name        : u16   -- FileNameLength bytes follow
+
+-- §4  NT API FUNCTION DECLARATIONS
+
+fn NtCreateFile           : (ptr, u32, ptr, ptr, ptr, u32, u32, u32, u32, ptr, u32) -> i32  #extern("NtCreateFile") #cc(winapi)
+fn NtOpenFile             : (ptr, u32, ptr, ptr, u32, u32) -> i32                             #extern("NtOpenFile") #cc(winapi)
+fn NtClose                : ptr -> i32                                                         #extern("NtClose") #cc(winapi)
+fn NtReadFile             : (ptr, ptr, ptr, ptr, ptr, ptr, u32, ptr, ptr) -> i32              #extern("NtReadFile") #cc(winapi)
+fn NtWriteFile            : (ptr, ptr, ptr, ptr, ptr, ptr, u32, ptr, ptr) -> i32              #extern("NtWriteFile") #cc(winapi)
+fn NtDeviceIoControlFile  : (ptr, ptr, ptr, ptr, ptr, u32, ptr, u32, ptr, u32) -> i32        #extern("NtDeviceIoControlFile") #cc(winapi)
+fn NtFsControlFile        : (ptr, ptr, ptr, ptr, ptr, u32, ptr, u32, ptr, u32) -> i32        #extern("NtFsControlFile") #cc(winapi)
+fn NtCancelIoFileEx       : (ptr, ptr, ptr) -> i32                                            #extern("NtCancelIoFileEx") #cc(winapi)
+fn NtSetInformationFile   : (ptr, ptr, ptr, u32, u32) -> i32                                 #extern("NtSetInformationFile") #cc(winapi)
+fn NtQueryInformationFile : (ptr, ptr, ptr, u32, u32) -> i32                                 #extern("NtQueryInformationFile") #cc(winapi)
+fn NtQueryDirectoryFile   : (ptr, ptr, ptr, ptr, ptr, ptr, u32, u32, i32, ptr, u32) -> i32  #extern("NtQueryDirectoryFile") #cc(winapi)
+fn NtQueryDirectoryFileEx : (ptr, ptr, ptr, ptr, ptr, ptr, u32, u32, i32, ptr, u32) -> i32  #extern("NtQueryDirectoryFileEx") #cc(winapi)
+fn NtCreateKeyedEvent     : (ptr, u32, ptr, u32) -> i32                                      #extern("NtCreateKeyedEvent") #cc(winapi)
+fn NtReleaseKeyedEvent    : (ptr, ptr, i32, ptr) -> i32                                      #extern("NtReleaseKeyedEvent") #cc(winapi)
+fn NtWaitForKeyedEvent    : (ptr, ptr, i32, ptr) -> i32                                      #extern("NtWaitForKeyedEvent") #cc(winapi)
+fn NtQueryTimerResolution : (ptr, ptr, ptr) -> i32                                           #extern("NtQueryTimerResolution") #cc(winapi)
+fn NtSetTimerResolution   : (u32, i32, ptr) -> i32                                           #extern("NtSetTimerResolution") #cc(winapi)
+
+fn RtlNtStatusToDosError  : i32 -> u32                                                       #extern("RtlNtStatusToDosError") #cc(winapi)
+fn RtlCaptureContext      : ptr -> ()                                                          #extern("RtlCaptureContext") #cc(winapi)
+fn RtlVirtualUnwind       : (u32, u64, u64, ptr, ptr, ptr, ptr, ptr) -> ptr                  #extern("RtlVirtualUnwind") #cc(winapi)
+fn RtlLookupFunctionEntry : (u64, ptr, ptr) -> ptr                                            #extern("RtlLookupFunctionEntry") #cc(winapi)
+
+fn LdrLoadDll             : (ptr, ptr, ptr, ptr) -> i32                                      #extern("LdrLoadDll") #cc(winapi)
+fn LdrUnloadDll           : ptr -> i32                                                         #extern("LdrUnloadDll") #cc(winapi)
+fn LdrGetProcedureAddress : (ptr, ptr, u32, ptr) -> i32                                      #extern("LdrGetProcedureAddress") #cc(winapi)
+
+fn NtQuerySystemInformation : (u32, ptr, u32, ptr) -> i32                                    #extern("NtQuerySystemInformation") #cc(winapi)
+fn NtSetSystemInformation   : (u32, ptr, u32) -> i32                                         #extern("NtSetSystemInformation") #cc(winapi)
+
+-- §5  CREATE DISPOSITION (NtCreateFile)
+const FILE_SUPERSEDE      : u32 = 0u32
+const FILE_OPEN           : u32 = 1u32
+const FILE_CREATE         : u32 = 2u32
+const FILE_OPEN_IF        : u32 = 3u32
+const FILE_OVERWRITE      : u32 = 4u32
+const FILE_OVERWRITE_IF   : u32 = 5u32
+
+-- §6  CREATE OPTIONS (NtCreateFile)
+const FILE_DIRECTORY_FILE            : u32 = 0x00000001u32
+const FILE_WRITE_THROUGH             : u32 = 0x00000002u32
+const FILE_SEQUENTIAL_ONLY           : u32 = 0x00000004u32
+const FILE_NO_INTERMEDIATE_BUFFERING : u32 = 0x00000008u32
+const FILE_SYNCHRONOUS_IO_ALERT      : u32 = 0x00000010u32
+const FILE_SYNCHRONOUS_IO_NONALERT   : u32 = 0x00000020u32
+const FILE_NON_DIRECTORY_FILE        : u32 = 0x00000040u32
+const FILE_CREATE_TREE_CONNECTION    : u32 = 0x00000080u32
+const FILE_COMPLETE_IF_OPLOCKED      : u32 = 0x00000100u32
+const FILE_NO_EA_KNOWLEDGE           : u32 = 0x00000200u32
+const FILE_OPEN_REMOTE_INSTANCE      : u32 = 0x00000400u32
+const FILE_RANDOM_ACCESS             : u32 = 0x00000800u32
+const FILE_DELETE_ON_CLOSE           : u32 = 0x00001000u32
+const FILE_OPEN_BY_FILE_ID           : u32 = 0x00002000u32
+const FILE_OPEN_FOR_BACKUP_INTENT    : u32 = 0x00004000u32
+const FILE_NO_COMPRESSION            : u32 = 0x00008000u32
+const FILE_OPEN_REQUIRING_OPLOCK     : u32 = 0x00010000u32
+const FILE_DISALLOW_EXCLUSIVE        : u32 = 0x00020000u32
+const FILE_RESERVE_OPFILTER          : u32 = 0x00100000u32
+const FILE_OPEN_REPARSE_POINT        : u32 = 0x00200000u32
+const FILE_OPEN_NO_RECALL            : u32 = 0x00400000u32
+const FILE_OPEN_FOR_FREE_SPACE_QUERY : u32 = 0x00800000u32

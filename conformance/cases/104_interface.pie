@@ -1,0 +1,10 @@
+-- EXPECT-CLEAN
+interface Show
+  fn show : i32 -> i32
+
+type Box = struct
+  val : i32
+
+impl Show for Box
+  fn show : Box -> i32
+    | b -> b.val

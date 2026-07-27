@@ -1,0 +1,15 @@
+-- EXPECT-CLEAN
+fn set_bit : (u64, u64) -> u64
+  | (v, mask) -> v | mask
+
+fn clear_bit : (u64, u64) -> u64
+  | (v, mask) -> v & ~mask
+
+fn toggle_bit : (u64, u64) -> u64
+  | (v, mask) -> v ^ mask
+
+fn bit_not : u64 -> u64
+  | v -> ~v
+
+fn test_bit : (u64, i32) -> bool
+  | (v, n) -> ((v >> n) & 1u64) != 0u64

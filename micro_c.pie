@@ -1,0 +1,55 @@
+-- micro_c.pie: A test showcasing structural overlapping subsets
+struct Token
+  type_id : i64
+  val : i64
+
+-- Let's construct a pattern matching system directly over multiple variants
+fn handle_token : Token -> i64
+  | t ->
+      if t.type_id == 1 then t.val + 1
+      else if t.type_id == 2 then t.val + 2
+      else if t.type_id == 3 then 99
+      else 0
+
+fn test_struct_match : i64 -> i64
+  | 1 -> 
+      let t1 = Token { type_id: 1, val: 10 }
+      handle_token(t1)
+  | 2 -> 
+      let t2 = Token { type_id: 2, val: 10 }
+      handle_token(t2)
+  | 3 -> 
+      let t3 = Token { type_id: 3, val: 10 }
+      handle_token(t3)
+  | _ -> 0
+
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      print_i64_nl(test_struct_match(1))
+      print_i64_nl(test_struct_match(2))
+      print_i64_nl(test_struct_match(3))

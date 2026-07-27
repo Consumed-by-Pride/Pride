@@ -1,0 +1,27 @@
+-- EXPECT-CLEAN
+fn find_in_matrix : (*i64, i64, i64, i64) -> i64
+  | (mat, rows, cols, target) ->
+    let mut found_row : i64 = -1i64
+    let mut r : i64 = 0i64
+    'rowscan: while r < rows
+      let mut c : i64 = 0i64
+      while c < cols
+        if mat[r * cols + c] == target then
+          found_row = r
+          break 'rowscan
+        c = c + 1i64
+      r = r + 1i64
+    found_row
+
+fn nested_break : (*i64, i64, i64) -> i64
+  | (arr, n, limit) ->
+    let mut result : i64 = 0i64
+    let mut i : i64 = 0i64
+    'outer: while i < n
+      let mut j : i64 = 0i64
+      while j < n
+        result = result + arr[i] + arr[j]
+        if result > limit then break 'outer
+        j = j + 1i64
+      i = i + 1i64
+    result

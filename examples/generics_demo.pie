@@ -1,0 +1,27 @@
+-- Pass-4: generic constraints, where clauses, negation. All CORRECT.
+
+type Num = i32 ∪ i64
+
+-- constrained generic, used with a satisfying type
+fn twice<T : Num> : T -> T
+  | x -> x
+
+fn apply_twice : i32 -> i32
+  | n -> twice(n)
+
+-- where clause aliasing a result type
+type Pair = struct
+  fst : i32
+  snd : i32
+
+fn make_pair<C> : i32 -> C
+  where C = Pair
+  | n -> make_pair_impl(n)
+
+fn make_pair_impl : i32 -> Pair
+  | n -> Pair { fst: n, snd: n }
+
+-- negation: an i32 is provably not a bool
+type NotBool = ¬bool
+fn as_notbool : i32 -> NotBool
+  | n -> n

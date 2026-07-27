@@ -1,0 +1,12 @@
+-- EXPECT-CLEAN
+fn add : (i32, i32) -> i32
+  | (a, b) -> a + b
+fn id : i32 -> i32
+  | a -> a
+dialect Opt
+  opcode oadd
+irdl
+  Opt.oadd [a : i32, 0] ↦ id(a)
+  Opt.oadd [a : i32, b : i32] ↦ add(a, b)
+fn use1 : i32 -> i32
+  | x -> Opt.oadd(x, 0)

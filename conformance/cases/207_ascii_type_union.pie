@@ -1,0 +1,13 @@
+-- EXPECT-CLEAN
+type Numeric = i64 | f64 | i32
+type PtrOrBool = *u8 | bool
+
+fn fib : i64 -> i64
+  | 0i64 -> 0i64
+  | 1i64 -> 1i64
+  | n    -> fib(n - 1i64) + fib(n - 2i64)
+
+fn classify : i64 -> i64
+  | n, n > 0i64 -> 1i64
+  | n, n < 0i64 -> 0i64 - 1i64
+  | _           -> 0i64

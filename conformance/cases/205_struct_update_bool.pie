@@ -1,0 +1,15 @@
+-- EXPECT-CLEAN
+struct Options
+    verbose  : bool
+    debug    : bool
+    quiet    : bool
+    color    : bool
+
+fn enable_debug : Options -> Options
+  | opts -> opts { debug: true }
+
+fn disable_color : Options -> Options
+  | opts -> opts { color: false }
+
+fn make_quiet : Options -> Options
+  | opts -> opts { verbose: false, quiet: true }

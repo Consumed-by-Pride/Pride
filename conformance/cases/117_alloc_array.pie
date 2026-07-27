@@ -1,0 +1,12 @@
+-- EXPECT-CLEAN
+fn alloc_ten : () -> *i64 ! [Alloc]
+  | () -> alloc [i64; 10]
+
+fn sum_arr : (*i64, i64) -> i64
+  | (p, n) ->
+    let mut s : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i < n
+      s = s + p[i]
+      i = i + 1i64
+    s

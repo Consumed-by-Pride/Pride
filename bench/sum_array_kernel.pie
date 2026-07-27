@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+fn sum_arr : (*i64, i64) -> i64
+  | (a, n) ->
+      let mut s : i64 = 0
+      let mut i : i64 = 0
+      while i < n
+        s = s + a[i]
+        i = i + 1
+      s

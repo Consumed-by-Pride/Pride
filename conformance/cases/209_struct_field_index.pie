@@ -1,0 +1,15 @@
+-- EXPECT-CLEAN
+struct Vec3
+    x : f64
+    y : f64
+    z : f64
+
+fn get_x : Vec3 -> f64 | v -> v.x
+fn get_y : Vec3 -> f64 | v -> v.y
+fn get_z : Vec3 -> f64 | v -> v.z
+
+fn dot : (Vec3, Vec3) -> f64
+  | (a, b) -> a.x * b.x + a.y * b.y + a.z * b.z
+
+fn scale : (Vec3, f64) -> Vec3
+  | (v, s) -> Vec3 { x: v.x * s, y: v.y * s, z: v.z * s }

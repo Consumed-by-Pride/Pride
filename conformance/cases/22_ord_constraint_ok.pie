@@ -1,0 +1,5 @@
+-- EXPECT-CLEAN
+fn maxof<T : Ord> : (T, T) -> T
+  | (a, b) -> if a > b then a else b
+fn apply : i32 -> i32
+  | n -> maxof(n, n)

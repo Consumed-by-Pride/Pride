@@ -1,0 +1,1037 @@
+-- lexer.pie
+-- The Pride lexer written in Pride.
+-- "The over-engineered C" — self-hosting begins here.
+--
+-- This file implements tokenisation of Pride source code.
+-- It is intentionally written to be compilable by the Pride compiler itself,
+-- using only features that are known to work end-to-end.
+--
+-- Phase 1: Token kinds, lexer state, basic scanning.
+
+-- ── Token kinds ───────────────────────────────────────────────────────────────
+-- Mirror of lexer.c3 TokenType enum (ordinals must match exactly).
+
+const TOK_INVALID       : i32 = 0i32
+const TOK_EOF           : i32 = 1i32
+const TOK_NEWLINE       : i32 = 2i32
+const TOK_INDENT        : i32 = 3i32
+const TOK_DEDENT        : i32 = 4i32
+const TOK_IDENT         : i32 = 5i32
+const TOK_TYPEVAR       : i32 = 6i32
+const TOK_WILDCARD      : i32 = 7i32   -- lone _
+const TOK_LIT_INT       : i32 = 8i32
+const TOK_LIT_FLOAT     : i32 = 9i32
+const TOK_LIT_BOOL      : i32 = 10i32
+const TOK_LIT_CHAR      : i32 = 11i32
+const TOK_LIT_STRING    : i32 = 12i32
+const TOK_LIT_RAW_BYTES : i32 = 13i32
+const TOK_LIT_NULL      : i32 = 14i32
+const TOK_LABEL_REF     : i32 = 15i32
+const TOK_COLON         : i32 = 16i32
+const TOK_COLONCOLON    : i32 = 17i32
+const TOK_SEMICOLON     : i32 = 18i32
+const TOK_COMMA         : i32 = 19i32
+const TOK_DOT           : i32 = 20i32
+const TOK_DOTDOT        : i32 = 21i32
+const TOK_DOTDOTEQ      : i32 = 22i32
+const TOK_PIPE          : i32 = 23i32   -- |
+const TOK_AMP           : i32 = 24i32   -- &
+const TOK_BANG          : i32 = 25i32   -- !
+const TOK_TILDE         : i32 = 26i32   -- ~
+const TOK_AT            : i32 = 27i32   -- @
+const TOK_HASH          : i32 = 28i32   -- #
+const TOK_LPAREN        : i32 = 29i32
+const TOK_RPAREN        : i32 = 30i32
+const TOK_LBRACK        : i32 = 31i32
+const TOK_RBRACK        : i32 = 32i32
+const TOK_LBRACE        : i32 = 33i32
+const TOK_RBRACE        : i32 = 34i32
+const TOK_LT            : i32 = 35i32   -- <
+const TOK_GT            : i32 = 36i32   -- >
+const TOK_EQ            : i32 = 37i32   -- =
+const TOK_EQEQ         : i32 = 38i32   -- ==
+const TOK_NEQ           : i32 = 39i32   -- !=
+const TOK_LTE           : i32 = 40i32   -- <=
+const TOK_GTE           : i32 = 41i32   -- >=
+const TOK_PLUS          : i32 = 42i32
+const TOK_MINUS         : i32 = 43i32
+const TOK_STAR          : i32 = 44i32
+const TOK_SLASH         : i32 = 45i32
+const TOK_PERCENT       : i32 = 46i32
+const TOK_CARET         : i32 = 47i32   -- ^
+const TOK_SHL           : i32 = 48i32   -- <<
+const TOK_SHR           : i32 = 49i32   -- >>
+const TOK_PLUSEQ        : i32 = 50i32
+const TOK_MINUSEQ       : i32 = 51i32
+const TOK_STAREQ        : i32 = 52i32
+const TOK_SLASHEQ       : i32 = 53i32
+const TOK_PERCENTEQ     : i32 = 54i32
+const TOK_AMPEQ         : i32 = 55i32
+const TOK_PIPEEQ        : i32 = 56i32
+const TOK_CARETEQ       : i32 = 57i32
+const TOK_SHLEQ         : i32 = 58i32
+const TOK_SHREQ         : i32 = 59i32
+const TOK_ANDAND        : i32 = 60i32   -- &&
+const TOK_OROR          : i32 = 61i32   -- ||
+const TOK_ARROW         : i32 = 62i32   -- → (Unicode)
+const TOK_ARROW_ASCII   : i32 = 63i32   -- ->
+const TOK_FATARROW      : i32 = 64i32   -- =>
+const TOK_MATMUL        : i32 = 65i32   -- @
+-- Keywords (100+)
+const TOK_KW_FN         : i32 = 100i32
+const TOK_KW_LET        : i32 = 101i32
+const TOK_KW_MUT        : i32 = 102i32
+const TOK_KW_IF         : i32 = 103i32
+const TOK_KW_ELSE       : i32 = 104i32
+const TOK_KW_WHILE      : i32 = 105i32
+const TOK_KW_FOR        : i32 = 106i32
+const TOK_KW_DO         : i32 = 107i32
+const TOK_KW_IN         : i32 = 108i32
+const TOK_KW_RETURN     : i32 = 109i32
+const TOK_KW_BREAK      : i32 = 110i32
+const TOK_KW_CONTINUE   : i32 = 111i32
+const TOK_KW_MATCH      : i32 = 112i32
+const TOK_KW_TYPE       : i32 = 113i32
+const TOK_KW_STRUCT     : i32 = 114i32
+const TOK_KW_EFFECT     : i32 = 115i32
+const TOK_KW_HANDLE     : i32 = 116i32
+const TOK_KW_RESUME     : i32 = 117i32
+const TOK_KW_PERFORM    : i32 = 118i32
+const TOK_KW_DEFER      : i32 = 119i32
+const TOK_KW_MOD        : i32 = 120i32
+const TOK_KW_USE        : i32 = 121i32
+const TOK_KW_AS         : i32 = 122i32
+const TOK_KW_INTERFACE  : i32 = 123i32
+const TOK_KW_IMPL       : i32 = 124i32
+const TOK_KW_FOR_IMPL   : i32 = 125i32   -- 'for' in impl context
+const TOK_KW_CONST      : i32 = 126i32
+const TOK_KW_STATIC     : i32 = 127i32
+const TOK_KW_UNSAFE     : i32 = 128i32
+const TOK_KW_UNCHECKED  : i32 = 129i32
+const TOK_KW_TAIL       : i32 = 130i32
+const TOK_KW_ENUM       : i32 = 131i32
+const TOK_KW_OF         : i32 = 132i32
+const TOK_KW_WHERE      : i32 = 133i32
+const TOK_KW_ALLOC      : i32 = 134i32
+const TOK_KW_FREE       : i32 = 135i32
+const TOK_KW_NULL       : i32 = 136i32
+const TOK_KW_UB_BANG    : i32 = 137i32
+const TOK_KW_ASSUME     : i32 = 138i32
+const TOK_KW_TRAP       : i32 = 139i32
+const TOK_KW_UNREACHABLE: i32 = 140i32
+const TOK_KW_POISON     : i32 = 141i32
+const TOK_KW_FREEZE     : i32 = 142i32
+const TOK_KW_SIZEOF     : i32 = 143i32
+const TOK_KW_ALIGNOF    : i32 = 144i32
+const TOK_KW_OFFSETOF   : i32 = 145i32
+const TOK_KW_PGEN       : i32 = 146i32
+const TOK_KW_REWRITE    : i32 = 147i32
+const TOK_KW_IRDL       : i32 = 148i32
+const TOK_KW_EVAL       : i32 = 149i32
+const TOK_KW_CONSTEXPR  : i32 = 150i32
+const TOK_KW_WITH       : i32 = 151i32
+const TOK_KW_NEWTYPE    : i32 = 152i32
+
+-- ── Token structure ───────────────────────────────────────────────────────────
+struct Token
+    kind   : i32      -- TOK_* constant
+    start  : *u8      -- pointer into source buffer
+    len    : i64      -- byte length of token text
+    line   : i32      -- 1-indexed line number
+    col    : i32      -- 1-indexed column number
+
+-- Null/invalid token sentinel
+fn tok_invalid : () -> Token
+  | () -> Token { kind: TOK_INVALID, start: null, len: 0i64, line: 0i32, col: 0i32 }
+
+fn tok_eof : (*u8, i32, i32) -> Token
+  | (at, line, col) -> Token { kind: TOK_EOF, start: at, len: 0i64, line: line, col: col }
+
+-- ── Lexer state ───────────────────────────────────────────────────────────────
+const MAX_INDENT_STACK : i32 = 256i32
+
+struct Lexer
+    src     : *u8       -- source buffer (not owned)
+    src_len : i64       -- total byte length
+    pos     : i64       -- current byte position
+    line    : i32       -- current line (1-indexed)
+    col     : i32       -- current column (1-indexed)
+    -- Indentation tracking for INDENT/DEDENT layout
+    indent_stack : *u8  -- stack of indent levels (heap, MAX_INDENT_STACK * i32)
+    indent_top   : i32  -- number of entries on stack
+    -- Pending synthetic tokens (DEDENT can emit multiple)
+    pending_kind  : i32  -- 0 = none, else the pending tok kind to emit next
+    pending_count : i32  -- how many more pending tokens to emit
+
+fn lexer_new : (*u8, i64) -> Lexer ! [Alloc]
+  | (src, src_len) ->
+    let stack : *u8 = alloc [u8; 1024]   -- 256 * 4 bytes for i32s
+    -- Push initial indent level 0
+    let sp : *i32 = stack as *i32
+    sp[0i64] = 0i32
+    Lexer {
+        src: src, src_len: src_len, pos: 0i64,
+        line: 1i32, col: 1i32,
+        indent_stack: stack, indent_top: 1i32,
+        pending_kind: 0i32, pending_count: 0i32
+    }
+
+fn lexer_destroy : *Lexer -> () ! [Alloc]
+  | lex -> free(lex.indent_stack)
+
+-- ── Character access ──────────────────────────────────────────────────────────
+fn lex_at_end : *Lexer -> bool
+  | lex -> lex.pos >= lex.src_len
+
+fn lex_peek : *Lexer -> u8
+  | lex ->
+    if lex.pos < lex.src_len then lex.src[lex.pos] else 0u8
+
+fn lex_peek1 : *Lexer -> u8
+  | lex ->
+    if lex.pos + 1i64 < lex.src_len then lex.src[lex.pos + 1i64] else 0u8
+
+fn lex_peek2 : *Lexer -> u8
+  | lex ->
+    if lex.pos + 2i64 < lex.src_len then lex.src[lex.pos + 2i64] else 0u8
+
+fn lex_advance : *Lexer -> u8
+  | lex ->
+    if lex.pos >= lex.src_len then 0u8
+    else
+      let c : u8 = lex.src[lex.pos]
+      lex.pos = lex.pos + 1i64
+      if c == 10i64 then   -- '\n'
+        lex.line = lex.line + 1i32
+        lex.col  = 1i32
+      else
+        lex.col = lex.col + 1i32
+      c
+
+-- ── Character classification ──────────────────────────────────────────────────
+fn is_alpha : u8 -> bool
+  | c -> (c >= 65i64 && c <= 90i64) || (c >= 97i64 && c <= 122i64)   -- A-Z a-z
+
+fn is_digit : u8 -> bool
+  | c -> c >= 48i64 && c <= 57i64    -- 0-9
+
+fn is_alnum : u8 -> bool
+  | c -> is_alpha(c) || is_digit(c)
+
+fn is_ident_start : u8 -> bool
+  | c -> is_alpha(c) || c == 95i64   -- alpha or _
+
+fn is_ident_cont : u8 -> bool
+  | c -> is_alnum(c) || c == 95i64   -- alnum or _
+
+fn is_whitespace_no_nl : u8 -> bool
+  | c -> c == 32i64 || c == 9i64    -- space or tab (NOT newline)
+
+fn is_upper : u8 -> bool
+  | c -> c >= 65i64 && c <= 90i64   -- A-Z
+
+fn is_hex_digit : u8 -> bool
+  | c -> is_digit(c) || (c >= 65i64 && c <= 70i64) || (c >= 97i64 && c <= 102i64)
+
+-- ── Indent stack helpers ──────────────────────────────────────────────────────
+fn indent_top_level : *Lexer -> i32
+  | lex ->
+    if lex.indent_top <= 0i32 then 0i32
+    else
+      let sp : *i32 = lex.indent_stack as *i32
+      sp[(lex.indent_top - 1i32) as i64]
+
+fn indent_push : (*Lexer, i32) -> ()
+  | (lex, level) ->
+    if lex.indent_top < MAX_INDENT_STACK then
+      let sp : *i32 = lex.indent_stack as *i32
+      sp[lex.indent_top as i64] = level
+      lex.indent_top = lex.indent_top + 1i32
+
+fn indent_pop : *Lexer -> i32
+  | lex ->
+    if lex.indent_top > 1i32 then
+      lex.indent_top = lex.indent_top - 1i32
+      let sp : *i32 = lex.indent_stack as *i32
+      sp[lex.indent_top as i64]
+    else 0i32
+
+-- ── Skip whitespace (not newlines) ───────────────────────────────────────────
+fn lex_skip_spaces : *Lexer -> ()
+  | lex ->
+    while !lex_at_end(lex) && is_whitespace_no_nl(lex_peek(lex))
+      let _ : u8 = lex_advance(lex)
+
+-- ── Skip single-line comment -- ... \n ───────────────────────────────────────
+fn lex_skip_line_comment : *Lexer -> ()
+  | lex ->
+    while !lex_at_end(lex) && lex_peek(lex) != 10i64   -- not \n
+      let _ : u8 = lex_advance(lex)
+
+-- ── Skip block comment --[ ... ]-- ───────────────────────────────────────────
+-- Nested: `--[[ inner ]]--` is valid.
+-- Helper: detect '--[' at current position (next two chars after c already consumed)
+fn is_block_open : (*Lexer, u8) -> bool
+  | (lex, c) ->
+    c == 45u8 && lex_peek(lex) == 45u8 && lex_peek1(lex) == 91u8
+
+-- Helper: detect ']--' at current position
+fn is_block_close : (*Lexer, u8) -> bool
+  | (lex, c) ->
+    c == 93u8 && lex_peek(lex) == 45u8 && lex_peek1(lex) == 45u8
+
+-- Increment depth when '--[' found; returns new depth.
+fn block_depth_open : (*Lexer, i32) -> i32
+  | (lex, depth) ->
+    let _ : u8 = lex_advance(lex)
+    let _ : u8 = lex_advance(lex)
+    depth + 1i32
+
+-- Decrement depth when ']--' found; returns new depth.
+fn block_depth_close : (*Lexer, i32) -> i32
+  | (lex, depth) ->
+    let _ : u8 = lex_advance(lex)
+    let _ : u8 = lex_advance(lex)
+    depth - 1i32
+
+fn lex_skip_block_comment : *Lexer -> ()
+  | lex ->
+    -- Already consumed '--[', now scan for matching ']--'
+    -- Nested block comments supported: '--[' increments depth, ']--' decrements.
+    -- Restructured to avoid SASI phi-dominance violation: depth is only mutated
+    -- inside the branch that actually changes it (open XOR close), never both.
+    let mut depth : i32 = 1i32
+    while !lex_at_end(lex) && depth > 0i32
+      let c : u8 = lex_advance(lex)
+      let opened : bool = is_block_open(lex, c)
+      let closed : bool = is_block_close(lex, c)
+      if opened then
+        depth = block_depth_open(lex, depth)
+      else if closed then
+        depth = block_depth_close(lex, depth)
+
+-- ── Measure indent of current line ───────────────────────────────────────────
+-- Helpers to avoid SASI phi-dominance violations in lex_count_indent.
+-- The pattern: if-else with mutations of two variables (col, i) in the same
+-- branch causes the compiler to speculatively compute both branches' arithmetic
+-- before branching, violating phi dominance. By extracting to helper functions,
+-- the arithmetic is only computed when the function is called (inside the branch).
+fn count_indent_space_col : i32 -> i32
+  | col -> col + 1i32
+
+fn count_indent_tab_col : i32 -> i32
+  | col -> col + 4i32
+
+fn count_indent_advance : i64 -> i64
+  | i -> i + 1i64
+
+fn lex_count_indent : (*u8, i64, i64) -> i32
+  | (src, src_len, pos) ->
+    let mut col : i32 = 0i32
+    let mut i   : i64 = pos
+    while i < src_len
+      let c : u8 = src[i]
+      if c == 32i64 then        -- space
+        col = count_indent_space_col(col)
+        i   = count_indent_advance(i)
+      else if c == 9i64 then    -- tab
+        col = count_indent_tab_col(col)
+        i   = count_indent_advance(i)
+      else
+        i = src_len
+    col
+
+-- ── Keyword matching ─────────────────────────────────────────────────────────
+-- kw_match: compare two byte slices for equality.
+-- The while body assigns `ok` and increments `i` in the same iteration,
+-- but putting them in separate if-branches avoids the SASI phi-dominance bug
+-- by keeping all mutations inside the single taken-branch (ok=false only
+-- if mismatch, i always incremented outside the branch).
+fn kw_match : (*u8, i64, *u8, i64) -> bool
+  | (src, src_len, kw, kw_len) ->
+    if src_len != kw_len then false
+    else
+      let mut i  : i64  = 0i64
+      let mut ok : bool = true
+      while i < kw_len && ok
+        -- Only assign ok inside the branch; i is incremented unconditionally.
+        let mismatch : bool = src[i] != kw[i]
+        if mismatch then ok = false
+        i = i + 1i64
+      ok
+
+fn classify_keyword : (*u8, i64) -> i32
+  | (s, n) ->
+    if n == 2i64  then return classify_kw2(s)
+    if n == 3i64  then return classify_kw3(s)
+    if n == 4i64  then return classify_kw4(s)
+    if n == 5i64  then return classify_kw5(s)
+    if n == 6i64  then return classify_kw6(s)
+    if n == 7i64  then return classify_kw7(s)
+    if n == 8i64  then return classify_kw8(s)
+    if n == 9i64  then return classify_kw9(s)
+    if n == 11i64 then return classify_kw11(s)
+    TOK_IDENT
+
+-- Length 2: fn do as of in if
+fn classify_kw2 : *u8 -> i32
+  | s ->
+    if s[0i64] == 102u8 && s[1i64] == 110u8  then TOK_KW_FN       -- fn
+    else if s[0i64] == 100u8 && s[1i64] == 111u8 then TOK_KW_DO   -- do
+    else if s[0i64] == 97u8  && s[1i64] == 115u8 then TOK_KW_AS   -- as
+    else if s[0i64] == 111u8 && s[1i64] == 102u8 then TOK_KW_OF   -- of
+    else if s[0i64] == 105u8 && s[1i64] == 110u8 then TOK_KW_IN   -- in
+    else if s[0i64] == 105u8 && s[1i64] == 102u8 then TOK_KW_IF   -- if
+    else TOK_IDENT
+
+-- Length 3: let mut for use mod
+fn classify_kw3 : *u8 -> i32
+  | s ->
+    if s[0i64] == 108u8 && s[1i64] == 101u8 && s[2i64] == 116u8 then TOK_KW_LET  -- let
+    else if s[0i64] == 109u8 && s[1i64] == 117u8 && s[2i64] == 116u8 then TOK_KW_MUT  -- mut
+    else if s[0i64] == 102u8 && s[1i64] == 111u8 && s[2i64] == 114u8 then TOK_KW_FOR  -- for
+    else if s[0i64] == 117u8 && s[1i64] == 115u8 && s[2i64] == 101u8 then TOK_KW_USE  -- use
+    else if s[0i64] == 109u8 && s[1i64] == 111u8 && s[2i64] == 100u8 then TOK_KW_MOD  -- mod
+    else TOK_IDENT
+
+-- Length 4: else with eval free tail trap enum impl type pgen irdl null
+fn classify_kw4 : *u8 -> i32
+  | s ->
+    if s[0i64] == 101u8 && s[1i64] == 108u8 && s[2i64] == 115u8 && s[3i64] == 101u8 then TOK_KW_ELSE      -- else
+    else if s[0i64] == 119u8 && s[1i64] == 105u8 && s[2i64] == 116u8 && s[3i64] == 104u8 then TOK_KW_WITH -- with
+    else if s[0i64] == 101u8 && s[1i64] == 118u8 && s[2i64] == 97u8  && s[3i64] == 108u8 then TOK_KW_EVAL -- eval
+    else if s[0i64] == 102u8 && s[1i64] == 114u8 && s[2i64] == 101u8 && s[3i64] == 101u8 then TOK_KW_FREE -- free
+    else if s[0i64] == 116u8 && s[1i64] == 97u8  && s[2i64] == 105u8 && s[3i64] == 108u8 then TOK_KW_TAIL -- tail
+    else if s[0i64] == 116u8 && s[1i64] == 114u8 && s[2i64] == 97u8  && s[3i64] == 112u8 then TOK_KW_TRAP -- trap
+    else if s[0i64] == 101u8 && s[1i64] == 110u8 && s[2i64] == 117u8 && s[3i64] == 109u8 then TOK_KW_ENUM -- enum
+    else if s[0i64] == 105u8 && s[1i64] == 109u8 && s[2i64] == 112u8 && s[3i64] == 108u8 then TOK_KW_IMPL -- impl
+    else if s[0i64] == 116u8 && s[1i64] == 121u8 && s[2i64] == 112u8 && s[3i64] == 101u8 then TOK_KW_TYPE -- type
+    else if s[0i64] == 112u8 && s[1i64] == 103u8 && s[2i64] == 101u8 && s[3i64] == 110u8 then TOK_KW_PGEN -- pgen
+    else if s[0i64] == 105u8 && s[1i64] == 114u8 && s[2i64] == 100u8 && s[3i64] == 108u8 then TOK_KW_IRDL -- irdl
+    else if s[0i64] == 110u8 && s[1i64] == 117u8 && s[2i64] == 108u8 && s[3i64] == 108u8 then TOK_KW_NULL -- null
+    else TOK_IDENT
+
+-- Length 5: while match defer where const break alloc
+fn classify_kw5 : *u8 -> i32
+  | s ->
+    if s[0i64] == 119u8 && s[1i64] == 104u8 && s[2i64] == 105u8 && s[3i64] == 108u8 && s[4i64] == 101u8 then TOK_KW_WHILE   -- while
+    else if s[0i64] == 109u8 && s[1i64] == 97u8  && s[2i64] == 116u8 && s[3i64] == 99u8  && s[4i64] == 104u8 then TOK_KW_MATCH  -- match
+    else if s[0i64] == 100u8 && s[1i64] == 101u8 && s[2i64] == 102u8 && s[3i64] == 101u8 && s[4i64] == 114u8 then TOK_KW_DEFER  -- defer
+    else if s[0i64] == 119u8 && s[1i64] == 104u8 && s[2i64] == 101u8 && s[3i64] == 114u8 && s[4i64] == 101u8 then TOK_KW_WHERE  -- where
+    else if s[0i64] == 99u8  && s[1i64] == 111u8 && s[2i64] == 110u8 && s[3i64] == 115u8 && s[4i64] == 116u8 then TOK_KW_CONST  -- const
+    else if s[0i64] == 98u8  && s[1i64] == 114u8 && s[2i64] == 101u8 && s[3i64] == 97u8  && s[4i64] == 107u8 then TOK_KW_BREAK  -- break
+    else if s[0i64] == 97u8  && s[1i64] == 108u8 && s[2i64] == 108u8 && s[3i64] == 111u8 && s[4i64] == 99u8  then TOK_KW_ALLOC  -- alloc
+    else TOK_IDENT
+
+-- Length 6: return effect handle resume struct static assume freeze poison sizeof unsafe
+fn classify_kw6 : *u8 -> i32
+  | s ->
+    if s[0i64] == 114u8 && s[1i64] == 101u8 && s[2i64] == 116u8 && s[3i64] == 117u8 && s[4i64] == 114u8 && s[5i64] == 110u8 then TOK_KW_RETURN  -- return
+    else if s[0i64] == 101u8 && s[1i64] == 102u8 && s[2i64] == 102u8 && s[3i64] == 101u8 && s[4i64] == 99u8  && s[5i64] == 116u8 then TOK_KW_EFFECT  -- effect
+    else if s[0i64] == 104u8 && s[1i64] == 97u8  && s[2i64] == 110u8 && s[3i64] == 100u8 && s[4i64] == 108u8 && s[5i64] == 101u8 then TOK_KW_HANDLE  -- handle
+    else if s[0i64] == 114u8 && s[1i64] == 101u8 && s[2i64] == 115u8 && s[3i64] == 117u8 && s[4i64] == 109u8 && s[5i64] == 101u8 then TOK_KW_RESUME  -- resume
+    else if s[0i64] == 115u8 && s[1i64] == 116u8 && s[2i64] == 114u8 && s[3i64] == 117u8 && s[4i64] == 99u8  && s[5i64] == 116u8 then TOK_KW_STRUCT  -- struct
+    else if s[0i64] == 115u8 && s[1i64] == 116u8 && s[2i64] == 97u8  && s[3i64] == 116u8 && s[4i64] == 105u8 && s[5i64] == 99u8  then TOK_KW_STATIC  -- static
+    else if s[0i64] == 97u8  && s[1i64] == 115u8 && s[2i64] == 115u8 && s[3i64] == 117u8 && s[4i64] == 109u8 && s[5i64] == 101u8 then TOK_KW_ASSUME  -- assume
+    else if s[0i64] == 102u8 && s[1i64] == 114u8 && s[2i64] == 101u8 && s[3i64] == 101u8 && s[4i64] == 122u8 && s[5i64] == 101u8 then TOK_KW_FREEZE  -- freeze
+    else if s[0i64] == 112u8 && s[1i64] == 111u8 && s[2i64] == 105u8 && s[3i64] == 115u8 && s[4i64] == 111u8 && s[5i64] == 110u8 then TOK_KW_POISON  -- poison
+    else if s[0i64] == 115u8 && s[1i64] == 105u8 && s[2i64] == 122u8 && s[3i64] == 101u8 && s[4i64] == 111u8 && s[5i64] == 102u8 then TOK_KW_SIZEOF  -- sizeof
+    else if s[0i64] == 117u8 && s[1i64] == 110u8 && s[2i64] == 115u8 && s[3i64] == 97u8  && s[4i64] == 102u8 && s[5i64] == 101u8 then TOK_KW_UNSAFE  -- unsafe
+    else TOK_IDENT
+
+-- Length 7: alignof newtype perform rewrite
+fn classify_kw7 : *u8 -> i32
+  | s ->
+    if s[0i64] == 97u8  && s[1i64] == 108u8 && s[2i64] == 105u8 && s[3i64] == 103u8 && s[4i64] == 110u8 && s[5i64] == 111u8 && s[6i64] == 102u8 then TOK_KW_ALIGNOF   -- alignof
+    else if s[0i64] == 110u8 && s[1i64] == 101u8 && s[2i64] == 119u8 && s[3i64] == 116u8 && s[4i64] == 121u8 && s[5i64] == 112u8 && s[6i64] == 101u8 then TOK_KW_NEWTYPE  -- newtype
+    else if s[0i64] == 112u8 && s[1i64] == 101u8 && s[2i64] == 114u8 && s[3i64] == 102u8 && s[4i64] == 111u8 && s[5i64] == 114u8 && s[6i64] == 109u8 then TOK_KW_PERFORM  -- perform
+    else if s[0i64] == 114u8 && s[1i64] == 101u8 && s[2i64] == 119u8 && s[3i64] == 114u8 && s[4i64] == 105u8 && s[5i64] == 116u8 && s[6i64] == 101u8 then TOK_KW_REWRITE  -- rewrite
+    else TOK_IDENT
+
+-- Length 8: continue offsetof
+fn classify_kw8 : *u8 -> i32
+  | s ->
+    if s[0i64] == 99u8  && s[1i64] == 111u8 && s[2i64] == 110u8 && s[3i64] == 116u8 && s[4i64] == 105u8 && s[5i64] == 110u8 && s[6i64] == 117u8 && s[7i64] == 101u8 then TOK_KW_CONTINUE  -- continue
+    else if s[0i64] == 111u8 && s[1i64] == 102u8 && s[2i64] == 102u8 && s[3i64] == 115u8 && s[4i64] == 101u8 && s[5i64] == 116u8 && s[6i64] == 111u8 && s[7i64] == 102u8 then TOK_KW_OFFSETOF  -- offsetof
+    else TOK_IDENT
+
+-- Length 9: constexpr interface unchecked
+fn classify_kw9 : *u8 -> i32
+  | s ->
+    if s[0i64] == 99u8  && s[1i64] == 111u8 && s[2i64] == 110u8 && s[3i64] == 115u8 && s[4i64] == 116u8 && s[5i64] == 101u8 && s[6i64] == 120u8 && s[7i64] == 112u8 && s[8i64] == 114u8 then TOK_KW_CONSTEXPR   -- constexpr
+    else if s[0i64] == 105u8 && s[1i64] == 110u8 && s[2i64] == 116u8 && s[3i64] == 101u8 && s[4i64] == 114u8 && s[5i64] == 102u8 && s[6i64] == 97u8  && s[7i64] == 99u8  && s[8i64] == 101u8 then TOK_KW_INTERFACE  -- interface
+    else if s[0i64] == 117u8 && s[1i64] == 110u8 && s[2i64] == 99u8  && s[3i64] == 104u8 && s[4i64] == 101u8 && s[5i64] == 99u8  && s[6i64] == 107u8 && s[7i64] == 101u8 && s[8i64] == 100u8 then TOK_KW_UNCHECKED  -- unchecked
+    else TOK_IDENT
+
+-- Length 11: unreachable
+fn classify_kw11 : *u8 -> i32
+  | s ->
+    if s[0i64] == 117u8 && s[1i64] == 110u8 && s[2i64] == 114u8 && s[3i64] == 101u8 && s[4i64] == 97u8 && s[5i64] == 99u8 && s[6i64] == 104u8 && s[7i64] == 97u8 && s[8i64] == 98u8 && s[9i64] == 108u8 && s[10i64] == 101u8 then TOK_KW_UNREACHABLE  -- unreachable
+    else TOK_IDENT
+
+
+fn lex_ident : *Lexer -> Token
+  | lex ->
+    let start_pos : i64 = lex.pos
+    let start_line : i32 = lex.line
+    let start_col  : i32 = lex.col
+    while !lex_at_end(lex) && is_ident_cont(lex_peek(lex))
+      let _ : u8 = lex_advance(lex)
+    let word     : *u8 = lex.src + start_pos
+    let word_len : i64 = lex.pos - start_pos
+    -- Lone `_` is wildcard
+    if word_len == 1i64 && word[0i64] == 95i64 then
+      Token { kind: TOK_WILDCARD, start: word, len: word_len,
+              line: start_line, col: start_col }
+    -- Uppercase-starting = typevar
+    else if is_upper(word[0i64]) then
+      Token { kind: TOK_TYPEVAR, start: word, len: word_len,
+              line: start_line, col: start_col }
+    else
+      -- Check for bool literals using explicit early-return to avoid SASI phi dominance bugs
+      let kw : i32 = classify_keyword(word, word_len)
+      if kw == TOK_IDENT then
+        -- Check "true" (4 bytes: t=116 r=114 u=117 e=101)
+        if word_len == 4i64 then
+          if word[0i64] == 116i64 && word[1i64] == 114i64 && word[2i64] == 117i64 && word[3i64] == 101i64 then
+            return Token { kind: TOK_LIT_BOOL, start: word, len: word_len,
+                           line: start_line, col: start_col }
+        -- Check "false" (5 bytes: f=102 a=97 l=108 s=115 e=101)
+        if word_len == 5i64 then
+          if word[0i64] == 102i64 && word[1i64] == 97i64 && word[2i64] == 108i64 && word[3i64] == 115i64 && word[4i64] == 101i64 then
+            return Token { kind: TOK_LIT_BOOL, start: word, len: word_len,
+                           line: start_line, col: start_col }
+      Token { kind: kw, start: word, len: word_len,
+              line: start_line, col: start_col }
+
+-- ── Number lexing ─────────────────────────────────────────────────────────────
+fn lex_number : *Lexer -> Token
+  | lex ->
+    let start_pos  : i64 = lex.pos
+    let start_line : i32 = lex.line
+    let start_col  : i32 = lex.col
+    let mut is_float : bool = false
+    -- Check prefix: 0x 0b 0o
+    if lex_peek(lex) == 48i64 && lex.pos + 1i64 < lex.src_len then
+      let nc : u8 = lex_peek1(lex)
+      if nc == 120i64 || nc == 88i64 then       -- 0x or 0X hex
+        let _ : u8 = lex_advance(lex)
+        let _ : u8 = lex_advance(lex)
+        while !lex_at_end(lex) && (is_hex_digit(lex_peek(lex)) || lex_peek(lex) == 95i64)
+          let _ : u8 = lex_advance(lex)
+      else if nc == 98i64 || nc == 66i64 then    -- 0b or 0B binary
+        let _ : u8 = lex_advance(lex)
+        let _ : u8 = lex_advance(lex)
+        while !lex_at_end(lex) && (lex_peek(lex) == 48i64 || lex_peek(lex) == 49i64 || lex_peek(lex) == 95i64)
+          let _ : u8 = lex_advance(lex)
+      else if nc == 111i64 || nc == 79i64 then   -- 0o or 0O octal
+        let _ : u8 = lex_advance(lex)
+        let _ : u8 = lex_advance(lex)
+        while !lex_at_end(lex) && ((lex_peek(lex) >= 48i64 && lex_peek(lex) <= 55i64) || lex_peek(lex) == 95i64)
+          let _ : u8 = lex_advance(lex)
+      else
+        -- Decimal starting with 0
+        while !lex_at_end(lex) && (is_digit(lex_peek(lex)) || lex_peek(lex) == 95i64)
+          let _ : u8 = lex_advance(lex)
+    else
+      -- Decimal digits
+      while !lex_at_end(lex) && (is_digit(lex_peek(lex)) || lex_peek(lex) == 95i64)
+        let _ : u8 = lex_advance(lex)
+    -- Optional decimal point (float)
+    if !lex_at_end(lex) && lex_peek(lex) == 46i64 && lex_peek1(lex) != 46i64 then  -- '.' but not '..'
+      is_float = true
+      let _ : u8 = lex_advance(lex)   -- consume '.'
+      while !lex_at_end(lex) && (is_digit(lex_peek(lex)) || lex_peek(lex) == 95i64)
+        let _ : u8 = lex_advance(lex)
+    -- Optional exponent
+    if !lex_at_end(lex) && (lex_peek(lex) == 101i64 || lex_peek(lex) == 69i64) then  -- e or E
+      is_float = true
+      let _ : u8 = lex_advance(lex)
+      if !lex_at_end(lex) && (lex_peek(lex) == 43i64 || lex_peek(lex) == 45i64) then
+        let _ : u8 = lex_advance(lex)
+      while !lex_at_end(lex) && is_digit(lex_peek(lex))
+        let _ : u8 = lex_advance(lex)
+    -- Optional type suffix: i64 u64 f32 f64 i32 u32 i8 u8 u16 i16 etc.
+    if !lex_at_end(lex) && (lex_peek(lex) == 105i64 || lex_peek(lex) == 117i64 || lex_peek(lex) == 102i64) then
+      let sc : u8 = lex_peek(lex)
+      let _ : u8 = lex_advance(lex)
+      while !lex_at_end(lex) && is_digit(lex_peek(lex))
+        let _ : u8 = lex_advance(lex)
+      if sc == 102i64 then is_float = true
+    let total_len : i64 = lex.pos - start_pos
+    let kind : i32 = if is_float then TOK_LIT_FLOAT else TOK_LIT_INT
+    Token { kind: kind, start: lex.src + start_pos, len: total_len,
+            line: start_line, col: start_col }
+
+-- ── String lexing ─────────────────────────────────────────────────────────────
+fn lex_string : *Lexer -> Token
+  | lex ->
+    let start_pos  : i64 = lex.pos
+    let start_line : i32 = lex.line
+    let start_col  : i32 = lex.col
+    let _ : u8 = lex_advance(lex)   -- consume opening "
+    while !lex_at_end(lex) && lex_peek(lex) != 34i64  -- not "
+      if lex_peek(lex) == 92i64 && lex.pos + 1i64 < lex.src_len then  -- '\'
+        let _ : u8 = lex_advance(lex)
+        let _ : u8 = lex_advance(lex)   -- skip escape + escaped char
+      else
+        let _ : u8 = lex_advance(lex)
+    if !lex_at_end(lex) then let _ : u8 = lex_advance(lex)   -- consume closing "
+    Token { kind: TOK_LIT_STRING, start: lex.src + start_pos, len: lex.pos - start_pos,
+            line: start_line, col: start_col }
+
+-- ── Char literal / label-ref lexing ──────────────────────────────────────────
+fn lex_quote : *Lexer -> Token
+  | lex ->
+    let start_pos  : i64 = lex.pos
+    let start_line : i32 = lex.line
+    let start_col  : i32 = lex.col
+    -- ' followed by alpha/_ = label reference
+    if lex.pos + 1i64 < lex.src_len then
+      let nc : u8 = lex.src[lex.pos + 1i64]
+      if is_ident_start(nc) then
+        let _ : u8 = lex_advance(lex)   -- consume '
+        while !lex_at_end(lex) && is_ident_cont(lex_peek(lex))
+          let _ : u8 = lex_advance(lex)
+        return Token { kind: TOK_LABEL_REF, start: lex.src + start_pos,
+                       len: lex.pos - start_pos,
+                       line: start_line, col: start_col }
+    -- Character literal 'c' or escape '\n' etc.
+    let _ : u8 = lex_advance(lex)   -- consume '
+    if !lex_at_end(lex) then
+      if lex_peek(lex) == 92i64 then  -- backslash escape
+        let _ : u8 = lex_advance(lex)
+        let _ : u8 = lex_advance(lex)
+      else
+        let _ : u8 = lex_advance(lex)
+    if !lex_at_end(lex) && lex_peek(lex) == 39i64 then  -- closing '
+      let _ : u8 = lex_advance(lex)
+    Token { kind: TOK_LIT_CHAR, start: lex.src + start_pos, len: lex.pos - start_pos,
+            line: start_line, col: start_col }
+
+-- ── Single/double char token dispatch ──────────────────────────────────────────
+-- Table-driven single-char token lookup to avoid if-else dominance issues.
+-- Returns TOK_INVALID (0) if char is not a simple single-char token.
+fn tok_single_char : i64 -> i32
+  | c ->
+    if c == 40i64 then TOK_LPAREN
+    else if c == 41i64 then TOK_RPAREN
+    else if c == 91i64 then TOK_LBRACK
+    else if c == 93i64 then TOK_RBRACK
+    else if c == 123i64 then TOK_LBRACE
+    else if c == 125i64 then TOK_RBRACE
+    else if c == 44i64 then TOK_COMMA
+    else if c == 59i64 then TOK_SEMICOLON
+    else if c == 126i64 then TOK_TILDE
+    else if c == 64i64 then TOK_AT
+    else if c == 35i64 then TOK_HASH
+    else TOK_INVALID
+
+fn lex_dispatch_op : (*Lexer, i64, i64, i32, i32) -> Token
+  | (lex, c, start_pos, start_line, start_col) ->
+    -- Try single-char lookup first (no dominance issues)
+    let single : i32 = tok_single_char(c)
+    if single != TOK_INVALID then
+      Token { kind: single, start: lex.src + start_pos, len: 1i64,
+              line: start_line, col: start_col }
+    else
+      -- Multi-char operators
+      lex_dispatch_multichar(lex, c, start_pos, start_line, start_col)
+
+-- Dispatch for chars that can start multi-char tokens
+fn lex_dispatch_multichar : (*Lexer, i64, i64, i32, i32) -> Token
+  | (lex, c, start_pos, start_line, start_col) ->
+    lex_do_multichar(lex, c, start_pos, start_line, start_col)
+
+fn lex_do_multichar : (*Lexer, i64, i64, i32, i32) -> Token
+  | (lex, c, start_pos, start_line, start_col) ->
+    if c == 58i64 then   -- :
+      if !lex_at_end(lex) && lex_peek(lex) == 58i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_COLONCOLON, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else
+        Token { kind: TOK_COLON, start: lex.src + start_pos, len: 1i64, line: start_line, col: start_col }
+    else if c == 46i64 then   -- .
+      if !lex_at_end(lex) && lex_peek(lex) == 46i64 then
+        let _ : u8 = lex_advance(lex)
+        if !lex_at_end(lex) && lex_peek(lex) == 61i64 then
+          let _ : u8 = lex_advance(lex)
+          Token { kind: TOK_DOTDOTEQ, start: lex.src + start_pos, len: 3i64, line: start_line, col: start_col }
+        else
+          Token { kind: TOK_DOTDOT, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else
+        Token { kind: TOK_DOT, start: lex.src + start_pos, len: 1i64, line: start_line, col: start_col }
+    else if c == 45i64 then   -- -
+      if !lex_at_end(lex) && lex_peek(lex) == 62i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_ARROW_ASCII, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else if !lex_at_end(lex) && lex_peek(lex) == 61i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_MINUSEQ, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else
+        Token { kind: TOK_MINUS, start: lex.src + start_pos, len: 1i64, line: start_line, col: start_col }
+    else if c == 61i64 then   -- =
+      if !lex_at_end(lex) && lex_peek(lex) == 61i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_EQEQ, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else if !lex_at_end(lex) && lex_peek(lex) == 62i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_FATARROW, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else
+        Token { kind: TOK_EQ, start: lex.src + start_pos, len: 1i64, line: start_line, col: start_col }
+    else if c == 33i64 then   -- !
+      if !lex_at_end(lex) && lex_peek(lex) == 61i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_NEQ, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else
+        Token { kind: TOK_BANG, start: lex.src + start_pos, len: 1i64, line: start_line, col: start_col }
+    else
+      lex_dispatch_arith(lex, c, start_pos, start_line, start_col)
+
+-- Arithmetic/comparison operators
+fn lex_dispatch_arith : (*Lexer, i64, i64, i32, i32) -> Token
+  | (lex, c, start_pos, start_line, start_col) ->
+    if c == 60i64 then   -- <
+      if !lex_at_end(lex) && lex_peek(lex) == 61i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_LTE, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else if !lex_at_end(lex) && lex_peek(lex) == 60i64 then
+        let _ : u8 = lex_advance(lex)
+        if !lex_at_end(lex) && lex_peek(lex) == 61i64 then
+          let _ : u8 = lex_advance(lex)
+          Token { kind: TOK_SHLEQ, start: lex.src + start_pos, len: 3i64, line: start_line, col: start_col }
+        else
+          Token { kind: TOK_SHL, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else
+        Token { kind: TOK_LT, start: lex.src + start_pos, len: 1i64, line: start_line, col: start_col }
+    else if c == 62i64 then   -- >
+      if !lex_at_end(lex) && lex_peek(lex) == 61i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_GTE, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else if !lex_at_end(lex) && lex_peek(lex) == 62i64 then
+        let _ : u8 = lex_advance(lex)
+        if !lex_at_end(lex) && lex_peek(lex) == 61i64 then
+          let _ : u8 = lex_advance(lex)
+          Token { kind: TOK_SHREQ, start: lex.src + start_pos, len: 3i64, line: start_line, col: start_col }
+        else
+          Token { kind: TOK_SHR, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else
+        Token { kind: TOK_GT, start: lex.src + start_pos, len: 1i64, line: start_line, col: start_col }
+    else
+      lex_dispatch_math(lex, c, start_pos, start_line, start_col)
+
+fn lex_dispatch_math : (*Lexer, i64, i64, i32, i32) -> Token
+  | (lex, c, start_pos, start_line, start_col) ->
+    if c == 43i64 then   -- +
+      if !lex_at_end(lex) && lex_peek(lex) == 61i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_PLUSEQ, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else
+        Token { kind: TOK_PLUS, start: lex.src + start_pos, len: 1i64, line: start_line, col: start_col }
+    else if c == 42i64 then   -- *
+      if !lex_at_end(lex) && lex_peek(lex) == 61i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_STAREQ, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else
+        Token { kind: TOK_STAR, start: lex.src + start_pos, len: 1i64, line: start_line, col: start_col }
+    else if c == 47i64 then   -- /
+      if !lex_at_end(lex) && lex_peek(lex) == 61i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_SLASHEQ, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else
+        Token { kind: TOK_SLASH, start: lex.src + start_pos, len: 1i64, line: start_line, col: start_col }
+    else if c == 37i64 then   -- %
+      if !lex_at_end(lex) && lex_peek(lex) == 61i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_PERCENTEQ, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else
+        Token { kind: TOK_PERCENT, start: lex.src + start_pos, len: 1i64, line: start_line, col: start_col }
+    else if c == 94i64 then   -- ^
+      if !lex_at_end(lex) && lex_peek(lex) == 61i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_CARETEQ, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else
+        Token { kind: TOK_CARET, start: lex.src + start_pos, len: 1i64, line: start_line, col: start_col }
+    else if c == 38i64 then   -- &
+      if !lex_at_end(lex) && lex_peek(lex) == 38i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_ANDAND, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else if !lex_at_end(lex) && lex_peek(lex) == 61i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_AMPEQ, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else
+        Token { kind: TOK_AMP, start: lex.src + start_pos, len: 1i64, line: start_line, col: start_col }
+    else if c == 124i64 then   -- |
+      if !lex_at_end(lex) && lex_peek(lex) == 124i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_OROR, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else if !lex_at_end(lex) && lex_peek(lex) == 61i64 then
+        let _ : u8 = lex_advance(lex)
+        Token { kind: TOK_PIPEEQ, start: lex.src + start_pos, len: 2i64, line: start_line, col: start_col }
+      else
+        Token { kind: TOK_PIPE, start: lex.src + start_pos, len: 1i64, line: start_line, col: start_col }
+    else
+      Token { kind: TOK_INVALID, start: lex.src + start_pos, len: 1i64, line: start_line, col: start_col }
+
+
+-- ── Main token dispatch ───────────────────────────────────────────────────────
+-- Scans and returns the next token from the source.
+fn lex_next : *Lexer -> Token
+  | lex ->
+    -- Skip whitespace (not newlines — those are significant for layout)
+    lex_skip_spaces(lex)
+
+    if lex_at_end(lex) then return tok_eof(lex.src + lex.pos, lex.line, lex.col)
+
+    let start_pos  : i64 = lex.pos
+    let start_line : i32 = lex.line
+    let start_col  : i32 = lex.col
+    let c : i64 = lex_peek(lex) as i64
+
+    -- Newline → NEWLINE token + measure next line's indent for INDENT/DEDENT
+    if c == 10i64 || c == 13i64 then
+      let _ : u8 = lex_advance(lex)
+      if c == 13i64 && !lex_at_end(lex) && lex_peek(lex) == 10i64 then
+        let _ : u8 = lex_advance(lex)   -- CRLF
+      return Token { kind: TOK_NEWLINE, start: lex.src + start_pos, len: lex.pos - start_pos,
+                     line: start_line, col: start_col }
+
+    -- Comment: `--` starts a line comment or block comment `--[`
+    if c == 45i64 && lex_peek1(lex) == 45i64 then
+      if lex.pos + 2i64 < lex.src_len && lex.src[lex.pos + 2i64] == 91i64 then
+        -- Block comment --[ ... ]--
+        let _ : u8 = lex_advance(lex)
+        let _ : u8 = lex_advance(lex)
+        let _ : u8 = lex_advance(lex)
+        lex_skip_block_comment(lex)
+      else
+        -- Line comment
+        lex_skip_line_comment(lex)
+      return lex_next(lex)   -- tail recurse to get next real token
+
+    -- Identifiers and keywords
+    if is_ident_start(c as u8) then return lex_ident(lex)
+
+    -- Numbers
+    if is_digit(c as u8) then return lex_number(lex)
+
+    -- String literals
+    if c == 34i64 then return lex_string(lex)   -- "
+
+    -- Raw bytes b"..."
+    if c == 98i64 && lex_peek1(lex) == 34i64 then
+      let _ : u8 = lex_advance(lex)   -- consume b
+      let _raw_tok : Token = lex_string(lex)
+      return Token { kind: TOK_LIT_RAW_BYTES, start: lex.src + start_pos,
+                     len: lex.pos - start_pos, line: start_line, col: start_col }
+
+    -- Char literal / label ref
+    if c == 39i64 then return lex_quote(lex)   -- '
+
+    -- Advance and emit single/double char tokens
+    let _ : u8 = lex_advance(lex)
+    lex_dispatch_op(lex, c, start_pos, start_line, start_col)
+
+-- ── Token stream ─────────────────────────────────────────────────────────────
+-- Collect all tokens from source into a heap-allocated array.
+-- Returns (array_ptr, token_count).
+fn lex_all : (*u8, i64) -> (*Token, i64) ! [Alloc]
+  | (src, src_len) ->
+    let tokens : *Token = alloc [u8; 1048576] as *Token   -- up to 65536 tokens
+    let lex : Lexer = lexer_new(src, src_len)
+    let mut count : i64 = 0i64
+    let mut running : bool = true
+    while running && count < 65536i64
+      let tok : Token = lex_next(&lex)
+      tokens[count] = tok
+      count = count + 1i64
+      if tok.kind == TOK_EOF then running = false
+    lexer_destroy(&lex)
+    (tokens, count)
+
+-- ── Token name (for debug output) ────────────────────────────────────────────
+-- Split into sub-functions to avoid SASI phi-dominance violations (too many branches).
+
+fn tok_name_structural : i32 -> *u8
+  | k ->
+    if k == TOK_INVALID      then "INVALID\x00"      as *u8
+    else if k == TOK_EOF     then "EOF\x00"           as *u8
+    else if k == TOK_NEWLINE then "NEWLINE\x00"       as *u8
+    else if k == TOK_INDENT  then "INDENT\x00"        as *u8
+    else if k == TOK_DEDENT  then "DEDENT\x00"        as *u8
+    else if k == TOK_IDENT   then "IDENT\x00"         as *u8
+    else if k == TOK_TYPEVAR then "TYPEVAR\x00"       as *u8
+    else if k == TOK_WILDCARD then "WILDCARD\x00"     as *u8
+    else null as *u8
+
+fn tok_name_lit : i32 -> *u8
+  | k ->
+    if k == TOK_LIT_INT       then "LIT_INT\x00"       as *u8
+    else if k == TOK_LIT_FLOAT then "LIT_FLOAT\x00"    as *u8
+    else if k == TOK_LIT_BOOL  then "LIT_BOOL\x00"     as *u8
+    else if k == TOK_LIT_CHAR  then "LIT_CHAR\x00"     as *u8
+    else if k == TOK_LIT_STRING then "LIT_STRING\x00"  as *u8
+    else if k == TOK_LIT_RAW_BYTES then "LIT_RAW_BYTES\x00" as *u8
+    else if k == TOK_LIT_NULL  then "LIT_NULL\x00"     as *u8
+    else if k == TOK_LABEL_REF then "LABEL_REF\x00"    as *u8
+    else null as *u8
+
+fn tok_name_punct : i32 -> *u8
+  | k ->
+    if k == TOK_COLON       then "COLON\x00"     as *u8
+    else if k == TOK_COLONCOLON then "COLONCOLON\x00" as *u8
+    else if k == TOK_SEMICOLON  then "SEMICOLON\x00"  as *u8
+    else if k == TOK_COMMA      then "COMMA\x00"      as *u8
+    else if k == TOK_DOT        then "DOT\x00"        as *u8
+    else if k == TOK_DOTDOT     then "DOTDOT\x00"     as *u8
+    else if k == TOK_DOTDOTEQ   then "DOTDOTEQ\x00"   as *u8
+    else if k == TOK_PIPE       then "PIPE\x00"       as *u8
+    else if k == TOK_AMP        then "AMP\x00"        as *u8
+    else if k == TOK_BANG       then "BANG\x00"       as *u8
+    else if k == TOK_TILDE      then "TILDE\x00"      as *u8
+    else if k == TOK_AT         then "AT\x00"         as *u8
+    else if k == TOK_HASH       then "HASH\x00"       as *u8
+    else null as *u8
+
+fn tok_name_bracket : i32 -> *u8
+  | k ->
+    if k == TOK_LPAREN      then "LPAREN\x00"    as *u8
+    else if k == TOK_RPAREN then "RPAREN\x00"    as *u8
+    else if k == TOK_LBRACK then "LBRACK\x00"    as *u8
+    else if k == TOK_RBRACK then "RBRACK\x00"    as *u8
+    else if k == TOK_LBRACE then "LBRACE\x00"    as *u8
+    else if k == TOK_RBRACE then "RBRACE\x00"    as *u8
+    else null as *u8
+
+fn tok_name_op : i32 -> *u8
+  | k ->
+    if k == TOK_LT          then "LT\x00"         as *u8
+    else if k == TOK_GT     then "GT\x00"          as *u8
+    else if k == TOK_EQ     then "EQ\x00"          as *u8
+    else if k == TOK_EQEQ   then "EQEQ\x00"        as *u8
+    else if k == TOK_NEQ    then "NEQ\x00"          as *u8
+    else if k == TOK_LTE    then "LTE\x00"          as *u8
+    else if k == TOK_GTE    then "GTE\x00"          as *u8
+    else if k == TOK_PLUS   then "PLUS\x00"         as *u8
+    else if k == TOK_MINUS  then "MINUS\x00"        as *u8
+    else if k == TOK_STAR   then "STAR\x00"         as *u8
+    else if k == TOK_SLASH  then "SLASH\x00"        as *u8
+    else if k == TOK_PERCENT then "PERCENT\x00"     as *u8
+    else if k == TOK_CARET  then "CARET\x00"        as *u8
+    else if k == TOK_SHL    then "SHL\x00"          as *u8
+    else if k == TOK_SHR    then "SHR\x00"          as *u8
+    else null as *u8
+
+fn tok_name_compound_op : i32 -> *u8
+  | k ->
+    if k == TOK_PLUSEQ      then "PLUSEQ\x00"     as *u8
+    else if k == TOK_MINUSEQ  then "MINUSEQ\x00"  as *u8
+    else if k == TOK_STAREQ   then "STAREQ\x00"   as *u8
+    else if k == TOK_SLASHEQ  then "SLASHEQ\x00"  as *u8
+    else if k == TOK_PERCENTEQ then "PERCENTEQ\x00" as *u8
+    else if k == TOK_AMPEQ    then "AMPEQ\x00"    as *u8
+    else if k == TOK_PIPEEQ   then "PIPEEQ\x00"   as *u8
+    else if k == TOK_CARETEQ  then "CARETEQ\x00"  as *u8
+    else if k == TOK_SHLEQ    then "SHLEQ\x00"    as *u8
+    else if k == TOK_SHREQ    then "SHREQ\x00"    as *u8
+    else if k == TOK_ANDAND   then "ANDAND\x00"   as *u8
+    else if k == TOK_OROR     then "OROR\x00"     as *u8
+    else if k == TOK_ARROW    then "ARROW\x00"    as *u8
+    else if k == TOK_ARROW_ASCII then "ARROW_ASCII\x00" as *u8
+    else if k == TOK_FATARROW then "FATARROW\x00" as *u8
+    else if k == TOK_MATMUL   then "MATMUL\x00"   as *u8
+    else null as *u8
+
+fn tok_name_kw_a : i32 -> *u8
+  | k ->
+    if k == TOK_KW_FN       then "KW_FN\x00"      as *u8
+    else if k == TOK_KW_LET  then "KW_LET\x00"    as *u8
+    else if k == TOK_KW_MUT  then "KW_MUT\x00"    as *u8
+    else if k == TOK_KW_IF   then "KW_IF\x00"     as *u8
+    else if k == TOK_KW_ELSE then "KW_ELSE\x00"   as *u8
+    else if k == TOK_KW_WHILE then "KW_WHILE\x00" as *u8
+    else if k == TOK_KW_FOR  then "KW_FOR\x00"    as *u8
+    else if k == TOK_KW_DO   then "KW_DO\x00"     as *u8
+    else if k == TOK_KW_IN   then "KW_IN\x00"     as *u8
+    else if k == TOK_KW_RETURN then "KW_RETURN\x00" as *u8
+    else if k == TOK_KW_BREAK then "KW_BREAK\x00" as *u8
+    else if k == TOK_KW_CONTINUE then "KW_CONTINUE\x00" as *u8
+    else if k == TOK_KW_MATCH then "KW_MATCH\x00" as *u8
+    else if k == TOK_KW_TYPE then "KW_TYPE\x00"   as *u8
+    else if k == TOK_KW_STRUCT then "KW_STRUCT\x00" as *u8
+    else null as *u8
+
+fn tok_name_kw_b : i32 -> *u8
+  | k ->
+    if k == TOK_KW_EFFECT    then "KW_EFFECT\x00"   as *u8
+    else if k == TOK_KW_HANDLE  then "KW_HANDLE\x00"  as *u8
+    else if k == TOK_KW_RESUME  then "KW_RESUME\x00"  as *u8
+    else if k == TOK_KW_PERFORM then "KW_PERFORM\x00" as *u8
+    else if k == TOK_KW_DEFER   then "KW_DEFER\x00"   as *u8
+    else if k == TOK_KW_MOD     then "KW_MOD\x00"     as *u8
+    else if k == TOK_KW_USE     then "KW_USE\x00"     as *u8
+    else if k == TOK_KW_AS      then "KW_AS\x00"      as *u8
+    else if k == TOK_KW_INTERFACE then "KW_INTERFACE\x00" as *u8
+    else if k == TOK_KW_IMPL    then "KW_IMPL\x00"    as *u8
+    else if k == TOK_KW_FOR_IMPL then "KW_FOR_IMPL\x00" as *u8
+    else if k == TOK_KW_CONST   then "KW_CONST\x00"   as *u8
+    else if k == TOK_KW_STATIC  then "KW_STATIC\x00"  as *u8
+    else if k == TOK_KW_UNSAFE  then "KW_UNSAFE\x00"  as *u8
+    else if k == TOK_KW_UNCHECKED then "KW_UNCHECKED\x00" as *u8
+    else null as *u8
+
+fn tok_name_kw_c : i32 -> *u8
+  | k ->
+    if k == TOK_KW_TAIL       then "KW_TAIL\x00"        as *u8
+    else if k == TOK_KW_ENUM  then "KW_ENUM\x00"        as *u8
+    else if k == TOK_KW_OF    then "KW_OF\x00"          as *u8
+    else if k == TOK_KW_WHERE then "KW_WHERE\x00"       as *u8
+    else if k == TOK_KW_ALLOC then "KW_ALLOC\x00"       as *u8
+    else if k == TOK_KW_FREE  then "KW_FREE\x00"        as *u8
+    else if k == TOK_KW_NULL  then "KW_NULL\x00"        as *u8
+    else if k == TOK_KW_UB_BANG then "KW_UB_BANG\x00"  as *u8
+    else if k == TOK_KW_ASSUME then "KW_ASSUME\x00"     as *u8
+    else if k == TOK_KW_TRAP  then "KW_TRAP\x00"        as *u8
+    else if k == TOK_KW_UNREACHABLE then "KW_UNREACHABLE\x00" as *u8
+    else if k == TOK_KW_POISON then "KW_POISON\x00"     as *u8
+    else if k == TOK_KW_FREEZE then "KW_FREEZE\x00"     as *u8
+    else if k == TOK_KW_SIZEOF then "KW_SIZEOF\x00"     as *u8
+    else if k == TOK_KW_ALIGNOF then "KW_ALIGNOF\x00"   as *u8
+    else null as *u8
+
+fn tok_name_kw_d : i32 -> *u8
+  | k ->
+    if k == TOK_KW_OFFSETOF   then "KW_OFFSETOF\x00"   as *u8
+    else if k == TOK_KW_PGEN  then "KW_PGEN\x00"       as *u8
+    else if k == TOK_KW_REWRITE then "KW_REWRITE\x00"  as *u8
+    else if k == TOK_KW_IRDL  then "KW_IRDL\x00"       as *u8
+    else if k == TOK_KW_EVAL  then "KW_EVAL\x00"       as *u8
+    else if k == TOK_KW_CONSTEXPR then "KW_CONSTEXPR\x00" as *u8
+    else if k == TOK_KW_WITH  then "KW_WITH\x00"       as *u8
+    else if k == TOK_KW_NEWTYPE then "KW_NEWTYPE\x00"  as *u8
+    else null as *u8
+
+fn tok_name : i32 -> *u8
+  | k ->
+    let r0 : *u8 = tok_name_structural(k)
+    if r0 != null as *u8 then return r0
+    let r1 : *u8 = tok_name_lit(k)
+    if r1 != null as *u8 then return r1
+    let r2 : *u8 = tok_name_punct(k)
+    if r2 != null as *u8 then return r2
+    let r3 : *u8 = tok_name_bracket(k)
+    if r3 != null as *u8 then return r3
+    let r4 : *u8 = tok_name_op(k)
+    if r4 != null as *u8 then return r4
+    let r5 : *u8 = tok_name_compound_op(k)
+    if r5 != null as *u8 then return r5
+    let r6 : *u8 = tok_name_kw_a(k)
+    if r6 != null as *u8 then return r6
+    let r7 : *u8 = tok_name_kw_b(k)
+    if r7 != null as *u8 then return r7
+    let r8 : *u8 = tok_name_kw_c(k)
+    if r8 != null as *u8 then return r8
+    let r9 : *u8 = tok_name_kw_d(k)
+    if r9 != null as *u8 then return r9
+    "TOKEN\x00" as *u8
+
