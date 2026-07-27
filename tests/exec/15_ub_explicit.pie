@@ -1,0 +1,20 @@
+-- EXPECT: safe\nsafe
+fn safe_div : (i64, i64) -> i64 ! [UB]
+  | (_, 0) -> ub! "division by zero"
+  | (a, b) -> a / b
+fn safe_mod : (i64, i64) -> i64 ! [UB]
+  | (_, 0) -> ub! "mod by zero"
+  | (a, b) -> a % b
+fn main : () -> () ! [IO, UB]
+  | () ->
+      let d = safe_div(100, 5)
+      if d == 20
+        syscall(1, 1, "safe\n" as i64, 5)
+      else
+        syscall(1, 1, "bad\n" as i64, 4)
+      let m = safe_mod(17, 5)
+      if m == 2
+        syscall(1, 1, "safe\n" as i64, 5)
+      else
+        syscall(1, 1, "bad\n" as i64, 4)
+      syscall(231, 0)
