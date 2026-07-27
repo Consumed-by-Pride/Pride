@@ -1902,6 +1902,117 @@ fn char* resolve_ty(TypeTable* tm, ssi_ir::IrVal* v)
     return (char*)"i64";
 }
 
+// ── Scalar coercion service ────────────────────────────────────────────────
+// Single source of truth for "a value of type SRC must be materialised as
+// type DST". Every site that retypes a value (ret, φ-edge normalisation, …)
+// consults `coerce_op` instead of open-coding its own width comparisons —
+// the previous family of per-site copies is exactly where the invalid-IR
+// regressions came from (i64 value fed to an i32 φ, fptrunc used for a
+// float→double WIDENING, and similar).
+
+// Width of an "iN" integer type string, or -1 when TY is not an int type.
+fn int int_ty_width(char* ty)
+{
+    if (ty == null || ty[0] != 'i' || ty[1] < '0' || ty[1] > '9') return -1;
+    int w = 0;
+    usz ci = 1;
+    while (ty[ci] >= '0' && ty[ci] <= '9') { w = w * 10 + (int)(ty[ci] - '0'); ci++; }
+    if (ty[ci] != 0) return -1;
+    return w;
+}
+
+// Rank of a floating-point type string ("float" < "double"), or -1 otherwise.
+fn int fp_ty_rank(char* ty)
+{
+    if (ty == null) return -1;
+    if (ty[0] == 'f') return 1;   // float
+    if (ty[0] == 'd') return 2;   // double
+    return -1;
+}
+
+// The LLVM conversion opcode that turns a scalar SRC into a scalar DST, or
+// null when the types are representation-identical and NO instruction is
+// required (same type, or both opaque `ptr`). Also null when no scalar
+// conversion exists (aggregates/void) — callers handle those separately.
+fn char* coerce_op(char* src, char* dst)
+{
+    if (src == null || dst == null || src[0] == 0 || dst[0] == 0) return null;
+    // Identical types need no instruction (covers ptr==ptr under opaque ptrs).
+    usz sl = strlen(src); usz dl = strlen(dst);
+    if (sl == dl)
+    {
+        bool same = true;
+        for (usz ci = 0; ci < sl; ci++) { if (src[ci] != dst[ci]) { same = false; break; } }
+        if (same) return null;
+    }
+    int sw = int_ty_width(src);
+    int dw = int_ty_width(dst);
+    int sr = fp_ty_rank(src);
+    int dr = fp_ty_rank(dst);
+    if (sw > 0 && dw > 0) return sw > dw ? (char*)"trunc" : (char*)"sext";
+    if (sr > 0 && dr > 0) return sr > dr ? (char*)"fptrunc" : (char*)"fpext";
+    if (sr > 0 && dw > 0) return (char*)"fptosi";
+    if (sw > 0 && dr > 0) return (char*)"sitofp";
+    if (src[0] == 'p' && dw > 0) return (char*)"ptrtoint";
+    if (sw > 0 && dst[0] == 'p') return (char*)"inttoptr";
+    // Aggregates / arrays / void have no scalar conversion.
+    if (src[0] == '{' || dst[0] == '{' || src[0] == '[' || dst[0] == '['
+        || (src[0] == 'v' && src[1] == 'o') || (dst[0] == 'v' && dst[1] == 'o'))
+    { return null; }
+    return (char*)"bitcast";
+}
+
+// ── Typed φ-edge normalisation ─────────────────────────────────────────────
+// LLVM requires every φ incoming value to have EXACTLY the φ's type and to
+// dominate the end of its predecessor block. Branch/match arm results often
+// carry the body's NATURAL type (e.g. an i64 `let` feeding an i32 match
+// result), so each malformed φ edge is retyped through a real conversion
+// instruction. The instruction must live at the END of the predecessor block:
+// a join block can print BEFORE some of its predecessors in the linear order,
+// so emitting the conversion at the φ site would break dominance. The anchor
+// is printed by CgenModule.emit_phi_edge_coerces (invoked from the block
+// loop, right before the predecessor's terminator) and the φ references it
+// as `%phi.<id>.in.<slot>`. Constants need no anchor — emit_phi folds them
+// to the φ width inline.
+
+// σ-transparency shared by the predicate and both print sites.
+fn ssi_ir::IrVal* sigma_unwrap(ssi_ir::IrVal* v)
+{
+    int depth = 0;
+    while (v != null && v.op == ssi_ir::IrOp.IR_SIGMA
+           && v.arg_count >= 1 && v.args[0] != null && depth < 16)
+    { v = v.args[0]; depth++; }
+    return v;
+}
+
+// Decide whether φ incoming slot AI must be retyped. On true, *OP/*SRC/*DST
+// receive the conversion opcode and the operand/result type strings. Mirrors
+// emit_phi's incoming-value classification exactly: anything emit_phi would
+// print as `undef`, fold as a constant, or pass through unchanged needs no
+// anchored instruction.
+fn bool phi_edge_coercion(TypeTable* tm, ssi_ir::IrVal* ph, usz ai,
+                          char** op, char** src, char** dst)
+{
+    if (ph == null || ph.op != ssi_ir::IrOp.IR_PHI || ai >= ph.arg_count) return false;
+    char* phi_ty = (tm != null) ? tm.get(ph.id) : null;
+    if (phi_ty == null || phi_ty[0] == 0) return false;   // untyped φ: legacy i64 fallback
+    if (phi_ty[0] == 'v' && phi_ty[1] == 'o') return false;   // void φ: not emitted at all
+    if (phi_ty[0] == '{') return false;   // aggregate φ: args match by construction
+    ssi_ir::IrVal* arg = sigma_unwrap(ph.args[ai]);
+    if (arg == null || arg.op == ssi_ir::IrOp.IR_CONST_UNIT) return false;  // prints undef
+    // Constants are folded inline by emit_phi / emit_vref — no anchor.
+    if (arg.op == ssi_ir::IrOp.IR_CONST_INT  || arg.op == ssi_ir::IrOp.IR_CONST_BOOL
+     || arg.op == ssi_ir::IrOp.IR_CONST_FLOAT || arg.op == ssi_ir::IrOp.IR_CONST_NULL)
+    { return false; }
+    char* apty = resolve_ty(tm, arg);
+    if (apty == null || apty[0] == 0) return false;
+    if (apty[0] == '{' || (apty[0] == 'v' && apty[1] == 'o')) return false;   // prints undef
+    char* opc = coerce_op(apty, phi_ty);
+    if (opc == null) return false;
+    *op = opc; *src = apty; *dst = phi_ty;
+    return true;
+}
+
 // Write the LLVM type for val id from the type table (or "i64" fallback).
 fn void CgenModule.writes_ty(CgenModule* cg, TypeTable* tm, int id)
 {
@@ -4885,13 +4996,67 @@ fn void CgenModule.emit_phi(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 }
                 else { cg.out.writei((long)phi_arg.ival); }
             }
-            else { cg.emit_vref(phi_arg); }
+            else
+            {
+                // Non-constant incoming value: LLVM demands incoming type ==
+                // φ type. A mismatched edge is retyped through a conversion
+                // anchored at the end of the predecessor block (see
+                // emit_phi_edge_coerces) — reference it here by name.
+                char* eop = null; char* esrc = null; char* edst = null;
+                if (phi_edge_coercion(tm, v, i, &eop, &esrc, &edst))
+                {
+                    cg.out.writes("%phi."); cg.out.writei(v.id);
+                    cg.out.writes(".in."); cg.out.writeu((ulong)i);
+                }
+                else { cg.emit_vref(phi_arg); }
+            }
         }
         cg.out.writes(", %B");
         cg.out.writei(v.pred[i]);
         cg.out.writes(" ]");
     }
     cg.out.writes("\n");
+}
+
+// Anchor emission for typed φ edges. Called for every block B immediately
+// before B's terminator is printed: for each successor block's φ that takes
+// an incoming value FROM B whose type differs from the φ type, print the
+// conversion instruction here — the only position that dominates the edge
+// regardless of the linear order in which blocks happen to be emitted.
+// The φ itself references the result as `%phi.<id>.in.<slot>`; the predicate
+// shared with emit_phi (phi_edge_coercion) keeps the two sides in lockstep.
+fn void CgenModule.emit_phi_edge_coerces(CgenModule* cg, ssi_ir::IrBlock* b, TypeTable* tm)
+{
+    if (b == null || cg.ir == null) return;
+    for (usz si = 0; si < b.succ_count; si++)
+    {
+        // Dedup repeated successor ids (a CBR to a single target lists it twice).
+        bool seen = false;
+        for (usz sj = 0; sj < si; sj++) { if (b.succ[sj] == b.succ[si]) { seen = true; break; } }
+        if (seen) continue;
+        ssi_ir::IrBlock* sb = cg.ir.blk(b.succ[si]);
+        if (sb == null) continue;
+        ssi_ir::IrVal* ph = sb.phi_head;
+        while (ph != null)
+        {
+            if (ph.op == ssi_ir::IrOp.IR_PHI)
+            {
+                for (usz ai = 0; ai < ph.arg_count; ai++)
+                {
+                    if (ph.pred[ai] != b.id) continue;
+                    char* eop = null; char* esrc = null; char* edst = null;
+                    if (!phi_edge_coercion(tm, ph, ai, &eop, &esrc, &edst)) continue;
+                    cg.out.writes("  %phi."); cg.out.writei(ph.id);
+                    cg.out.writes(".in."); cg.out.writeu((ulong)ai);
+                    cg.out.writes(" = "); cg.out.writes(eop); cg.out.writes(" ");
+                    cg.out.writes(esrc); cg.out.writes(" ");
+                    cg.emit_vref(sigma_unwrap(ph.args[ai]));
+                    cg.out.writes(" to "); cg.out.writes(edst); cg.out.writes("\n");
+                }
+            }
+            ph = ph.next;
+        }
+    }
 }
 
 
@@ -5038,10 +5203,6 @@ fn void CgenModule.emit_terminator(CgenModule* cg, ssi_ir::IrBlock* b, TypeTable
 
                     if (need_coerce)
                     {
-                        bool src_int = (val_ty[0]=='i');
-                        bool dst_int = (ret_ty[0]=='i');
-                        bool src_fp  = (val_ty[0]=='f'||val_ty[0]=='d');
-                        bool dst_fp  = (ret_ty[0]=='f'||ret_ty[0]=='d');
                         // Aggregate→ptr: alloca/store/ret ptr (bitcast is invalid in LLVM 22)
                         // Handle BEFORE emitting the %coerce.ret prefix.
                         if (val_ty[0] == '{' && ret_ty[0] == 'p')
@@ -5054,21 +5215,14 @@ fn void CgenModule.emit_terminator(CgenModule* cg, ssi_ir::IrBlock* b, TypeTable
                             cg.out.writes("  ret ptr %coerce.alloca.B"); cg.out.writei(b.id); cg.out.writes("\n");
                             return;
                         }
-                        // Emit coercion prefix for all other cases
+                        // Scalar coercion: the shared coercion service picks the
+                        // opcode (trunc/sext/fptrunc/fpext/fptosi/sitofp/…) —
+                        // including the correct fpext for float→double widening,
+                        // which the old per-site code emitted as invalid fptrunc.
+                        char* ret_opc = coerce_op(val_ty, ret_ty);
+                        if (ret_opc == null) ret_opc = (char*)"bitcast";
                         cg.out.writes("  %coerce.ret.B"); cg.out.writei(b.id); cg.out.writes(" = ");
-                        if (src_int && dst_int)
-                        {
-                            int src_w = 0; int dst_w = 0;
-                            for (usz ci = 1; val_ty[ci] >= '0' && val_ty[ci] <= '9'; ci++) { src_w = src_w*10 + (int)(val_ty[ci]-'0'); }
-                            for (usz ci = 1; ret_ty[ci] >= '0' && ret_ty[ci] <= '9'; ci++) { dst_w = dst_w*10 + (int)(ret_ty[ci]-'0'); }
-                            cg.out.writes(src_w > dst_w ? "trunc " : "sext ");
-                        }
-                        else if (src_fp && dst_int) { cg.out.writes("fptosi "); }
-                        else if (src_int && dst_fp) { cg.out.writes("sitofp "); }
-                        else if (src_fp && dst_fp)  { cg.out.writes("fptrunc "); }
-                        else if (val_ty[0]=='p' && dst_int) { cg.out.writes("ptrtoint "); }
-                        else if (src_int && ret_ty[0]=='p') { cg.out.writes("inttoptr "); }
-                        else                        { cg.out.writes("bitcast "); }
+                        cg.out.writes(ret_opc); cg.out.writes(" ");
                         cg.out.writes(val_ty);
                         cg.out.writes(" ");
                         cg.emit_vref(b.ret_val);
@@ -5641,6 +5795,10 @@ fn void CgenModule.emit_function(CgenModule* cg, ssi_ir::SsiFunc* f)
         // Straight-line instructions
         ssi_ir::IrVal* instr = b.head;
         while (instr != null) { cg.emit_val(instr, &cg.tymap); instr = instr.next; }
+
+        // Typed φ edges: conversions incoming to successor φs are anchored
+        // at the end of THIS block (their predecessor), before the terminator.
+        cg.emit_phi_edge_coerces(b, &cg.tymap);
 
         // Terminator — use the canonical ret type computed once at function entry
         cg.emit_terminator(b, &cg.tymap, &fn_ret_canonical[0]);
