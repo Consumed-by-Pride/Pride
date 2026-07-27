@@ -1,0 +1,49 @@
+-- stdlib/test.pry — Built-in test framework
+-- Usage: annotate functions with #[test] and run with: pryde --test file.pry
+--
+-- Test functions have signature: fn name : () -> ()
+-- Framework tracks pass/fail count and prints summary.
+
+fn printf_test : *u8 -> () #extern("printf") #cc(c)
+
+let mut __pryde_test_pass : i64 = 0
+let mut __pryde_test_fail : i64 = 0
+let mut __pryde_test_total: i64 = 0
+
+fn __test_assert : (bool, *u8) -> ()
+  | (cond, msg) ->
+      __pryde_test_total = __pryde_test_total + 1
+      if cond
+        __pryde_test_pass = __pryde_test_pass + 1
+      else
+        __pryde_test_fail = __pryde_test_fail + 1
+
+fn __test_report : () -> i64
+  | () ->
+      __pryde_test_total
+
+-- Public API
+fn assert_true : (bool, *u8) -> ()
+  | (cond, msg) -> __test_assert(cond, msg)
+
+fn assert_false : (bool, *u8) -> ()
+  | (cond, msg) -> __test_assert(!cond, msg)
+
+fn assert_eq_i64 : (i64, i64, *u8) -> ()
+  | (a, b, msg) -> __test_assert(a == b, msg)
+
+fn assert_ne_i64 : (i64, i64, *u8) -> ()
+  | (a, b, msg) -> __test_assert(a != b, msg)
+
+fn assert_lt_i64 : (i64, i64, *u8) -> ()
+  | (a, b, msg) -> __test_assert(a < b, msg)
+
+fn assert_gt_i64 : (i64, i64, *u8) -> ()
+  | (a, b, msg) -> __test_assert(a > b, msg)
+
+fn test_pass_count  : () -> i64
+  | () -> __pryde_test_pass
+fn test_fail_count  : () -> i64
+  | () -> __pryde_test_fail
+fn test_total_count : () -> i64
+  | () -> __pryde_test_total

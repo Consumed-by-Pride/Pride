@@ -1,0 +1,223 @@
+mod fmt.parse_float.convert_slow
+
+use fmt.parse_float.common
+use fmt.parse_float.float_info
+use fmt.parse_float.decimal
+
+-- Slow/fallback path: convert_slow.
+
+-- Uses big-decimal (decimal.pie) to exactly determine rounding.
+-- Only called when eisel-lemire fails (near half-way cases).
+-- Marked "cold" conceptually — this path is rare.
+
+-- §1  SHIFT TABLE
+-- getShift(n): how many bits to shift for a decimal_point of n.
+-- Covers the first 19 values; beyond that use MAX_SHIFT=60.
+
+const CONV_SLOW_MAX_SHIFT : i64 = 60i64
+const CONV_SLOW_NUM_POWERS : i64 = 19i64
+
+fn get_shift : i64 -> i64
+  | n ->
+    if n >= CONV_SLOW_NUM_POWERS then CONV_SLOW_MAX_SHIFT
+    else if n == 0i64 then 0i64
+    else if n == 1i64 then 3i64
+    else if n == 2i64 then 6i64
+    else if n == 3i64 then 9i64
+    else if n == 4i64 then 13i64
+    else if n == 5i64 then 16i64
+    else if n == 6i64 then 19i64
+    else if n == 7i64 then 23i64
+    else if n == 8i64 then 26i64
+    else if n == 9i64 then 29i64
+    else if n == 10i64 then 33i64
+    else if n == 11i64 then 36i64
+    else if n == 12i64 then 39i64
+    else if n == 13i64 then 43i64
+    else if n == 14i64 then 46i64
+    else if n == 15i64 then 49i64
+    else if n == 16i64 then 53i64
+    else if n == 17i64 then 56i64
+    else 59i64
+
+-- §2  CONVERT SLOW — f64
+
+-- Returns (mantissa, biased_exp): compose with assemble_f64().
+
+fn convert_slow_f64 : (ptr, i64) -> (u64, i32)
+  | (s, slen) ->
+    let min_exp       : i32 = -(1022i32)        -- -(2^(exp_bits-1) - 1) + 1 for f64
+    let infinite_power : i32 = 2047i32          -- (1 << exp_bits) - 1
+    let fractional_bits : i32 = 52i32           -- floatFractionalBits(f64)
+
+    let mut d = decimal.decimal_new()
+    decimal.decimal_parse(&d, s, slen)
+
+    if d.num_digits == 0i64 || d.decimal_point < decimal.MIN_EXPONENT as i32
+      decimal.decimal_free(&d)
+      (0u64, 0i32)
+    else if d.decimal_point >= decimal.MAX_EXPONENT as i32
+      decimal.decimal_free(&d)
+      (0u64, infinite_power)
+    else
+      let mut exp2 : i32 = 0i32
+
+      -- shift right toward (0.5 .. 1]
+      while d.decimal_point > 0i32
+        let n = d.decimal_point as i64
+        let shift = get_shift(n)
+        decimal.decimal_right_shift(&d, shift)
+        if d.decimal_point < -(decimal.DECIMAL_POINT_RANGE as i32)
+          decimal.decimal_free(&d)
+          (0u64, 0i32)
+        exp2 = exp2 + shift as i32
+
+      -- shift left toward (0.5 .. 1]
+      let mut done_left = false
+      while !done_left
+        if d.decimal_point == 0i32
+          -- at zero decimal point: check first digit to decide
+          if d.num_digits == 0i64 then done_left = true
+          else if d.digits[0i64] >= 5u8 then done_left = true
+          else if d.digits[0i64] <= 1u8
+            let shift = 2i64
+            decimal.decimal_left_shift(&d, shift)
+            if d.decimal_point > decimal.DECIMAL_POINT_RANGE as i32
+              decimal.decimal_free(&d)
+              (0u64, infinite_power)
+            exp2 = exp2 - shift as i32
+          else
+            let shift = 1i64
+            decimal.decimal_left_shift(&d, shift)
+            if d.decimal_point > decimal.DECIMAL_POINT_RANGE as i32
+              decimal.decimal_free(&d)
+              (0u64, infinite_power)
+            exp2 = exp2 - shift as i32
+        else if d.decimal_point < 0i32
+          let n = (-d.decimal_point) as i64
+          let shift = get_shift(n)
+          decimal.decimal_left_shift(&d, shift)
+          if d.decimal_point > decimal.DECIMAL_POINT_RANGE as i32
+            decimal.decimal_free(&d)
+            (0u64, infinite_power)
+          exp2 = exp2 - shift as i32
+        else
+          done_left = true
+
+      -- now in (0.5 .. 1]; binary format wants (1 .. 2]
+      exp2 = exp2 - 1i32
+
+      -- subnormal handling: shift right until exp2 >= min_exp + 1
+      while min_exp + 1i32 > exp2
+        let mut n = ((min_exp + 1i32) - exp2) as i64
+        if n > CONV_SLOW_MAX_SHIFT then n = CONV_SLOW_MAX_SHIFT
+        decimal.decimal_right_shift(&d, n)
+        exp2 = exp2 + n as i32
+
+      if exp2 - min_exp >= infinite_power
+        decimal.decimal_free(&d)
+        (0u64, infinite_power)
+      else
+        -- shift decimal to hidden bit, then round to get mantissa+1 bits
+        decimal.decimal_left_shift(&d, (fractional_bits + 1i32) as i64)
+        let mut mantissa = decimal.decimal_round(&d)
+
+        if mantissa >= (1u64 << (fractional_bits + 1i32) as u64)
+          -- rounding overflowed into carry bit — shift back
+          decimal.decimal_right_shift(&d, 1i64)
+          exp2 = exp2 + 1i32
+          mantissa = decimal.decimal_round(&d)
+          if exp2 - min_exp >= infinite_power
+            decimal.decimal_free(&d)
+            (0u64, infinite_power)
+
+        let mut power2 = exp2 - min_exp
+        if mantissa < (1u64 << fractional_bits as u64)
+          power2 = power2 - 1i32
+
+        -- zero out bits above mantissa_bits (remove hidden bit)
+        mantissa = mantissa & ((1u64 << float_info.F64_MANTISSA_EXPLICIT_BITS as u64) - 1u64)
+        decimal.decimal_free(&d)
+        (mantissa, power2)
+
+-- §3  CONVERT SLOW — f32
+-- Same algorithm, but f32 constants.
+
+fn convert_slow_f32 : (ptr, i64) -> (u32, i32)
+  | (s, slen) ->
+    let min_exp        : i32 = -126i32
+    let infinite_power : i32 = 255i32
+    let fractional_bits : i32 = 23i32
+
+    let mut d = decimal.decimal_new()
+    decimal.decimal_parse(&d, s, slen)
+
+    if d.num_digits == 0i64 || d.decimal_point < decimal.MIN_EXPONENT as i32
+      decimal.decimal_free(&d); (0u32, 0i32)
+    else if d.decimal_point >= decimal.MAX_EXPONENT as i32
+      decimal.decimal_free(&d); (0u32, infinite_power)
+    else
+      let mut exp2 : i32 = 0i32
+      while d.decimal_point > 0i32
+        let shift = get_shift(d.decimal_point as i64)
+        decimal.decimal_right_shift(&d, shift)
+        if d.decimal_point < -(decimal.DECIMAL_POINT_RANGE as i32)
+          decimal.decimal_free(&d); (0u32, 0i32)
+        exp2 = exp2 + shift as i32
+
+      let mut done_left = false
+      while !done_left
+        if d.decimal_point == 0i32
+          if d.num_digits == 0i64 then done_left = true
+          else if d.digits[0i64] >= 5u8 then done_left = true
+          else if d.digits[0i64] <= 1u8
+            decimal.decimal_left_shift(&d, 2i64)
+            if d.decimal_point > decimal.DECIMAL_POINT_RANGE as i32
+              decimal.decimal_free(&d); (0u32, infinite_power)
+            exp2 = exp2 - 2i32
+          else
+            decimal.decimal_left_shift(&d, 1i64)
+            if d.decimal_point > decimal.DECIMAL_POINT_RANGE as i32
+              decimal.decimal_free(&d); (0u32, infinite_power)
+            exp2 = exp2 - 1i32
+        else if d.decimal_point < 0i32
+          let shift = get_shift((-d.decimal_point) as i64)
+          decimal.decimal_left_shift(&d, shift)
+          if d.decimal_point > decimal.DECIMAL_POINT_RANGE as i32
+            decimal.decimal_free(&d); (0u32, infinite_power)
+          exp2 = exp2 - shift as i32
+        else done_left = true
+
+      exp2 = exp2 - 1i32
+      while min_exp + 1i32 > exp2
+        let mut n = ((min_exp + 1i32) - exp2) as i64
+        if n > CONV_SLOW_MAX_SHIFT then n = CONV_SLOW_MAX_SHIFT
+        decimal.decimal_right_shift(&d, n); exp2 = exp2 + n as i32
+
+      if exp2 - min_exp >= infinite_power
+        decimal.decimal_free(&d); (0u32, infinite_power)
+      else
+        decimal.decimal_left_shift(&d, (fractional_bits + 1i32) as i64)
+        let mut mantissa = decimal.decimal_round(&d) as u32
+        if mantissa >= (1u32 << (fractional_bits + 1i32) as u32)
+          decimal.decimal_right_shift(&d, 1i64); exp2 = exp2 + 1i32
+          mantissa = decimal.decimal_round(&d) as u32
+          if exp2 - min_exp >= infinite_power
+            decimal.decimal_free(&d); (0u32, infinite_power)
+        let mut power2 = exp2 - min_exp
+        if mantissa < (1u32 << fractional_bits as u32) then power2 = power2 - 1i32
+        mantissa = mantissa & ((1u32 << float_info.F32_MANTISSA_EXPLICIT_BITS as u32) - 1u32)
+        decimal.decimal_free(&d)
+        (mantissa, power2)
+
+-- §4  PUBLIC ENTRY POINTS (called from parse_float.pie)
+
+fn slow_path_f64 : (ptr, i64, bool) -> f64
+  | (s, slen, neg) ->
+    let (mant, biased_exp) = convert_slow_f64(s, slen)
+    common.assemble_f64(neg, biased_exp, mant)
+
+fn slow_path_f32 : (ptr, i64, bool) -> f32
+  | (s, slen, neg) ->
+    let (mant, biased_exp) = convert_slow_f32(s, slen)
+    common.assemble_f32(neg, biased_exp, mant)

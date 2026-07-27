@@ -1,0 +1,12 @@
+-- EXPECT-CLEAN
+fn sum_pos : (*i64, i64) -> i64
+  | (p, n) ->
+    let mut s : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i < n
+      let v : i64 = p[i]
+      i = i + 1i64
+      if v < 0i64
+        continue
+      s = s + v
+    s

@@ -1,0 +1,14 @@
+-- Test: struct update syntax
+struct Config
+    debug   : bool
+    verbose : bool
+    level   : i32
+
+fn config_default : () -> Config
+  | () -> Config { debug: false, verbose: false, level: 0i32 }
+
+fn config_with_debug : Config -> Config
+  | c -> c { debug: true }
+
+fn config_with_level : (Config, i32) -> Config
+  | (c, l) -> c { level: l }

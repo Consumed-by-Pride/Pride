@@ -1,0 +1,8 @@
+-- EXPECT-CLEAN
+fn count_down : i32 -> i32
+  | n ->
+    let mut x = n
+    do
+      x = x - 1
+    while x > 0
+    x

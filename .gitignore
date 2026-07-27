@@ -1,0 +1,11 @@
+*.o
+*.bc
+*.opt.bc
+*.ll
+pride
+prydc
+pryde_new
+.understand-anything/
+redteam/
+__pycache__/
+/tmp/

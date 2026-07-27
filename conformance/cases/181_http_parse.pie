@@ -1,0 +1,21 @@
+-- EXPECT-CLEAN
+fn http_status_is_success : i32 -> bool
+  | code -> code >= 200i32 && code < 300i32
+
+fn http_status_is_error : i32 -> bool
+  | code -> code >= 400i32
+
+fn http_status_category : i32 -> i32
+  | code ->
+    let cat : i32 = code / 100i32
+    cat
+
+fn url_starts_with_http : (*u8, i64) -> bool
+  | (s, len) ->
+    len >= 4i64 && s[0i64] == 104u8 && s[1i64] == 116u8 &&
+    s[2i64] == 116u8 && s[3i64] == 112u8
+
+fn content_type_is_json : (*u8, i64) -> bool
+  | (s, len) ->
+    len >= 16i64 &&
+    s[0i64] == 97u8   -- 'a' (application/json starts with 'a')

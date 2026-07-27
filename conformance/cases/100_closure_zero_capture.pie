@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+fn double : (i64 -> i64)
+  | () -> fn | (x) -> x * 2
+
+fn apply_twice : (i64, (i64 -> i64)) -> i64
+  | (x, f) -> f(x)

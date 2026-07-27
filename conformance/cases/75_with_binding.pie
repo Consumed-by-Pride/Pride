@@ -1,0 +1,7 @@
+-- EXPECT-CLEAN
+fn acquire : () -> i32
+  | () -> 1
+fn use_with : () -> i32
+  | () ->
+      with r = acquire()
+        r + 1

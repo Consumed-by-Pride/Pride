@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+-- interface is the Pride keyword (trait is accepted as an alias)
+interface Show
+  fn show : (i64) -> i64
+fn f : i32 -> i32
+  | n -> n

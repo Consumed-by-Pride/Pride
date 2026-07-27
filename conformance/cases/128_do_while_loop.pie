@@ -1,0 +1,10 @@
+-- Test: do-while loop
+fn count_up : i64 -> i64
+  | n ->
+    let mut count : i64 = 0i64
+    let mut x : i64 = 0i64
+    do
+      x = x + 1i64
+      count = count + x
+    while x < n
+    count

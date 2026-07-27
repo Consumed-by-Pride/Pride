@@ -1,0 +1,7 @@
+-- EXPECT-CLEAN
+type Opt = union
+  some : i32
+  none : ()
+fn unwrap : Opt -> i32
+  | { some: v } -> v
+  | { none: n } -> n

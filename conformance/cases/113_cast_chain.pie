@@ -1,0 +1,11 @@
+-- EXPECT-CLEAN
+fn widen_narrow : i8 -> i8
+  | n ->
+    let w : i64 = n as i64
+    let b : i8  = w as i8
+    b
+
+fn ptr_roundtrip : *i32 -> *i32
+  | p ->
+    let u : u64 = p as u64
+    u as *i32

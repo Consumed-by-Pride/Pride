@@ -1,0 +1,5 @@
+-- EXPECT-CLEAN
+graph cfg
+  node entry
+  node exit
+  edge entry exit

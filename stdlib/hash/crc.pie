@@ -1,0 +1,409 @@
+mod hash.crc
+
+use os.linux
+
+-- CRC implementations: CRC-32 (IEEE), CRC-32C (Castagnoli), CRC-16, CRC-8.
+-- All variants support streaming (init/update/final) and one-shot.
+-- Pride covers the major polynomial variants.
+
+-- §1  CRC-32 (IEEE 802.3 — used in Ethernet, zlib, PNG, zip)
+-- Polynomial: 0xEDB88320 (reflected 0x04C11DB7)
+
+const CRC32_POLY : u32 = 3988292384u32   -- 0xEDB88320
+
+let crc32_table_ready : bool = false
+let crc32_table : *u32 = 0 as *u32
+
+fn crc32_make_table : () -> ()
+  | () ->
+    if crc32_table_ready then ()
+    else
+      let tbl = os.linux.malloc(256i64 * 4i64) as *u32
+      let mut i : i64 = 0i64
+      while i < 256i64
+        let mut c = i as u32; let mut j : i64 = 0i64
+        while j < 8i64
+          if c & 1u32 != 0u32 then c = (c >> 1u32) ^ CRC32_POLY else c = c >> 1u32
+          j = j + 1i64
+        tbl[i] = c; i = i + 1i64
+      crc32_table = tbl; crc32_table_ready = true
+
+struct Crc32
+  value : u32
+
+fn crc32_init : () -> Crc32
+  | () -> crc32_make_table(); Crc32 { value: 0xFFFFFFFFu32 }
+
+fn crc32_update : (*Crc32, ptr, i64) -> ()
+  | (c, data, len) ->
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      c.value = (c.value >> 8u32) ^ crc32_table[((c.value ^ b[i] as u32) & 0xFFu32) as i64]
+      i = i + 1i64
+
+fn crc32_update_str : (*Crc32, ptr) -> ()
+  | (c, s) -> crc32_update(c, s, os.linux.strlen(s) as i64)
+
+fn crc32_update_u8 : (*Crc32, u8) -> ()
+  | (c, b) ->
+    c.value = (c.value >> 8u32) ^ crc32_table[((c.value ^ b as u32) & 0xFFu32) as i64]
+
+fn crc32_final : *Crc32 -> u32 | c -> c.value ^ 0xFFFFFFFFu32
+
+fn crc32_hash : (ptr, i64) -> u32
+  | (data, len) ->
+    let mut c = crc32_init()
+    crc32_update(&c, data, len)
+    crc32_final(&c)
+
+fn crc32_str : ptr -> u32
+  | s -> crc32_hash(s, os.linux.strlen(s) as i64)
+
+fn crc32_combine : (u32, u32, i64) -> u32
+  | (crc1, crc2, len2) ->
+    -- Combine two CRCs computed over consecutive data blocks.
+    -- crc1 = CRC of first block, crc2 = CRC of second block of length len2.
+    -- Uses matrix exponentiation. Simplified: just chain-XOR for streaming.
+    -- Full implementation uses the "crc32_combine" algorithm from zlib.
+    let mut even : *u32 = os.linux.malloc(32i64 * 4i64) as *u32
+    let mut odd  : *u32 = os.linux.malloc(32i64 * 4i64) as *u32
+    let mut n = len2; let mut crc = crc1
+    even[0u32] = CRC32_POLY; let mut row : u32 = 1u32
+    let mut i : i32 = 1i32
+    while i < 32i32 then even[i as u32] = row; row = row << 1u32; i = i + 1i32
+    -- matrix square
+    let mut j : i32 = 0i32
+    while j < 32i32
+      let vec = even[j as u32]; let mut sum : u32 = 0u32; let mut k : i32 = 0i32
+      while k < 32i32 then if vec & (1u32 << k as u32) != 0u32 then sum = sum ^ even[k as u32]; k=k+1i32
+      odd[j as u32] = sum; j = j + 1i32
+    while n > 0i64
+      -- apply if bit set
+      if n & 1i64 != 0i64
+        let mut sum2 : u32 = 0u32; let mut b2 : i32 = 0i32
+        while b2 < 32i32 then if crc & (1u32 << b2 as u32) != 0u32 then sum2 = sum2 ^ odd[b2 as u32]; b2=b2+1i32
+        crc = sum2
+      n = n >> 1i64
+      -- swap and square
+      let tmp = even; even = odd; odd = tmp
+      let mut j2 : i32 = 0i32
+      while j2 < 32i32
+        let vec = even[j2 as u32]; let mut sum3 : u32 = 0u32; let mut k2 : i32 = 0i32
+        while k2 < 32i32 then if vec & (1u32 << k2 as u32) != 0u32 then sum3 = sum3 ^ even[k2 as u32]; k2=k2+1i32
+        odd[j2 as u32] = sum3; j2=j2+1i32
+    os.linux.free(even as ptr); os.linux.free(odd as ptr)
+    crc ^ crc2
+
+-- §2  CRC-32C (Castagnoli — used in iSCSI, SCTP, NVMe, ZFS)
+-- Polynomial: 0x82F63B78 (reflected 0x1EDC6F41)
+
+const CRC32C_POLY : u32 = 2197175160u32   -- 0x82F63B78
+
+let crc32c_table_ready : bool = false
+let crc32c_table : *u32 = 0 as *u32
+
+fn crc32c_make_table : () -> ()
+  | () ->
+    if crc32c_table_ready then ()
+    else
+      let tbl = os.linux.malloc(256i64 * 4i64) as *u32
+      let mut i : i64 = 0i64
+      while i < 256i64
+        let mut c = i as u32; let mut j : i64 = 0i64
+        while j < 8i64
+          if c & 1u32 != 0u32 then c = (c >> 1u32) ^ CRC32C_POLY else c = c >> 1u32
+          j = j + 1i64
+        tbl[i] = c; i = i + 1i64
+      crc32c_table = tbl; crc32c_table_ready = true
+
+struct Crc32c
+  value : u32
+
+fn crc32c_init : () -> Crc32c
+  | () -> crc32c_make_table(); Crc32c { value: 0xFFFFFFFFu32 }
+
+fn crc32c_update : (*Crc32c, ptr, i64) -> ()
+  | (c, data, len) ->
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      c.value = (c.value >> 8u32) ^ crc32c_table[((c.value ^ b[i] as u32) & 0xFFu32) as i64]
+      i = i + 1i64
+
+fn crc32c_update_str : (*Crc32c, ptr) -> ()
+  | (c, s) -> crc32c_update(c, s, os.linux.strlen(s) as i64)
+
+fn crc32c_update_u8 : (*Crc32c, u8) -> ()
+  | (c, b) ->
+    c.value = (c.value >> 8u32) ^ crc32c_table[((c.value ^ b as u32) & 0xFFu32) as i64]
+
+fn crc32c_final : *Crc32c -> u32 | c -> c.value ^ 0xFFFFFFFFu32
+
+fn crc32c_hash : (ptr, i64) -> u32
+  | (data, len) ->
+    let mut c = crc32c_init()
+    crc32c_update(&c, data, len)
+    crc32c_final(&c)
+
+fn crc32c_str : ptr -> u32
+  | s -> crc32c_hash(s, os.linux.strlen(s) as i64)
+
+-- §3  CRC-16 (CCITT / IBM / ANSI variants)
+-- CRC-16-CCITT: Polynomial 0x1021
+-- CRC-16-IBM:   Polynomial 0x8005 (reflected 0xA001)
+-- CRC-16-ANSI:  same as IBM
+
+const CRC16_CCITT_POLY : u16 = 4129u16   -- 0x1021
+const CRC16_IBM_POLY   : u16 = 40961u16  -- 0xA001 (reflected)
+
+let crc16_ccitt_table_ready : bool = false
+let crc16_ccitt_table : *u16 = 0 as *u16
+
+fn crc16_ccitt_make_table : () -> ()
+  | () ->
+    if crc16_ccitt_table_ready then ()
+    else
+      let tbl = os.linux.malloc(256i64 * 2i64) as *u16
+      let mut i : i64 = 0i64
+      while i < 256i64
+        let mut c = (i as u16) << 8u16; let mut j : i64 = 0i64
+        while j < 8i64
+          if c & 0x8000u16 != 0u16 then c = (c << 1u16) ^ CRC16_CCITT_POLY else c = c << 1u16
+          j = j + 1i64
+        tbl[i] = c; i = i + 1i64
+      crc16_ccitt_table = tbl; crc16_ccitt_table_ready = true
+
+struct Crc16
+  value : u16
+
+fn crc16_ccitt_init : () -> Crc16
+  | () -> crc16_ccitt_make_table(); Crc16 { value: 0xFFFFu16 }
+
+fn crc16_ccitt_update : (*Crc16, ptr, i64) -> ()
+  | (c, data, len) ->
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      let idx = (((c.value >> 8u16) as u8) ^ b[i]) as i64
+      c.value = (c.value << 8u16) ^ crc16_ccitt_table[idx]
+      i = i + 1i64
+
+fn crc16_ccitt_final : *Crc16 -> u16 | c -> c.value
+
+fn crc16_ccitt_hash : (ptr, i64) -> u16
+  | (data, len) ->
+    let mut c = crc16_ccitt_init()
+    crc16_ccitt_update(&c, data, len)
+    crc16_ccitt_final(&c)
+
+fn crc16_ccitt_str : ptr -> u16
+  | s -> crc16_ccitt_hash(s, os.linux.strlen(s) as i64)
+
+-- CRC-16-IBM (reflected, used in USB)
+let crc16_ibm_table_ready : bool = false
+let crc16_ibm_table : *u16 = 0 as *u16
+
+fn crc16_ibm_make_table : () -> ()
+  | () ->
+    if crc16_ibm_table_ready then ()
+    else
+      let tbl = os.linux.malloc(256i64 * 2i64) as *u16
+      let mut i : i64 = 0i64
+      while i < 256i64
+        let mut c = i as u16; let mut j : i64 = 0i64
+        while j < 8i64
+          if c & 1u16 != 0u16 then c = (c >> 1u16) ^ CRC16_IBM_POLY else c = c >> 1u16
+          j = j + 1i64
+        tbl[i] = c; i = i + 1i64
+      crc16_ibm_table = tbl; crc16_ibm_table_ready = true
+
+fn crc16_ibm_hash : (ptr, i64) -> u16
+  | (data, len) ->
+    crc16_ibm_make_table()
+    let mut crc : u16 = 0u16
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      crc = (crc >> 8u16) ^ crc16_ibm_table[((crc ^ b[i] as u16) & 0xFFu16) as i64]
+      i = i + 1i64
+    crc
+
+fn crc16_ibm_str : ptr -> u16
+  | s -> crc16_ibm_hash(s, os.linux.strlen(s) as i64)
+
+-- §4  CRC-8 variants
+-- CRC-8-ATM: Polynomial 0x07
+-- CRC-8-MAXIM: Polynomial 0x8C (reflected 0x31)
+-- CRC-8-CCITT: Polynomial 0x07
+
+const CRC8_ATM_POLY   : u8 = 7u8    -- 0x07
+const CRC8_MAXIM_POLY : u8 = 140u8  -- 0x8C (reflected)
+
+let crc8_atm_table_ready   : bool = false
+let crc8_maxim_table_ready : bool = false
+let crc8_atm_table   : *u8 = 0 as *u8
+let crc8_maxim_table : *u8 = 0 as *u8
+
+fn crc8_make_table : (u8, *u8, bool) -> ()
+  | (poly, tbl_ptr, reflected) ->
+    let tbl = os.linux.malloc(256i64) as *u8
+    let mut i : i64 = 0i64
+    while i < 256i64
+      let mut c = i as u8; let mut j : i64 = 0i64
+      while j < 8i64
+        if reflected
+          if c & 1u8 != 0u8 then c = (c >> 1u8) ^ poly else c = c >> 1u8
+        else
+          if c & 0x80u8 != 0u8 then c = (c << 1u8) ^ poly else c = c << 1u8
+        j = j + 1i64
+      tbl[i] = c; i = i + 1i64
+
+fn crc8_atm_init : () -> ()
+  | () ->
+    if !crc8_atm_table_ready
+      crc8_atm_table = os.linux.malloc(256i64) as *u8
+      let mut i : i64 = 0i64
+      while i < 256i64
+        let mut c = i as u8; let mut j : i64 = 0i64
+        while j < 8i64
+          if c & 0x80u8 != 0u8 then c = (c << 1u8) ^ CRC8_ATM_POLY else c = c << 1u8
+          j = j + 1i64
+        crc8_atm_table[i] = c; i = i + 1i64
+      crc8_atm_table_ready = true
+
+fn crc8_atm_hash : (ptr, i64) -> u8
+  | (data, len) ->
+    crc8_atm_init()
+    let mut crc : u8 = 0u8
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      crc = crc8_atm_table[(crc ^ b[i]) as i64]
+      i = i + 1i64
+    crc
+
+fn crc8_atm_str : ptr -> u8 | s -> crc8_atm_hash(s, os.linux.strlen(s) as i64)
+
+fn crc8_maxim_init : () -> ()
+  | () ->
+    if !crc8_maxim_table_ready
+      crc8_maxim_table = os.linux.malloc(256i64) as *u8
+      let mut i : i64 = 0i64
+      while i < 256i64
+        let mut c = i as u8; let mut j : i64 = 0i64
+        while j < 8i64
+          if c & 1u8 != 0u8 then c = (c >> 1u8) ^ CRC8_MAXIM_POLY else c = c >> 1u8
+          j = j + 1i64
+        crc8_maxim_table[i] = c; i = i + 1i64
+      crc8_maxim_table_ready = true
+
+fn crc8_maxim_hash : (ptr, i64) -> u8
+  | (data, len) ->
+    crc8_maxim_init()
+    let mut crc : u8 = 0u8
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      crc = crc8_maxim_table[(crc ^ b[i]) as i64]
+      i = i + 1i64
+    crc
+
+fn crc8_maxim_str : ptr -> u8 | s -> crc8_maxim_hash(s, os.linux.strlen(s) as i64)
+
+-- §5  ADLER-32 (RSA Data Security — used in zlib)
+
+struct Adler32
+  a : u32
+  b : u32
+
+const ADLER_MOD : u32 = 65521u32
+
+fn adler32_init : () -> Adler32 | () -> Adler32 { a: 1u32, b: 0u32 }
+
+fn adler32_update : (*Adler32, ptr, i64) -> ()
+  | (h, data, len) ->
+    let buf = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      h.a = (h.a +% buf[i] as u32) % ADLER_MOD
+      h.b = (h.b +% h.a) % ADLER_MOD
+      i = i + 1i64
+
+fn adler32_update_str : (*Adler32, ptr) -> ()
+  | (h, s) -> adler32_update(h, s, os.linux.strlen(s) as i64)
+
+fn adler32_final : *Adler32 -> u32 | h -> (h.b << 16u32) | h.a
+
+fn adler32_hash : (ptr, i64) -> u32
+  | (data, len) ->
+    let mut h = adler32_init()
+    adler32_update(&h, data, len)
+    adler32_final(&h)
+
+fn adler32_str : ptr -> u32 | s -> adler32_hash(s, os.linux.strlen(s) as i64)
+
+-- §6  FLETCHER-16 / FLETCHER-32 (used in IP checksum, etc.)
+
+struct Fletcher16
+  a : u16
+  b : u16
+
+fn fletcher16_init : () -> Fletcher16 | () -> Fletcher16 { a: 0u16, b: 0u16 }
+
+fn fletcher16_update : (*Fletcher16, ptr, i64) -> ()
+  | (h, data, len) ->
+    let buf = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      h.a = (h.a +% buf[i] as u16) % 255u16
+      h.b = (h.b +% h.a) % 255u16
+      i = i + 1i64
+
+fn fletcher16_final : *Fletcher16 -> u16 | h -> (h.b << 8u16) | h.a
+
+fn fletcher16_hash : (ptr, i64) -> u16
+  | (data, len) ->
+    let mut h = fletcher16_init()
+    fletcher16_update(&h, data, len)
+    fletcher16_final(&h)
+
+struct Fletcher32
+  a : u32
+  b : u32
+
+fn fletcher32_init : () -> Fletcher32 | () -> Fletcher32 { a: 0u32, b: 0u32 }
+
+fn fletcher32_update : (*Fletcher32, ptr, i64) -> ()
+  | (h, data, len) ->
+    -- Operates on 16-bit words
+    let buf = data as *u16; let mut i : i64 = 0i64
+    while i + 2i64 <= len
+      let w = buf[i / 2i64] as u32
+      h.a = (h.a +% w) % 65535u32
+      h.b = (h.b +% h.a) % 65535u32
+      i = i + 2i64
+
+fn fletcher32_final : *Fletcher32 -> u32 | h -> (h.b << 16u32) | h.a
+
+fn fletcher32_hash : (ptr, i64) -> u32
+  | (data, len) ->
+    let mut h = fletcher32_init()
+    fletcher32_update(&h, data, len)
+    fletcher32_final(&h)
+
+-- §7  INTERNET CHECKSUM (RFC 1071 — used in IP/TCP/UDP headers)
+
+fn inet_checksum : (ptr, i64) -> u16
+  | (data, len) ->
+    let mut sum : u32 = 0u32
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i + 2i64 <= len
+      sum = sum +% ((b[i] as u32) << 8u32) | b[i+1i64] as u32
+      i = i + 2i64
+    if len & 1i64 != 0i64 then sum = sum +% (b[len-1i64] as u32) << 8u32
+    while sum >> 16u32 != 0u32 do sum = (sum & 0xFFFFu32) +% (sum >> 16u32)
+    (!sum & 0xFFFFu32) as u16
+
+-- §8  CRC TABLE MANAGEMENT — free all tables (for testing/valgrind)
+
+fn crc_free_all_tables : () -> ()
+  | () ->
+    if crc32_table_ready  then os.linux.free(crc32_table as ptr);  crc32_table = 0 as *u32;  crc32_table_ready = false
+    if crc32c_table_ready then os.linux.free(crc32c_table as ptr); crc32c_table = 0 as *u32; crc32c_table_ready = false
+    if crc16_ccitt_table_ready then os.linux.free(crc16_ccitt_table as ptr); crc16_ccitt_table = 0 as *u16; crc16_ccitt_table_ready = false
+    if crc16_ibm_table_ready   then os.linux.free(crc16_ibm_table as ptr);   crc16_ibm_table = 0 as *u16;   crc16_ibm_table_ready = false
+    if crc8_atm_table_ready    then os.linux.free(crc8_atm_table as ptr);    crc8_atm_table = 0 as *u8;     crc8_atm_table_ready = false
+    if crc8_maxim_table_ready  then os.linux.free(crc8_maxim_table as ptr);  crc8_maxim_table = 0 as *u8;   crc8_maxim_table_ready = false

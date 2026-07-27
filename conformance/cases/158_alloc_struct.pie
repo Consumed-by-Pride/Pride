@@ -1,0 +1,14 @@
+-- EXPECT-CLEAN
+struct Point
+    x : i64
+    y : i64
+
+fn make_point : (i64, i64) -> *Point ! [Alloc]
+  | (x, y) ->
+    let p : *Point = alloc Point as *Point
+    p.x = x
+    p.y = y
+    p
+
+fn point_dist_sq : *Point -> i64
+  | p -> p.x * p.x + p.y * p.y

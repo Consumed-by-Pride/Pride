@@ -1,0 +1,17 @@
+-- EXPECT-CLEAN
+fn find_pair : (*i64, i64, i64) -> (i64, i64)
+  | (arr, n, target) ->
+    let mut ri : i64 = 0i64 - 1i64
+    let mut rj : i64 = 0i64 - 1i64
+    let mut i : i64 = 0i64
+    while i < n
+      let mut j : i64 = i + 1i64
+      while j < n
+        if arr[i] + arr[j] == target then
+          ri = i
+          rj = j
+          j = n   -- inner break
+        j = j + 1i64
+      if ri >= 0i64 then i = n  -- outer break
+      i = i + 1i64
+    (ri, rj)

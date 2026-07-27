@@ -1,0 +1,10 @@
+-- EXPECT-COUNT: resolve=0
+-- EXPECT-COUNT: type-err=0
+enum List
+  Nil
+  Cons(i32)
+
+fn tag : List -> i32
+  | Nil      -> 0
+  | Cons(_)  -> 1
+  | _        -> 2

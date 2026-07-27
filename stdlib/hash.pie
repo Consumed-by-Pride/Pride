@@ -1,0 +1,1075 @@
+mod hash
+
+use os.linux
+use mem
+
+-- §1  FNV-1a (32-bit and 64-bit)
+-- Fowler–Noll–Vo hash — fast, simple, decent distribution for strings/bytes
+
+const FNV32_OFFSET : u32 = 2166136261u32
+const FNV32_PRIME  : u32 = 16777619u32
+const FNV64_OFFSET : u64 = 14695981039346656037u64
+const FNV64_PRIME  : u64 = 1099511628211u64
+
+fn fnv1a32_bytes : (ptr, i64) -> u32
+  | (data, len) ->
+    let mut h = FNV32_OFFSET
+    let mut i : i64 = 0i64
+    let b = data as *u8
+    while i < len
+      h = h ^ b[i] as u32
+      h = h *% FNV32_PRIME
+      i = i + 1i64
+    h
+
+fn fnv1a32_str : ptr -> u32
+  | s ->
+    let mut h = FNV32_OFFSET
+    let cs = s as *u8; let mut i : i64 = 0i64
+    while cs[i] != 0u8
+      h = h ^ cs[i] as u32
+      h = h *% FNV32_PRIME
+      i = i + 1i64
+    h
+
+fn fnv1a64_bytes : (ptr, i64) -> u64
+  | (data, len) ->
+    let mut h = FNV64_OFFSET
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      h = h ^ b[i] as u64
+      h = h *% FNV64_PRIME
+      i = i + 1i64
+    h
+
+fn fnv1a64_str : ptr -> u64
+  | s ->
+    let mut h = FNV64_OFFSET
+    let cs = s as *u8; let mut i : i64 = 0i64
+    while cs[i] != 0u8
+      h = h ^ cs[i] as u64
+      h = h *% FNV64_PRIME
+      i = i + 1i64
+    h
+
+-- §2  MURMUR3 (32-bit, x86 variant)
+-- Austin Appleby's MurmurHash3_x86_32
+
+fn murmur3_32 : (ptr, i64, u32) -> u32
+  | (data, len, seed) ->
+    let mut h = seed
+    let nblocks = len / 4i64
+    let blocks = data as *u32
+    let mut i : i64 = 0i64
+    while i < nblocks
+      let mut k = blocks[i]
+      k = k *% 3432918353u32
+      k = (k << 15u32) | (k >> 17u32)
+      k = k *% 461845907u32
+      h = h ^ k
+      h = (h << 13u32) | (h >> 19u32)
+      h = h *% 5u32 +% 3864292196u32
+      i = i + 1i64
+    -- tail
+    let tail = (data as i64 + nblocks * 4i64) as *u8
+    let mut k : u32 = 0u32
+    let rem = len & 3i64
+    if rem == 3i64 then k = k ^ (tail[2i64] as u32 << 16u32)
+    if rem >= 2i64 then k = k ^ (tail[1i64] as u32 << 8u32)
+    if rem >= 1i64
+      k = k ^ tail[0i64] as u32
+      k = k *% 3432918353u32
+      k = (k << 15u32) | (k >> 17u32)
+      k = k *% 461845907u32
+      h = h ^ k
+    -- finalize
+    h = h ^ len as u32
+    h = h ^ (h >> 16u32)
+    h = h *% 2246822519u32
+    h = h ^ (h >> 13u32)
+    h = h *% 3266489917u32
+    h = h ^ (h >> 16u32)
+    h
+
+fn murmur3_32_str : (ptr, u32) -> u32
+  | (s, seed) ->
+    let n = os.linux.strlen(s) as i64
+    murmur3_32(s, n, seed)
+
+-- §3  MURMUR3 128-bit (x64 variant — MurmurHash3_x64_128)
+-- Returns two u64 values (lo, hi)
+
+fn murmur3_128 : (ptr, i64, u32, *u64) -> ()
+  | (data, len, seed, out) ->
+    let mut h1 = seed as u64
+    let mut h2 = seed as u64
+    let c1 : u64 = 11931769755167812297u64
+    let c2 : u64 = 16624267996588697507u64
+    let nblocks = len / 16i64
+    let blocks = data as *u64
+    let mut i : i64 = 0i64
+    while i < nblocks
+      let mut k1 = blocks[i * 2i64]
+      let mut k2 = blocks[i * 2i64 + 1i64]
+      k1 = k1 *% c1; k1 = (k1 << 31u64) | (k1 >> 33u64); k1 = k1 *% c2; h1 = h1 ^ k1
+      h1 = (h1 << 27u64) | (h1 >> 37u64); h1 = h1 +% h2; h1 = h1 *% 5u64 +% 1390208809u64
+      k2 = k2 *% c2; k2 = (k2 << 33u64) | (k2 >> 31u64); k2 = k2 *% c1; h2 = h2 ^ k2
+      h2 = (h2 << 31u64) | (h2 >> 33u64); h2 = h2 +% h1; h2 = h2 *% 5u64 +% 944331445u64
+      i = i + 1i64
+    let tail = (data as i64 + nblocks * 16i64) as *u8
+    let mut k1 : u64 = 0u64; let mut k2 : u64 = 0u64
+    let rem = len & 15i64
+    if rem == 15i64 then k2 = k2 ^ (tail[14i64] as u64 << 48u64)
+    if rem >= 14i64 then k2 = k2 ^ (tail[13i64] as u64 << 40u64)
+    if rem >= 13i64 then k2 = k2 ^ (tail[12i64] as u64 << 32u64)
+    if rem >= 12i64 then k2 = k2 ^ (tail[11i64] as u64 << 24u64)
+    if rem >= 11i64 then k2 = k2 ^ (tail[10i64] as u64 << 16u64)
+    if rem >= 10i64 then k2 = k2 ^ (tail[9i64]  as u64 << 8u64)
+    if rem >= 9i64
+      k2 = k2 ^ tail[8i64] as u64
+      k2 = k2 *% c2; k2 = (k2 << 33u64) | (k2 >> 31u64); k2 = k2 *% c1; h2 = h2 ^ k2
+    if rem >= 8i64 then k1 = k1 ^ (tail[7i64] as u64 << 56u64)
+    if rem >= 7i64 then k1 = k1 ^ (tail[6i64] as u64 << 48u64)
+    if rem >= 6i64 then k1 = k1 ^ (tail[5i64] as u64 << 40u64)
+    if rem >= 5i64 then k1 = k1 ^ (tail[4i64] as u64 << 32u64)
+    if rem >= 4i64 then k1 = k1 ^ (tail[3i64] as u64 << 24u64)
+    if rem >= 3i64 then k1 = k1 ^ (tail[2i64] as u64 << 16u64)
+    if rem >= 2i64 then k1 = k1 ^ (tail[1i64] as u64 << 8u64)
+    if rem >= 1i64
+      k1 = k1 ^ tail[0i64] as u64
+      k1 = k1 *% c1; k1 = (k1 << 31u64) | (k1 >> 33u64); k1 = k1 *% c2; h1 = h1 ^ k1
+    h1 = h1 ^ len as u64; h2 = h2 ^ len as u64
+    h1 = h1 +% h2; h2 = h2 +% h1
+    -- fmix64
+    h1 = h1 ^ (h1 >> 33u64); h1 = h1 *% 16181161503786112357u64
+    h1 = h1 ^ (h1 >> 33u64); h1 = h1 *% 12065312585381208867u64; h1 = h1 ^ (h1 >> 33u64)
+    h2 = h2 ^ (h2 >> 33u64); h2 = h2 *% 16181161503786112357u64
+    h2 = h2 ^ (h2 >> 33u64); h2 = h2 *% 12065312585381208867u64; h2 = h2 ^ (h2 >> 33u64)
+    h1 = h1 +% h2; h2 = h2 +% h1
+    out[0i64] = h1; out[1i64] = h2
+
+-- §4  XXHASH64
+-- Fast non-cryptographic hash, excellent avalanche
+
+const XX64_P1 : u64 = 11400714785074694791u64
+const XX64_P2 : u64 = 14029467366897019727u64
+const XX64_P3 : u64 = 1609587929392839161u64
+const XX64_P4 : u64 = 9650029242287828579u64
+const XX64_P5 : u64 = 2870177450012600261u64
+
+fn xxhash64_round : (u64, u64) -> u64
+  | (acc, input) ->
+    let a = acc +% (input *% XX64_P2)
+    let r = (a << 31u64) | (a >> 33u64)
+    r *% XX64_P1
+
+fn xxhash64_merge : (u64, u64) -> u64
+  | (acc, val) ->
+    let a = acc ^ xxhash64_round(0u64, val)
+    a *% XX64_P1 +% XX64_P4
+
+fn xxhash64_fmix : u64 -> u64
+  | h ->
+    let h1 = h ^ (h >> 33u64)
+    let h2 = h1 *% XX64_P2
+    let h3 = h2 ^ (h2 >> 29u64)
+    let h4 = h3 *% XX64_P3
+    h4 ^ (h4 >> 32u64)
+
+fn xxhash64 : (ptr, i64, u64) -> u64
+  | (data, len, seed) ->
+    let b = data as *u8
+    let mut h : u64 = 0u64
+    let mut p : i64 = 0i64
+
+    if len >= 32i64
+      let mut v1 = seed +% XX64_P1 +% XX64_P2
+      let mut v2 = seed +% XX64_P2
+      let mut v3 = seed
+      let mut v4 = seed -% XX64_P1
+      while p <= len - 32i64
+        v1 = xxhash64_round(v1, (data as i64+p) as *u64 as *u64 as u64)   -- load u64 LE
+        v2 = xxhash64_round(v2, ((data as i64+p+8i64) as *u64)[0i64])
+        v3 = xxhash64_round(v3, ((data as i64+p+16i64) as *u64)[0i64])
+        v4 = xxhash64_round(v4, ((data as i64+p+24i64) as *u64)[0i64])
+        p = p + 32i64
+      h = ((v1 << 1u64)|(v1>>63u64)) +% ((v2 << 7u64)|(v2>>57u64)) +%
+          ((v3 << 12u64)|(v3>>52u64)) +% ((v4 << 18u64)|(v4>>46u64))
+      h = xxhash64_merge(h, v1)
+      h = xxhash64_merge(h, v2)
+      h = xxhash64_merge(h, v3)
+      h = xxhash64_merge(h, v4)
+    else
+      h = seed +% XX64_P5
+    h = h +% len as u64
+    while p <= len - 8i64
+      h = h ^ xxhash64_round(0u64, ((data as i64+p) as *u64)[0i64])
+      h = ((h << 27u64)|(h>>37u64)) *% XX64_P1 +% XX64_P4
+      p = p + 8i64
+    while p <= len - 4i64
+      h = h ^ (((data as i64+p) as *u32)[0u32] as u64 *% XX64_P1)
+      h = ((h << 23u64)|(h>>41u64)) *% XX64_P2 +% XX64_P3
+      p = p + 4i64
+    while p < len
+      h = h ^ (b[p] as u64 *% XX64_P5)
+      h = ((h << 11u64)|(h>>53u64)) *% XX64_P1
+      p = p + 1i64
+    xxhash64_fmix(h)
+
+fn xxhash64_str : ptr -> u64
+  | s -> xxhash64(s, os.linux.strlen(s) as i64, 0u64)
+
+-- §5  WYHASH (Wang Yi's fast hash — excellent quality/speed ratio)
+-- v4.2 reference implementation
+
+fn wyhash_mix : (u64, u64) -> u64
+  | (a, b) ->
+    let lo = a *% b
+    let hi = mem.mul64_hi(a, b)
+    lo ^ hi
+
+fn wyhash64 : (ptr, i64, u64) -> u64
+  | (data, len, seed) ->
+    let secret0 : u64 = 11562461410679940143u64
+    let secret1 : u64 = 16646288086500911323u64
+    let secret2 : u64 = 10285213230658275043u64
+    let secret3 : u64 = 6384245875588680899u64
+    let b = data as *u8
+    let mut s = seed ^ wyhash_mix(seed ^ secret0, secret1)
+    let mut p : i64 = 0i64
+    let mut remaining = len
+
+    if remaining <= 0i64
+      s ^ wyhash_mix(secret1, s)
+    else
+      while remaining > 48i64
+        let a0 = wyhash_mix(((data as i64+p)    as *u64)[0i64] ^ secret1, ((data as i64+p+8i64)  as *u64)[0i64] ^ s)
+        let a1 = wyhash_mix(((data as i64+p+16i64) as *u64)[0i64] ^ secret2, ((data as i64+p+24i64) as *u64)[0i64] ^ s)
+        let a2 = wyhash_mix(((data as i64+p+32i64) as *u64)[0i64] ^ secret3, ((data as i64+p+40i64) as *u64)[0i64] ^ s)
+        s = a0 ^ a1 ^ a2
+        p = p + 48i64; remaining = remaining - 48i64
+      if remaining > 32i64
+        s = wyhash_mix(((data as i64+p) as *u64)[0i64] ^ secret1, ((data as i64+p+8i64) as *u64)[0i64] ^ s)
+        s = wyhash_mix(((data as i64+p+16i64) as *u64)[0i64] ^ secret2, ((data as i64+p+24i64) as *u64)[0i64] ^ s)
+        p = p + 32i64; remaining = remaining - 32i64
+      if remaining > 16i64
+        s = wyhash_mix(((data as i64+p) as *u64)[0i64] ^ secret1, ((data as i64+p+8i64) as *u64)[0i64] ^ s)
+        p = p + 16i64; remaining = remaining - 16i64
+      -- tail
+      let tail_a : u64 = 0u64; let tail_b : u64 = 0u64
+      -- simplified tail read (full version handles 1-16 bytes carefully)
+      let have_a = if remaining >= 8i64 then ((data as i64+p) as *u64)[0i64] else 0u64
+      let have_b = if remaining >= 16i64 then ((data as i64+p+8i64) as *u64)[0i64] else 0u64
+      s = wyhash_mix(have_a ^ secret1, have_b ^ s)
+      wyhash_mix(s ^ secret2, s ^ secret3) ^ (len as u64 *% secret0)
+
+fn wyhash64_str : ptr -> u64
+  | s -> wyhash64(s, os.linux.strlen(s) as i64, 0u64)
+
+-- §6  SIPHASH-1-3 (fast, cryptographically harder than above — good for hash tables)
+
+fn siphash_u64_le : ptr -> u64
+  | p -> (p as *u64)[0i64]
+
+fn siphash13 : (ptr, i64, u64, u64) -> u64
+  | (data, len, k0, k1) ->
+    let mut v0 = k0 ^ 0x736f6d6570736575u64
+    let mut v1 = k1 ^ 0x646f72616e646f6du64
+    let mut v2 = k0 ^ 0x6c7967656e657261u64
+    let mut v3 = k1 ^ 0x7465646279746573u64
+    let b = data as *u8
+    let mut p : i64 = 0i64
+    let nblocks = len / 8i64
+
+    -- SipRound macro: a 1-round compress
+    -- v0 += v1; v1 rotl 13; v1 ^= v0; v0 rotl 32
+    -- v2 += v3; v3 rotl 16; v3 ^= v2
+    -- v0 += v3; v3 rotl 21; v3 ^= v0
+    -- v2 += v1; v1 rotl 17; v1 ^= v2; v2 rotl 32
+
+    let mut i : i64 = 0i64
+    while i < nblocks
+      let m = ((data as i64 + i * 8i64) as *u64)[0i64]
+      v3 = v3 ^ m
+      -- 1 round
+      v0 = v0 +% v1; v1 = (v1<<13u64)|(v1>>51u64); v1 = v1^v0; v0 = (v0<<32u64)|(v0>>32u64)
+      v2 = v2 +% v3; v3 = (v3<<16u64)|(v3>>48u64); v3 = v3^v2
+      v0 = v0 +% v3; v3 = (v3<<21u64)|(v3>>43u64); v3 = v3^v0
+      v2 = v2 +% v1; v1 = (v1<<17u64)|(v1>>47u64); v1 = v1^v2; v2 = (v2<<32u64)|(v2>>32u64)
+      v0 = v0 ^ m
+      i = i + 1i64
+
+    -- last block + length
+    let mut last : u64 = (len as u64) << 56u64
+    let rem = len & 7i64
+    let tail = (data as i64 + nblocks * 8i64) as *u8
+    if rem == 7i64 then last = last | (tail[6i64] as u64 << 48u64)
+    if rem >= 6i64 then last = last | (tail[5i64] as u64 << 40u64)
+    if rem >= 5i64 then last = last | (tail[4i64] as u64 << 32u64)
+    if rem >= 4i64 then last = last | (tail[3i64] as u64 << 24u64)
+    if rem >= 3i64 then last = last | (tail[2i64] as u64 << 16u64)
+    if rem >= 2i64 then last = last | (tail[1i64] as u64 << 8u64)
+    if rem >= 1i64 then last = last | tail[0i64] as u64
+    v3 = v3 ^ last
+    v0 = v0 +% v1; v1 = (v1<<13u64)|(v1>>51u64); v1 = v1^v0; v0 = (v0<<32u64)|(v0>>32u64)
+    v2 = v2 +% v3; v3 = (v3<<16u64)|(v3>>48u64); v3 = v3^v2
+    v0 = v0 +% v3; v3 = (v3<<21u64)|(v3>>43u64); v3 = v3^v0
+    v2 = v2 +% v1; v1 = (v1<<17u64)|(v1>>47u64); v1 = v1^v2; v2 = (v2<<32u64)|(v2>>32u64)
+    v0 = v0 ^ last
+    -- 3 finalization rounds
+    v2 = v2 ^ 0xFFu64
+    v0 = v0 +% v1; v1 = (v1<<13u64)|(v1>>51u64); v1 = v1^v0; v0 = (v0<<32u64)|(v0>>32u64)
+    v2 = v2 +% v3; v3 = (v3<<16u64)|(v3>>48u64); v3 = v3^v2
+    v0 = v0 +% v3; v3 = (v3<<21u64)|(v3>>43u64); v3 = v3^v0
+    v2 = v2 +% v1; v1 = (v1<<17u64)|(v1>>47u64); v1 = v1^v2; v2 = (v2<<32u64)|(v2>>32u64)
+    v0 = v0 +% v1; v1 = (v1<<13u64)|(v1>>51u64); v1 = v1^v0; v0 = (v0<<32u64)|(v0>>32u64)
+    v2 = v2 +% v3; v3 = (v3<<16u64)|(v3>>48u64); v3 = v3^v2
+    v0 = v0 +% v3; v3 = (v3<<21u64)|(v3>>43u64); v3 = v3^v0
+    v2 = v2 +% v1; v1 = (v1<<17u64)|(v1>>47u64); v1 = v1^v2; v2 = (v2<<32u64)|(v2>>32u64)
+    v0 = v0 +% v1; v1 = (v1<<13u64)|(v1>>51u64); v1 = v1^v0; v0 = (v0<<32u64)|(v0>>32u64)
+    v2 = v2 +% v3; v3 = (v3<<16u64)|(v3>>48u64); v3 = v3^v2
+    v0 = v0 +% v3; v3 = (v3<<21u64)|(v3>>43u64); v3 = v3^v0
+    v2 = v2 +% v1; v1 = (v1<<17u64)|(v1>>47u64); v1 = v1^v2; v2 = (v2<<32u64)|(v2>>32u64)
+    v0 ^ v1 ^ v2 ^ v3
+
+fn siphash13_str : ptr -> u64
+  | s ->
+    let n = os.linux.strlen(s) as i64
+    siphash13(s, n, 0x736f6d6570736575u64, 0x646f72616e646f6du64)
+
+-- §7  CRC-32C (Castagnoli — SSE4.2 hardware polynomial)
+-- Software fallback using 256-entry table
+
+let crc32c_table_inited : bool = false
+let crc32c_table : *u32 = 0 as *u32   -- allocated on first use, 256 × 4 bytes
+
+const CRC32C_POLY : u32 = 2197175160u32   -- 0x82F63B78 reflected
+
+fn crc32c_init_table : () -> ()
+  | () ->
+    if !crc32c_table_inited
+      let tbl = os.linux.malloc(256i64 * 4i64) as *u32
+      let mut i : i64 = 0i64
+      while i < 256i64
+        let mut crc = i as u32
+        let mut j : i64 = 0i64
+        while j < 8i64
+          if (crc & 1u32) != 0u32 then crc = (crc >> 1u32) ^ CRC32C_POLY
+          else crc = crc >> 1u32
+          j = j + 1i64
+        tbl[i] = crc; i = i + 1i64
+      crc32c_table = tbl
+      crc32c_table_inited = true
+
+fn crc32c_bytes : (ptr, i64, u32) -> u32
+  | (data, len, init_crc) ->
+    crc32c_init_table()
+    let mut crc = init_crc ^ 0xFFFFFFFFu32
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      crc = (crc >> 8u32) ^ crc32c_table[(crc ^ b[i] as u32) & 0xFFu32]
+      i = i + 1i64
+    crc ^ 0xFFFFFFFFu32
+
+fn crc32c : (ptr, i64) -> u32
+  | (data, len) -> crc32c_bytes(data, len, 0u32)
+
+fn crc32c_str : ptr -> u32
+  | s -> crc32c(s, os.linux.strlen(s) as i64)
+
+fn crc32c_update : (u32, ptr, i64) -> u32
+  | (prev, data, len) -> crc32c_bytes(data, len, prev ^ 0xFFFFFFFFu32) ^ 0xFFFFFFFFu32
+
+-- §8  CRC-32 (IEEE 802.3 — zlib polynomial)
+let crc32_table_inited : bool = false
+let crc32_table : *u32 = 0 as *u32
+
+const CRC32_POLY : u32 = 3988292384u32   -- 0xEDB88320 reflected
+
+fn crc32_init_table : () -> ()
+  | () ->
+    if !crc32_table_inited
+      let tbl = os.linux.malloc(256i64 * 4i64) as *u32
+      let mut i : i64 = 0i64
+      while i < 256i64
+        let mut c = i as u32; let mut j : i64 = 0i64
+        while j < 8i64
+          if (c & 1u32) != 0u32 then c = (c >> 1u32) ^ CRC32_POLY else c = c >> 1u32
+          j = j + 1i64
+        tbl[i] = c; i = i + 1i64
+      crc32_table = tbl; crc32_table_inited = true
+
+fn crc32 : (ptr, i64) -> u32
+  | (data, len) ->
+    crc32_init_table()
+    let mut crc = 0xFFFFFFFFu32
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      crc = (crc >> 8u32) ^ crc32_table[(crc ^ b[i] as u32) & 0xFFu32]
+      i = i + 1i64
+    crc ^ 0xFFFFFFFFu32
+
+fn crc32_str : ptr -> u32
+  | s -> crc32(s, os.linux.strlen(s) as i64)
+
+fn crc32_update : (u32, ptr, i64) -> u32
+  | (prev_crc, data, len) ->
+    crc32_init_table()
+    let mut crc = prev_crc ^ 0xFFFFFFFFu32
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      crc = (crc >> 8u32) ^ crc32_table[(crc ^ b[i] as u32) & 0xFFu32]
+      i = i + 1i64
+    crc ^ 0xFFFFFFFFu32
+
+-- §9  ADLER-32
+fn adler32 : (ptr, i64) -> u32
+  | (data, len) ->
+    let mut a : u32 = 1u32; let mut b : u32 = 0u32
+    let buf = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      a = (a +% buf[i] as u32) % 65521u32
+      b = (b +% a) % 65521u32
+      i = i + 1i64
+    (b << 16u32) | a
+
+-- §10  HASH MAP (open-addressing, robin-hood probing, power-of-2 table)
+-- Key: *u8 (null-terminated string). Value: i64 (64-bit any-purpose).
+-- Load factor 75%. tombstones not used — backwards-shift deletion.
+
+const HASHMAP_EMPTY     : i64 = 0i64    -- slot state: empty
+const HASHMAP_OCCUPIED  : i64 = 1i64    -- slot state: has entry
+const HASHMAP_MIN_CAP   : i64 = 8i64    -- minimum bucket count (power of 2)
+const HASHMAP_LOAD_NUM  : i64 = 3i64    -- numerator of load factor
+const HASHMAP_LOAD_DEN  : i64 = 4i64    -- denominator → 75%
+
+struct HashMapEntry
+  key   : *u8
+  value : i64
+  hash  : u64
+  state : i64   -- HASHMAP_EMPTY or HASHMAP_OCCUPIED
+
+struct HashMap
+  entries : *HashMapEntry
+  cap     : i64   -- number of buckets (power of 2)
+  count   : i64   -- number of live entries
+  mask    : i64   -- cap - 1
+
+fn hashmap_new : () -> HashMap
+  | () ->
+    let cap = HASHMAP_MIN_CAP
+    let entries = os.linux.malloc(cap * 64i64) as *HashMapEntry   -- 64 bytes per entry
+    os.linux.memset(entries as ptr, 0i32, (cap * 64i64) as u64)
+    HashMap { entries: entries, cap: cap, count: 0i64, mask: cap - 1i64 }
+
+fn hashmap_with_cap : i64 -> HashMap
+  | hint ->
+    let mut cap = HASHMAP_MIN_CAP
+    while cap * HASHMAP_LOAD_NUM / HASHMAP_LOAD_DEN < hint then cap = cap * 2i64
+    let entries = os.linux.malloc(cap * 64i64) as *HashMapEntry
+    os.linux.memset(entries as ptr, 0i32, (cap * 64i64) as u64)
+    HashMap { entries: entries, cap: cap, count: 0i64, mask: cap - 1i64 }
+
+fn hashmap_destroy : *HashMap -> ()
+  | m ->
+    let mut i : i64 = 0i64
+    while i < m.cap
+      let e = (m.entries as i64 + i * 64i64) as *HashMapEntry
+      if e.state == HASHMAP_OCCUPIED && e.key as i64 != 0i64
+        os.linux.free(e.key as ptr)
+      i = i + 1i64
+    os.linux.free(m.entries as ptr)
+    m.entries = 0 as *HashMapEntry; m.count = 0i64; m.cap = 0i64
+
+fn hashmap_slot : (*HashMap, u64) -> *HashMapEntry
+  | (m, h) -> (m.entries as i64 + (h as i64 & m.mask) * 64i64) as *HashMapEntry
+
+fn hashmap_next_slot : (*HashMap, *HashMapEntry) -> *HashMapEntry
+  | (m, e) ->
+    let idx = (e as i64 - m.entries as i64) / 64i64
+    let next = (idx + 1i64) & m.mask
+    (m.entries as i64 + next * 64i64) as *HashMapEntry
+
+fn hashmap_keys_eq : (ptr, ptr) -> bool
+  | (a, b) -> os.linux.strcmp(a, b) == 0i32
+
+fn hashmap_find_slot : (*HashMap, ptr, u64) -> *HashMapEntry
+  | (m, key, h) ->
+    let mut slot = hashmap_slot(m, h)
+    while slot.state == HASHMAP_OCCUPIED
+      if slot.hash == h && hashmap_keys_eq(slot.key as ptr, key) then slot
+      slot = hashmap_next_slot(m, slot)
+    slot   -- returns empty slot if not found
+
+fn hashmap_grow : *HashMap -> ()
+  | m ->
+    let old_entries = m.entries
+    let old_cap = m.cap
+    let new_cap = old_cap * 2i64
+    m.entries = os.linux.malloc(new_cap * 64i64) as *HashMapEntry
+    os.linux.memset(m.entries as ptr, 0i32, (new_cap * 64i64) as u64)
+    m.cap = new_cap; m.mask = new_cap - 1i64; m.count = 0i64
+    -- reinsert all
+    let mut i : i64 = 0i64
+    while i < old_cap
+      let old_e = (old_entries as i64 + i * 64i64) as *HashMapEntry
+      if old_e.state == HASHMAP_OCCUPIED
+        let slot = hashmap_find_slot(m, old_e.key as ptr, old_e.hash)
+        slot.key = old_e.key; slot.value = old_e.value
+        slot.hash = old_e.hash; slot.state = HASHMAP_OCCUPIED
+        m.count = m.count + 1i64
+      i = i + 1i64
+    os.linux.free(old_entries as ptr)
+
+fn hashmap_set : (*HashMap, ptr, i64) -> ()
+  | (m, key, value) ->
+    if m.count * HASHMAP_LOAD_DEN >= m.cap * HASHMAP_LOAD_NUM
+      hashmap_grow(m)
+    let h = wyhash64_str(key)
+    let slot = hashmap_find_slot(m, key, h)
+    if slot.state == HASHMAP_OCCUPIED
+      slot.value = value   -- update existing
+    else
+      let klen = os.linux.strlen(key) as i64
+      let kdup = os.linux.malloc(klen + 1i64) as *u8
+      os.linux.memcpy(kdup as ptr, key, klen as u64); kdup[klen] = 0u8
+      slot.key = kdup; slot.value = value; slot.hash = h
+      slot.state = HASHMAP_OCCUPIED; m.count = m.count + 1i64
+
+fn hashmap_get : (*HashMap, ptr) -> (i64, bool)
+  | (m, key) ->
+    if m.cap == 0i64 then (0i64, false)
+    else
+      let h = wyhash64_str(key)
+      let slot = hashmap_find_slot(m, key, h)
+      if slot.state == HASHMAP_OCCUPIED then (slot.value, true)
+      else (0i64, false)
+
+fn hashmap_get_or : (*HashMap, ptr, i64) -> i64
+  | (m, key, default_val) ->
+    let (v, found) = hashmap_get(m, key)
+    if found then v else default_val
+
+fn hashmap_has : (*HashMap, ptr) -> bool
+  | (m, key) ->
+    let (_, found) = hashmap_get(m, key)
+    found
+
+fn hashmap_delete : (*HashMap, ptr) -> bool
+  | (m, key) ->
+    if m.cap == 0i64 then false
+    else
+      let h = wyhash64_str(key)
+      let mut slot = hashmap_find_slot(m, key, h)
+      if slot.state != HASHMAP_OCCUPIED then false
+      else
+        os.linux.free(slot.key as ptr)
+        slot.key = 0 as *u8; slot.state = HASHMAP_EMPTY; m.count = m.count - 1i64
+        -- backwards-shift: fill hole by shifting subsequent entries back
+        let mut cur = slot
+        let mut nxt = hashmap_next_slot(m, cur)
+        while nxt.state == HASHMAP_OCCUPIED
+          let natural = nxt.hash as i64 & m.mask
+          let cur_idx = (cur as i64 - m.entries as i64) / 64i64
+          let nxt_idx = (nxt as i64 - m.entries as i64) / 64i64
+          let dist_cur = (cur_idx - natural + m.cap) & m.mask
+          let dist_nxt = (nxt_idx - natural + m.cap) & m.mask
+          if dist_nxt > dist_cur
+            -- move nxt into cur
+            cur.key = nxt.key; cur.value = nxt.value; cur.hash = nxt.hash
+            cur.state = HASHMAP_OCCUPIED
+            nxt.state = HASHMAP_EMPTY; nxt.key = 0 as *u8
+            cur = nxt
+          nxt = hashmap_next_slot(m, nxt)
+        true
+
+fn hashmap_count : *HashMap -> i64 | m -> m.count
+fn hashmap_is_empty : *HashMap -> bool | m -> m.count == 0i64
+
+fn hashmap_clear : *HashMap -> ()
+  | m ->
+    let mut i : i64 = 0i64
+    while i < m.cap
+      let e = (m.entries as i64 + i * 64i64) as *HashMapEntry
+      if e.state == HASHMAP_OCCUPIED then os.linux.free(e.key as ptr)
+      e.state = HASHMAP_EMPTY; e.key = 0 as *u8
+      i = i + 1i64
+    m.count = 0i64
+
+-- iterate: returns key and value at bucket index, or (null,0) if empty
+fn hashmap_iter_next : (*HashMap, *i64) -> (*u8, i64, bool)
+  | (m, idx_ptr) ->
+    while idx_ptr[0i64] < m.cap
+      let e = (m.entries as i64 + idx_ptr[0i64] * 64i64) as *HashMapEntry
+      idx_ptr[0i64] = idx_ptr[0i64] + 1i64
+      if e.state == HASHMAP_OCCUPIED then (e.key, e.value, true)
+    (0 as *u8, 0i64, false)
+
+-- §11  HASH MAP (u64 key → i64 value, no string copies)
+struct U64MapEntry
+  key   : u64
+  value : i64
+  state : i64
+
+struct U64Map
+  entries : *U64MapEntry
+  cap     : i64
+  count   : i64
+  mask    : i64
+
+fn u64map_new : () -> U64Map
+  | () ->
+    let cap = HASHMAP_MIN_CAP
+    let entries = os.linux.malloc(cap * 32i64) as *U64MapEntry
+    os.linux.memset(entries as ptr, 0i32, (cap * 32i64) as u64)
+    U64Map { entries: entries, cap: cap, count: 0i64, mask: cap - 1i64 }
+
+fn u64map_destroy : *U64Map -> ()
+  | m -> os.linux.free(m.entries as ptr); m.entries = 0 as *U64MapEntry; m.count = 0i64
+
+fn u64map_hash : u64 -> u64
+  | k ->
+    -- splitmix64 finalizer
+    let mut x = k ^ (k >> 30u64)
+    x = x *% 13787848793156543929u64
+    x = x ^ (x >> 27u64)
+    x = x *% 10723151780598845931u64
+    x ^ (x >> 31u64)
+
+fn u64map_grow : *U64Map -> ()
+  | m ->
+    let old_entries = m.entries; let old_cap = m.cap
+    let new_cap = old_cap * 2i64
+    m.entries = os.linux.malloc(new_cap * 32i64) as *U64MapEntry
+    os.linux.memset(m.entries as ptr, 0i32, (new_cap * 32i64) as u64)
+    m.cap = new_cap; m.mask = new_cap - 1i64; m.count = 0i64
+    let mut i : i64 = 0i64
+    while i < old_cap
+      let oe = (old_entries as i64 + i * 32i64) as *U64MapEntry
+      if oe.state == HASHMAP_OCCUPIED
+        let h = u64map_hash(oe.key) as i64 & m.mask
+        let mut j = h
+        while (m.entries as i64 + j * 32i64 as i64) as *U64MapEntry as *U64MapEntry != 0 as *U64MapEntry &&
+              ((m.entries as i64 + j * 32i64) as *U64MapEntry).state == HASHMAP_OCCUPIED
+          j = (j + 1i64) & m.mask
+        let ne = (m.entries as i64 + j * 32i64) as *U64MapEntry
+        ne.key = oe.key; ne.value = oe.value; ne.state = HASHMAP_OCCUPIED
+        m.count = m.count + 1i64
+      i = i + 1i64
+    os.linux.free(old_entries as ptr)
+
+fn u64map_set : (*U64Map, u64, i64) -> ()
+  | (m, key, value) ->
+    if m.count * HASHMAP_LOAD_DEN >= m.cap * HASHMAP_LOAD_NUM then u64map_grow(m)
+    let mut i = u64map_hash(key) as i64 & m.mask
+    while true
+      let e = (m.entries as i64 + i * 32i64) as *U64MapEntry
+      if e.state == HASHMAP_EMPTY
+        e.key = key; e.value = value; e.state = HASHMAP_OCCUPIED; m.count = m.count + 1i64
+        i = m.mask + 1i64   -- sentinel: break out of loop
+      else if e.key == key
+        e.value = value
+        i = m.mask + 1i64   -- sentinel: break
+      else
+        i = (i + 1i64) & m.mask
+
+fn u64map_get : (*U64Map, u64) -> (i64, bool)
+  | (m, key) ->
+    if m.cap == 0i64 then (0i64, false)
+    else
+      let mut i = u64map_hash(key) as i64 & m.mask
+      let start = i
+      while true
+        let e = (m.entries as i64 + i * 32i64) as *U64MapEntry
+        if e.state == HASHMAP_EMPTY then (0i64, false)
+        else if e.key == key then (e.value, true)
+        i = (i + 1i64) & m.mask
+        if i == start then (0i64, false)
+      (0i64, false)
+
+fn u64map_has    : (*U64Map, u64) -> bool | (m, k) -> let (_,f) = u64map_get(m,k); f
+fn u64map_count  : *U64Map -> i64         | m -> m.count
+fn u64map_destroy_full : *U64Map -> ()    | m -> u64map_destroy(m)
+
+-- §12  HASH SET (string keys, presence only)
+struct HashSet
+  map : HashMap   -- value always 1
+
+fn hashset_new : () -> HashSet
+  | () -> HashSet { map: hashmap_new() }
+
+fn hashset_destroy : *HashSet -> ()
+  | s -> hashmap_destroy(&s.map)
+
+fn hashset_insert : (*HashSet, ptr) -> bool
+  | (s, key) ->
+    let already = hashmap_has(&s.map, key)
+    if !already then hashmap_set(&s.map, key, 1i64)
+    !already
+
+fn hashset_contains : (*HashSet, ptr) -> bool | (s, k) -> hashmap_has(&s.map, k)
+fn hashset_remove   : (*HashSet, ptr) -> bool | (s, k) -> hashmap_delete(&s.map, k)
+fn hashset_count    : *HashSet -> i64         | s -> s.map.count
+fn hashset_is_empty : *HashSet -> bool        | s -> s.map.count == 0i64
+fn hashset_clear    : *HashSet -> ()          | s -> hashmap_clear(&s.map)
+
+fn hashset_iter_next : (*HashSet, *i64) -> (*u8, bool)
+  | (s, idx_ptr) ->
+    let (k, _, found) = hashmap_iter_next(&s.map, idx_ptr)
+    (k, found)
+
+-- §13  MULTI-MAP (string key → Vec of i64)
+-- Backed by HashMap where values are heap-allocated Vecs
+
+fn multimap_new : () -> HashMap | () -> hashmap_new()
+
+fn multimap_push : (*HashMap, ptr, i64) -> ()
+  | (m, key, value) ->
+    let (existing, found) = hashmap_get(m, key)
+    if found
+      let v = existing as *mem.Vec
+      mem.vec_push(v, &value)
+    else
+      let v = os.linux.malloc(64i64) as *mem.Vec
+      v[0i64] = mem.vec_new(8i64)
+      mem.vec_push(v, &value)
+      hashmap_set(m, key, v as i64)
+
+fn multimap_get_vec : (*HashMap, ptr) -> *mem.Vec
+  | (m, key) ->
+    let (v, found) = hashmap_get(m, key)
+    if found then v as *mem.Vec else 0 as *mem.Vec
+
+fn multimap_count : (*HashMap, ptr) -> i64
+  | (m, key) ->
+    let v = multimap_get_vec(m, key)
+    if v as i64 == 0i64 then 0i64 else mem.vec_len(v)
+
+fn multimap_destroy : *HashMap -> ()
+  | m ->
+    let mut idx : i64 = 0i64
+    while true
+      let (_, val, found) = hashmap_iter_next(m, &idx)
+      if !found
+        hashmap_destroy(m)
+        idx = -1i64   -- break sentinel
+      else
+        let v = val as *mem.Vec
+        mem.vec_destroy(v); os.linux.free(v as ptr)
+
+-- §14  LRU CACHE (doubly-linked HashMap-backed, O(1) get/put)
+struct LruNode
+  key   : *u8
+  value : i64
+  prev  : *LruNode
+  next  : *LruNode
+
+struct LruCache
+  map      : HashMap      -- key → *LruNode
+  head     : *LruNode     -- most recently used
+  tail     : *LruNode     -- least recently used
+  cap      : i64
+  count    : i64
+
+fn lru_new : i64 -> LruCache
+  | cap ->
+    LruCache { map: hashmap_new(), head: 0 as *LruNode, tail: 0 as *LruNode, cap: cap, count: 0i64 }
+
+fn lru_unlink : (*LruCache, *LruNode) -> ()
+  | (c, n) ->
+    if n.prev as i64 != 0i64 then n.prev.next = n.next else c.head = n.next
+    if n.next as i64 != 0i64 then n.next.prev = n.prev else c.tail = n.prev
+    n.prev = 0 as *LruNode; n.next = 0 as *LruNode
+
+fn lru_push_front : (*LruCache, *LruNode) -> ()
+  | (c, n) ->
+    n.next = c.head; n.prev = 0 as *LruNode
+    if c.head as i64 != 0i64 then c.head.prev = n
+    c.head = n
+    if c.tail as i64 == 0i64 then c.tail = n
+
+fn lru_get : (*LruCache, ptr) -> (i64, bool)
+  | (c, key) ->
+    let (vptr, found) = hashmap_get(&c.map, key)
+    if !found then (0i64, false)
+    else
+      let node = vptr as *LruNode
+      lru_unlink(c, node); lru_push_front(c, node)
+      (node.value, true)
+
+fn lru_put : (*LruCache, ptr, i64) -> ()
+  | (c, key, value) ->
+    let (vptr, found) = hashmap_get(&c.map, key)
+    if found
+      let node = vptr as *LruNode
+      node.value = value
+      lru_unlink(c, node); lru_push_front(c, node)
+    else
+      if c.count >= c.cap && c.tail as i64 != 0i64
+        -- evict LRU
+        let evict = c.tail
+        lru_unlink(c, evict)
+        hashmap_delete(&c.map, evict.key as ptr)
+        os.linux.free(evict.key as ptr); os.linux.free(evict as ptr)
+        c.count = c.count - 1i64
+      let klen = os.linux.strlen(key) as i64
+      let kdup = os.linux.malloc(klen + 1i64) as *u8
+      os.linux.memcpy(kdup as ptr, key, klen as u64); kdup[klen] = 0u8
+      let node = os.linux.malloc(48i64) as *LruNode
+      node.key = kdup; node.value = value
+      node.prev = 0 as *LruNode; node.next = 0 as *LruNode
+      lru_push_front(c, node)
+      hashmap_set(&c.map, key, node as i64)
+      c.count = c.count + 1i64
+
+fn lru_has     : (*LruCache, ptr) -> bool | (c, k) -> hashmap_has(&c.map, k)
+fn lru_count   : *LruCache -> i64         | c -> c.count
+fn lru_is_full : *LruCache -> bool        | c -> c.count >= c.cap
+
+fn lru_destroy : *LruCache -> ()
+  | c ->
+    let mut node = c.head
+    while node as i64 != 0i64
+      let next = node.next
+      os.linux.free(node.key as ptr); os.linux.free(node as ptr)
+      node = next
+    hashmap_destroy(&c.map); c.count = 0i64
+
+-- §15  BLOOM FILTER
+-- Space-efficient probabilistic membership. No false negatives.
+-- k hash functions via double-hashing: h_i(x) = h1(x) + i*h2(x)
+
+struct BloomFilter
+  bits     : ptr   -- byte array
+  bit_count : i64  -- total bits
+  k        : i64   -- number of hash functions
+  count    : i64   -- estimated elements inserted
+
+fn bloom_new : (i64, i64) -> BloomFilter
+  | (bit_count, k) ->
+    let byte_count = (bit_count + 7i64) / 8i64
+    let bits = os.linux.malloc(byte_count)
+    os.linux.memset(bits, 0i32, byte_count as u64)
+    BloomFilter { bits: bits, bit_count: bit_count, k: k, count: 0i64 }
+
+fn bloom_destroy : *BloomFilter -> ()
+  | f -> os.linux.free(f.bits); f.bits = 0 as ptr
+
+fn bloom_set_bit : (*BloomFilter, i64) -> ()
+  | (f, bit_idx) ->
+    let byte_idx = bit_idx / 8i64
+    let bit_off  = bit_idx % 8i64
+    let b = f.bits as *u8
+    b[byte_idx] = b[byte_idx] | (1u8 << bit_off as u8)
+
+fn bloom_test_bit : (*BloomFilter, i64) -> bool
+  | (f, bit_idx) ->
+    let byte_idx = bit_idx / 8i64
+    let bit_off  = bit_idx % 8i64
+    let b = f.bits as *u8
+    (b[byte_idx] >> bit_off as u8) & 1u8 != 0u8
+
+fn bloom_insert : (*BloomFilter, ptr, i64) -> ()
+  | (f, data, len) ->
+    let h1 = fnv1a64_bytes(data, len)
+    let h2 = xxhash64(data, len, 0xdeadbeefcafeu64)
+    let mut i : i64 = 0i64
+    while i < f.k
+      let bit = ((h1 +% (i as u64 *% h2)) % f.bit_count as u64) as i64
+      bloom_set_bit(f, bit); i = i + 1i64
+    f.count = f.count + 1i64
+
+fn bloom_insert_str : (*BloomFilter, ptr) -> ()
+  | (f, s) -> bloom_insert(f, s, os.linux.strlen(s) as i64)
+
+fn bloom_contains : (*BloomFilter, ptr, i64) -> bool
+  | (f, data, len) ->
+    let h1 = fnv1a64_bytes(data, len)
+    let h2 = xxhash64(data, len, 0xdeadbeefcafeu64)
+    let mut i : i64 = 0i64
+    while i < f.k
+      let bit = ((h1 +% (i as u64 *% h2)) % f.bit_count as u64) as i64
+      if !bloom_test_bit(f, bit) then false
+      i = i + 1i64
+    true
+
+fn bloom_contains_str : (*BloomFilter, ptr) -> bool
+  | (f, s) -> bloom_contains(f, s, os.linux.strlen(s) as i64)
+
+fn bloom_false_positive_rate : *BloomFilter -> f64
+  | f ->
+    -- (1 - e^(-k*n/m))^k
+    let k = f.k as f64
+    let n = f.count as f64
+    let m = f.bit_count as f64
+    let inner = 1.0f64 - os.linux.exp(-k * n / m)
+    os.linux.pow(inner, k)
+
+-- §16  COUNTING MAP (string → i64 counter, convenience wrapper)
+fn countmap_new : () -> HashMap | () -> hashmap_new()
+
+fn countmap_inc : (*HashMap, ptr) -> i64
+  | (m, key) ->
+    let (v, found) = hashmap_get(m, key)
+    let new_v = if found then v + 1i64 else 1i64
+    hashmap_set(m, key, new_v); new_v
+
+fn countmap_dec : (*HashMap, ptr) -> i64
+  | (m, key) ->
+    let (v, found) = hashmap_get(m, key)
+    let new_v = if found then v - 1i64 else -1i64
+    hashmap_set(m, key, new_v); new_v
+
+fn countmap_add : (*HashMap, ptr, i64) -> i64
+  | (m, key, delta) ->
+    let (v, _) = hashmap_get(m, key)
+    let new_v = v + delta
+    hashmap_set(m, key, new_v); new_v
+
+fn countmap_get : (*HashMap, ptr) -> i64
+  | (m, key) ->
+    let (v, _) = hashmap_get(m, key)
+    v
+
+fn countmap_top_n : (*HashMap, i64, ptr, ptr) -> i64
+  | (m, n, out_keys, out_counts) ->
+    -- O(count * n) selection — fine for small n; use heaps for large n
+    let keys_out = out_keys as *ptr
+    let cnts_out = out_counts as *i64
+    let mut found : i64 = 0i64
+    let mut idx : i64 = 0i64
+    while found < n
+      let (k, v, has) = hashmap_iter_next(m, &idx)
+      if !has then found
+      -- insert into sorted top-n
+      let mut insert_pos = found
+      let mut ip : i64 = 0i64
+      while ip < found
+        if cnts_out[ip] < v then insert_pos = ip; ip = found   -- break
+        ip = ip + 1i64
+      if insert_pos < n
+        let mut shift = if found < n then found else n - 1i64
+        while shift > insert_pos
+          keys_out[shift] = keys_out[shift - 1i64]
+          cnts_out[shift] = cnts_out[shift - 1i64]
+          shift = shift - 1i64
+        keys_out[insert_pos] = k as ptr
+        cnts_out[insert_pos] = v
+        if found < n then found = found + 1i64
+    found
+
+-- §17  CONSISTENT HASH RING (for distributed systems)
+struct HashRingNode
+  name : *u8
+  hash : u64
+
+struct HashRing
+  nodes   : *HashRingNode   -- sorted by hash
+  count   : i64
+  cap     : i64
+  vnodes  : i64             -- virtual nodes per real node
+
+fn hashring_new : i64 -> HashRing
+  | vnodes ->
+    HashRing { nodes: 0 as *HashRingNode, count: 0i64, cap: 0i64, vnodes: vnodes }
+
+fn hashring_destroy : *HashRing -> ()
+  | r ->
+    let mut i : i64 = 0i64
+    while i < r.count
+      let n = (r.nodes as i64 + i * 24i64) as *HashRingNode
+      os.linux.free(n.name as ptr); i = i + 1i64
+    if r.cap > 0i64 then os.linux.free(r.nodes as ptr)
+    r.nodes = 0 as *HashRingNode; r.count = 0i64
+
+fn hashring_add_node : (*HashRing, ptr) -> ()
+  | (r, name) ->
+    let new_slots = r.vnodes
+    let needed = r.count + new_slots
+    if needed > r.cap
+      let new_cap = if r.cap == 0i64 then needed * 2i64 else r.cap * 2i64
+      r.nodes = os.linux.realloc(r.nodes as ptr, new_cap * 24i64) as *HashRingNode
+      r.cap = new_cap
+    let nlen = os.linux.strlen(name) as i64
+    let mut vn : i64 = 0i64
+    while vn < new_slots
+      let vkey : *u8 = os.linux.malloc(nlen + 12i64) as *u8
+      os.linux.snprintf(vkey as ptr, (nlen+12i64) as u64, "%s-%ld" as ptr, name, vn)
+      let h = wyhash64_str(vkey as ptr)
+      let slot = (r.nodes as i64 + r.count * 24i64) as *HashRingNode
+      slot.name = vkey; slot.hash = h; r.count = r.count + 1i64
+      vn = vn + 1i64
+    -- insertion sort the new entries
+    let mut i = r.count - new_slots
+    while i < r.count
+      let cur_n = (r.nodes as i64 + i * 24i64) as *HashRingNode
+      let cur_h = cur_n.hash; let cur_name = cur_n.name
+      let mut j = i - 1i64
+      while j >= 0i64 && (r.nodes as i64 + j * 24i64 as i64) as *HashRingNode as *HashRingNode != 0 as *HashRingNode &&
+            ((r.nodes as i64 + j * 24i64) as *HashRingNode).hash > cur_h
+        let jn = (r.nodes as i64 + j * 24i64) as *HashRingNode
+        let j1n = (r.nodes as i64 + (j+1i64) * 24i64) as *HashRingNode
+        j1n.name = jn.name; j1n.hash = jn.hash
+        j = j - 1i64
+      let j1n = (r.nodes as i64 + (j+1i64) * 24i64) as *HashRingNode
+      j1n.name = cur_name; j1n.hash = cur_h
+      i = i + 1i64
+
+fn hashring_lookup : (*HashRing, ptr) -> *u8
+  | (r, key) ->
+    if r.count == 0i64 then 0 as *u8
+    else
+      let h = wyhash64_str(key)
+      -- binary search for first node with hash >= h
+      let mut lo : i64 = 0i64; let mut hi = r.count - 1i64
+      while lo < hi
+        let mid = (lo + hi) / 2i64
+        let mn = (r.nodes as i64 + mid * 24i64) as *HashRingNode
+        if mn.hash < h then lo = mid + 1i64 else hi = mid
+      let node = (r.nodes as i64 + lo * 24i64) as *HashRingNode
+      -- strip virtual node suffix (everything after last '-')
+      let mut n = node.name; let mut last_dash : i64 = -1i64; let mut ni : i64 = 0i64
+      while n[ni] != 0u8 then if n[ni]==45u8 then last_dash=ni; ni=ni+1i64
+      if last_dash < 0i64 then n
+      else
+        let base_name = os.linux.malloc(last_dash + 1i64) as *u8
+        os.linux.memcpy(base_name as ptr, n as ptr, last_dash as u64)
+        base_name[last_dash] = 0u8
+        base_name   -- NOTE: caller must free
+
+-- §18  HASH UTILITIES
+fn hash_combine : (u64, u64) -> u64
+  | (a, b) -> a ^ b +% 0x9e3779b97f4a7c15u64 +% (a << 6u64) +% (a >> 2u64)
+
+fn hash_bytes_default : (ptr, i64) -> u64
+  | (data, len) -> wyhash64(data, len, 0u64)
+
+fn hash_str_default : ptr -> u64
+  | s -> wyhash64_str(s)
+
+fn hash_i64 : i64 -> u64
+  | v ->
+    let mut x = v as u64
+    x = x ^ (x >> 30u64)
+    x = x *% 13787848793156543929u64
+    x = x ^ (x >> 27u64)
+    x = x *% 10723151780598845931u64
+    x ^ (x >> 31u64)
+
+fn hash_u64 : u64 -> u64 | v -> hash_i64(v as i64)
+
+fn hash_ptr  : ptr -> u64 | p -> hash_u64(p as u64)
+
+fn hash_f64  : f64 -> u64
+  | v ->
+    let bits = v as u64   -- raw cast
+    if bits == 0x8000000000000000u64 then 0u64   -- -0.0 == 0.0
+    else hash_u64(bits)
+
+fn hash_bool : bool -> u64 | b -> if b then 1u64 else 0u64
+
+fn hash_bytes_to_u32 : (ptr, i64) -> u32
+  | (data, len) -> (wyhash64(data, len, 0u64) & 0xFFFFFFFFu64) as u32
+
+fn hash_str_to_u32 : ptr -> u32
+  | s -> hash_bytes_to_u32(s, os.linux.strlen(s) as i64)

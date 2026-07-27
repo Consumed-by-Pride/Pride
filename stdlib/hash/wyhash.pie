@@ -1,0 +1,237 @@
+mod hash.wyhash
+
+use os.linux
+
+-- Wyhash v4.2 — Wang Yi's fast hash.
+-- https://github.com/wangyi-fudan/wyhash
+-- Passes SMHasher. Excellent speed/quality tradeoff.
+-- Supports streaming API.
+
+-- §1  CONSTANTS
+
+const WY_SECRET_0 : u64 = 11562461410679940143u64   -- 0xa0761d6478bd642f
+const WY_SECRET_1 : u64 = 16646288086500911323u64   -- 0xe7037ed1a0b428db
+const WY_SECRET_2 : u64 = 10285213230658275043u64   -- 0x8ebc6af09c88c6e3
+const WY_SECRET_3 : u64 = 6384245875588680899u64    -- 0x589965cc75374cc3
+
+-- §2  CORE PRIMITIVE: wyhash mum (multiply-xor-mix)
+
+fn wy_mum : (u64, u64) -> (u64, u64)
+  | (a, b) ->
+    let a_lo = a & 0xFFFFFFFFu64; let a_hi = a >> 32u64
+    let b_lo = b & 0xFFFFFFFFu64; let b_hi = b >> 32u64
+    let ll = a_lo *% b_lo
+    let lh = a_lo *% b_hi
+    let hl = a_hi *% b_lo
+    let hh = a_hi *% b_hi
+    let mid = (ll >> 32u64) +% (lh & 0xFFFFFFFFu64) +% (hl & 0xFFFFFFFFu64)
+    let lo = (ll & 0xFFFFFFFFu64) | (mid << 32u64)
+    let hi = hh +% (lh >> 32u64) +% (hl >> 32u64) +% (mid >> 32u64)
+    (lo, hi)
+
+fn wy_mix : (u64, u64) -> u64
+  | (a, b) ->
+    let (lo, hi) = wy_mum(a, b)
+    lo ^ hi
+
+-- §3  STREAMING HASHER
+
+struct Wyhash
+  a         : u64
+  b         : u64
+  state0    : u64
+  state1    : u64
+  state2    : u64
+  total_len : i64
+  buf       : ptr     -- *u8[48], internal buffer
+  buf_len   : i64
+
+fn wyhash_init : u64 -> Wyhash
+  | seed ->
+    let buf = os.linux.malloc(48i64)
+    let s0 = wy_mix(seed ^ WY_SECRET_0, WY_SECRET_1)
+    Wyhash {
+      a: 0u64, b: 0u64,
+      state0: s0, state1: s0, state2: s0,
+      total_len: 0i64,
+      buf: buf, buf_len: 0i64
+    }
+
+fn wyhash_destroy : *Wyhash -> ()
+  | h -> os.linux.free(h.buf); h.buf = 0 as ptr
+
+-- Read n bytes (1-8) from pointer as little-endian u64
+fn wy_read : (ptr, i64) -> u64
+  | (p, n) ->
+    let b = p as *u8
+    if n == 8i64 then (b as *u64)[0i64]
+    else if n == 4i64 then (b as *u32)[0u32] as u64
+    else if n == 2i64 then (b as *u16)[0u16] as u64
+    else if n == 1i64 then b[0i64] as u64
+    else
+      let mut v : u64 = 0u64; let mut i : i64 = 0i64
+      while i < n
+        v = v | (b[i] as u64 << (i * 8i64) as u64)
+        i = i + 1i64
+      v
+
+fn wy_read8 : ptr -> u64 | p -> (p as *u64)[0i64]
+
+-- Process one 48-byte block
+fn wyhash_round : (*Wyhash, ptr) -> ()
+  | (h, block) ->
+    let b = block as *u64
+    h.state0 = wy_mix(b[0i64] ^ WY_SECRET_1, b[1i64] ^ h.state0)
+    h.state1 = wy_mix(b[2i64] ^ WY_SECRET_2, b[3i64] ^ h.state1)
+    h.state2 = wy_mix(b[4i64] ^ WY_SECRET_3, b[5i64] ^ h.state2)
+
+fn wyhash_update : (*Wyhash, ptr, i64) -> ()
+  | (h, data, len) ->
+    let b = data as *u8
+    h.total_len = h.total_len + len
+    let mut i : i64 = 0i64
+
+    -- flush buffered + incoming data in 48-byte chunks
+    if h.buf_len > 0i64
+      let fill_n = 48i64 - h.buf_len
+      if len < fill_n
+        os.linux.memcpy((h.buf as i64 + h.buf_len) as ptr, data, len as u64)
+        h.buf_len = h.buf_len + len
+        ()   -- not enough to flush
+      else
+        os.linux.memcpy((h.buf as i64 + h.buf_len) as ptr, data, fill_n as u64)
+        wyhash_round(h, h.buf)
+        h.buf_len = 0i64; i = fill_n
+
+    while i + 48i64 < len
+      wyhash_round(h, (b as i64 + i) as ptr)
+      i = i + 48i64
+
+    let remaining = len - i
+    if remaining > 0i64
+      os.linux.memcpy((h.buf as i64 + h.buf_len) as ptr, (b as i64 + i) as ptr, remaining as u64)
+      h.buf_len = h.buf_len + remaining
+
+fn wyhash_update_str : (*Wyhash, ptr) -> ()
+  | (h, s) -> wyhash_update(h, s, os.linux.strlen(s) as i64)
+
+fn wyhash_update_u64 : (*Wyhash, u64) -> ()
+  | (h, v) ->
+    let tmp : *u64 = os.linux.malloc(8i64) as *u64
+    tmp[0i64] = v
+    wyhash_update(h, tmp as ptr, 8i64)
+    os.linux.free(tmp as ptr)
+
+fn wyhash_update_i64 : (*Wyhash, i64) -> ()
+  | (h, v) -> wyhash_update_u64(h, v as u64)
+
+fn wyhash_update_u32 : (*Wyhash, u32) -> ()
+  | (h, v) ->
+    let tmp : *u32 = os.linux.malloc(4i64) as *u32
+    tmp[0u32] = v
+    wyhash_update(h, tmp as ptr, 4i64)
+    os.linux.free(tmp as ptr)
+
+fn wyhash_update_u8 : (*Wyhash, u8) -> ()
+  | (h, v) ->
+    let tmp : *u8 = os.linux.malloc(1i64) as *u8
+    tmp[0i64] = v
+    wyhash_update(h, tmp as ptr, 1i64)
+    os.linux.free(tmp as ptr)
+
+-- Finalize: process remaining bytes, return digest
+fn wyhash_final : *Wyhash -> u64
+  | h ->
+    let tlen = h.total_len
+
+    if tlen <= 16i64
+      -- Small key path
+      let input = h.buf
+      let ilen = h.buf_len
+      let (a, b) =
+        if ilen >= 4i64
+          let end_ = ilen - 4i64
+          let quarter = (ilen >> 3i64) << 2i64
+          let av = (wy_read(input, 4i64) << 32u64) | wy_read((input as i64 + quarter) as ptr, 4i64)
+          let bv = (wy_read((input as i64 + end_) as ptr, 4i64) << 32u64) |
+                   wy_read((input as i64 + end_ - quarter) as ptr, 4i64)
+          (av, bv)
+        else if ilen > 0i64
+          let av = (h.buf as *u8)[0i64] as u64 << 16u64 |
+                   (h.buf as *u8)[ilen / 2i64] as u64 << 8u64 |
+                   (h.buf as *u8)[ilen - 1i64] as u64
+          (av, 0u64)
+        else (0u64, 0u64)
+      let s = h.state0
+      wy_mix(WY_SECRET_1, wy_mix(a ^ WY_SECRET_1, b ^ s))
+    else
+      -- Long key path
+      let s0 = h.state0 ^ h.state1 ^ h.state2
+      let input = h.buf; let ilen = h.buf_len
+
+      -- Process remaining buf (treat as final1)
+      let (a, b) =
+        if ilen >= 16i64
+          let last16_start = ilen - 16i64
+          let av = wy_read8((input as i64 + last16_start) as ptr)
+          let bv = wy_read8((input as i64 + last16_start + 8i64) as ptr)
+          -- also handle the 16-byte chunks before the last 16
+          let mut acc = s0; let mut pi : i64 = 0i64
+          while pi + 16i64 < ilen
+            acc = wy_mix(wy_read8((input as i64 + pi) as ptr) ^ WY_SECRET_1,
+                         wy_read8((input as i64 + pi + 8i64) as ptr) ^ acc)
+            pi = pi + 16i64
+          (wy_read8((input as i64 + ilen - 16i64) as ptr),
+           wy_read8((input as i64 + ilen - 8i64) as ptr))
+        else if ilen >= 8i64
+          (wy_read8(input), wy_read8((input as i64 + ilen - 8i64) as ptr))
+        else if ilen > 0i64
+          (wy_read(input, ilen), 0u64)
+        else (0u64, 0u64)
+
+      let s_final = s0
+      let res = wy_mix(a ^ WY_SECRET_1, b ^ s_final)
+      wy_mix(res ^ WY_SECRET_0 ^ tlen as u64, res ^ WY_SECRET_1)
+
+-- §4  ONE-SHOT HASH FUNCTIONS
+
+fn wyhash : (ptr, i64, u64) -> u64
+  | (data, len, seed) ->
+    let mut h = wyhash_init(seed)
+    wyhash_update(&h, data, len)
+    let v = wyhash_final(&h)
+    wyhash_destroy(&h); v
+
+fn wyhash_str : (ptr, u64) -> u64
+  | (s, seed) -> wyhash(s, os.linux.strlen(s) as i64, seed)
+
+fn wyhash64 : ptr -> u64 | s -> wyhash_str(s, 0u64)
+
+fn wyhash_bytes : ptr -> u64
+  | data -> wyhash(data, os.linux.strlen(data) as i64, 0u64)
+
+-- §5  WYHASH-BASED KEY COMBINERS (for hash_map default hash)
+
+fn wy_hash_i64 : i64 -> u64
+  | v ->
+    let mut x = v as u64 ^ WY_SECRET_0
+    x = wy_mix(x, WY_SECRET_1)
+    x
+
+fn wy_hash_u64 : u64 -> u64 | v -> wy_hash_i64(v as i64)
+
+fn wy_hash_ptr : ptr -> u64 | p -> wy_hash_u64(p as u64)
+
+fn wy_hash_f64 : f64 -> u64
+  | v ->
+    let bits = v as u64
+    wy_hash_u64(if bits == 0x8000000000000000u64 then 0u64 else bits)
+
+fn wy_hash_bool : bool -> u64
+  | b -> if b then WY_SECRET_0 else WY_SECRET_1
+
+fn wy_combine : (u64, u64) -> u64
+  | (a, b) -> wy_mix(a ^ WY_SECRET_0, b ^ WY_SECRET_1)
+
+fn wy_combine3 : (u64, u64, u64) -> u64
+  | (a, b, c) -> wy_combine(wy_combine(a, b), c)

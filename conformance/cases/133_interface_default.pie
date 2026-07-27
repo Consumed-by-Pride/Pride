@@ -1,0 +1,16 @@
+-- EXPECT-CLEAN
+interface Show
+  fn show : i32 -> i32
+
+type Tag = struct
+  id : i32
+
+impl Show for Tag
+  fn show : Tag -> i32
+    | t -> t.id
+
+fn name_of : Tag -> i32
+  | t -> t.id
+
+fn describe : Tag -> i32
+  | t -> name_of(t)

@@ -1,0 +1,354 @@
+mod hash.siphash
+
+use os.linux
+
+-- SipHash: a fast short-input PRF for hash table protection.
+-- Jean-Philippe Aumasson and Daniel J. Bernstein, 2012.
+-- https://131002.net/siphash/siphash.pdf
+-- SipHash-1-3: 1 compression round, 3 finalization rounds (fast, table-safe)
+-- SipHash-2-4: 2 compression rounds, 4 finalization rounds (reference)
+-- Both 64-bit and 128-bit output variants.
+
+-- §1  CORE SIPROUND MACRO (inline)
+
+fn sip_rotl : (u64, u32) -> u64
+  | (v, n) -> (v << n as u64) | (v >> (64u32 - n) as u64)
+
+-- One SipRound:
+--   v0 += v1; v1 = rotl(v1,13); v1 ^= v0; v0 = rotl(v0,32)
+--   v2 += v3; v3 = rotl(v3,16); v3 ^= v2
+--   v0 += v3; v3 = rotl(v3,21); v3 ^= v0
+--   v2 += v1; v1 = rotl(v1,17); v1 ^= v2; v2 = rotl(v2,32)
+fn sip_round : (u64, u64, u64, u64) -> (u64, u64, u64, u64)
+  | (v0, v1, v2, v3) ->
+    let v0a = v0 +% v1
+    let v1a = sip_rotl(v1, 13u32) ^ v0a
+    let v0b = sip_rotl(v0a, 32u32)
+    let v2a = v2 +% v3
+    let v3a = sip_rotl(v3, 16u32) ^ v2a
+    let v0c = v0b +% v3a
+    let v3b = sip_rotl(v3a, 21u32) ^ v0c
+    let v2b = v2a +% v1a
+    let v1b = sip_rotl(v1a, 17u32) ^ v2b
+    let v2c = sip_rotl(v2b, 32u32)
+    (v0c, v1b, v2c, v3b)
+
+-- §2  SIPHASH-1-3 STREAMING (64-bit output)
+
+struct SipHash13
+  v0  : u64
+  v1  : u64
+  v2  : u64
+  v3  : u64
+  buf : u64    -- partial block accumulator
+  buf_len : i64
+  total   : i64
+
+fn sip13_init : (u64, u64) -> SipHash13
+  | (k0, k1) ->
+    SipHash13 {
+      v0: k0 ^ 0x736f6d6570736575u64,
+      v1: k1 ^ 0x646f72616e646f6du64,
+      v2: k0 ^ 0x6c7967656e657261u64,
+      v3: k1 ^ 0x7465646279746573u64,
+      buf: 0u64, buf_len: 0i64, total: 0i64
+    }
+
+fn sip13_init_default : () -> SipHash13
+  | () -> sip13_init(0x736f6d6570736575u64, 0x646f72616e646f6du64)
+
+fn sip13_compress : (*SipHash13, u64) -> ()
+  | (h, m) ->
+    h.v3 = h.v3 ^ m
+    let (v0, v1, v2, v3) = sip_round(h.v0, h.v1, h.v2, h.v3)
+    h.v0 = v0; h.v1 = v1; h.v2 = v2; h.v3 = v3
+    h.v0 = h.v0 ^ m
+
+fn sip13_update : (*SipHash13, ptr, i64) -> ()
+  | (h, data, len) ->
+    h.total = h.total + len
+    let b = data as *u8; let mut i : i64 = 0i64
+
+    -- consume partial buffer
+    while i < len && h.buf_len < 8i64
+      h.buf = h.buf | (b[i] as u64 << (h.buf_len * 8i64) as u64)
+      h.buf_len = h.buf_len + 1i64; i = i + 1i64
+
+    if h.buf_len == 8i64
+      sip13_compress(h, h.buf)
+      h.buf = 0u64; h.buf_len = 0i64
+
+    -- full 8-byte blocks
+    while i + 8i64 <= len
+      let m = (b[i] as u64)       | ((b[i+1i64] as u64) << 8u64)  |
+              ((b[i+2i64] as u64) << 16u64) | ((b[i+3i64] as u64) << 24u64) |
+              ((b[i+4i64] as u64) << 32u64) | ((b[i+5i64] as u64) << 40u64) |
+              ((b[i+6i64] as u64) << 48u64) | ((b[i+7i64] as u64) << 56u64)
+      sip13_compress(h, m)
+      i = i + 8i64
+
+    -- buffer remainder
+    while i < len
+      h.buf = h.buf | (b[i] as u64 << (h.buf_len * 8i64) as u64)
+      h.buf_len = h.buf_len + 1i64; i = i + 1i64
+
+fn sip13_update_str : (*SipHash13, ptr) -> ()
+  | (h, s) -> sip13_update(h, s, os.linux.strlen(s) as i64)
+
+fn sip13_update_u64 : (*SipHash13, u64) -> ()
+  | (h, v) ->
+    let tmp : *u64 = os.linux.malloc(8i64) as *u64; tmp[0i64] = v
+    sip13_update(h, tmp as ptr, 8i64); os.linux.free(tmp as ptr)
+
+fn sip13_update_u8 : (*SipHash13, u8) -> ()
+  | (h, b) ->
+    let tmp : *u8 = os.linux.malloc(1i64) as *u8; tmp[0i64] = b
+    sip13_update(h, tmp as ptr, 1i64); os.linux.free(tmp as ptr)
+
+fn sip13_final : *SipHash13 -> u64
+  | h ->
+    -- final block: length in high byte + remaining bytes
+    let last = ((h.total & 0xFFi64) as u64 << 56u64) | h.buf
+    h.v3 = h.v3 ^ last
+    let (v0a, v1a, v2a, v3a) = sip_round(h.v0, h.v1, h.v2, h.v3)
+    let v0b = v0a ^ last
+    -- finalization: 3 rounds for SipHash-1-3
+    let v2f = v2a ^ 0xFFu64
+    let (f0, f1, f2, f3) = sip_round(v0b, v1a, v2f, v3a)
+    let (g0, g1, g2, g3) = sip_round(f0, f1, f2, f3)
+    let (h0, h1, h2, h3) = sip_round(g0, g1, g2, g3)
+    h0 ^ h1 ^ h2 ^ h3
+
+-- §3  SIPHASH-2-4 STREAMING (64-bit output)
+
+struct SipHash24
+  v0  : u64; v1 : u64; v2 : u64; v3 : u64
+  buf : u64; buf_len : i64; total : i64
+
+fn sip24_init : (u64, u64) -> SipHash24
+  | (k0, k1) ->
+    SipHash24 {
+      v0: k0 ^ 0x736f6d6570736575u64,
+      v1: k1 ^ 0x646f72616e646f6du64,
+      v2: k0 ^ 0x6c7967656e657261u64,
+      v3: k1 ^ 0x7465646279746573u64,
+      buf: 0u64, buf_len: 0i64, total: 0i64
+    }
+
+fn sip24_compress : (*SipHash24, u64) -> ()
+  | (h, m) ->
+    h.v3 = h.v3 ^ m
+    let (a0, a1, a2, a3) = sip_round(h.v0, h.v1, h.v2, h.v3)
+    let (b0, b1, b2, b3) = sip_round(a0, a1, a2, a3)
+    h.v0 = b0; h.v1 = b1; h.v2 = b2; h.v3 = b3
+    h.v0 = h.v0 ^ m
+
+fn sip24_update : (*SipHash24, ptr, i64) -> ()
+  | (h, data, len) ->
+    h.total = h.total + len
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len && h.buf_len < 8i64
+      h.buf = h.buf | (b[i] as u64 << (h.buf_len * 8i64) as u64)
+      h.buf_len = h.buf_len + 1i64; i = i + 1i64
+    if h.buf_len == 8i64 then sip24_compress(h, h.buf); h.buf = 0u64; h.buf_len = 0i64
+    while i + 8i64 <= len
+      let m = (b[i] as u64) | ((b[i+1i64] as u64)<<8u64) | ((b[i+2i64] as u64)<<16u64) |
+              ((b[i+3i64] as u64)<<24u64) | ((b[i+4i64] as u64)<<32u64) |
+              ((b[i+5i64] as u64)<<40u64) | ((b[i+6i64] as u64)<<48u64) | ((b[i+7i64] as u64)<<56u64)
+      sip24_compress(h, m); i = i + 8i64
+    while i < len then h.buf = h.buf | (b[i] as u64 << (h.buf_len * 8i64) as u64); h.buf_len=h.buf_len+1i64; i=i+1i64
+
+fn sip24_update_str : (*SipHash24, ptr) -> ()
+  | (h, s) -> sip24_update(h, s, os.linux.strlen(s) as i64)
+
+fn sip24_final : *SipHash24 -> u64
+  | h ->
+    let last = ((h.total & 0xFFi64) as u64 << 56u64) | h.buf
+    h.v3 = h.v3 ^ last
+    let (a0,a1,a2,a3) = sip_round(h.v0, h.v1, h.v2, h.v3)
+    let (b0,b1,b2,b3) = sip_round(a0, a1, a2, a3)
+    let v0f = b0 ^ last
+    let v2f = b2 ^ 0xFFu64
+    let (c0,c1,c2,c3) = sip_round(v0f, b1, v2f, b3)
+    let (d0,d1,d2,d3) = sip_round(c0, c1, c2, c3)
+    let (e0,e1,e2,e3) = sip_round(d0, d1, d2, d3)
+    let (f0,f1,f2,f3) = sip_round(e0, e1, e2, e3)
+    f0 ^ f1 ^ f2 ^ f3
+
+-- §4  SIPHASH-1-3 128-BIT OUTPUT
+
+struct SipHash13_128
+  v0 : u64; v1 : u64; v2 : u64; v3 : u64
+  buf : u64; buf_len : i64; total : i64
+
+fn sip13_128_init : (u64, u64) -> SipHash13_128
+  | (k0, k1) ->
+    SipHash13_128 {
+      v0: k0 ^ 0x736f6d6570736575u64,
+      v1: k1 ^ 0x646f72616e646f6du64,
+      v2: k0 ^ 0x6c7967656e657261u64,
+      v3: k1 ^ 0x7465646279746573u64 ^ 0xeeu64,
+      buf: 0u64, buf_len: 0i64, total: 0i64
+    }
+
+fn sip13_128_compress : (*SipHash13_128, u64) -> ()
+  | (h, m) ->
+    h.v3 = h.v3 ^ m
+    let (a0,a1,a2,a3) = sip_round(h.v0, h.v1, h.v2, h.v3)
+    h.v0 = a0; h.v1 = a1; h.v2 = a2; h.v3 = a3
+    h.v0 = h.v0 ^ m
+
+fn sip13_128_update : (*SipHash13_128, ptr, i64) -> ()
+  | (h, data, len) ->
+    h.total = h.total + len
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len && h.buf_len < 8i64
+      h.buf = h.buf | (b[i] as u64 << (h.buf_len * 8i64) as u64)
+      h.buf_len=h.buf_len+1i64; i=i+1i64
+    if h.buf_len == 8i64 then sip13_128_compress(h, h.buf); h.buf=0u64; h.buf_len=0i64
+    while i + 8i64 <= len
+      let m = (b[i] as u64) | ((b[i+1i64] as u64)<<8u64) | ((b[i+2i64] as u64)<<16u64) |
+              ((b[i+3i64] as u64)<<24u64) | ((b[i+4i64] as u64)<<32u64) |
+              ((b[i+5i64] as u64)<<40u64) | ((b[i+6i64] as u64)<<48u64) | ((b[i+7i64] as u64)<<56u64)
+      sip13_128_compress(h, m); i=i+8i64
+    while i < len then h.buf=h.buf|(b[i] as u64<<(h.buf_len*8i64) as u64); h.buf_len=h.buf_len+1i64; i=i+1i64
+
+fn sip13_128_update_str : (*SipHash13_128, ptr) -> ()
+  | (h, s) -> sip13_128_update(h, s, os.linux.strlen(s) as i64)
+
+fn sip13_128_final : (*SipHash13_128, *u64) -> ()
+  | (h, out) ->
+    let last = ((h.total & 0xFFi64) as u64 << 56u64) | h.buf
+    h.v3 = h.v3 ^ last
+    let (a0,a1,a2,a3) = sip_round(h.v0, h.v1, h.v2, h.v3)
+    let v0f = a0 ^ last
+    let v2f = a2 ^ 0xFFu64
+    -- finalization 1
+    let (b0,b1,b2,b3) = sip_round(v0f, a1, v2f, a3)
+    let (c0,c1,c2,c3) = sip_round(b0, b1, b2, b3)
+    let (d0,d1,d2,d3) = sip_round(c0, c1, c2, c3)
+    let lo = d0 ^ d1 ^ d2 ^ d3
+    -- finalization 2: flip bit in v1, rerun
+    let v1ee = d1 ^ 0xDDu64
+    let (e0,e1,e2,e3) = sip_round(d0, v1ee, d2, d3)
+    let (f0,f1,f2,f3) = sip_round(e0, e1, e2, e3)
+    let (g0,g1,g2,g3) = sip_round(f0, f1, f2, f3)
+    let hi = g0 ^ g1 ^ g2 ^ g3
+    out[0i64] = lo; out[1i64] = hi
+
+-- §5  ONE-SHOT FUNCTIONS
+
+fn siphash13 : (ptr, i64, u64, u64) -> u64
+  | (data, len, k0, k1) ->
+    let mut h = sip13_init(k0, k1)
+    sip13_update(&h, data, len)
+    sip13_final(&h)
+
+fn siphash13_str : ptr -> u64
+  | s -> siphash13(s, os.linux.strlen(s) as i64, 0x736f6d6570736575u64, 0x646f72616e646f6du64)
+
+fn siphash13_bytes : (ptr, i64) -> u64
+  | (data, len) -> siphash13(data, len, 0x736f6d6570736575u64, 0x646f72616e646f6du64)
+
+fn siphash24 : (ptr, i64, u64, u64) -> u64
+  | (data, len, k0, k1) ->
+    let mut h = sip24_init(k0, k1)
+    sip24_update(&h, data, len)
+    sip24_final(&h)
+
+fn siphash24_str : ptr -> u64
+  | s -> siphash24(s, os.linux.strlen(s) as i64, 0x736f6d6570736575u64, 0x646f72616e646f6du64)
+
+fn siphash13_128 : (ptr, i64, u64, u64, *u64) -> ()
+  | (data, len, k0, k1, out) ->
+    let mut h = sip13_128_init(k0, k1)
+    sip13_128_update(&h, data, len)
+    sip13_128_final(&h, out)
+
+fn siphash13_128_str : (ptr, *u64) -> ()
+  | (s, out) -> siphash13_128(s, os.linux.strlen(s) as i64, 0x736f6d6570736575u64, 0x646f72616e646f6du64, out)
+
+-- §6  HALF-SIPHASH (32-bit keys, used by Linux kernel for hash tables)
+-- HalfSipHash-1-3: 32-bit state words, 64-bit or 32-bit output
+
+fn hsip_round : (u32, u32, u32, u32) -> (u32, u32, u32, u32)
+  | (v0, v1, v2, v3) ->
+    let a0 = v0 +% v1; let a1 = ((v1 << 5u32) | (v1 >> 27u32)) ^ a0
+    let a0b = (a0 << 16u32) | (a0 >> 16u32)
+    let a2 = v2 +% v3; let a3 = ((v3 << 8u32) | (v3 >> 24u32)) ^ a2
+    let b0 = a0b +% a3; let b3 = ((a3 << 7u32) | (a3 >> 25u32)) ^ b0
+    let b2 = a2 +% a1; let b1 = ((a1 << 13u32) | (a1 >> 19u32)) ^ b2
+    let b2f = (b2 << 16u32) | (b2 >> 16u32)
+    (b0, b1, b2f, b3)
+
+fn halfsiphash13 : (ptr, i64, u32, u32) -> u32
+  | (data, len, k0, k1) ->
+    let mut v0 = k0 ^ 0u32; let mut v1 = k0 ^ 0u32
+    let mut v2 = k1 ^ 0x6c796765u32; let mut v3 = k1 ^ 0x74656462u32
+    let b = data as *u8; let mut i : i64 = 0i64
+    let mut total : i64 = 0i64
+
+    while i + 4i64 <= len
+      let m = (b[i] as u32) | ((b[i+1i64] as u32)<<8u32) | ((b[i+2i64] as u32)<<16u32) | ((b[i+3i64] as u32)<<24u32)
+      v3 = v3 ^ m
+      let (a0,a1,a2,a3) = hsip_round(v0,v1,v2,v3)
+      v0=a0; v1=a1; v2=a2; v3=a3
+      v0 = v0 ^ m
+      i = i + 4i64; total = total + 4i64
+
+    let mut last : u32 = ((len & 0xFFi64) as u32) << 24u32
+    let rem = len - i
+    if rem >= 3i64 then last = last | (b[i+2i64] as u32 << 16u32)
+    if rem >= 2i64 then last = last | (b[i+1i64] as u32 << 8u32)
+    if rem >= 1i64 then last = last | b[i] as u32
+
+    v3 = v3 ^ last
+    let (a0,a1,a2,a3) = hsip_round(v0,v1,v2,v3)
+    v0=a0; v1=a1; v2=a2; v3=a3
+    v0 = v0 ^ last
+    v2 = v2 ^ 0xFFu32
+    let (b0,b1,b2,b3) = hsip_round(v0,v1,v2,v3)
+    let (c0,c1,c2,c3) = hsip_round(b0,b1,b2,b3)
+    let (d0,d1,d2,d3) = hsip_round(c0,c1,c2,c3)
+    v0=d0; v1=d1; v2=d2; v3=d3
+    v1 ^ v3
+
+fn halfsiphash13_str : ptr -> u32
+  | s -> halfsiphash13(s, os.linux.strlen(s) as i64, 0u32, 0u32)
+
+-- §7  KEYED HASH WRAPPERS (common usage patterns)
+
+fn sip13_keyed : (ptr, i64, ptr) -> u64
+  | (data, len, key16) ->
+    let k = key16 as *u64
+    siphash13(data, len, k[0i64], k[1i64])
+
+fn sip24_keyed : (ptr, i64, ptr) -> u64
+  | (data, len, key16) ->
+    let k = key16 as *u64
+    siphash24(data, len, k[0i64], k[1i64])
+
+fn sip13_with_random_key : (ptr, i64) -> u64
+  | (data, len) ->
+    let k : *u64 = os.linux.malloc(16i64) as *u64
+    os.linux.getrandom_exact(k as ptr, 16i64)
+    let v = siphash13(data, len, k[0i64], k[1i64])
+    os.linux.free(k as ptr); v
+
+-- §8  RESET FUNCTIONS (reuse hasher with same key)
+
+fn sip13_reset : (*SipHash13, u64, u64) -> ()
+  | (h, k0, k1) ->
+    h.v0 = k0 ^ 0x736f6d6570736575u64
+    h.v1 = k1 ^ 0x646f72616e646f6du64
+    h.v2 = k0 ^ 0x6c7967656e657261u64
+    h.v3 = k1 ^ 0x7465646279746573u64
+    h.buf = 0u64; h.buf_len = 0i64; h.total = 0i64
+
+fn sip24_reset : (*SipHash24, u64, u64) -> ()
+  | (h, k0, k1) ->
+    h.v0 = k0 ^ 0x736f6d6570736575u64
+    h.v1 = k1 ^ 0x646f72616e646f6du64
+    h.v2 = k0 ^ 0x6c7967656e657261u64
+    h.v3 = k1 ^ 0x7465646279746573u64
+    h.buf = 0u64; h.buf_len = 0i64; h.total = 0i64

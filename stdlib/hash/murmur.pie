@@ -1,0 +1,227 @@
+mod hash.murmur
+
+use os.linux
+
+-- MurmurHash2 and MurmurHash3 — Austin Appleby.
+-- All variants: _32 (32-bit), _64A (64-bit x64), _128 (128-bit x64).
+-- https://github.com/aappleby/smhasher
+
+-- §1  MURMUR2_32
+
+const MM2_M32 : u32 = 1540483477u32   -- 0x5BD1E995
+
+fn murmur2_32 : (ptr, i64, u32) -> u32
+  | (data, len, seed) ->
+    let mut h = seed ^ len as u32
+    let b = data as *u8
+    let mut i : i64 = 0i64
+    while i + 4i64 <= len
+      let mut k = (b as i64 + i) as *u32 as *u32
+      let kv = (b[i] as u32) | ((b[i+1i64] as u32) << 8u32) | ((b[i+2i64] as u32) << 16u32) | ((b[i+3i64] as u32) << 24u32)
+      let mut kk = kv *% MM2_M32
+      kk = kk ^ (kk >> 24u32)
+      kk = kk *% MM2_M32
+      h = h *% MM2_M32
+      h = h ^ kk
+      i = i + 4i64
+    let rem = len - i
+    if rem >= 3i64 then h = h ^ (b[i+2i64] as u32 << 16u32)
+    if rem >= 2i64 then h = h ^ (b[i+1i64] as u32 << 8u32)
+    if rem >= 1i64 then h = h ^ b[i] as u32; h = h *% MM2_M32
+    h = h ^ (h >> 13u32)
+    h = h *% MM2_M32
+    h ^ (h >> 15u32)
+
+fn murmur2_32_str : (ptr, u32) -> u32
+  | (s, seed) -> murmur2_32(s, os.linux.strlen(s) as i64, seed)
+
+fn murmur2_32_hash : ptr -> u32 | s -> murmur2_32_str(s, 0u32)
+
+-- MurmurHash2_64A: designed for 64-bit platforms
+const MM2_M64 : u64 = 14181476777654086739u64   -- 0xC6A4A7935BD1E995
+
+fn murmur2_64a : (ptr, i64, u64) -> u64
+  | (data, len, seed) ->
+    let mut h = seed ^ (len as u64 *% MM2_M64)
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i + 8i64 <= len
+      let mut k = (b[i] as u64) | ((b[i+1i64] as u64) << 8u64) |
+                  ((b[i+2i64] as u64) << 16u64) | ((b[i+3i64] as u64) << 24u64) |
+                  ((b[i+4i64] as u64) << 32u64) | ((b[i+5i64] as u64) << 40u64) |
+                  ((b[i+6i64] as u64) << 48u64) | ((b[i+7i64] as u64) << 56u64)
+      k = k *% MM2_M64
+      k = k ^ (k >> 47u64)
+      k = k *% MM2_M64
+      h = h ^ k
+      h = h *% MM2_M64
+      i = i + 8i64
+    let rem = len - i
+    if rem >= 7i64 then h = h ^ (b[i+6i64] as u64 << 48u64)
+    if rem >= 6i64 then h = h ^ (b[i+5i64] as u64 << 40u64)
+    if rem >= 5i64 then h = h ^ (b[i+4i64] as u64 << 32u64)
+    if rem >= 4i64 then h = h ^ (b[i+3i64] as u64 << 24u64)
+    if rem >= 3i64 then h = h ^ (b[i+2i64] as u64 << 16u64)
+    if rem >= 2i64 then h = h ^ (b[i+1i64] as u64 << 8u64)
+    if rem >= 1i64 then h = h ^ b[i] as u64; h = h *% MM2_M64
+    h = h ^ (h >> 47u64)
+    h = h *% MM2_M64
+    h ^ (h >> 47u64)
+
+fn murmur2_64a_str : ptr -> u64 | s -> murmur2_64a(s, os.linux.strlen(s) as i64, 0u64)
+
+-- §2  MURMUR3_32
+
+const MM3_C1_32 : u32 = 3432918353u32   -- 0xCC9E2D51
+const MM3_C2_32 : u32 = 461845907u32    -- 0x1B873593
+
+fn mm3_rotl32 : (u32, u32) -> u32
+  | (x, r) -> (x << r) | (x >> (32u32 - r))
+
+fn mm3_fmix32 : u32 -> u32
+  | h ->
+    let h1 = h ^ (h >> 16u32)
+    let h2 = h1 *% 2246822519u32
+    let h3 = h2 ^ (h2 >> 13u32)
+    let h4 = h3 *% 3266489917u32
+    h4 ^ (h4 >> 16u32)
+
+fn murmur3_32 : (ptr, i64, u32) -> u32
+  | (data, len, seed) ->
+    let mut h = seed
+    let b = data as *u8
+    let nblocks = len / 4i64; let mut i : i64 = 0i64
+
+    while i < nblocks
+      let base = i * 4i64
+      let mut k = (b[base] as u32) | ((b[base+1i64] as u32) << 8u32) |
+                  ((b[base+2i64] as u32) << 16u32) | ((b[base+3i64] as u32) << 24u32)
+      k = k *% MM3_C1_32
+      k = mm3_rotl32(k, 15u32)
+      k = k *% MM3_C2_32
+      h = h ^ k
+      h = mm3_rotl32(h, 13u32)
+      h = h *% 5u32 +% 3864292196u32   -- 0xE6546B64
+      i = i + 1i64
+
+    let tail = nblocks * 4i64
+    let rem = len & 3i64
+    let mut k : u32 = 0u32
+    if rem == 3i64 then k = k ^ (b[tail+2i64] as u32 << 16u32)
+    if rem >= 2i64 then k = k ^ (b[tail+1i64] as u32 << 8u32)
+    if rem >= 1i64
+      k = k ^ b[tail] as u32
+      k = k *% MM3_C1_32
+      k = mm3_rotl32(k, 15u32)
+      k = k *% MM3_C2_32
+      h = h ^ k
+
+    h = h ^ len as u32
+    mm3_fmix32(h)
+
+fn murmur3_32_str : (ptr, u32) -> u32
+  | (s, seed) -> murmur3_32(s, os.linux.strlen(s) as i64, seed)
+
+fn murmur3_32_hash : ptr -> u32 | s -> murmur3_32_str(s, 0u32)
+
+-- §3  MURMUR3_128 x64 variant — returns two u64s (lo, hi)
+
+const MM3_C1_128 : u64 = 14181476777654086739u64  -- 0xC6A4A7935BD1E995 (same as MM2_M64 — coincidence in constants)
+const MM3_C2_128 : u64 = 16624267996588697507u64  -- 0xE7037ED1A0B428DB
+
+-- Corrected Murmur3_x64_128 constants
+const M3_128_C1 : u64 = 11931769755167812297u64   -- 0xA5B2838292B28ADC
+const M3_128_C2 : u64 = 14029467366897019727u64   -- 0xC2B2AE3D27D4EB4F
+
+fn mm3_rotl64 : (u64, u64) -> u64
+  | (x, r) -> (x << r) | (x >> (64u64 - r))
+
+fn mm3_fmix64 : u64 -> u64
+  | h ->
+    let h1 = h ^ (h >> 33u64)
+    let h2 = h1 *% 16181161503786112357u64
+    let h3 = h2 ^ (h2 >> 33u64)
+    let h4 = h3 *% 12065312585381208867u64
+    h4 ^ (h4 >> 33u64)
+
+fn murmur3_128 : (ptr, i64, u32, *u64) -> ()
+  | (data, len, seed, out) ->
+    let mut h1 = seed as u64
+    let mut h2 = seed as u64
+    let c1 : u64 = 11931769755167812297u64
+    let c2 : u64 = 16624267996588697507u64
+    let b = data as *u8
+    let nblocks = len / 16i64; let mut i : i64 = 0i64
+
+    while i < nblocks
+      let base = i * 16i64
+      let k1 = (b[base]   as u64) | ((b[base+1i64] as u64)<<8u64)  | ((b[base+2i64] as u64)<<16u64) | ((b[base+3i64] as u64)<<24u64) |
+               ((b[base+4i64] as u64)<<32u64) | ((b[base+5i64] as u64)<<40u64) | ((b[base+6i64] as u64)<<48u64) | ((b[base+7i64] as u64)<<56u64)
+      let k2 = (b[base+8i64] as u64) | ((b[base+9i64] as u64)<<8u64) | ((b[base+10i64] as u64)<<16u64) | ((b[base+11i64] as u64)<<24u64) |
+               ((b[base+12i64] as u64)<<32u64) | ((b[base+13i64] as u64)<<40u64) | ((b[base+14i64] as u64)<<48u64) | ((b[base+15i64] as u64)<<56u64)
+
+      let mut k1m = k1 *% c1; k1m = mm3_rotl64(k1m, 31u64); k1m = k1m *% c2; h1 = h1 ^ k1m
+      h1 = mm3_rotl64(h1, 27u64); h1 = h1 +% h2; h1 = h1 *% 5u64 +% 1390208809u64
+
+      let mut k2m = k2 *% c2; k2m = mm3_rotl64(k2m, 33u64); k2m = k2m *% c1; h2 = h2 ^ k2m
+      h2 = mm3_rotl64(h2, 31u64); h2 = h2 +% h1; h2 = h2 *% 5u64 +% 944331445u64
+      i = i + 1i64
+
+    let tail = nblocks * 16i64
+    let rem = len & 15i64
+    let mut k1 : u64 = 0u64; let mut k2 : u64 = 0u64
+
+    if rem == 15i64 then k2 = k2 ^ (b[tail+14i64] as u64 << 48u64)
+    if rem >= 14i64 then k2 = k2 ^ (b[tail+13i64] as u64 << 40u64)
+    if rem >= 13i64 then k2 = k2 ^ (b[tail+12i64] as u64 << 32u64)
+    if rem >= 12i64 then k2 = k2 ^ (b[tail+11i64] as u64 << 24u64)
+    if rem >= 11i64 then k2 = k2 ^ (b[tail+10i64] as u64 << 16u64)
+    if rem >= 10i64 then k2 = k2 ^ (b[tail+ 9i64] as u64 <<  8u64)
+    if rem >=  9i64
+      k2 = k2 ^ b[tail+8i64] as u64
+      k2 = k2 *% c2; k2 = mm3_rotl64(k2, 33u64); k2 = k2 *% c1; h2 = h2 ^ k2
+
+    if rem >=  8i64 then k1 = k1 ^ (b[tail+7i64] as u64 << 56u64)
+    if rem >=  7i64 then k1 = k1 ^ (b[tail+6i64] as u64 << 48u64)
+    if rem >=  6i64 then k1 = k1 ^ (b[tail+5i64] as u64 << 40u64)
+    if rem >=  5i64 then k1 = k1 ^ (b[tail+4i64] as u64 << 32u64)
+    if rem >=  4i64 then k1 = k1 ^ (b[tail+3i64] as u64 << 24u64)
+    if rem >=  3i64 then k1 = k1 ^ (b[tail+2i64] as u64 << 16u64)
+    if rem >=  2i64 then k1 = k1 ^ (b[tail+1i64] as u64 <<  8u64)
+    if rem >=  1i64
+      k1 = k1 ^ b[tail] as u64
+      k1 = k1 *% c1; k1 = mm3_rotl64(k1, 31u64); k1 = k1 *% c2; h1 = h1 ^ k1
+
+    h1 = h1 ^ len as u64; h2 = h2 ^ len as u64
+    h1 = h1 +% h2; h2 = h2 +% h1
+    h1 = mm3_fmix64(h1); h2 = mm3_fmix64(h2)
+    h1 = h1 +% h2; h2 = h2 +% h1
+
+    out[0i64] = h1; out[1i64] = h2
+
+fn murmur3_128_lo : (ptr, i64, u32) -> u64
+  | (data, len, seed) ->
+    let out : *u64 = os.linux.malloc(16i64) as *u64
+    murmur3_128(data, len, seed, out)
+    let v = out[0i64]; os.linux.free(out as ptr); v
+
+fn murmur3_128_str : ptr -> u64
+  | s -> murmur3_128_lo(s, os.linux.strlen(s) as i64, 0u32)
+
+-- §4  MURMUR3 HASH FOR INTEGERS
+
+fn murmur3_32_u32 : u32 -> u32
+  | v ->
+    let tmp : *u32 = os.linux.malloc(4i64) as *u32
+    tmp[0u32] = v
+    let r = murmur3_32(tmp as ptr, 4i64, 0u32)
+    os.linux.free(tmp as ptr); r
+
+fn murmur3_32_u64 : u64 -> u32
+  | v ->
+    let tmp : *u64 = os.linux.malloc(8i64) as *u64
+    tmp[0i64] = v
+    let r = murmur3_32(tmp as ptr, 8i64, 0u32)
+    os.linux.free(tmp as ptr); r
+
+fn murmur3_64_u64 : u64 -> u64
+  | v -> murmur2_64a(&v as ptr, 8i64, 0u64)

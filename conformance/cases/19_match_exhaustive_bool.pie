@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+fn f : bool -> i32
+  | b ->
+      match b
+        | true -> 1
+        | false -> 0

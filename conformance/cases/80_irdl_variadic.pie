@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+fn sink : i32 -> i32
+  | a -> a
+dialect Flex
+  opcode anyop
+irdl
+  Flex.anyop [a : i32, ..rest] ↦ sink(a)
+fn u : (i32,i32,i32) -> i32
+  | (x,y,z) -> Flex.anyop(x, y, z)

@@ -1,0 +1,86 @@
+mod fmt.parse_float.float_info
+
+-- Per-type IEEE-754 constants needed by the parse pipeline.
+
+-- f64 constants
+const F64_MANTISSA_EXPLICIT_BITS  : i32 = 52i32
+const F64_MANTISSA_BITS           : i32 = 53i32   -- includes hidden bit
+const F64_EXPONENT_BITS           : i32 = 11i32
+const F64_EXPONENT_BIAS           : i32 = 1023i32
+const F64_MINIMUM_EXPONENT        : i32 = -1023i32  -- biased exponent for denormals
+const F64_INFINITE_POWER          : i32 = 0x7FFi32
+const F64_SIGN_INDEX              : i32 = 63i32
+const F64_SMALLEST_POWER_OF_TEN   : i64 = -342i64
+const F64_LARGEST_POWER_OF_TEN    : i64 = 308i64
+const F64_MAX_DIGITS              : i64 = 768i64    -- max digits for exact parse
+const F64_MAX_DIGITS_WITHOUT_OVERFLOW : i64 = 19i64
+-- round-to-even exponent window
+const F64_MIN_EXPONENT_ROUND_TO_EVEN : i64 = -4i64
+const F64_MAX_EXPONENT_ROUND_TO_EVEN : i64 = 23i64
+const F64_MIN_EXPONENT_FAST       : i64 = -22i64   -- 10^22 fits in f64
+const F64_MAX_EXPONENT_FAST       : i64 = 22i64
+const F64_MAX_MANTISSA_FAST       : u64 = 2000000000000000u64  -- 2e15
+const F64_INF_BITS                : u64 = 0x7FF0000000000000u64
+const F64_NAN_BITS                : u64 = 0x7FF8000000000000u64
+
+-- f32 constants
+const F32_MANTISSA_EXPLICIT_BITS  : i32 = 23i32
+const F32_MANTISSA_BITS           : i32 = 24i32
+const F32_EXPONENT_BITS           : i32 = 8i32
+const F32_EXPONENT_BIAS           : i32 = 127i32
+const F32_MINIMUM_EXPONENT        : i32 = -127i32
+const F32_INFINITE_POWER          : i32 = 0xFFi32
+const F32_SIGN_INDEX              : i32 = 31i32
+const F32_SMALLEST_POWER_OF_TEN   : i64 = -65i64
+const F32_LARGEST_POWER_OF_TEN    : i64 = 38i64
+const F32_MAX_DIGITS              : i64 = 114i64
+const F32_MAX_DIGITS_WITHOUT_OVERFLOW : i64 = 19i64
+const F32_MIN_EXPONENT_ROUND_TO_EVEN : i64 = -17i64
+const F32_MAX_EXPONENT_ROUND_TO_EVEN : i64 = 10i64
+const F32_MIN_EXPONENT_FAST       : i64 = -10i64
+const F32_MAX_EXPONENT_FAST       : i64 = 10i64
+const F32_MAX_MANTISSA_FAST       : u64 = 16777216u64   -- 2^24
+const F32_INF_BITS                : u32 = 0x7F800000u32
+const F32_NAN_BITS                : u32 = 0x7FC00000u32
+
+-- Pre-computed exact powers of 10 that fit in f64 (10^0 through 10^22)
+-- Used by the fast path converter
+fn f64_pow10_exact : i64 -> f64
+  | exp ->
+    if exp == 0i64 then 1.0f64
+    else if exp == 1i64 then 10.0f64
+    else if exp == 2i64 then 100.0f64
+    else if exp == 3i64 then 1000.0f64
+    else if exp == 4i64 then 10000.0f64
+    else if exp == 5i64 then 100000.0f64
+    else if exp == 6i64 then 1000000.0f64
+    else if exp == 7i64 then 10000000.0f64
+    else if exp == 8i64 then 100000000.0f64
+    else if exp == 9i64 then 1000000000.0f64
+    else if exp == 10i64 then 10000000000.0f64
+    else if exp == 11i64 then 100000000000.0f64
+    else if exp == 12i64 then 1000000000000.0f64
+    else if exp == 13i64 then 10000000000000.0f64
+    else if exp == 14i64 then 100000000000000.0f64
+    else if exp == 15i64 then 1000000000000000.0f64
+    else if exp == 16i64 then 10000000000000000.0f64
+    else if exp == 17i64 then 100000000000000000.0f64
+    else if exp == 18i64 then 1000000000000000000.0f64
+    else if exp == 19i64 then 10000000000000000000.0f64
+    else if exp == 20i64 then 100000000000000000000.0f64
+    else if exp == 21i64 then 1000000000000000000000.0f64
+    else 10000000000000000000000.0f64   -- 10^22
+
+fn f32_pow10_exact : i64 -> f32
+  | exp ->
+    if exp == 0i64 then 1.0f32
+    else if exp == 1i64 then 10.0f32
+    else if exp == 2i64 then 100.0f32
+    else if exp == 3i64 then 1000.0f32
+    else if exp == 4i64 then 10000.0f32
+    else if exp == 5i64 then 100000.0f32
+    else if exp == 6i64 then 1000000.0f32
+    else if exp == 7i64 then 10000000.0f32
+    else if exp == 8i64 then 100000000.0f32
+    else if exp == 9i64 then 1000000000.0f32
+    else 10000000000.0f32

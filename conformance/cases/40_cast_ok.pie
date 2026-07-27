@@ -1,0 +1,3 @@
+-- EXPECT-CLEAN
+fn f : i32 -> i64
+  | n -> n as i64

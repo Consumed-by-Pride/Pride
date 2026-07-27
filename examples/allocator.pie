@@ -1,0 +1,175 @@
+-- allocator.pie — Memory allocator in pure Pride
+-- mmap-based bump and freelist allocators
+
+fn mmap_anon : i64 -> ptr ! [IO]
+  | size ->
+      let r = syscall(9, 0, size, 3, 34, 0 - 1, 0)
+      r as ptr
+
+fn munmap_range : (ptr, i64) -> i64 ! [IO]
+  | (addr, size) -> syscall(11, addr as i64, size)
+
+fn sys_write_str : (ptr, i64) -> () ! [IO]
+  | (s, n) -> syscall(1, 1, s as i64, n)
+
+fn u64_print : u64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 24]
+      let buf_addr = buf as i64
+      let mut x = n
+      let mut len : i64 = 0
+      if x == 0u64
+        buf[0] = 48u8
+        len = 1
+      else
+        let tmp : *u8 = alloc [u8; 24]
+        let tmp_addr = tmp as i64
+        while x > 0u64
+          tmp[len] = (x % 10u64 + 48u64) as u8
+          x = x / 10u64
+          len = len + 1
+        let mut i : i64 = 0
+        while i < len
+          buf[i] = tmp[len - 1 - i]
+          i = i + 1
+        free tmp
+      buf[len] = 10u8
+      syscall(1, 1, buf_addr, len + 1)
+      free buf
+
+-- ── Bump arena ────────────────────────────────────────────────────────────────
+
+type Arena = struct
+  base : ptr
+  pos  : i64
+  cap  : i64
+
+fn arena_new : i64 -> Arena ! [IO]
+  | cap ->
+      let base = mmap_anon(cap)
+      Arena { base: base, pos: 0, cap: cap }
+
+fn arena_alloc : (*Arena, i64) -> ptr
+  | (a, size) ->
+      let aligned = (size + 7) & ~7
+      let available = a.cap - a.pos >= aligned
+      if !available
+        null as ptr
+      else
+        let result = a.base + a.pos
+        a.pos = a.pos + aligned
+        result
+
+fn arena_used : *Arena -> i64
+  | a -> a.pos
+
+fn arena_reset : *Arena -> ()
+  | a -> a.pos = 0
+
+fn arena_destroy : *Arena -> () ! [IO]
+  | a -> munmap_range(a.base, a.cap)
+
+-- ── Freelist ──────────────────────────────────────────────────────────────────
+
+type FreeList = struct
+  head     : i64
+  obj_size : i64
+  pool     : ptr
+  pool_pos : i64
+  pool_cap : i64
+
+fn freelist_new : (i64, i64) -> FreeList ! [IO]
+  | (obj_size, count) ->
+      let pool = mmap_anon(obj_size * count)
+      FreeList {
+        head: 0,
+        obj_size: obj_size,
+        pool: pool,
+        pool_pos: 0,
+        pool_cap: obj_size * count
+      }
+
+fn freelist_alloc : *FreeList -> ptr
+  | fl ->
+      let mut result : ptr = null
+      let has_head = fl.head != 0
+      if has_head
+        let node_addr = fl.head
+        let next_addr = *(node_addr as *i64)
+        fl.head = next_addr
+        result = node_addr as ptr
+      else
+        let pool_pos = fl.pool_pos
+        let fits = pool_pos + fl.obj_size <= fl.pool_cap
+        if fits
+          let slot = fl.pool + pool_pos
+          fl.pool_pos = pool_pos + fl.obj_size
+          result = slot
+      result
+
+fn freelist_free : (*FreeList, ptr) -> ()
+  | (fl, p) ->
+      *(p as *i64) = fl.head
+      fl.head = p as i64
+
+fn freelist_destroy : *FreeList -> () ! [IO]
+  | fl -> munmap_range(fl.pool, fl.pool_cap)
+
+-- ── Demo ──────────────────────────────────────────────────────────────────────
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      let s0 = "=== Pride Allocators ===\n"
+      sys_write_str(s0, 25)
+
+      -- Bump arena
+      let mut arena = arena_new(1024 * 1024)
+      let s1 = "Arena: 1MB mmaped\n"
+      sys_write_str(s1, 18)
+
+      let p1 = arena_alloc(&arena, 8)
+      let p2 = arena_alloc(&arena, 16)
+      let p3 = arena_alloc(&arena, 32)
+      *(p1 as *u64) = 111u64
+      *(p2 as *u64) = 222u64
+      *(p3 as *u64) = 333u64
+
+      let sp1 = "p1 = "
+      sys_write_str(sp1, 5)
+      u64_print(*(p1 as *u64))
+      let sp2 = "p2 = "
+      sys_write_str(sp2, 5)
+      u64_print(*(p2 as *u64))
+      let sp3 = "p3 = "
+      sys_write_str(sp3, 5)
+      u64_print(*(p3 as *u64))
+      let su = "used = "
+      sys_write_str(su, 7)
+      u64_print(arena_used(&arena) as u64)
+
+      arena_reset(&arena)
+      let sar = "after reset = "
+      sys_write_str(sar, 14)
+      u64_print(arena_used(&arena) as u64)
+      arena_destroy(&arena)
+
+      -- Freelist
+      let mut fl = freelist_new(64, 16)
+      let sfl = "FreeList: 16 slots\n"
+      sys_write_str(sfl, 19)
+
+      let fp1 = freelist_alloc(&fl)
+      let fp2 = freelist_alloc(&fl)
+      *(fp1 as *u64) = 42u64
+      *(fp2 as *u64) = 99u64
+
+      freelist_free(&fl, fp1)
+      let fp3 = freelist_alloc(&fl)
+      let sfp = "fp3 = "
+      sys_write_str(sfp, 6)
+      u64_print(*(fp2 as *u64))
+
+      freelist_destroy(&fl)
+      let sd = "Done.\n"
+      sys_write_str(sd, 6)
+      syscall(231, 0)

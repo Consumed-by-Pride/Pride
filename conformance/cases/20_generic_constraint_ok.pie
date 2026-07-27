@@ -1,0 +1,5 @@
+-- EXPECT-CLEAN
+fn dbl<T : Num> : T -> T
+  | x -> x + x
+fn apply : i32 -> i32
+  | n -> dbl(n)
