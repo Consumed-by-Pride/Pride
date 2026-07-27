@@ -51,7 +51,7 @@ DYNLINKER := /lib64/ld-linux-x86-64.so.2
 # runtime/compiler_rt_arch.c's own weak stubs may not cover on every GCC
 # version — link it (as tests/run_exec.sh already does) so `make compile`
 # doesn't fail with undefined-symbol errors for programs using i128/u128.
-GCC_LIBDIR := /usr/lib/gcc/x86_64-linux-gnu/14
+GCC_LIBDIR := /usr/lib/gcc/x86_64-linux-gnu/12
 
 MODULES := \
 	lexer.c3       \

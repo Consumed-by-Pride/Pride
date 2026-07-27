@@ -12,7 +12,7 @@ fn is_odd : i64 -> i64
 fn main : () -> () ! [IO]
   | () ->
       if is_even(100) == 1
-        syscall(1, 1, "true\n" as i64, 5)
+        syscall(1, 1, ("true\n" as ptr) as i64, 5)
       else
-        syscall(1, 1, "false\n" as i64, 6)
+        syscall(1, 1, ("false\n" as ptr) as i64, 6)
       syscall(231, 0)

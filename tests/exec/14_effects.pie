@@ -29,6 +29,6 @@ fn print_i64_nl : i64 -> () ! [IO, Alloc]
 fn main : () -> () ! [IO, Alloc, Compute]
   | () ->
       print_i64_nl(safe_square(7))
-      syscall(1, 1, "0\n" as i64, 2)
-      syscall(1, 1, "true\n" as i64, 5)
+      syscall(1, 1, ("0\n" as ptr) as i64, 2)
+      syscall(1, 1, ("true\n" as ptr) as i64, 5)
       syscall(231, 0)

@@ -2,11 +2,11 @@
 fn sign_str : i64 -> () ! [IO]
   | n ->
       if n > 0
-        syscall(1, 1, "positive\n" as i64, 9)
+        syscall(1, 1, ("positive\n" as ptr) as i64, 9)
       else if n == 0
-        syscall(1, 1, "zero\n" as i64, 5)
+        syscall(1, 1, ("zero\n" as ptr) as i64, 5)
       else
-        syscall(1, 1, "negative\n" as i64, 9)
+        syscall(1, 1, ("negative\n" as ptr) as i64, 9)
 fn refined_sum : (i64, i64) -> i64
   | (a, b) ->
       if a > 0

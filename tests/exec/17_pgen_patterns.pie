@@ -49,7 +49,7 @@ fn main : () -> () ! [IO, Alloc]
       print_i64_nl(pair_decide(p))
       let q = Pair { fst: 0, snd: 99 }
       if pair_decide(q) == 0
-        syscall(1, 1, "no\n" as i64, 3)
+        syscall(1, 1, ("no\n" as ptr) as i64, 3)
       else
-        syscall(1, 1, "yes\n" as i64, 4)
+        syscall(1, 1, ("yes\n" as ptr) as i64, 4)
       syscall(231, 0)

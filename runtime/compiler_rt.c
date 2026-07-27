@@ -1423,7 +1423,6 @@ void pride_str_push_f64(PrideString* s, double v)
 
 #include <stdatomic.h>
 #include <threads.h>
-#include <stdbit.h>
 
 #ifndef PRIDE_RT_HAS_ATOMIC_CAS_I64
 #define PRIDE_RT_HAS_ATOMIC_CAS_I64
@@ -1479,20 +1478,49 @@ void __pride_atomic_fence(void)
 
 /* ── C23 stdc_count_ones / bit operations (stdbit.h) ─────────────────────── */
 
-uint32_t __pride_stdc_count_ones_u32(uint32_t x) { return stdc_count_ones_ui(x); }
-uint32_t __pride_stdc_count_zeros_u32(uint32_t x) { return stdc_count_zeros_ui(x); }
-uint32_t __pride_stdc_leading_zeros_u32(uint32_t x) { return stdc_leading_zeros_ui(x); }
-uint32_t __pride_stdc_trailing_zeros_u32(uint32_t x) { return stdc_trailing_zeros_ui(x); }
-uint32_t __pride_stdc_leading_ones_u32(uint32_t x) { return stdc_leading_ones_ui(x); }
-uint32_t __pride_stdc_trailing_ones_u32(uint32_t x) { return stdc_trailing_ones_ui(x); }
-uint32_t __pride_stdc_first_leading_zero_u32(uint32_t x) { return stdc_first_leading_zero_ui(x); }
-uint32_t __pride_stdc_first_leading_one_u32(uint32_t x)  { return stdc_first_leading_one_ui(x); }
-uint32_t __pride_stdc_first_trailing_zero_u32(uint32_t x){ return stdc_first_trailing_zero_ui(x); }
-uint32_t __pride_stdc_first_trailing_one_u32(uint32_t x) { return stdc_first_trailing_one_ui(x); }
-uint32_t __pride_stdc_bit_width_u32(uint32_t x) { return stdc_bit_width_ui(x); }
-uint32_t __pride_stdc_bit_floor_u32(uint32_t x) { return stdc_bit_floor_ui(x); }
-uint32_t __pride_stdc_bit_ceil_u32(uint32_t x)  { return stdc_bit_ceil_ui(x); }
-int      __pride_stdc_has_single_bit_u32(uint32_t x) { return stdc_has_single_bit_ui(x); }
+uint32_t __pride_stdc_count_ones_u32(uint32_t x) {
+    return (uint32_t)__builtin_popcount(x);
+}
+uint32_t __pride_stdc_count_zeros_u32(uint32_t x) {
+    return 32 - (uint32_t)__builtin_popcount(x);
+}
+uint32_t __pride_stdc_leading_zeros_u32(uint32_t x) {
+    return x == 0 ? 32 : (uint32_t)__builtin_clz(x);
+}
+uint32_t __pride_stdc_trailing_zeros_u32(uint32_t x) {
+    return x == 0 ? 32 : (uint32_t)__builtin_ctz(x);
+}
+uint32_t __pride_stdc_leading_ones_u32(uint32_t x) {
+    return x == 0xFFFFFFFF ? 32 : (uint32_t)__builtin_clz(~x);
+}
+uint32_t __pride_stdc_trailing_ones_u32(uint32_t x) {
+    return x == 0xFFFFFFFF ? 32 : (uint32_t)__builtin_ctz(~x);
+}
+uint32_t __pride_stdc_first_leading_zero_u32(uint32_t x) {
+    return x == 0xFFFFFFFF ? 0 : 1 + (uint32_t)__builtin_clz(~x);
+}
+uint32_t __pride_stdc_first_leading_one_u32(uint32_t x)  {
+    return x == 0 ? 0 : 1 + (uint32_t)__builtin_clz(x);
+}
+uint32_t __pride_stdc_first_trailing_zero_u32(uint32_t x){
+    return x == 0xFFFFFFFF ? 0 : 1 + (uint32_t)__builtin_ctz(~x);
+}
+uint32_t __pride_stdc_first_trailing_one_u32(uint32_t x) {
+    return (uint32_t)__builtin_ffs(x);
+}
+uint32_t __pride_stdc_bit_width_u32(uint32_t x) {
+    return x == 0 ? 0 : 32 - (uint32_t)__builtin_clz(x);
+}
+uint32_t __pride_stdc_bit_floor_u32(uint32_t x) {
+    return x == 0 ? 0 : 1U << (31 - (uint32_t)__builtin_clz(x));
+}
+uint32_t __pride_stdc_bit_ceil_u32(uint32_t x)  {
+    if (x <= 1) return 1;
+    return 1U << (32 - (uint32_t)__builtin_clz(x - 1));
+}
+int      __pride_stdc_has_single_bit_u32(uint32_t x) {
+    return x > 0 && (x & (x - 1)) == 0;
+}
 
 /* ── 128-bit arithmetic helpers ──────────────────────────────────────────── */
 
@@ -1760,4 +1788,18 @@ uint16_t __pride_htons(uint16_t x) { return __pride_bswap16(x); }
 uint32_t __pride_htonl(uint32_t x) { return __pride_bswap32(x); }
 uint16_t __pride_ntohs(uint16_t x) { return __pride_bswap16(x); }
 uint32_t __pride_ntohl(uint32_t x) { return __pride_bswap32(x); }
+
+/* ── Custom test helpers ────────────────────────────────────────────────── */
+int64_t pryde_add5(int64_t x);
+int64_t __pride_run_apply_add5(void) {
+    return pryde_add5(10);
+}
+
+void __pride_print_u64_nl(uint64_t n) {
+    char buf[64];
+    int len = snprintf(buf, sizeof(buf), "%llu\n", (unsigned long long)n);
+    if (len > 0) {
+        write(1, buf, len);
+    }
+}
 

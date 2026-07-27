@@ -1,5 +1,5 @@
 -- EXPECT: Hello, World!
 fn main : () -> () ! [IO]
   | () ->
-      syscall(1, 1, "Hello, World!\n" as i64, 14)
+      syscall(1, 1, ("Hello, World!\n" as ptr) as i64, 14)
       syscall(231, 0)

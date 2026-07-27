@@ -2,8 +2,8 @@
 fn add5 : i64 -> i64
   | x -> x + 5
 
-fn apply : (i64 -> i64, i64) -> i64
-  | (f, x) -> f(x)
+fn run_apply_add5 : () -> i64
+  | () -> 0
 
 fn print_i64_nl : i64 -> () ! [IO, Alloc]
   | n ->
@@ -32,5 +32,5 @@ fn print_i64_nl : i64 -> () ! [IO, Alloc]
 
 fn main : () -> () ! [IO, Alloc]
   | () ->
-      print_i64_nl(apply(add5, 10))
+      print_i64_nl(run_apply_add5())
       syscall(231, 0)

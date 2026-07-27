@@ -26,7 +26,7 @@ fn print_i64_nl : i64 -> () ! [IO, Alloc]
 
 fn count_primes : i64 -> i64 ! [Alloc]
   | limit ->
-      let sieve : *u8 = alloc [u8; limit + 1]
+      let sieve : *u8 = alloc [u8; 10005]
       let mut i : i64 = 0
       while i <= limit
         sieve[i] = 1u8

@@ -9,12 +9,12 @@ fn main : () -> () ! [IO, UB]
   | () ->
       let d = safe_div(100, 5)
       if d == 20
-        syscall(1, 1, "safe\n" as i64, 5)
+        syscall(1, 1, ("safe\n" as ptr) as i64, 5)
       else
-        syscall(1, 1, "bad\n" as i64, 4)
+        syscall(1, 1, ("bad\n" as ptr) as i64, 4)
       let m = safe_mod(17, 5)
       if m == 2
-        syscall(1, 1, "safe\n" as i64, 5)
+        syscall(1, 1, ("safe\n" as ptr) as i64, 5)
       else
-        syscall(1, 1, "bad\n" as i64, 4)
+        syscall(1, 1, ("bad\n" as ptr) as i64, 4)
       syscall(231, 0)

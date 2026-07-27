@@ -1,8 +1,8 @@
 -- EXPECT: one\nthree\nmany
 fn describe : i64 -> () ! [IO]
-  | 1 -> syscall(1, 1, "one\n" as i64, 4)
-  | 3 -> syscall(1, 1, "three\n" as i64, 6)
-  | _ -> syscall(1, 1, "many\n" as i64, 5)
+  | 1 -> syscall(1, 1, ("one\n" as ptr) as i64, 4)
+  | 3 -> syscall(1, 1, ("three\n" as ptr) as i64, 6)
+  | _ -> syscall(1, 1, ("many\n" as ptr) as i64, 5)
 
 fn main : () -> () ! [IO]
   | () ->

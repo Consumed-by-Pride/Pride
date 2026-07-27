@@ -1,4 +1,4 @@
--- EXPECT: parse 2:1 Pride has no `class`
+-- EXPECT: parse 2:1 Pryde has no `class`
 class Foo
   x : i32
 fn f : i32 -> i32
