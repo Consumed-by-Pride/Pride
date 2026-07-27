@@ -1,5 +1,5 @@
 # ============================================================================
-# Makefile — Pryde compiler (frontend + IR pipeline)
+# Makefile — Pride compiler (frontend + IR pipeline)
 # ============================================================================
 # Requires: c3c v0.8.1  (auto-fetched to /tmp/c3/c3c if missing)
 #           LLVM 22.1.x toolchain: llvm-as-22 llc-22 opt-22 ld.lld-22
@@ -13,7 +13,7 @@
 #   make redteam      — red-team suite only
 #   make clean        — remove built binaries + generated .ll/.bc/.o files
 #   make c3c          — fetch c3c if missing (idempotent)
-#   make runtime      — compile runtime/compiler_rt.c → runtime/compiler_rt.o
+#   make runtime      — compile runtime/compiler_rt.c + compiler_rt_arch.c
 #
 # LLVM 22 pipeline (no Clang anywhere):
 #   ./pryde --emit-llvm output.ll source.pry        # emit LLVM 22 IR text
@@ -21,8 +21,9 @@
 #   opt-22 -O2 output.bc -o output.opt.bc           # optimise
 #   llc-22 -filetype=obj -relocation-model=pic \
 #          output.opt.bc -o output.o                # compile to ELF object
-#   ld.lld-22 crt1.o crti.o output.o compiler_rt.o \
-#             crtn.o -lc --dynamic-linker ... \
+#   ld.lld-22 crt1.o crti.o output.o \
+#             compiler_rt.o compiler_rt_arch.o \
+#             crtn.o -lc -lgcc --dynamic-linker ... \
 #             -o program                            # link with lld
 # ============================================================================
 
@@ -45,6 +46,12 @@ LLVM_DIS  := llvm-dis-22
 CRT_DIR   := /usr/lib/x86_64-linux-gnu
 LIB_DIRS  := -L/usr/lib/x86_64-linux-gnu -L/lib/x86_64-linux-gnu
 DYNLINKER := /lib64/ld-linux-x86-64.so.2
+# libgcc provides __udivti3/__divti3/__umodti3/__modti3/__udivmodti4 (128-bit
+# division/modulo) and other compiler-generated intrinsic calls that
+# runtime/compiler_rt_arch.c's own weak stubs may not cover on every GCC
+# version — link it (as tests/run_exec.sh already does) so `make compile`
+# doesn't fail with undefined-symbol errors for programs using i128/u128.
+GCC_LIBDIR := /usr/lib/gcc/x86_64-linux-gnu/14
 
 MODULES := \
 	lexer.c3       \
@@ -81,10 +88,12 @@ asan: c3c $(MODULES)
 	@chmod +x $(ASAN)
 	@echo "Built: ./$(ASAN)"
 
-runtime: runtime/compiler_rt.c
+runtime: runtime/compiler_rt.c runtime/compiler_rt_arch.c
 	gcc -O2 -std=c11 -pthread -Wall -Wextra -fno-strict-aliasing \
-	    -fPIC -c runtime/compiler_rt.c -o runtime/compiler_rt.o
-	@echo "Built: runtime/compiler_rt.o"
+	    -msse4.1 -fPIC -c runtime/compiler_rt.c -o runtime/compiler_rt.o
+	gcc -O2 -std=c11 -pthread -Wall -Wextra -fno-strict-aliasing \
+	    -msse4.1 -fPIC -c runtime/compiler_rt_arch.c -o runtime/compiler_rt_arch.o
+	@echo "Built: runtime/compiler_rt.o runtime/compiler_rt_arch.o"
 
 test: all conform redteam
 
@@ -98,7 +107,7 @@ redteam: all
 
 clean:
 	@rm -f $(BINARY) $(ASAN) *.ll *.bc *.o
-	@rm -f runtime/compiler_rt.o
+	@rm -f runtime/compiler_rt.o runtime/compiler_rt_arch.o
 	@echo "Cleaned."
 
 c3c:
@@ -126,12 +135,12 @@ OPTLEVEL ?= 2
 %.o: %.opt.bc
 	$(LLC) -filetype=obj -relocation-model=pic $< -o $@
 
-compile: $(SRC:.pry=.o) runtime/compiler_rt.o
+compile: $(SRC:.pry=.o) runtime/compiler_rt.o runtime/compiler_rt_arch.o
 	$(LLD) \
 	  $(CRT_DIR)/crt1.o $(CRT_DIR)/crti.o \
-	  $< runtime/compiler_rt.o \
+	  $< runtime/compiler_rt.o runtime/compiler_rt_arch.o \
 	  $(CRT_DIR)/crtn.o \
-	  $(LIB_DIRS) -lc -lpthread -lm \
+	  $(LIB_DIRS) -L$(GCC_LIBDIR) -lc -lpthread -lm -lgcc -lgcc_s \
 	  --dynamic-linker $(DYNLINKER) \
 	  -o $(OUT)
 	@echo "Built: $(OUT)"

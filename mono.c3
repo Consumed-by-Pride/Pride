@@ -270,6 +270,38 @@ fn char* Monomorphizer.mangle(Monomorphizer* m, char* base, usz base_len, MonoSu
         buf[off++] = '_';
         off = type_to_str(sub.types[i], &buf[0], MANGLE_BUF_CAP, off, 0);
     }
+    // Disambiguate against every ALREADY-ASSIGNED instance name. Because
+    // type_to_str() truncates at MANGLE_BUF_CAP bytes, two genuinely
+    // different (per type_struct_eq, which never truncates) instantiations
+    // can still produce the identical mangled prefix for a sufficiently
+    // wide/deep type argument — which would otherwise emit two distinct
+    // LLVM definitions under the SAME symbol name (a link-time duplicate-
+    // symbol failure, or worse, a silent one-definition-wins collision).
+    // Append a numeric suffix until the name is unique.
+    usz base_off = off;
+    int suffix = 0;
+    while (true)
+    {
+        bool collision = false;
+        for (usz ii = 0; ii < m.instance_count; ii++)
+        {
+            MonoInstance* other = &m.instances[ii];
+            if (other.name == null || other.name_len != off) { continue; }
+            bool same = true;
+            for (usz k = 0; k < off; k++) { if (other.name[k] != buf[k]) { same = false; break; } }
+            if (same) { collision = true; break; }
+        }
+        if (!collision) { break; }
+        // Reset to the un-suffixed prefix and append "_N".
+        off = base_off;
+        suffix++;
+        char[16] sbuf;
+        usz slen = 0;
+        int sv = suffix;
+        do { sbuf[slen++] = (char)('0' + (sv % 10)); sv /= 10; } while (sv > 0 && slen < 16);
+        if (off < MANGLE_BUF_CAP - 2) { buf[off++] = '_'; }
+        for (usz k = slen; k > 0 && off < MANGLE_BUF_CAP - 1; k--) { buf[off++] = sbuf[k-1]; }
+    }
     buf[off] = 0;
     char* result = (char*)ast::arena_alloc(m.arena, off + 1, 1);
     if (result == null) { *out_len = 0; return null; }
@@ -285,14 +317,69 @@ fn bool sub_eq(MonoSub* a, MonoSub* b)
     for (usz i = 0; i < a.count; i++)
     {
         if (a.params[i] != b.params[i]) { return false; }
-        char[128] sa;
-        char[128] sb_buf;
-        usz la = type_to_str(a.types[i], &sa[0], 128, 0, 0);
-        usz lb = type_to_str(b.types[i], &sb_buf[0], 128, 0, 0);
-        if (la != lb) { return false; }
-        if (memcmp((void*)&sa[0], (void*)&sb_buf[0], la) != 0) { return false; }
+        if (!type_struct_eq(a.types[i], b.types[i], 0)) { return false; }
     }
     return true;
+}
+
+// Direct recursive structural equality between two type nodes, exactly
+// mirroring type_to_str()'s traversal (same node kinds, same child order,
+// same depth cap) but WITHOUT materializing a bounded string buffer.
+//
+// This exists because sub_eq() previously compared `type_to_str(...)`
+// output truncated into a fixed 128-byte stack buffer: for a sufficiently
+// wide/deep type argument (e.g. a generic instantiated over a tuple type
+// with on the order of 100+ fields sharing a long common prefix), two
+// GENUINELY DIFFERENT types could truncate to the same 128-byte prefix and
+// be silently misidentified as identical by `find_instance()` — causing a
+// call site to be monomorphized against the WRONG existing clone (silent
+// type confusion, since this module's dedup is otherwise relied upon as a
+// correctness guarantee, per this file's own header comment). Comparing
+// the type trees directly can never truncate, so it can never conflate two
+// distinct types regardless of size.
+fn bool type_struct_eq(Node* a, Node* b, int depth)
+{
+    if (a == b) { return true; }
+    if (a == null || b == null) { return false; }
+    if (depth > 8) { return true; }   // matches type_to_str's depth cap
+    if (a.kind != b.kind) { return false; }
+
+    switch (a.kind)
+    {
+        case Nk.NODE_TYPE_PRIMITIVE:
+        case Nk.NODE_TYPEVAR:
+        case Nk.NODE_IDENT:
+            if (a.p.ident.name_len != b.p.ident.name_len) { return false; }
+            for (usz i = 0; i < a.p.ident.name_len; i++)
+            {
+                if (a.p.ident.name_ptr[i] != b.p.ident.name_ptr[i]) { return false; }
+            }
+            return true;
+        case Nk.NODE_TYPE_PTR:
+        case Nk.NODE_TYPE_SLICE:
+        case Nk.NODE_TYPE_ARRAY:
+            if (a.child_count < 1 || b.child_count < 1) { return a.child_count == b.child_count; }
+            return type_struct_eq(a.children[0], b.children[0], depth + 1);
+        case Nk.NODE_TYPE_TUPLE:
+        case Nk.NODE_TYPE_FN:
+        case Nk.NODE_TYPE_UNION:
+        case Nk.NODE_TYPE_INTERSECT:
+        case Nk.NODE_TYPE_GENERIC_APP:
+            if (a.child_count != b.child_count) { return false; }
+            for (usz i = 0; i < a.child_count; i++)
+            {
+                if (!type_struct_eq(a.children[i], b.children[i], depth + 1)) { return false; }
+            }
+            return true;
+        case Nk.NODE_EXPR_UNIT:
+            return true;
+        default:
+            // Unknown/unhandled kinds: type_to_str() emits a fixed 'X' marker
+            // for all of them regardless of content, so it would treat any
+            // two same-kind-but-otherwise-different nodes here as equal too;
+            // preserve that (permissive) behavior for parity.
+            return true;
+    }
 }
 
 

@@ -643,6 +643,25 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
             if (e.child_count >= 1) return self.synth(e.children[0]);
             return null;
 
+        case Nk.NODE_EXPR_RANGE_STEP:
+            // start..end by step — synthesize all three operands (so the step
+            // expression is type-checked too); the range's element type is the
+            // start operand's type, matching NODE_EXPR_RANGE above.
+            {
+                Node* step_ty = e.child_count >= 3 ? self.synth(e.children[2]) : null;
+                if (step_ty != null)
+                {
+                    Prim step_prim = type_prim(self.unfold(step_ty));
+                    if (step_prim != Prim.PRIM_NONE && !prim_is_numeric(step_prim))
+                    {
+                        self.soft("range step must be numeric", e.line, e.col);
+                    }
+                }
+                if (e.child_count >= 2) self.synth(e.children[1]);
+                if (e.child_count >= 1) return self.synth(e.children[0]);
+            }
+            return null;
+
         case Nk.NODE_EXPR_PIPELINE:
         case Nk.NODE_FIXPOINT:
             // value flows through the pipeline; type of the left operand.
@@ -1232,7 +1251,10 @@ fn Node* TypeChecker.mod_decl_of(TypeChecker* self, Node* base)
     if (r.kind == Nk.NODE_DECL_MOD) return r;
     // a `use ... as alias` node: the resolver stamps the target Mod on its
     // type_annotation; child 0 (the module path head) may also be linked.
-    if (r.kind == Nk.NODE_DECL_USE)
+    // (The parser only ever builds NODE_DECL_IMPORT for `use` statements —
+    // NODE_DECL_USE is legacy/unused — but resolve.c3 treats both kinds
+    // identically, so both must be checked here too.)
+    if (r.kind == Nk.NODE_DECL_USE || r.kind == Nk.NODE_DECL_IMPORT)
     {
         if (r.type_annotation != null && r.type_annotation.kind == Nk.NODE_DECL_MOD)
         {
@@ -1423,7 +1445,32 @@ fn Node* TypeChecker.synth_index(TypeChecker* self, Node* e)
 {
     if (e.child_count < 1) return null;
     Node* bt = self.unfold(self.synth(e.children[0]));
-    if (e.child_count >= 2) self.synth(e.children[1]);   // index expr
+    Node* idx_t = null;
+    if (e.child_count >= 2) idx_t = self.synth(e.children[1]);   // index expr
+
+    // The index operand itself must be an integer (or a bare untyped integer
+    // literal, or an unresolved/generic type we can't judge). Indexing with a
+    // bool/float/aggregate is a mistake a caller would otherwise hit silently
+    // (e.g. `arr[true]` or `arr[1.0]`), matching the soft-typing style used
+    // for arithmetic/comparison elsewhere in this checker.
+    if (idx_t != null && e.child_count >= 2)
+    {
+        Node* uidx = self.unfold(idx_t);
+        if (!is_generic_param_type(uidx))
+        {
+            Prim pidx = type_prim(uidx);
+            bool idx_is_int_literal = self.is_int_literal(e.children[1]);
+            if (pidx != Prim.PRIM_NONE && !prim_is_numeric(pidx) && !idx_is_int_literal)
+            {
+                self.soft("index expression must be an integer", e.children[1].line, e.children[1].col);
+            }
+            else if (pidx != Prim.PRIM_NONE && prim_is_float(pidx))
+            {
+                self.soft("index expression must be an integer, not a float", e.children[1].line, e.children[1].col);
+            }
+        }
+    }
+
     if (bt == null) return null;
 
     switch (bt.kind)
@@ -1995,11 +2042,46 @@ fn Node* TypeChecker.synth_bitwise(TypeChecker* self, Node* e, Node* l, Node* r)
     {
         self.soft("bitwise/shift operator requires integer operands (not floats)", e.line, e.col);
     }
+
+    // A shift amount that is a literal >= the left operand's bit width (or
+    // negative, when read as signed) is undefined behavior at the machine
+    // level (LLVM's shl/lshr/ashr are poison in that case) — flag it here so
+    // it isn't a silent runtime footgun (mirrors check_divisor's treatment of
+    // literal-zero divisors as a surfaced, soft "declared UB" diagnostic).
+    bool is_shift = (e.p.op.op == lexer::TokenType.TOKEN_LSHIFT
+                   || e.p.op.op == lexer::TokenType.TOKEN_RSHIFT);
+    if (is_shift && e.child_count >= 2 && e.children[1] != null
+        && e.children[1].kind == Nk.NODE_LIT_INT)
+    {
+        long shift_amount = (long)e.children[1].p.lit_int.int_val;
+        int lhs_bits = prim_bit_width(pl);
+        if (lhs_bits <= 0) lhs_bits = 64;   // unknown left type: assume the widest case
+        if (shift_amount < 0 || shift_amount >= (long)lhs_bits)
+        {
+            self.soft("shift amount is out of range for the operand's width (undefined behavior)",
+                e.children[1].line, e.children[1].col);
+        }
+    }
+
     // Result follows the non-literal operand's integer type.
     if (l != null && prim_is_int(pl)) return l;
     if (r != null && prim_is_int(pr)) return r;
     if (l != null) return l;
     return r;
+}
+
+// Bit width of an integer primitive, or 0 if `p` isn't a fixed-width integer.
+fn int prim_bit_width(Prim p)
+{
+    switch (p)
+    {
+        case PRIM_I8: case PRIM_U8: return 8;
+        case PRIM_I16: case PRIM_U16: return 16;
+        case PRIM_I32: case PRIM_U32: return 32;
+        case PRIM_I64: case PRIM_U64: case PRIM_ISIZE: case PRIM_USIZE: return 64;
+        case PRIM_I128: case PRIM_U128: return 128;
+        default: return 0;
+    }
 }
 
 fn bool TypeChecker.is_int_literal(TypeChecker* self, Node* n)

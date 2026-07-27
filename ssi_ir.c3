@@ -276,12 +276,17 @@ fn ulong sizeof_prim(char* name, usz len)
     // Integer / unsigned: i8 u8 i16 u16 i32 u32 i64 u64 i128 u128 isize usize
     if (len >= 2 && (name[0] == 'i' || name[0] == 'u'))
     {
+        // isize/usize are 64-bit on this target; every other iN/uN spelling
+        // carries its bit width as a decimal suffix after the leading letter.
+        if (span_matches_cstr(name, len, (char*)"isize") || span_matches_cstr(name, len, (char*)"usize"))
+        {
+            return 8;
+        }
         ulong bits = 0;
         for (usz di = 1; di < len; di++)
         {
             if (name[di] >= '0' && name[di] <= '9') { bits = bits * 10 + (ulong)(name[di] - '0'); }
         }
-        if (bits == 0 && len == 5) { bits = 64; } // isize/usize → 64
         if (bits >= 1)
         {
             ulong bytes = (bits + 7) / 8;
@@ -290,16 +295,16 @@ fn ulong sizeof_prim(char* name, usz len)
         return 8;
     }
     // Float: f32 f64
-    if (len == 3 && name[0] == 'f' && name[1] == '3') { return 4; }
-    if (len == 3 && name[0] == 'f' && name[1] == '6') { return 8; }
-    // bool (b or bool)
-    if (len >= 1 && name[0] == 'b') { return 1; }
+    if (span_matches_cstr(name, len, (char*)"f32")) { return 4; }
+    if (span_matches_cstr(name, len, (char*)"f64")) { return 8; }
+    // bool
+    if (span_matches_cstr(name, len, (char*)"bool")) { return 1; }
     // chr (character = 4 bytes / unicode codepoint)
-    if (len == 3 && name[0] == 'c' && name[1] == 'h') { return 4; }
+    if (span_matches_cstr(name, len, (char*)"char")) { return 4; }
     // ptr / raw pointer
-    if (len == 3 && name[0] == 'p' && name[1] == 't') { return 8; }
-    // str (fat pointer: ptr + len)
-    if (len == 3 && name[0] == 's' && name[1] == 't') { return 16; }
+    if (span_matches_cstr(name, len, (char*)"ptr")) { return 8; }
+    // str / Str (fat pointer: ptr + len)
+    if (span_matches_cstr(name, len, (char*)"str") || span_matches_cstr(name, len, (char*)"Str")) { return 16; }
     return 8;
 }
 
@@ -1937,10 +1942,6 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
             if (n.resolved != null)
             {
                 IrVal* cur = m.env_lookup(n.resolved);
-                if (cur == null && n.p.ident.name_len == 6
-                    && n.p.ident.name_ptr[0] == 'o' && n.p.ident.name_ptr[1] == 'f')
-                {
-                        }
                 if (cur != null) return cur;
 
                 // DECL_CONST / DECL_STATIC with an integer/bool initializer:
@@ -2166,6 +2167,24 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
             IrVal* v = m.new_val(IrOp.IR_RANGE, n);
             if (v != null) { v.add_arg(lo, -1); v.add_arg(hi, -1); m.emit(v); }
             return v;
+
+        case Nk.NODE_EXPR_RANGE_STEP:
+            // start..end by step. Lowered exactly like NODE_EXPR_RANGE but with
+            // a third IR_RANGE operand (args[2]) carrying the step value, so
+            // lower_for() (and any other IR_RANGE consumer) can recover it
+            // instead of assuming a hardcoded step of 1.
+            IrVal* rs_lo = m.lower_expr(n.child_count >= 1 ? n.children[0] : null);
+            IrVal* rs_hi = m.lower_expr(n.child_count >= 2 ? n.children[1] : null);
+            IrVal* rs_step = m.lower_expr(n.child_count >= 3 ? n.children[2] : null);
+            IrVal* rs_v = m.new_val(IrOp.IR_RANGE, n);
+            if (rs_v != null)
+            {
+                rs_v.add_arg(rs_lo, -1);
+                rs_v.add_arg(rs_hi, -1);
+                if (rs_step != null) rs_v.add_arg(rs_step, -1);
+                m.emit(rs_v);
+            }
+            return rs_v;
 
         case Nk.NODE_EXPR_TUPLE_LIT:
             return m.lower_aggregate(n, IrOp.IR_TUPLE);
@@ -3930,21 +3949,27 @@ fn void SsiModule.lower_for(SsiModule* m, Node* n)
     Node* iter   = n.child_count >= 2 ? n.children[1] : null;
     Node* body   = n.child_count >= 3 ? n.children[2] : null;
 
-    // Detect integer-range iterator: `for i in lo..hi` / `for i in lo..=hi`.
-    // When iter is NODE_EXPR_RANGE we emit a proper counter φ and bounds check
+    // Detect integer-range iterator: `for i in lo..hi` / `for i in lo..=hi`
+    // / `for i in lo..hi by step`. When iter is NODE_EXPR_RANGE or
+    // NODE_EXPR_RANGE_STEP we emit a proper counter φ and bounds check
     // (IR_BIN '<' or '<=') instead of the opaque IR_UNKNOWN "has-next".
-    bool is_range = (iter != null && iter.kind == Nk.NODE_EXPR_RANGE);
+    bool is_range = (iter != null
+        && (iter.kind == Nk.NODE_EXPR_RANGE || iter.kind == Nk.NODE_EXPR_RANGE_STEP));
 
     IrVal* iter_val = iter != null ? m.lower_expr(iter) : null;
 
-    // For a range, extract lo/hi from the IR_RANGE value's operands.
+    // For a range, extract lo/hi (and, for a step-range, the step) from the
+    // IR_RANGE value's operands. args[2], if present, is the step value
+    // (see the NODE_EXPR_RANGE_STEP case in lower_expr_body).
     IrVal* range_lo = null;
     IrVal* range_hi = null;
+    IrVal* range_step = null;
     if (is_range && iter_val != null && iter_val.op == IrOp.IR_RANGE
         && iter_val.arg_count >= 2)
     {
         range_lo = iter_val.args[0];
         range_hi = iter_val.args[1];
+        if (iter_val.arg_count >= 3) range_step = iter_val.args[2];
     }
     else
     {
@@ -4058,18 +4083,24 @@ fn void SsiModule.lower_for(SsiModule* m, Node* n)
     int body_end = m.cur;
     if (!m.terminated())
     {
-        // Range back-edge: emit counter + 1 before closing the body env.
+        // Range back-edge: emit counter + step (default step 1 when the
+        // iterator was a plain lo..hi/lo..=hi range with no explicit `by`).
         IrVal* back_counter = null;
         if (is_range && counter_phi != null)
         {
-            IrVal* one = m.new_val(IrOp.IR_CONST_INT, n);
-            if (one != null) { one.ival = 1; m.emit(one); }
+            IrVal* step_val = range_step;
+            if (step_val == null)
+            {
+                IrVal* one = m.new_val(IrOp.IR_CONST_INT, n);
+                if (one != null) { one.ival = 1; m.emit(one); }
+                step_val = one;
+            }
             back_counter = m.new_val(IrOp.IR_BIN, n);
             if (back_counter != null)
             {
                 back_counter.bop = Tt.TOKEN_PLUS;
                 back_counter.add_arg(counter_phi, -1);
-                back_counter.add_arg(one, -1);
+                back_counter.add_arg(step_val, -1);
                 m.emit(back_counter);
             }
         }

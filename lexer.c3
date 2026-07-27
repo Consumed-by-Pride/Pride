@@ -1259,14 +1259,11 @@ fn TokenType keyword_type(char* p, usz len) @private
 
         case 4:
             if (span_eq(p, len, "type", 4)) return TokenType.TOKEN_KW_TYPE;
-            if (span_eq(p, len, "typeof", 6)) return TokenType.TOKEN_KW_TYPEOF;
-            if (span_eq(p, len, "typeof_unqual", 13)) return TokenType.TOKEN_KW_TYPEOF_UNQUAL;
             if (span_eq(p, len, "else", 4)) return TokenType.TOKEN_KW_ELSE;
             if (span_eq(p, len, "free", 4)) return TokenType.TOKEN_KW_FREE;
             if (span_eq(p, len, "with", 4)) return TokenType.TOKEN_KW_WITH;
             if (span_eq(p, len, "true", 4)) return TokenType.TOKEN_LIT_BOOL;
             if (span_eq(p, len, "null", 4)) return TokenType.TOKEN_LIT_NULL;
-            if (span_eq(p, len, "nullptr", 7)) return TokenType.TOKEN_KW_NULLPTR;
             if (span_eq(p, len, "pure", 4)) return TokenType.TOKEN_KW_PURE;
             if (span_eq(p, len, "trap", 4)) return TokenType.TOKEN_KW_TRAP;
             if (span_eq(p, len, "pgen", 4)) return TokenType.TOKEN_KW_PGEN;
@@ -1294,7 +1291,6 @@ fn TokenType keyword_type(char* p, usz len) @private
             if (span_eq(p, len, "false", 5)) return TokenType.TOKEN_LIT_BOOL;
             if (span_eq(p, len, "align", 5)) return TokenType.TOKEN_KW_ALIGN;
             if (span_eq(p, len, "const", 5)) return TokenType.TOKEN_KW_CONST;
-            if (span_eq(p, len, "constexpr", 9)) return TokenType.TOKEN_KW_CONSTEXPR;
             if (span_eq(p, len, "stage", 5)) return TokenType.TOKEN_KW_STAGE;
             if (span_eq(p, len, "quote", 5)) return TokenType.TOKEN_KW_QUOTE;
             if (span_eq(p, len, "reify", 5)) return TokenType.TOKEN_KW_REIFY;
@@ -1325,6 +1321,7 @@ fn TokenType keyword_type(char* p, usz len) @private
             if (span_eq(p, len, "splice", 6)) return TokenType.TOKEN_KW_SPLICE;
             if (span_eq(p, len, "region", 6)) return TokenType.TOKEN_KW_REGION;
             if (span_eq(p, len, "opcode", 6)) return TokenType.TOKEN_KW_OPCODE;
+            if (span_eq(p, len, "typeof", 6)) return TokenType.TOKEN_KW_TYPEOF;
             break;
 
         case 7:
@@ -1336,6 +1333,7 @@ fn TokenType keyword_type(char* p, usz len) @private
             if (span_eq(p, len, "pattern", 7)) return TokenType.TOKEN_KW_PATTERN;
             if (span_eq(p, len, "unquote", 7)) return TokenType.TOKEN_KW_UNQUOTE;
             if (span_eq(p, len, "dialect", 7)) return TokenType.TOKEN_KW_DIALECT;
+            if (span_eq(p, len, "nullptr", 7)) return TokenType.TOKEN_KW_NULLPTR;
             break;
 
         case 8:
@@ -1355,6 +1353,7 @@ fn TokenType keyword_type(char* p, usz len) @private
             if (span_eq(p, len, "unchecked", 9)) return TokenType.TOKEN_KW_UNCHECKED;
             if (span_eq(p, len, "invariant", 9)) return TokenType.TOKEN_KW_INVARIANT;
             if (span_eq(p, len, "hyperedge", 9)) return TokenType.TOKEN_KW_HYPEREDGE;
+            if (span_eq(p, len, "constexpr", 9)) return TokenType.TOKEN_KW_CONSTEXPR;
             break;
 
         case 10:
@@ -1371,6 +1370,10 @@ fn TokenType keyword_type(char* p, usz len) @private
 
         case 12:
             if (span_eq(p, len, "thread_local", 12)) return TokenType.TOKEN_KW_THREAD_LOCAL;
+            break;
+
+        case 13:
+            if (span_eq(p, len, "typeof_unqual", 13)) return TokenType.TOKEN_KW_TYPEOF_UNQUAL;
             break;
 
         case 14:
@@ -1487,8 +1490,8 @@ fn Token lex_tilde(Lexer* self) @private
    E2 88 83 → TOKEN_EXISTS     (∃  U+2203)
    E2 88 88 → TOKEN_ELEMENT    (∈  U+2208)
    E2 88 85 → TOKEN_EMPTYSET   (∅  U+2205)
-   E2 83 83 → TOKEN_SIGMA      (σ  U+03C3 — note: encoded differently)
-   E2 86 95 → TOKEN_PHI        (φ  U+03C6)
+   CF 83    → TOKEN_SIGMA      (σ  U+03C3 — 2-byte sequence, not 0xE2-prefixed)
+   CF 86    → TOKEN_PHI        (φ  U+03C6 — 2-byte sequence, not 0xE2-prefixed)
    C2 AC    → TOKEN_NEGATION   (¬  U+00AC)
 *>
 fn bool unicode_operator_at(Lexer* self, TokenType* out_type, usz* out_len) @private
@@ -1512,8 +1515,16 @@ fn bool unicode_operator_at(Lexer* self, TokenType* out_type, usz* out_len) @pri
         if (b1 == (char)0x88 && b2 == (char)0x83) { *out_type = TokenType.TOKEN_EXISTS; *out_len = 3; return true; }
         if (b1 == (char)0x88 && b2 == (char)0x88) { *out_type = TokenType.TOKEN_ELEMENT; *out_len = 3; return true; }
         if (b1 == (char)0x88 && b2 == (char)0x85) { *out_type = TokenType.TOKEN_EMPTYSET; *out_len = 3; return true; }
-        if (b1 == (char)0x83 && b2 == (char)0x83) { *out_type = TokenType.TOKEN_SIGMA; *out_len = 3; return true; }
-        if (b1 == (char)0x86 && b2 == (char)0x95) { *out_type = TokenType.TOKEN_PHI; *out_len = 3; return true; }
+    }
+
+    // σ (U+03C3) and φ (U+03C6) are 2-byte UTF-8 sequences (lead byte 0xCF),
+    // NOT part of the 0xE2-prefixed 3-byte block above.
+    if (b0 == (char)0xCF && self.pos + 1 < self.len)
+    {
+        char b1 = peek_at(self, 1);
+
+        if (b1 == (char)0x83) { *out_type = TokenType.TOKEN_SIGMA; *out_len = 2; return true; }
+        if (b1 == (char)0x86) { *out_type = TokenType.TOKEN_PHI; *out_len = 2; return true; }
     }
 
     if (b0 == (char)0xC2 && self.pos + 1 < self.len)
@@ -1646,6 +1657,24 @@ fn Token lex_punct(Lexer* self) @private
     {
         advance(self); advance(self);
         return make_token(TokenType.TOKEN_STAR_PERCENT, start, 2, start_line, start_col);
+    }
+
+    // Checked arithmetic: +?  -?  *?  (returns {T, bool}; see codegen's
+    // llvm.sadd/ssub/smul.with.overflow lowering)
+    if (c == '+' && peek_at(self, 1) == '?')
+    {
+        advance(self); advance(self);
+        return make_token(TokenType.TOKEN_PLUS_QUESTION, start, 2, start_line, start_col);
+    }
+    if (c == '-' && peek_at(self, 1) == '?')
+    {
+        advance(self); advance(self);
+        return make_token(TokenType.TOKEN_MINUS_QUESTION, start, 2, start_line, start_col);
+    }
+    if (c == '*' && peek_at(self, 1) == '?')
+    {
+        advance(self); advance(self);
+        return make_token(TokenType.TOKEN_STAR_QUESTION, start, 2, start_line, start_col);
     }
 
     // Saturating arithmetic: +|  -|  *|
@@ -1940,8 +1969,18 @@ fn Token Lexer.next(Lexer* self)
         // ' followed by anything else = character literal
         // Use peek_at(self, 1) because peek(self) still returns the '\'' itself
         // (the quote is at self.pos, not yet consumed).
+        //
+        // Ambiguity: 'x' (a single-letter/underscore char literal) LOOKS like
+        // the start of a label ref ('x_loop) under a naive one-token-of-
+        // lookahead check. Disambiguate with one more character of lookahead:
+        // if the character immediately after the would-be label start is a
+        // closing quote, this is unambiguously a char literal (a label
+        // reference is never immediately followed by a closing quote, since
+        // it has no closing quote at all), so fall through to lex_char.
         char nc = peek_at(self, 1);
-        if (nc >= 'a' && nc <= 'z' || nc >= 'A' && nc <= 'Z' || nc == '_')
+        bool nc_ident_start = (nc >= 'a' && nc <= 'z') || (nc >= 'A' && nc <= 'Z') || nc == '_';
+        bool looks_like_char_lit = peek_at(self, 2) == '\'';
+        if (nc_ident_start && !looks_like_char_lit)
         {
             // Lex as label ref: consume the ' then read the identifier
             advance(self);  // consume '

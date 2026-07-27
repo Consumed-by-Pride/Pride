@@ -115,7 +115,8 @@ fn bool is_unresolved_cross_module(Node* n)
         if (base == null) return false;
         bool base_is_module =
             (base.resolved != null
-             && (base.resolved.kind == Nk.NODE_DECL_MOD || base.resolved.kind == Nk.NODE_DECL_USE))
+             && (base.resolved.kind == Nk.NODE_DECL_MOD || base.resolved.kind == Nk.NODE_DECL_USE
+                 || base.resolved.kind == Nk.NODE_DECL_IMPORT))
             || base.kind == Nk.NODE_MODULE_PATH;
         // only excuse it when the member did NOT resolve (truly unknown import)
         if (base_is_module && (member == null || member.resolved == null)) return true;
@@ -181,6 +182,7 @@ fn bool is_optedout_kind(Nk k)
         case Nk.NODE_HANDLER_ARM:
         case Nk.NODE_EFFECT_WITH:
         case Nk.NODE_DECL_USE:
+        case Nk.NODE_DECL_IMPORT:
         case Nk.NODE_DECL_ENUM:       // variant name idents are definitions, not uses
             return true;
         default:
@@ -205,6 +207,7 @@ fn bool is_decl_kind(Nk k)
         case Nk.NODE_DECL_EFFECT:
         case Nk.NODE_DECL_MOD:
         case Nk.NODE_DECL_USE:
+        case Nk.NODE_DECL_IMPORT:
         case Nk.NODE_PARAM:
         case Nk.NODE_GENERIC_PARAM:
         case Nk.NODE_FIELD_DECL:

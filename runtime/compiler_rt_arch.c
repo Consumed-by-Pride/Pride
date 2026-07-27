@@ -72,11 +72,115 @@ ABI unsigned long long _aullrem(unsigned long long n,unsigned long long d){retur
 ABI long long _alldiv(long long n,long long d){return n/d;} ABI long long _allrem(long long n,long long d){return n%d;} ABI long long _allmul(long long a,long long b){return a*b;}
 struct __wlpad{int f;void*p;}; ABI struct __wlpad __wasm_lpad_context={0,0};
 ABI void __wasm_personality_v0(void){} ABI void __wasm_lpad_context_init(void){}
-ABI int __mulsi3(int a,int b){return a*b;} ABI long long __multi3(long long a,long long b){return a*b;}
-ABI unsigned long long __udivti3(unsigned long long n,unsigned long long d){return n/d;}
-ABI long long __divti3(long long n,long long d){return n/d;}
-ABI unsigned long long __umodti3(unsigned long long n,unsigned long long d){return n%d;}
-ABI long long __modti3(long long n,long long d){return n%d;}
+ABI int __mulsi3(int a,int b){return a*b;}
+/* ── 128-bit ("ti") compiler-rt intrinsics ─────────────────────────────────
+ * CRITICAL: these must operate on FULL 128-bit (__int128) values, matching
+ * the real libgcc/compiler-rt ABI (`ti_int __divti3(ti_int, ti_int)` etc.
+ * per LLVM's actual i128 lowering, which calls these directly for
+ * div/rem/udiv/urem on `i128` — see llc's codegen for `udiv i128`/`urem i128`).
+ * A prior version of this file declared these with `unsigned long long`
+ * (64-bit) parameters/return, which silently TRUNCATES every 128-bit
+ * operand to its low 64 bits before doing the division — this is not a
+ * degraded fallback, it is SILENT DATA CORRUPTION for any Pride i128/u128
+ * arithmetic whose value doesn't fit in 64 bits. Verified against a real
+ * LLVM 22 `llc`-compiled `udiv i128`/`urem i128`/`sdiv i128`/`srem i128`
+ * call boundary: the truncating stub returned hi=5 lo=0 for
+ * (64<<64|5)/3, where the correct 128-bit answer is hi=21
+ * lo=6148914691236517207 (cross-checked against Python's bignum division
+ * and libgcc's own __udivti3/__divti3/__umodti3 as ground truth).
+ *
+ * IMPORTANT — do NOT implement these with the native `/` `%` operators on
+ * __int128 operands: unlike 64-bit division (which lowers to the hardware
+ * `divq`/`idivq` instruction directly), the x86-64 ISA has no 128-bit
+ * divide instruction, so GCC/Clang lower a 128-bit `/`/`%` by calling
+ * __udivti3/__divti3/__umodti3/__modti3/__udivmodti4 THEMSELVES — i.e. a
+ * function named __udivti3 that computes its result via `n / d` on
+ * __int128 operands recursively calls itself and stack-overflows
+ * immediately. Verified empirically: `objdump`/`-S` of such a naive
+ * definition shows a self-call, and running it segfaults on the very first
+ * invocation. Implemented below as manual binary long division using only
+ * 64-bit-safe operations (shift/compare/subtract), which never triggers
+ * this libcall routing.
+ *
+ * `__multi3` is safe to implement natively (`a*b`) — 128-bit multiply DOES
+ * have a native lowering (a pair of 64-bit `mul`/`imul` + adds), so it is
+ * not actually reachable from LLVM's i128 codegen at all (`mul i128`
+ * lowers inline, no libcall) and doesn't self-recurse either way; kept for
+ * any other caller (e.g. GCC-compiled code) that expects the real ABI.
+ */
+typedef __int128 ti_int;
+typedef unsigned __int128 tu_int;
+
+ABI ti_int __multi3(ti_int a, ti_int b){return a*b;}
+
+/* Unsigned 128/128 -> 128 binary long division (schoolbook, bit-serial).
+ * Slow (128 iterations) but correct and immune to the self-recursion trap
+ * described above. `d == 0` returns 0 (matches this file's existing
+ * "never trap on bad input" convention elsewhere; real hardware division
+ * would fault, but Pride's own codegen is expected to guard divisor-zero
+ * upstream — see typecheck.c3's check_divisor). */
+ABI tu_int __udivti3(tu_int n, tu_int d)
+{
+    if (d == 0) return 0;
+    tu_int quotient = 0, remainder = 0;
+    for (int i = 127; i >= 0; i--)
+    {
+        remainder = (remainder << 1) | ((n >> i) & 1);
+        if (remainder >= d)
+        {
+            remainder -= d;
+            quotient |= ((tu_int)1) << i;
+        }
+    }
+    return quotient;
+}
+
+ABI tu_int __umodti3(tu_int n, tu_int d)
+{
+    if (d == 0) return 0;
+    tu_int remainder = 0;
+    for (int i = 127; i >= 0; i--)
+    {
+        remainder = (remainder << 1) | ((n >> i) & 1);
+        if (remainder >= d) { remainder -= d; }
+    }
+    return remainder;
+}
+
+/* Quotient+remainder in one call (GCC/LLVM emit this instead of separate
+ * __udivti3/__umodti3 calls when both are needed from the same operands in
+ * one expression — e.g. compiler_rt.c's own __pride_div_u128_u64). `*rem`
+ * receives the remainder; the quotient is returned. Built on __udivti3 (not
+ * `/`) for the same self-recursion-avoidance reason as above. */
+ABI tu_int __udivmodti4(tu_int n, tu_int d, tu_int* rem)
+{
+    tu_int q = __udivti3(n, d);
+    if (rem) { *rem = n - q * d; }
+    return q;
+}
+
+/* Signed division/modulo: reduce to the unsigned routines above (never uses
+ * __int128 `/`/`%` directly, for the same reason). C truncates toward zero;
+ * both operations here match that convention. */
+ABI ti_int __divti3(ti_int n, ti_int d)
+{
+    int neg = 0;
+    tu_int un = (tu_int)n, ud = (tu_int)d;
+    if (n < 0) { un = (tu_int)(-n); neg = !neg; }
+    if (d < 0) { ud = (tu_int)(-d); neg = !neg; }
+    tu_int uq = __udivti3(un, ud);
+    return neg ? -(ti_int)uq : (ti_int)uq;
+}
+
+ABI ti_int __modti3(ti_int n, ti_int d)
+{
+    int neg = 0;
+    tu_int un = (tu_int)n, ud = (tu_int)d;
+    if (n < 0) { un = (tu_int)(-n); neg = 1; }
+    if (d < 0) { ud = (tu_int)(-d); }
+    tu_int ur = __umodti3(un, ud);
+    return neg ? -(ti_int)ur : (ti_int)ur;
+}
 ABI int __popcountsi2(unsigned int a){return __builtin_popcount(a);}
 ABI int __popcountdi2(unsigned long long a){return __builtin_popcountll(a);}
 ABI int __clzsi2(unsigned int a){return a?__builtin_clz(a):32;}

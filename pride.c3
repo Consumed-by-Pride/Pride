@@ -54,6 +54,36 @@ fn usz cstr_len2(char* s)
     return n;
 }
 
+// Exact comparison of a NUL-terminated C string against a literal. Used by
+// the CLI argument parser below so every `--flag` is matched unambiguously
+// by its FULL text, never by a hand-picked subset of byte positions (that
+// class of bug previously made `--strip` silently dispatch as `--stage`,
+// and made `--emit-obj`/`--emit-bin` entirely unreachable — both fixed by
+// switching every flag comparison in main() to go through this helper).
+fn bool arg_is(char* s, usz slen, char* lit)
+{
+    usz i = 0;
+    while (i < slen)
+    {
+        if (lit[i] == 0) return false;   // s longer than the literal
+        if (s[i] != lit[i]) return false;
+        i++;
+    }
+    return lit[i] == 0;                  // s must consume the whole literal
+}
+
+// True if `s` starts with `prefix` (both NUL-terminated). Used for flags that
+// carry an inline value, e.g. `--target=<triple>` / `--cfg=<name>`.
+fn bool arg_starts_with(char* s, usz slen, char* prefix, usz prefix_len)
+{
+    if (slen < prefix_len) return false;
+    for (usz i = 0; i < prefix_len; i++)
+    {
+        if (s[i] != prefix[i]) return false;
+    }
+    return true;
+}
+
 fn char* read_file(char* path, usz* out_len)
 {
     CFile f = fopen(path, "rb");
@@ -762,6 +792,7 @@ fn void dump_stage_report(stage::Stager* st)
     printf("  comptime fns         : %llu\n", (ulong)st.fn_count);
     if (st.out_of_fuel) printf("  [OUT OF FUEL]\n");
     if (st.too_deep)    printf("  [EVAL TOO DEEP]\n");
+    if (st.overflow)    printf("  [CTFE ENV/FN TABLE OVERFLOW — some bindings or comptime fns were dropped]\n");
     for (int i = 0; i < st.diag_count; i++)
     {
         stage::StageDiag d = st.diags[i];
@@ -780,6 +811,7 @@ fn void dump_irdl_report(irdl_msp::DialectTable* dt)
     printf("  lowerings applied    : %d\n", dt.lowerings_applied);
     if (dt.out_of_fuel) printf("  [OUT OF FUEL]\n");
     if (dt.too_deep)    printf("  [LOWER CHAIN TOO DEEP]\n");
+    if (dt.overflow)    printf("  [IRDL TABLE OVERFLOW — some dialects/opcodes/regions were dropped]\n");
     // per-opcode lowering status
     for (usz i = 0; i < dt.opcode_count; i++)
     {
@@ -1041,50 +1073,12 @@ fn int main(int argc, char** argv)
     {
         char* a_raw = argv[ai];
         usz a_len = cstr_len2(a_raw);
-        if (a_len == 8 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 's')
-        {
-            strict = true;
-        }
-        else if (a_len == 11 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'd' && a_raw[7] == 's')
-        {
-            dump_sasi = true;   // --dump-sasi
-        }
-        else if (a_len == 10 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'd')
-        {
-            dump_ssi = true;   // --dump-ssi
-        }
-        else if (a_len == 9 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'd')
-        {
-            dump_ir = true;   // --dump-ir
-        }
-        else if (a_len == 10 && a_raw[2]=='d'&&a_raw[3]=='u'&&a_raw[4]=='m'&&a_raw[5]=='p'&&a_raw[6]=='-'&&a_raw[7]=='a')
-        { dump_ast = true; }  // --dump-ast
-        else if (a_len == 11 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'd' && a_raw[7] == 'm')
-        {
-            dump_mono = true;   // --dump-mono
-        }
-        else if (a_len == 9 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'r')
-        {
-            run_rewrite = true;   // --rewrite
-        }
-        else if (a_len == 6 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'p')
-        {
-            run_pgen = true;   // --pgen
-        }
-        else if (a_len == 7 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 's' && a_raw[3] == 't')
-        {
-            dump_stage = true;   // --stage
-        }
-        else if (a_len == 6 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'i')
-        {
-            dump_irdl = true;   // --irdl
-        }
-        else if (a_len == 8 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'v')
-        {
-            verify_frontend = true;   // --verify (print per-finding report)
-        }
-        else if (a_len >= 11 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'e'
-                 && a_raw[3] == 'm' && a_raw[4] == 'i' && a_raw[5] == 't')
+
+        // Flags carrying an inline `=value` or a following argument are
+        // checked first via prefix match; everything else is an exact,
+        // full-string comparison (arg_is) — no partial byte-position
+        // sniffing anywhere in this dispatcher.
+        if (arg_starts_with(a_raw, a_len, "--emit-llvm", 11))
         {
             // --emit-llvm [output.ll]  (default: source.ll next to source file)
             emit_llvm = true;
@@ -1104,40 +1098,46 @@ fn int main(int argc, char** argv)
                 }
             }
         }
-        else if (a_len >= 5 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'o' && a_raw[3] == 'p')
+        else if (arg_is(a_raw, a_len, "--opt") || arg_starts_with(a_raw, a_len, "--opt=", 6))
         {
             // --opt=N or --opt N
-            if (a_raw[4] == '=') { opt_level = (int)(a_raw[5] - '0'); }
+            if (a_len > 5 && a_raw[5] == '=') { opt_level = (int)(a_raw[6] - '0'); }
             else if (ai + 1 < (usz)argc) { ai++; opt_level = (int)(argv[ai][0] - '0'); }
         }
-        else if (a_len == 7 && a_raw[2] == 'd' && a_raw[3] == 'e' && a_raw[4] == 'b')
-        { emit_debug = true; }  // --debug
-        else if (a_len == 5 && a_raw[2] == 'l' && a_raw[3] == 't' && a_raw[4] == 'o')
-        { emit_lto = true; }   // --lto
-        else if (a_len == 7 && a_raw[2]=='s'&&a_raw[3]=='t'&&a_raw[4]=='r'&&a_raw[5]=='i'&&a_raw[6]=='p')
-        { emit_strip = true; }  // --strip
-        // --freestanding: bare-metal/kernel mode — no runtime, no libc declarations
-        else if (a_len == 14 && a_raw[2]=='f'&&a_raw[3]=='r'&&a_raw[4]=='e'&&a_raw[5]=='e')
-        { codegen::set_freestanding(true); }
-        else if (a_len == 6 && a_raw[2]=='t'&&a_raw[3]=='e'&&a_raw[4]=='s'&&a_raw[5]=='t')
-        { run_tests = true; }  // --test
-        else if (a_len == 6 && a_raw[2]=='j'&&a_raw[3]=='s'&&a_raw[4]=='o'&&a_raw[5]=='n')
-        { json_output = true; g_json_output = true; }  // --json
-        else if (a_len >= 9 && a_raw[2]=='t'&&a_raw[3]=='a'&&a_raw[4]=='r'&&a_raw[5]=='g'&&a_raw[6]=='e'&&a_raw[7]=='t'&&a_raw[8]=='=')
-        { target_triple = a_raw + 9; }  // --target=<triple>
-        else if (a_len >= 6 && a_raw[2]=='c'&&a_raw[3]=='f'&&a_raw[4]=='g'&&a_raw[5]=='=')
-        { if (cfg_count < 64) { cfg_flags[cfg_count] = a_raw + 6; cfg_count++; } }  // --cfg=...
-        else if (a_len == 2 && a_raw[0]=='-'&&a_raw[1]=='g')
-        { emit_debug_info = true; }  // -g
-        else if (a_len == 10 && a_raw[2] == 'e' && a_raw[5] == '-' && a_raw[6] == 'o')
-        { emit_obj = true; }   // --emit-obj
-        else if (a_len == 10 && a_raw[2] == 'e' && a_raw[5] == '-' && a_raw[6] == 'b')
-        { emit_bin = true; emit_llvm = true; }  // --emit-bin
-        else if (a_len == 2 && a_raw[0] == '-' && a_raw[1] == 'o')
+        else if (arg_starts_with(a_raw, a_len, "--target=", 9))
+        {
+            target_triple = a_raw + 9;   // --target=<triple>
+        }
+        else if (arg_starts_with(a_raw, a_len, "--cfg=", 6))
+        {
+            if (cfg_count < 64) { cfg_flags[cfg_count] = a_raw + 6; cfg_count++; }   // --cfg=...
+        }
+        else if (arg_is(a_raw, a_len, "-o"))
         {
             // -o <path>
             if (ai + 1 < (usz)argc) { ai++; out_path = argv[ai]; }
         }
+        else if (arg_is(a_raw, a_len, "--strict"))       { strict = true; }
+        else if (arg_is(a_raw, a_len, "--dump-sasi"))    { dump_sasi = true; }
+        else if (arg_is(a_raw, a_len, "--dump-ssi"))     { dump_ssi = true; }
+        else if (arg_is(a_raw, a_len, "--dump-ir"))      { dump_ir = true; }
+        else if (arg_is(a_raw, a_len, "--dump-ast"))     { dump_ast = true; }
+        else if (arg_is(a_raw, a_len, "--dump-mono"))    { dump_mono = true; }
+        else if (arg_is(a_raw, a_len, "--rewrite"))      { run_rewrite = true; }
+        else if (arg_is(a_raw, a_len, "--pgen"))         { run_pgen = true; }
+        else if (arg_is(a_raw, a_len, "--stage"))        { dump_stage = true; }
+        else if (arg_is(a_raw, a_len, "--irdl"))         { dump_irdl = true; }
+        else if (arg_is(a_raw, a_len, "--verify"))       { verify_frontend = true; }
+        else if (arg_is(a_raw, a_len, "--debug"))        { emit_debug = true; }
+        else if (arg_is(a_raw, a_len, "--lto"))          { emit_lto = true; }
+        else if (arg_is(a_raw, a_len, "--strip"))        { emit_strip = true; }
+        // --freestanding: bare-metal/kernel mode — no runtime, no libc declarations
+        else if (arg_is(a_raw, a_len, "--freestanding")) { codegen::set_freestanding(true); }
+        else if (arg_is(a_raw, a_len, "--test"))         { run_tests = true; }
+        else if (arg_is(a_raw, a_len, "--json"))         { json_output = true; g_json_output = true; }
+        else if (arg_is(a_raw, a_len, "-g"))             { emit_debug_info = true; }
+        else if (arg_is(a_raw, a_len, "--emit-obj"))     { emit_obj = true; }
+        else if (arg_is(a_raw, a_len, "--emit-bin"))     { emit_bin = true; emit_llvm = true; }
         else if (!found_path)
         {
             path_arg = a_raw;

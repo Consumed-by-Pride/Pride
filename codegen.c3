@@ -109,6 +109,27 @@ fn bool cstr_eq(char* a, char* b)
     return a[i] == b[i];
 }
 
+// Exact, full-byte comparison of a (ptr,len) span against a C string literal.
+// Every ad-hoc "is this identifier named X" check in this file MUST go
+// through this helper rather than hand-rolled partial byte-position checks
+// (e.g. `len==6 && name[0]=='c' && name[5]=='t'`) — a partial check silently
+// accepts other same-length strings that happen to share the tested byte
+// positions, which has previously caused real collisions (see the
+// `name_is_runtime_decl` / concat-vs-arbitrary-identifier class of bugs).
+// This is the single point of truth for "does this span spell exactly S".
+fn bool span_is(char* p, usz len, char* lit)
+{
+    if (p == null || lit == null) return false;
+    usz i = 0;
+    while (i < len)
+    {
+        if (lit[i] == 0) return false;   // span longer than the literal
+        if (p[i] != lit[i]) return false;
+        i++;
+    }
+    return lit[i] == 0;                  // span must consume the whole literal
+}
+
 fn void set_target_triple(char* triple) { g_target_triple_override = triple; }
 fn void set_freestanding(bool v)        { g_freestanding = v; }
 
@@ -1607,8 +1628,7 @@ fn void CgenModule.emit_fn_name(CgenModule* cg, ssi_ir::SsiFunc* f)
         cg.out.writei(f.entry);
         return;
     }
-    bool is_main = (f.name_len == 4 && f.name[0] == 'm' && f.name[1] == 'a'
-                    && f.name[2] == 'i' && f.name[3] == 'n');
+    bool is_main = span_is(f.name, f.name_len, (char*)"main");
     if (is_main) { cg.out.writes("@main"); return; }
 
     // Check for #[extern("name")] attribute — use the C symbol name directly
@@ -2790,8 +2810,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         fn_name_ptr = fn_decl.children[0].p.ident.name_ptr;
                         fn_name_len = fn_decl.children[0].p.ident.name_len;
                     }
-                    bool is_main_fn = (fn_name_len == 4 && fn_name_ptr != null
-                                       && fn_name_ptr[0] == 'm');
+                    bool is_main_fn = span_is(fn_name_ptr, fn_name_len, (char*)"main");
                     if (is_main_fn) { cg.out.writes("@main"); }
                     else
                     {
@@ -5057,22 +5076,63 @@ fn void CgenModule.emit_terminator(CgenModule* cg, ssi_ir::IrBlock* b, TypeTable
     }
 }
 
+// Every symbol name @X for which emit_runtime_decls() below emits a
+// `declare` line. This is the single source of truth `name_is_runtime_decl`
+// consults — keep it in sync with emit_runtime_decls() (both are covered by
+// the same construction: this list was extracted directly from that
+// function's `declare ... @NAME(...)` lines).
+//
+// IMPORTANT: this used to be a hand-rolled set of partial byte-position
+// checks (e.g. `len==6 && name[0]=='c' && name[5]=='t'`), which is exactly
+// the bug class that caused a real parser-level collision elsewhere in this
+// codebase (see parser.c3's compile-time-macro name detection) — a partial
+// check silently accepts any other same-length string sharing just the
+// tested byte positions. It was also independently WRONG for `printf` and
+// `putchar` specifically: neither is actually declared anywhere in
+// emit_runtime_decls(), so the old code caused any `#[extern("printf")]` or
+// `#[extern("putchar")]` function to be silently DROPPED (no `declare` line
+// emitted at all — `emit_function` returns early exactly as if the symbol
+// were already declared), which would fail at link time with an undefined
+// symbol. Rebuilt here as an exact, exhaustive, easy-to-audit table.
+const char*[*] RUNTIME_DECL_NAMES = {
+    // Pride effects runtime
+    "__pride_perform", "__pride_push_handler", "__pride_pop_handler",
+    "__pride_resume", "__pride_drop", "__pride_panic", "__pride_get_arm_arg",
+    // Str runtime helpers
+    "pride_str_init", "pride_str_push_str", "pride_str_push_i64", "pride_str_push_f64",
+    // libc: memory / string / process
+    "malloc", "free", "realloc", "calloc", "memcpy", "memmove", "memset", "memcmp",
+    "strdup", "strndup", "strlen", "strcmp", "strncmp", "getenv", "putenv", "_exit",
+    // libc: I/O / mmap / syscalls
+    "write", "open", "close", "read", "mmap", "munmap", "mprotect", "madvise", "syscall",
+    // libc: pthreads
+    "pthread_create", "pthread_join", "pthread_mutex_lock", "pthread_mutex_unlock",
+    "pthread_mutex_init", "pthread_mutex_destroy", "pthread_rwlock_rdlock",
+    "pthread_rwlock_wrlock", "pthread_rwlock_unlock", "pthread_cond_wait",
+    "pthread_cond_signal", "pthread_cond_broadcast",
+    // libc: time / networking / random
+    "clock_gettime", "nanosleep", "getaddrinfo", "freeaddrinfo", "getrandom",
+    // libm
+    "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",
+    "exp", "exp2", "log", "log2", "log10", "pow", "sqrt", "cbrt", "hypot", "fabs",
+    "floor", "ceil", "round", "trunc", "fmod", "fma", "copysign",
+    "sinf", "cosf", "sqrtf", "expf", "logf", "powf", "fabsf", "floorf", "ceilf",
+    "roundf", "fmaf",
+    null   // sentinel
+};
+
 // Scans a fn decl's attribute list for #[extern("name")] and returns the name ptr+len.
 // Returns false if no extern attribute found.
 // Returns true if the given name is already declared in the hardcoded runtime decl section.
-// Prevents duplicate `declare` lines for malloc/free/printf/putchar and Pride runtime fns.
+// Prevents duplicate `declare` lines for the exact symbols emit_runtime_decls() emits
+// (libc/pthread/math/Pride-runtime functions) — see RUNTIME_DECL_NAMES above.
 fn bool name_is_runtime_decl(char* name, usz len)
 {
     if (name == null || len == 0) { return false; }
-    // Check common libc symbols already in emit_runtime_decls
-    if (len==6&&name[0]=='m'&&name[1]=='a'&&name[2]=='l') { return true; }   // malloc
-    if (len==4&&name[0]=='f'&&name[1]=='r'&&name[2]=='e') { return true; }   // free
-    if (len==6&&name[0]=='p'&&name[1]=='r'&&name[2]=='i') { return true; }   // printf
-    if (len==7&&name[0]=='p'&&name[1]=='u'&&name[2]=='t'&&name[3]=='c') { return true; }  // putchar
-    // Pride runtime: __pride_* prefix
-    if (len > 8 && name[0]=='_'&&name[1]=='_'&&name[2]=='p'&&name[3]=='r') { return true; }
-    // pride_str_* prefix
-    if (len > 9 && name[0]=='p'&&name[1]=='r'&&name[2]=='y'&&name[3]=='d') { return true; }
+    for (usz i = 0; RUNTIME_DECL_NAMES[i] != null; i++)
+    {
+        if (span_is(name, len, (char*)RUNTIME_DECL_NAMES[i])) return true;
+    }
     return false;
 }
 

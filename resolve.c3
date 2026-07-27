@@ -124,6 +124,13 @@ fn void Resolver.push_scope(Resolver* self)
     self.top++;
     self.scopes[self.top].count = 0;
     self.scopes[self.top].parent = &self.scopes[self.top - 1];
+    // Every scope slot is reused across push/pop cycles (Resolver embeds a
+    // fixed Scope[MAX_SCOPES] array), so hash_valid/hash_idx from a PRIOR
+    // occupant of this slot must never be trusted here — always start a
+    // freshly-entered scope with an invalidated hash index. lookup_local()
+    // lazily rebuilds it (from `bindings[0..count)`) the first time it's
+    // actually needed.
+    self.scopes[self.top].hash_valid = false;
 }
 
 fn void Resolver.pop_scope(Resolver* self)
@@ -158,9 +165,27 @@ fn bool name_of(Node* n, char** out_ptr, usz* out_len)
 }
 
 // Look up a name in the current scope only (for duplicate detection).
+fn void Scope.rebuild_hash(Scope* s) @private
+{
+    for (usz i = 0; i < SCOPE_HASH_SIZE; i++) s.hash_idx[i] = 0;
+    for (usz i = 0; i < s.count; i++)
+    {
+        Binding* b = &s.bindings[i];
+        ulong h = 14695981039346656037u;
+        for (usz j = 0; j < b.name_len; j++) { h ^= (ulong)(uint)b.name_ptr[j]; h *= 1099511628211u; }
+        h ^= (ulong)(uint)b.ns;
+        h ^= (ulong)b.name_len;
+        usz hslot = (usz)(h & (ulong)(SCOPE_HASH_SIZE - 1));
+        while (s.hash_idx[hslot] != 0) { hslot = (hslot + 1) & (SCOPE_HASH_SIZE - 1); }
+        s.hash_idx[hslot] = (usz)(i + 1);
+    }
+    s.hash_valid = true;
+}
+
 fn Node* Resolver.lookup_local(Resolver* self, char* ptr, usz len, int ns)
 {
     Scope* s = self.cur();
+    if (!s.hash_valid && s.count > 4) { s.rebuild_hash(); }
     if (s.hash_valid && s.count > 4)
     {
         // O(1) hash lookup
@@ -239,6 +264,10 @@ fn void Resolver.bind(Resolver* self, char* ptr, usz len, int ns, Node* decl, bo
     b.ns = ns;
     b.decl = decl;
     s.count++;
+    // A new binding invalidates any previously-built hash index for this
+    // scope; lookup_local() lazily rebuilds it from `bindings[0..count)`
+    // next time it's consulted.
+    s.hash_valid = false;
 }
 
 // Bind a name node (IDENT/TYPEVAR) into a namespace.

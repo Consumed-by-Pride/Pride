@@ -322,6 +322,13 @@ fn void EffectChecker.gather_body(EffectChecker* self, Node* n, EffectSet* acc)
         case Nk.NODE_STMT_ASM:
             acc.add_builtin(ast::EFFECT_UNSAFE);
 
+        case Nk.NODE_EXPR_SYSCALL:
+            // A raw kernel syscall is the project's own idiomatic way to do
+            // I/O (see examples/*.pie, tests/exec/*.pie), so it must actually
+            // be tracked by the effect checker, not silently treated as pure.
+            acc.add_builtin(ast::EFFECT_IO);
+            self.gather_children(n, acc);
+
         case Nk.NODE_STMT_ASSERT:
         case Nk.NODE_STMT_INVARIANT:
             acc.add_builtin(ast::EFFECT_PANIC);

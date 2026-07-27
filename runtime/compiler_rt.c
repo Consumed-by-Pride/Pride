@@ -1661,10 +1661,11 @@ uint32_t __pride_xxhash32(const void* data, int64_t n, uint32_t seed)
         uint32_t v3 = seed, v4 = seed - P1;
         const uint8_t* end = p + n - 16;
         do {
-            uint32_t t; memcpy(&t, p, 4); v1 = ((v1+(t*P2)>>0u)*P1); p+=4;
-            memcpy(&t, p, 4); v2 = ((v2+(t*P2)>>0u)*P1); p+=4;
-            memcpy(&t, p, 4); v3 = ((v3+(t*P2)>>0u)*P1); p+=4;
-            memcpy(&t, p, 4); v4 = ((v4+(t*P2)>>0u)*P1); p+=4;
+            uint32_t t;
+            memcpy(&t, p, 4); v1 += t * P2; v1 = (v1 << 13) | (v1 >> 19); v1 *= P1; p += 4;
+            memcpy(&t, p, 4); v2 += t * P2; v2 = (v2 << 13) | (v2 >> 19); v2 *= P1; p += 4;
+            memcpy(&t, p, 4); v3 += t * P2; v3 = (v3 << 13) | (v3 >> 19); v3 *= P1; p += 4;
+            memcpy(&t, p, 4); v4 += t * P2; v4 = (v4 << 13) | (v4 >> 19); v4 *= P1; p += 4;
         } while (p <= end);
         h32 = ((v1<<1)|(v1>>31)) + ((v2<<7)|(v2>>25)) +
               ((v3<<12)|(v3>>20)) + ((v4<<18)|(v4>>14));

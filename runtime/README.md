@@ -9,9 +9,17 @@ and every subsystem is replaceable independently without touching the frontend.
 ## Building
 
 ```sh
-# Step 1: Compile the Pride compiler_rt (gcc for the C runtime only)
+# Step 1: Compile the Pride compiler_rt (gcc for the C runtime only).
+# Both TUs are required: compiler_rt.c has the language-level runtime
+# (effects, strings, allocator, ...); compiler_rt_arch.c supplies the
+# architecture/ABI intrinsics the LLVM-generated code calls directly
+# (e.g. 128-bit division for i128/u128 arithmetic) — a binary missing it
+# will fail to link with undefined-symbol errors for any program touching
+# those features.
 gcc -O2 -std=c11 -pthread -Wall -Wextra -fno-strict-aliasing \
-    -fPIC -c runtime/compiler_rt.c -o runtime/compiler_rt.o
+    -msse4.1 -fPIC -c runtime/compiler_rt.c -o runtime/compiler_rt.o
+gcc -O2 -std=c11 -pthread -Wall -Wextra -fno-strict-aliasing \
+    -msse4.1 -fPIC -c runtime/compiler_rt_arch.c -o runtime/compiler_rt_arch.o
 # Or: make runtime
 
 # Step 2: Emit LLVM 22 IR from a Pride source file
@@ -22,14 +30,19 @@ llvm-as-22 output.ll -o output.bc
 opt-22 -O2 output.bc -o output.opt.bc
 llc-22 -filetype=obj -relocation-model=pic output.opt.bc -o output.o
 
-# Step 4: Link with lld-22 (no gcc/Clang in the link step)
+# Step 4: Link with lld-22 (no gcc/Clang in the link step).
+# -lgcc/-lgcc_s supply compiler-generated intrinsic calls (128-bit division,
+# some popcount/clz paths, etc.) that aren't natively covered by hardware
+# instructions on x86-64 — link them even though the link step otherwise
+# avoids gcc/Clang, matching tests/run_exec.sh's proven-working recipe.
 ld.lld-22 \
   /usr/lib/x86_64-linux-gnu/crt1.o \
   /usr/lib/x86_64-linux-gnu/crti.o \
-  output.o runtime/compiler_rt.o \
+  output.o runtime/compiler_rt.o runtime/compiler_rt_arch.o \
   /usr/lib/x86_64-linux-gnu/crtn.o \
   -L/usr/lib/x86_64-linux-gnu -L/lib/x86_64-linux-gnu \
-  -lc -lpthread -lm \
+  -L/usr/lib/gcc/x86_64-linux-gnu/14 \
+  -lc -lpthread -lm -lgcc -lgcc_s \
   --dynamic-linker /lib64/ld-linux-x86-64.so.2 \
   -o program
 

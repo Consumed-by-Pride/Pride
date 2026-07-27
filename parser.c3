@@ -3363,7 +3363,7 @@ fn Node* Parser.parse_primary(Parser* self)
             return ast::node_bool(self.arena, tok_text_eq(t, "true", 4), t.line, t.col);
         case Tt.TOKEN_LIT_CHAR:
             self.advance();
-            return ast::node_char(self.arena, 0, t.line, t.col);
+            return ast::node_char(self.arena, parse_char_value(t.start, t.len), t.line, t.col);
         case Tt.TOKEN_LIT_STRING:
             {
                 self.advance();
@@ -3476,10 +3476,17 @@ fn Node* Parser.parse_primary(Parser* self)
             {
                 // Check for compile-time macro calls: include_bytes!(...), env!(...), concat!(...)
                 // Syntax: IDENT LPAREN args RPAREN (the ! is optional/skipped for simplicity)
-                bool ib = (t.len==13&&t.start[0]=='i'&&t.start[7]=='_'&&t.start[8]=='b'); // include_bytes
-                bool ev = (t.len==3&&t.start[0]=='e'&&t.start[1]=='n'&&t.start[2]=='v');   // env
-                bool cc = (t.len==6&&t.start[0]=='c'&&t.start[1]=='o'&&t.start[5]=='t');   // concat
-                bool fm = (t.len==6&&t.start[0]=='f'&&t.start[1]=='o'&&t.start[2]=='r'&&t.start[3]=='m'&&t.start[4]=='a'&&t.start[5]=='t'); // format
+                // NOTE: these MUST be exact full-name comparisons (tok_text_eq checks
+                // every byte), not partial byte-position sniffing — a partial check
+                // (e.g. only testing a handful of index positions) can silently
+                // collide with ordinary identifiers of the same length and hijack
+                // real function calls (e.g. a 6-letter name starting 'co' and
+                // ending 't', like a hypothetical user function, could otherwise
+                // be mistaken for "concat").
+                bool ib = tok_text_eq(t, "include_bytes", 13);
+                bool ev = tok_text_eq(t, "env", 3);
+                bool cc = tok_text_eq(t, "concat", 6);
+                bool fm = tok_text_eq(t, "format", 6);
                 if (ib||ev||cc||fm)
                 {
                     self.advance();  // consume IDENT
@@ -3687,7 +3694,17 @@ fn Node* Parser.parse_primary(Parser* self)
                     if (self.check(Tt.TOKEN_COMMA)) self.advance();
                 }
                 self.expect(Tt.TOKEN_RPAREN, "expected ')'");
-                return self.finish(Nk.NODE_EXPR_SYSCALL, &sc2, t.line, t.col);
+                Node* syscall_node = self.finish(Nk.NODE_EXPR_SYSCALL, &sc2, t.line, t.col);
+                // A raw kernel syscall is the project's own idiomatic way to
+                // do I/O (see examples/*.pie, tests/exec/*.pie) — tag it with
+                // EFFECT_IO so the effect checker's "no hidden behavior"
+                // guarantee actually covers it, matching every other
+                // effectful primitive built here (alloc/free/asm/ub!/handle
+                // all call node_add_effect on themselves). Kept consistent
+                // with alloc/free, which likewise only require ! [Alloc] and
+                // not also ! [Unsafe] despite being similarly low-level.
+                ast::node_add_effect(syscall_node, ast::EFFECT_IO);
+                return syscall_node;
             }
         case Tt.TOKEN_KW_ALIGNOF:   self.advance(); return ast::node1(self.arena, Nk.NODE_EXPR_ALIGNOF, self.parse_paren_or_type(), t.line, t.col);
         case Tt.TOKEN_KW_TRANSMUTE: return self.parse_transmute();
@@ -3885,6 +3902,109 @@ fn ulong parse_int_value(char* p, usz len) @private
         else { break; }   // hit a type suffix
     }
     return v;
+}
+
+fn bool is_hex_digit(char c) @private
+{
+    if (c >= '0' && c <= '9') return true;
+    if (c >= 'a' && c <= 'f') return true;
+    if (c >= 'A' && c <= 'F') return true;
+    return false;
+}
+
+fn uint hex_digit_value(char c) @private
+{
+    if (c >= '0' && c <= '9') return (uint)(c - '0');
+    if (c >= 'a' && c <= 'f') return (uint)(c - 'a' + 10);
+    if (c >= 'A' && c <= 'F') return (uint)(c - 'A' + 10);
+    return 0;
+}
+
+// Decode a TOKEN_LIT_CHAR token's source span (including the surrounding
+// single quotes, e.g. 'a' 'x41' '\n' '\x41' '\u{1F600}') into its codepoint.
+// Mirrors the escape grammar already VALIDATED (but not decoded) by
+// lexer.c3::lex_char. On any malformed input (which the lexer should already
+// have flagged as a diagnostic) this returns 0 rather than crashing.
+fn uint parse_char_value(char* p, usz len) @private
+{
+    if (p == null || len < 2 || p[0] != '\'') return 0;
+    usz i = 1;                       // skip opening quote
+    usz end = len - 1;               // index of closing quote (if well-formed)
+    if (end > len || end <= i) return 0;
+
+    if (p[i] != '\\')
+    {
+        // Plain (non-escaped) character. Decode as UTF-8 if it's a
+        // multi-byte sequence; otherwise it's a single ASCII byte.
+        uint b0 = (uint)(int)p[i] & 0xFF;
+        if ((b0 & 0x80) == 0) return b0;
+
+        // Minimal UTF-8 decode (2/3/4-byte sequences).
+        if ((b0 & 0xE0) == 0xC0 && i + 1 < end)
+        {
+            uint cp = b0 & 0x1F;
+            cp = (cp << 6) | ((uint)(int)p[i+1] & 0x3F);
+            return cp;
+        }
+        if ((b0 & 0xF0) == 0xE0 && i + 2 < end)
+        {
+            uint cp = b0 & 0x0F;
+            cp = (cp << 6) | ((uint)(int)p[i+1] & 0x3F);
+            cp = (cp << 6) | ((uint)(int)p[i+2] & 0x3F);
+            return cp;
+        }
+        if ((b0 & 0xF8) == 0xF0 && i + 3 < end)
+        {
+            uint cp = b0 & 0x07;
+            cp = (cp << 6) | ((uint)(int)p[i+1] & 0x3F);
+            cp = (cp << 6) | ((uint)(int)p[i+2] & 0x3F);
+            cp = (cp << 6) | ((uint)(int)p[i+3] & 0x3F);
+            return cp;
+        }
+        return b0;
+    }
+
+    // Escape sequence: p[i] == '\\'
+    if (i + 1 >= end) return 0;
+    char esc = p[i + 1];
+    switch (esc)
+    {
+        case 'n': return (uint)'\n';
+        case 'r': return (uint)'\r';
+        case 't': return (uint)'\t';
+        case '0': return 0;
+        case '\\': return (uint)'\\';
+        case '\'': return (uint)'\'';
+        case '"': return (uint)'"';
+        case 'x':
+            {
+                // \xHH — exactly two hex digits.
+                if (i + 3 < len && is_hex_digit(p[i+2]) && is_hex_digit(p[i+3]))
+                {
+                    return (hex_digit_value(p[i+2]) << 4) | hex_digit_value(p[i+3]);
+                }
+                return 0;
+            }
+        case 'u':
+            {
+                // \u{HHHH...} — one or more hex digits inside braces.
+                usz j = i + 2;
+                if (j >= len || p[j] != '{') return 0;
+                j++;
+                uint cp = 0;
+                bool saw = false;
+                while (j < end && p[j] != '}')
+                {
+                    if (!is_hex_digit(p[j])) return 0;
+                    cp = (cp << 4) | hex_digit_value(p[j]);
+                    saw = true;
+                    j++;
+                }
+                return saw ? cp : 0;
+            }
+        default:
+            return 0;
+    }
 }
 
 // ( ) unit | ( expr ) group | ( e, e, ... ) tuple
@@ -4282,7 +4402,7 @@ fn Node* Parser.parse_pattern_atom(Parser* self)
         case Tt.TOKEN_LIT_CHAR:
             self.advance();
             return ast::node1(self.arena, Nk.NODE_PATTERN_LITERAL,
-                ast::node_char(self.arena, 0, t.line, t.col), t.line, t.col);
+                ast::node_char(self.arena, parse_char_value(t.start, t.len), t.line, t.col), t.line, t.col);
 
         case Tt.TOKEN_LIT_STRING:
             self.advance();

@@ -1028,6 +1028,12 @@ fn AstNode* node_range_step(AstArena* a,
     if (n == null) return null;
     n.p.range_step.inclusive = inclusive;
     n.p.range_step.has_step  = (step != null);
+    // Also mirror `inclusive` into the shared FLAG_RANGE_INCLUSIVE bit so
+    // downstream passes (e.g. ssi_ir.c3's lower_for) that check
+    // `node.flags & FLAG_RANGE_INCLUSIVE` — the same check used for a plain
+    // NODE_EXPR_RANGE — work uniformly for step-ranges too, without needing
+    // to know about the range_step payload variant.
+    if (inclusive) n.flags |= FLAG_RANGE_INCLUSIVE;
     AstNode*[3] buf;
     buf[0] = start;
     buf[1] = end;
@@ -1379,18 +1385,31 @@ fn AstNode* fold_binary(AstArena* a, lexer::TokenType op, AstNode* lhs, AstNode*
             case lexer::TokenType.TOKEN_STAR:    return mark_folded(node_int(a, x * y, bits, sg, line, col));
             case lexer::TokenType.TOKEN_SLASH:
                 if (y == 0) return null;
+                // INT64_MIN / -1 overflows (result doesn't fit in i64) and is
+                // undefined behavior for the HOST's signed division — don't
+                // fold it at compile time; let it become a runtime operation
+                // instead (whose UB policy, if any, is the codegen's concern).
+                if (sg && x == 0x8000000000000000u && sy == -1) return null;
                 if (sg) return mark_folded(node_int(a, (ulong)(sx / sy), bits, sg, line, col));
                 return mark_folded(node_int(a, x / y, bits, sg, line, col));
             case lexer::TokenType.TOKEN_PERCENT:
                 if (y == 0) return null;
+                if (sg && x == 0x8000000000000000u && sy == -1) return null;
                 if (sg) return mark_folded(node_int(a, (ulong)(sx % sy), bits, sg, line, col));
                 return mark_folded(node_int(a, x % y, bits, sg, line, col));
             case lexer::TokenType.TOKEN_AMP:     return mark_folded(node_int(a, x & y, bits, sg, line, col));
             case lexer::TokenType.TOKEN_PIPE:    return mark_folded(node_int(a, x | y, bits, sg, line, col));
             case lexer::TokenType.TOKEN_XOR:     return mark_folded(node_int(a, x ^ y, bits, sg, line, col));
-            case lexer::TokenType.TOKEN_LSHIFT:  return mark_folded(node_int(a, x << y, bits, sg, line, col));
+            case lexer::TokenType.TOKEN_LSHIFT:
+                // A shift count >= 64 (or negative, read as signed) is
+                // undefined behavior for the HOST's shift operator too — do
+                // not fold; let the runtime operation (and its own overflow/
+                // UB policy) handle it instead of invoking host UB here.
+                if (y >= 64 || sy < 0) return null;
+                return mark_folded(node_int(a, x << y, bits, sg, line, col));
             case lexer::TokenType.TOKEN_RSHIFT:
                 // arithmetic shift for signed, logical for unsigned
+                if (y >= 64 || sy < 0) return null;
                 if (sg) return mark_folded(node_int(a, (ulong)(sx >> y), bits, sg, line, col));
                 return mark_folded(node_int(a, x >> y, bits, sg, line, col));
             case lexer::TokenType.TOKEN_EQEQ:    return mark_folded(node_bool(a, x == y, line, col));

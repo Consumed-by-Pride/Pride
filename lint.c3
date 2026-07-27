@@ -437,6 +437,10 @@ fn bool is_diverging(Node* n)
         case Nk.NODE_STMT_UNREACHABLE:
         case Nk.NODE_STMT_TRAP:
         case Nk.NODE_UB_BANG:
+        case Nk.NODE_STMT_BREAK:
+        case Nk.NODE_STMT_BREAK_LABEL:
+        case Nk.NODE_STMT_CONTINUE:
+        case Nk.NODE_STMT_CONTINUE_LABEL:
             return true;
         case Nk.NODE_STMT_EXPR:
             // an expression-statement wrapping a diverging expr (e.g. ub!)

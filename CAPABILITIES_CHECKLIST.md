@@ -1,9 +1,14 @@
 # Pride Capability Checklist
 
-Updated: 2026-07-26  
-**Compiler**: ~37,000 LoC C3 (root `*.c3`)  
-**Runtime**: `compiler_rt.c` 1,900 LoC + `compiler_rt_arch.c` 120 LoC  
-**Exec tests**: 18/18 PASS · Conformance: 242/242 PASS
+Updated: 2026-07-27
+**Compiler**: ~37,000 LoC C3 (root `*.c3`)
+**Runtime**: `compiler_rt.c` 1,900 LoC + `compiler_rt_arch.c` ~190 LoC
+**Exec tests**: 18/18 PASS · Conformance: 242/242 PASS (both pending a fresh
+build/run — the c3c/LLVM toolchain was unavailable in the review sandbox;
+all fixes below were instead verified either via an independently-assembled
+LLVM 22 toolchain compiling and running real code, or via careful static
+cross-referencing — see `finds.md` §7 and `.review_notes/` for the full
+methodology and per-finding verification detail)
 
 > ⚠️ **Repo layout note**: The `compiler/` directory contains an older
 > "Pryde"-branded snapshot that predates the current codebase. It is NOT
@@ -34,13 +39,21 @@ Updated: 2026-07-26
 | Float literals `3.14`, `1.5e-3`, `f32`/`f64` suffix | ✅ | `strtod`-based parsing |
 | Integer suffixes `i8` `u8` `i32` `u32` `i64` `u64` etc. | ✅ | Correct tymap type |
 | Bool `true`/`false`, `null` | ✅ | |
-| Char literal, string literal, raw bytes `b"..."` | ✅ | |
+| Char literal, string literal, raw bytes `b"..."` | ✅ Fixed this session | The parser previously hardcoded EVERY char literal's decoded value to `0` regardless of content (`node_char(self.arena, 0, ...)` at both call sites) — every `'x'` silently became NUL. Also fixed a lexer ambiguity where a single-letter/underscore char literal (`'a'`, `'_'`) was always mislexed as the start of a `'label` reference instead. String/raw-bytes literals were unaffected. |
 | `'label` reference lexing | ✅ | |
 | Unicode operators `→ ↦ ∩ ∪ ⊥ ≥ ≤ ≠` etc. | ✅ | |
 
 ## §4 Primitive Types
 
 `i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool chr ptr isize usize () (A,B) *T i128 u128` — all ✅
+
+`i128`/`u128` arithmetic specifically: division and modulo were **silently
+wrong** for any value not fitting in 64 bits until this session — the
+runtime's `__udivti3`/`__divti3`/`__umodti3`/`__modti3` compiler-rt
+intrinsics (which real LLVM `i128`/`u128` codegen calls directly) were
+declared with 64-bit parameter/return types, truncating every 128-bit
+operand before dividing. Verified and fixed against a real LLVM 22
+toolchain — see `finds.md` §7 and `.review_notes/i128_division_critical_bug.md`.
 
 ## §5 Bindings
 
@@ -115,7 +128,7 @@ Multi-clause literal patterns compiled to decision trees (Maranget's algorithm i
 |----|--------|-------|
 | `+%` `-% `*%` wrapping (two's complement) | ✅ Exec verified | |
 | `+\|` `-\|` `*\|` saturating | ✅ | Emits `llvm.sadd.sat` etc. Fixed from `add nsw` stub. |
-| `+?` `-?` `*?` checked (returns `{T, bool}`) | ✅ | Via `llvm.sadd.with.overflow` |
+| `+?` `-?` `*?` checked (returns `{T, bool}`) | ✅ Fixed this session | Was previously ❌: the lexer never fused `+?`/`-?`/`*?` into single tokens at all (only `+%`/`+\|` had the required 2-char lookahead in `lex_punct`), so despite real parser/codegen support existing (`llvm.sadd.with.overflow` etc.), the feature was completely unreachable — `1 +? 2` parsed as `+` followed by a stray `?`. Fixed by adding the missing lookahead branches. |
 
 ## §12 Generics
 
