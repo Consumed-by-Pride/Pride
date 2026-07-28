@@ -3437,6 +3437,50 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
             // enum value actually carries — the opaque-global fallback made
             // it a ptr literal that no consumer can use.
             if (n.kind == Nk.NODE_TYPEVAR && n.resolved != null
+                && (n.resolved.kind == Nk.NODE_PATTERN_IDENT
+                    || n.resolved.kind == Nk.NODE_DECL_LET
+                    || n.resolved.kind == Nk.NODE_DECL_MUT))
+            {
+                // A local binder whose name is capitalized (e.g. `let Red = 7`
+                // shadowing the enum variant) resolves here too — the let
+                // binder, fn param, or module-scope let lowered through this
+                // same default arm used to fall to the opaque placeholder,
+                // silently reading 0 for a live local. Read the env exactly
+                // like the NODE_IDENT use case does.
+                IrVal* tcur = m.env_lookup(n.resolved);
+                if (tcur != null && m.home_for(n.resolved) == tcur)
+                {
+                    IrVal* tld = m.new_val(IrOp.IR_UN, n);
+                    if (tld != null)
+                    {
+                        tld.bop = Tt.TOKEN_STAR;
+                        tld.add_arg(tcur, -1);
+                        m.emit(tld);
+                        return tld;
+                    }
+                    return tcur;
+                }
+                if (tcur != null) return tcur;
+                // Module-scope literal let not seeded into this fn's env:
+                // recover its constant initializer (same as the IDENT path).
+                Node* twant = n.resolved;
+                if (twant.kind == Nk.NODE_DECL_LET)
+                {
+                    twant = twant.child_count >= 1 ? twant.children[0] : null;
+                }
+                for (usz tli = 0; tli < m.top_let_count && twant != null; tli++)
+                {
+                    TopLet* tl = &m.top_lets[tli];
+                    if (tl.binder != twant || tl.init == null) continue;
+                    IrVal* lv = m.lower_expr(tl.init);
+                    if (lv != null)
+                    {
+                        m.env_push(n.resolved, lv);
+                        return lv;
+                    }
+                }
+            }
+            if (n.kind == Nk.NODE_TYPEVAR && n.resolved != null
                 && n.resolved.kind == Nk.NODE_ENUM_VARIANT)
             {
                 IrVal* evv = m.lower_enum_variant_use(n);

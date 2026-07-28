@@ -713,21 +713,32 @@ fn void Resolver.resolve_use_name(Resolver* self, Node* name, int ns)
     // If already resolved (e.g. pre-resolved at definition site), skip lookup.
     if (name.resolved != null) return;
 
-    Node* decl = self.lookup(ptr, len, ns);
-    if (decl != null)
-    {
-        name.resolved = self.chase_member_use(decl);
-        return;
-    }
-
-    // Fall back to the other namespace before giving up (handles cases where a
-    // name was bound as a type but used in value position, e.g. constructors).
+    // Walk scopes innermost→outermost; WITHIN each scope the requested
+    // namespace wins over the cross-namespace fallback. A local value binder
+    // must shadow a global TYPE-namespace name of the same spelling —
+    // `let Red = 7` shadows the enum variant `Red`, exactly like a lowercase
+    // local shadows a global fn. The old order (whole NS chain, then the
+    // whole other-NS chain) let global enum variants snipe value uses past a
+    // local binder, because uppercase uses lex as TYPEVARs and NS_TYPE never
+    // contains value binders: the two lowerings then disagreed about what the
+    // name meant and emitted invalid LLVM (i64 local used as { i32, i64 }).
     int other = ns == NS_VALUE ? NS_TYPE : NS_VALUE;
-    Node* alt = self.lookup(ptr, len, other);
-    if (alt != null)
+    for (Scope* s = self.cur(); s != null; s = s.parent)
     {
-        name.resolved = self.chase_member_use(alt);
-        return;
+        for (int pass = 0; pass < 2; pass++)
+        {
+            int want = pass == 0 ? ns : other;
+            // Newest→oldest within the scope: same-scope redefinition wins.
+            for (usz ii = s.count; ii-- > 0;)
+            {
+                Binding* b = &s.bindings[ii];
+                if (b.ns == want && name_eq(b.name_ptr, b.name_len, ptr, len))
+                {
+                    name.resolved = self.chase_member_use(b.decl);
+                    return;
+                }
+            }
+        }
     }
 
     // Suppress "undefined name" for uppercase-initial idents that are likely

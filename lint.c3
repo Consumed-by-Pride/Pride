@@ -176,6 +176,13 @@ fn void Linter.lint_match(Linter* self, Node* m)
     // over bool with no catch-all needed.
     bool saw_true = false;
     bool saw_false = false;
+    // Track enum-variant NAME coverage as ordinal bits: a match whose
+    // unguarded arms name every variant of one enum is total without a
+    // catch-all (same for a single enum-bearing tuple position).
+    ulong enum_bits = 0;
+    Node* match_ed = null;
+    int enum_pos = -1;
+    bool enum_dirty = false;
 
     for (usz i = 0; i < m.child_count; i++)
     {
@@ -198,16 +205,19 @@ fn void Linter.lint_match(Linter* self, Node* m)
         {
             saw_catchall = true;
         }
-        // Record unguarded bool-literal coverage.
+        // Record unguarded bool-literal / enum-name coverage.
         if (!arm_has_guard(arm))
         {
             pattern_bool_coverage(pat, &saw_true, &saw_false);
+            enum_coverage_accum(pat, &match_ed, &enum_pos, &enum_bits,
+                                &enum_dirty);
         }
     }
 
     if (saw_catchall) return;                 // total via catch-all
     if (saw_true && saw_false) return;        // total over bool {true, false}
     if ((m.flags & ast::FLAG_EXHAUSTIVE) != 0) return;  // total over union variants
+    if (enum_coverage_total(match_ed, enum_dirty, enum_bits)) return;
 
     self.warn("non-exhaustive match: no catch-all arm (add `| _ -> ...`)",
         m.line, m.col);
@@ -262,6 +272,152 @@ fn bool is_catchall_arm(Node* arm, Node* pat)
     return is_irrefutable(pat);
 }
 
+// An enum-variant NAME pattern (`| Red -> ...`) is a CONSTANT pattern on
+// the discriminant, not a binder and not a catch-all: it matches only
+// values whose tag equals that variant's ordinal. Detected exactly like
+// the SSI match lowering does — the pattern carries the enum type (stamped
+// from the scrutinee), and the head name is one of its variants. When the
+// head name is NOT a variant of the carried enum it stays a plain binder
+// (binding `c` over a `Color` still matches everything).
+fn bool pattern_is_enum_name_const(Node* pat)
+{
+    if (pat == null || pat.kind != Nk.NODE_PATTERN_IDENT) return false;
+    if (pat.child_count < 1 || pat.children[0] == null) return false;
+    if (pat.type_annotation == null) return false;
+    Node* head = pat.children[0];
+    if (head.kind != Nk.NODE_TYPEVAR && head.kind != Nk.NODE_IDENT) return false;
+    if (head.p.ident.name_ptr == null) return false;
+    Node* ed = ast::enum_decl_of(pat.type_annotation);
+    if (ed == null) return false;
+    return ast::enum_variant_lookup(ed, head.p.ident.name_ptr,
+                                    head.p.ident.name_len) >= 0;
+}
+
+// The owning DECL_ENUM of an enum-name constant pattern (null otherwise).
+fn Node* enum_of_name_pattern(Node* pat)
+{
+    if (!pattern_is_enum_name_const(pat)) return null;
+    return ast::enum_decl_of(pat.type_annotation);
+}
+
+// The enum a whole (possibly OR-) pattern's name constants belong to —
+// the first enum-name constant found, which the coverage accumulator then
+// treats as canonical for the entire match.
+fn Node* pattern_enum_of(Node* pat)
+{
+    if (pat == null) return null;
+    if (pat.kind == Nk.NODE_PATTERN_OR)
+    {
+        for (usz i = 0; i < pat.child_count; i++)
+        {
+            Node* ed = pattern_enum_of(pat.children[i]);
+            if (ed != null) return ed;
+        }
+        return null;
+    }
+    return enum_of_name_pattern(pat);
+}
+
+// How many variants (declaration order) the enum has.
+fn int enum_variant_count(Node* ed)
+{
+    if (ed == null || ed.kind != Nk.NODE_DECL_ENUM) return 0;
+    int cnt = 0;
+    for (usz i = 1; i < ed.child_count; i++)
+    {
+        Node* ev = ed.children[i];
+        if (ev != null && ev.kind == Nk.NODE_ENUM_VARIANT) cnt++;
+    }
+    return cnt;
+}
+
+// Mark which ordinals an (unguarded, possibly OR-) pattern covers.
+fn void pattern_enum_coverage(Node* pat, Node* ed, ulong* bits)
+{
+    if (pat == null || ed == null) return;
+    if (pat.kind == Nk.NODE_PATTERN_OR)
+    {
+        for (usz i = 0; i < pat.child_count; i++)
+        { pattern_enum_coverage(pat.children[i], ed, bits); }
+        return;
+    }
+    if (!pattern_is_enum_name_const(pat)) return;
+    Node* head = pat.children[0];
+    int ord = ast::enum_variant_lookup(ed, head.p.ident.name_ptr,
+                                       head.p.ident.name_len);
+    if (ord >= 0 && ord < 64) { *bits |= 1ul << (usz)ord; }
+}
+
+// The enum-name-constant subpattern an unguarded head contributes coverage
+// through, or null if the head is not (single-)enum-shaped. `*pos` is -1 for
+// a bare ident/OR head, or the index of the single enum-bearing component of
+// a tuple head whose every other component is irrefutable (so the tuple is
+// total exactly when the enum position is covered).
+fn Node* enum_coverage_pattern(Node* pat, int* pos)
+{
+    *pos = -1;
+    if (pat == null) return null;
+    if (pat.kind == Nk.NODE_PATTERN_IDENT || pat.kind == Nk.NODE_PATTERN_OR)
+    {
+        return pattern_enum_of(pat) != null ? pat : null;
+    }
+    if (pat.kind == Nk.NODE_PATTERN_TUPLE)
+    {
+        Node* found = null;
+        for (usz j = 0; j < pat.child_count; j++)
+        {
+            Node* comp = pat.children[j];
+            if (comp != null && pattern_enum_of(comp) != null)
+            {
+                if (found != null) return null;   // two enum positions
+                found = comp;
+                *pos = (int)j;
+            }
+            else if (!is_irrefutable(comp))
+            {
+                return null;   // refutable sibling keeps the head refutable
+            }
+        }
+        return found;
+    }
+    return null;
+}
+
+// Accumulate one unguarded head into the per-match/per-clause-set coverage
+// state. Heads naming a different enum or tuple position than the first seen
+// poison the tracker (the type checker owns diagnosing that nonsense).
+fn void enum_coverage_accum(Node* pat, Node** match_ed, int* enum_pos,
+                            ulong* bits, bool* dirty)
+{
+    int pos = -1;
+    Node* epat = enum_coverage_pattern(pat, &pos);
+    if (epat == null) return;
+    Node* ed = pattern_enum_of(epat);
+    if (*match_ed == null && !*dirty)
+    {
+        *match_ed = ed;
+        *enum_pos = pos;
+    }
+    if (!*dirty && ed == *match_ed && pos == *enum_pos)
+    {
+        pattern_enum_coverage(epat, *match_ed, bits);
+    }
+    else
+    {
+        *dirty = true;
+        *match_ed = null;
+    }
+}
+
+// True when the tracked enum coverage names every variant exactly (bits
+// 0..vc-1 all set, no poison).
+fn bool enum_coverage_total(Node* match_ed, bool dirty, ulong bits)
+{
+    if (match_ed == null || dirty) return false;
+    int vc = enum_variant_count(match_ed);
+    return vc > 0 && vc <= 64 && bits == ((1ul << (usz)vc) - 1);
+}
+
 // A pattern that matches every value of its type.
 fn bool is_irrefutable(Node* pat)
 {
@@ -271,7 +427,9 @@ fn bool is_irrefutable(Node* pat)
         case Nk.NODE_PATTERN_WILDCARD:
             return true;
         case Nk.NODE_PATTERN_IDENT:
-            return true;   // bare binder matches anything
+            // Enum-variant name constants are refutable (one tag only);
+            // everything else ident-shaped is a plain binder ≈ catch-all.
+            return !pattern_is_enum_name_const(pat);
         case Nk.NODE_PATTERN_TUPLE:
             // A tuple pattern is total iff every component is total. The empty
             // tuple `()` (unit) is vacuously total — the unit type has one value.
@@ -331,6 +489,14 @@ fn void Linter.lint_fn_clauses(Linter* self, Node* fn_node)
 
     bool saw_catchall = false;
     bool reported_unreachable = false;
+    // Enum-variant NAME coverage across clause heads, mirroring lint_match:
+    // `fn f : Color -> i64 | Red -> ... | Green -> ... | Blue -> ...` is
+    // total without a catch-all. `enum_pos` is which tuple component the
+    // enum heads sit in (-1 = bare head); every tracked clause must agree.
+    ulong enum_bits = 0;
+    Node* match_ed = null;
+    int enum_pos = -1;
+    bool enum_dirty = false;
 
     for (usz i = 0; i < clauses.child_count; i++)
     {
@@ -348,17 +514,39 @@ fn void Linter.lint_fn_clauses(Linter* self, Node* fn_node)
         {
             saw_catchall = true;
         }
+
+        // Record unguarded enum-name coverage.
+        if (clause.child_count >= 1 && !clause_has_guard(clause) &&
+            is_pattern_kind(clause.children[0]))
+        {
+            enum_coverage_accum(clause.children[0], &match_ed, &enum_pos,
+                                &enum_bits, &enum_dirty);
+        }
     }
 
     // The type checker may have proven the clause set total over a union's
     // variants (it can see variants; this syntactic pass cannot).
     if ((clauses.flags & ast::FLAG_EXHAUSTIVE) != 0) return;
 
-    if (!saw_catchall)
+    if (!saw_catchall && !enum_coverage_total(match_ed, enum_dirty, enum_bits))
     {
         self.warn("non-exhaustive clauses: no catch-all (add `| _ -> ...`)",
             fn_node.line, fn_node.col);
     }
+}
+
+// Does a clause carry a NODE_PATTERN_GUARD child?
+fn bool clause_has_guard(Node* clause)
+{
+    for (usz i = 0; i < clause.child_count; i++)
+    {
+        if (clause.children[i] != null &&
+            clause.children[i].kind == Nk.NODE_PATTERN_GUARD)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 // A clause with no parameter pattern (anonymous `-> body`).
@@ -465,6 +653,9 @@ fn void Linter.collect_binders_body(Linter* self, Node* n)
 {
     if (n.kind == Nk.NODE_PATTERN_IDENT)
     {
+        // An enum-variant NAME pattern matches a constant (the tag) — it
+        // binds nothing, so it can never be an "unused binding".
+        if (pattern_is_enum_name_const(n)) return;
         Node* nm = n.child_count >= 1 ? n.children[0] : null;
         // Skip `_`-prefixed names (conventionally intentionally unused).
         if (!name_starts_underscore(nm))
