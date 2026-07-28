@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+fn emit_asm : Str -> Str
+  | s -> s
+dialect MyDialect
+  opcode add_i32
+  opcode mul_f32
+  region entry
+irdl
+  MyDialect.add_i32 [a : i32, b : i32] ↦ emit_asm("addl")

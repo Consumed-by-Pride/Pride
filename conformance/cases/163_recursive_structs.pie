@@ -1,0 +1,14 @@
+-- EXPECT-CLEAN
+struct ListNode
+    val  : i64
+    next : *ListNode
+
+fn list_sum : *ListNode -> i64
+  | node ->
+    if node == null then 0i64
+    else node.val + list_sum(node.next)
+
+fn list_len : *ListNode -> i64
+  | node ->
+    if node == null then 0i64
+    else 1i64 + list_len(node.next)

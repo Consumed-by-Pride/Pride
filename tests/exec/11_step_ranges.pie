@@ -1,0 +1,43 @@
+-- EXPECT: 2450\n71253
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      -- sum of 0, 2, 4, ..., 98 = 2450
+      let mut s : i64 = 0
+      let mut i : i64 = 0
+      while i <= 98
+        s = s + i
+        i = i + 2
+      print_i64_nl(s)
+      -- sum 1..377 = 377*378/2 = 71253
+      let mut s2 : i64 = 0
+      let mut j : i64 = 1
+      while j <= 377
+        s2 = s2 + j
+        j = j + 1
+      print_i64_nl(s2)
+      syscall(231, 0)

@@ -1,0 +1,7 @@
+-- EXPECT-CLEAN
+mod mathx
+  fn sq : i32 -> i32
+    | n -> n * n
+use mathx as m
+fn caller : i32 -> i32
+  | n -> m::sq(n)

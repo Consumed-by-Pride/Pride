@@ -1,0 +1,27 @@
+-- EXPECT-CLEAN
+fn gcd : (i64, i64) -> i64
+  | (a, 0) -> a
+  | (a, b) -> gcd(b, a % b)
+
+fn lcm : (i64, i64) -> i64
+  | (a, b) -> (a / gcd(a, b)) * b
+
+fn is_prime : i64 -> bool
+  | n, n < 2 -> false
+  | 2 -> true
+  | n, n % 2 == 0 -> false
+  | n ->
+      let mut i : i64 = 3
+      while i * i <= n
+        if n % i == 0 then return false
+        i = i + 2
+      true
+
+fn pow_mod : (i64, i64, i64) -> i64
+  | (_, 0, _) -> 1
+  | (base, exp, m) ->
+      if exp % 2 == 0
+        let half = pow_mod(base, exp / 2, m)
+        (half * half) % m
+      else
+        (base * pow_mod(base, exp - 1, m)) % m

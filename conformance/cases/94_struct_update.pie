@@ -1,0 +1,13 @@
+-- EXPECT-CLEAN
+type Vec2 = struct
+  x : i64
+  y : i64
+
+fn get_x : Vec2 -> i64
+  | v -> v.x
+
+fn get_y : Vec2 -> i64
+  | v -> v.y
+
+fn sum : Vec2 -> i64
+  | v -> v.x + v.y

@@ -1,0 +1,2 @@
+-- EXPECT-CLEAN
+type T = i32 | f64

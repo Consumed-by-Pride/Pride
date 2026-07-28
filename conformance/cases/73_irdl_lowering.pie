@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+fn add : (i32, i32) -> i32
+  | (a, b) -> a + b
+dialect Gpu
+  opcode gadd
+irdl
+  Gpu.gadd [x : i32, y : i32] ↦ add(x, y)
+fn use_dialect : (i32, i32) -> i32
+  | (p, q) -> Gpu.gadd(p, q)

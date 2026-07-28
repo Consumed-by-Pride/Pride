@@ -1,0 +1,14 @@
+let opt : Rewrite = rewrite
+  | x + 0 ↦ x
+  | 0 + x ↦ x
+  | x * 1 ↦ x
+  | x * 0 ↦ 0
+  | x - x ↦ 0
+  | x * 2 ↦ x << 1
+  | x * 8 ↦ x << 3
+
+let a = (n + 0) |> opt
+let b = (n * 8) |> opt
+let c = (m - m) |> opt
+let d = ((n + 0) * 1) |> opt
+let e = (n * 0 + k * 1) |> opt

@@ -1,0 +1,16 @@
+-- EXPECT-CLEAN
+fn divmod : (i64, i64) -> (i64, i64)
+  | (a, b) -> (a / b, a % b)
+
+fn min_max : (i64, i64) -> (i64, i64)
+  | (a, b) -> if a < b then (a, b) else (b, a)
+
+fn euclidean : (i64, i64) -> (i64, i64, i64)
+  | (a, b) ->
+    if b == 0i64 then (a, 1i64, 0i64)
+    else
+      let (g, x, y) : (i64, i64, i64) = euclidean(b, a % b)
+      (g, y, x - (a / b) * y)
+
+fn parse_point : (*u8, i64) -> (i64, i64, i64)
+  | (_buf, len) -> (0i64, 0i64, len)

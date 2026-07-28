@@ -1,0 +1,7 @@
+-- EXPECT: type-warn 6:18 matmul shape mismatch
+fn f : () -> i32
+  | () ->
+      let a = [| [|1, 2|], [|3, 4|] |]
+      let b = [| [|1, 2, 3|] |]
+      let _c = a @ b
+      0

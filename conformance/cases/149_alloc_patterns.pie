@@ -1,0 +1,28 @@
+-- EXPECT-CLEAN
+fn make_zeros : i64 -> *i64 ! [Alloc]
+  | n ->
+      let p : *i64 = alloc [i64; n]
+      let mut i : i64 = 0
+      while i < n
+        p[i] = 0
+        i = i + 1
+      p
+
+fn sum_and_free : (*i64, i64) -> i64 ! [Alloc]
+  | (arr, n) ->
+      let mut s : i64 = 0
+      let mut i : i64 = 0
+      while i < n
+        s = s + arr[i]
+        i = i + 1
+      free arr
+      s
+
+fn alloc_copy : (*i64, i64) -> *i64 ! [Alloc]
+  | (src, n) ->
+      let dst : *i64 = alloc [i64; n]
+      let mut i : i64 = 0
+      while i < n
+        dst[i] = src[i]
+        i = i + 1
+      dst

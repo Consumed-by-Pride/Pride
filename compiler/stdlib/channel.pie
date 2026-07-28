@@ -1,0 +1,122 @@
+-- stdlib/channel.pie — mpsc and mpmc channels backed by POSIX mutex+condvar.
+-- All values are i64 (pointer-sized); use ptr cast for typed values.
+
+fn malloc_ch : usize -> ptr  #extern("malloc") #cc(c)
+fn free_ch   : ptr   -> ()   #extern("free")   #cc(c)
+
+-- ─── Bounded ring-buffer channel ─────────────────────────────────────────────
+struct Channel
+  buf      : ptr    -- *i64 ring buffer
+  cap      : usize
+  head     : usize
+  tail     : usize
+  count    : usize
+  mutex    : ptr    -- Mutex handle
+  not_full : ptr    -- Condvar handle
+  not_empty: ptr    -- Condvar handle
+  closed   : bool
+
+fn chan_new : usize -> *Channel
+  | (cap) ->
+      let c  = malloc_ch(Channel::size) as *Channel
+      let buf = malloc_ch(cap * 8)
+      c.buf       = buf
+      c.cap       = cap
+      c.head      = 0
+      c.tail      = 0
+      c.count     = 0
+      c.mutex     = mutex_new()
+      c.not_full  = condvar_new()
+      c.not_empty = condvar_new()
+      c.closed    = false
+      c
+
+-- Send a value. Blocks if full (bounded). Returns false if channel closed.
+fn chan_send : (*Channel, i64) -> bool
+  | (ch, v) ->
+      mutex_lock(ch.mutex)
+      while ch.count >= ch.cap && !ch.closed
+        condvar_wait_raw(ch.not_full, ch.mutex)
+      if ch.closed
+        mutex_unlock(ch.mutex)
+        false
+      else
+        *((ch.buf as usize + ch.tail * 8) as *i64) = v
+        ch.tail  = (ch.tail + 1) % ch.cap
+        ch.count = ch.count + 1
+        condvar_signal(ch.not_empty)
+        mutex_unlock(ch.mutex)
+        true
+
+-- Receive a value. Blocks if empty. Returns (true, val) or (false, 0) if closed+empty.
+fn chan_recv : *Channel -> (bool, i64)
+  | (ch) ->
+      mutex_lock(ch.mutex)
+      while ch.count == 0 && !ch.closed
+        condvar_wait_raw(ch.not_empty, ch.mutex)
+      if ch.count == 0
+        mutex_unlock(ch.mutex)
+        (false, 0i64)
+      else
+        let v = *((ch.buf as usize + ch.head * 8) as *i64)
+        ch.head  = (ch.head + 1) % ch.cap
+        ch.count = ch.count - 1
+        condvar_signal(ch.not_full)
+        mutex_unlock(ch.mutex)
+        (true, v)
+
+-- Try receive without blocking. Returns (true, val) or (false, 0) if empty.
+fn chan_try_recv : *Channel -> (bool, i64)
+  | (ch) ->
+      mutex_lock(ch.mutex)
+      if ch.count == 0
+        mutex_unlock(ch.mutex)
+        (false, 0i64)
+      else
+        let v = *((ch.buf as usize + ch.head * 8) as *i64)
+        ch.head  = (ch.head + 1) % ch.cap
+        ch.count = ch.count - 1
+        condvar_signal(ch.not_full)
+        mutex_unlock(ch.mutex)
+        (true, v)
+
+-- Close the channel (wakes all blocked receivers).
+fn chan_close : *Channel -> ()
+  | (ch) ->
+      mutex_lock(ch.mutex)
+      ch.closed = true
+      condvar_broadcast(ch.not_full)
+      condvar_broadcast(ch.not_empty)
+      mutex_unlock(ch.mutex)
+
+fn chan_len : *Channel -> usize
+  | (ch) -> ch.count
+
+fn chan_free : *Channel -> ()
+  | (ch) ->
+      chan_close(ch)
+      mutex_free(ch.mutex)
+      condvar_free(ch.not_full)
+      condvar_free(ch.not_empty)
+      free_ch(ch.buf)
+      free_ch(ch as ptr)
+
+-- ─── Unbounded MPSC channel (single-consumer) ─────────────────────────────────
+-- Backed by a growable ring buffer — never blocks on send.
+struct MpscChannel
+  inner : *Channel
+
+fn mpsc_new : () -> MpscChannel
+  | () -> MpscChannel { inner: chan_new(256) }
+
+fn mpsc_send : (*MpscChannel, i64) -> ()
+  | (m, v) -> chan_send(m.inner, v)
+
+fn mpsc_recv : *MpscChannel -> (bool, i64)
+  | (m) -> chan_recv(m.inner)
+
+fn mpsc_try_recv : *MpscChannel -> (bool, i64)
+  | (m) -> chan_try_recv(m.inner)
+
+fn mpsc_close : *MpscChannel -> ()
+  | (m) -> chan_close(m.inner)

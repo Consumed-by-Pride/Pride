@@ -1,0 +1,9 @@
+-- Test: type casting chain
+fn u8_to_i64 : u8 -> i64
+  | x -> x as i64
+
+fn i64_to_u8 : i64 -> u8
+  | x -> x as u8
+
+fn roundtrip : i64 -> i64
+  | x -> u8_to_i64(i64_to_u8(x))

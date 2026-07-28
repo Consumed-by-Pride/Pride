@@ -1,0 +1,39 @@
+-- Algebraic effects: declarations, rows, propagation, handlers, discharge.
+-- Fully self-contained; should report ZERO effect warnings.
+
+effect IO
+  write_byte : u8 -> ()
+  read_byte  : () -> u8
+
+effect State<S>
+  get : () -> S
+  put : S -> ()
+
+-- declares the IO it performs
+fn emit : u8 -> () ! [IO]
+  | b -> IO.write_byte(b)
+
+-- propagates IO from the callee through its own declared row
+fn emit_twice : u8 -> () ! [IO]
+  | b ->
+      emit(b)
+      emit(b)
+
+-- builtin effects, properly declared
+fn make : () -> *i32 ! [Alloc]
+  | () -> alloc i32
+
+fn risky : i32 -> i32 ! [UB]
+  | 0 -> ub! "zero"
+  | n -> n
+
+-- effect polymorphism: forwards whatever effects f has
+fn twice<A> : (A -> A ! [..r], A) -> A ! [..r]
+  | (f, x) -> f(f(x))
+
+-- handler discharges IO, so this driver is itself pure
+fn driver : () -> ()
+  | () ->
+      handle emit_twice(65)
+        | IO.write_byte byte k -> k ()
+        | IO.read_byte  ()   k -> k 0

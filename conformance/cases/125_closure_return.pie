@@ -1,0 +1,5 @@
+-- EXPECT-CLEAN
+fn counter : i64 -> i64
+  | start ->
+      let bump = fn | (x) -> x + 1i64
+      bump(bump(start))

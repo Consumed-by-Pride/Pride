@@ -1,0 +1,209 @@
+mod os.linux.vdso
+
+use os.linux
+
+-- vDSO (virtual Dynamic Shared Object) interface.
+
+-- The vDSO is a small shared library the kernel maps into every process's
+-- address space. It provides userspace implementations of certain syscalls
+-- (clock_gettime, gettimeofday, time, getcpu) that don't need a ring transition.
+
+-- §1  VDSO SYMBOL NAMES (x86-64)
+const VDSO_CLOCK_GETTIME : *u8 = "__vdso_clock_gettime"
+const VDSO_GETTIMEOFDAY  : *u8 = "__vdso_gettimeofday"
+const VDSO_GETCPU        : *u8 = "__vdso_getcpu"
+const VDSO_TIME          : *u8 = "__vdso_time"
+const VDSO_CLOCK_GETRES  : *u8 = "__vdso_clock_getres"
+
+-- §2  ELF PARSING TYPES (used to locate the vDSO in memory)
+-- We need to find the vDSO by parsing /proc/self/maps or AT_SYSINFO_EHDR from auxv.
+
+-- ELF header magic and type constants
+const ELF_MAGIC   : u32 = 0x464C457Fu32   -- "\x7fELF"
+const ET_DYN      : u16 = 3u16            -- shared object
+const SHT_DYNSYM  : u32 = 11u32
+const SHT_GNU_HASH: u32 = 1879048182u32   -- 0x6ffffff6
+const SHT_STRTAB  : u32 = 3u32
+
+-- §3  VDSO STATE
+
+let vdso_base         : ptr  = 0 as ptr   -- base address of vDSO mapping
+let vdso_initialized  : bool = false
+let vdso_clock_gettime : ptr = 0 as ptr   -- fn ptr or 0
+let vdso_gettimeofday  : ptr = 0 as ptr
+let vdso_getcpu        : ptr = 0 as ptr
+let vdso_time          : ptr = 0 as ptr
+
+-- §4  LOCATE VDSO VIA /proc/self/maps
+
+fn vdso_find_base : () -> ptr
+  | () ->
+    let buf : *u8 = os.linux.malloc(4096i64) as *u8
+    let fd = os.linux.open("/proc/self/maps" as ptr, os.linux.O_RDONLY, 0i64)
+    if fd < 0i64 then os.linux.free(buf as ptr); 0 as ptr
+    else
+      let n = os.linux.read(fd, buf as ptr, 4095i64)
+      os.linux.close(fd)
+      if n <= 0i64 then os.linux.free(buf as ptr); 0 as ptr
+      else
+        buf[n] = 0u8
+        -- Look for "[vdso]" line
+        let vdso_tag = "[vdso]" as *u8
+        let mut i : i64 = 0i64
+        let mut found : ptr = 0 as ptr
+        while i < n && found as i64 == 0i64
+          -- Check if this line contains [vdso]
+          let line_start = i
+          while i < n && buf[i] != 10u8 then i = i + 1i64
+          buf[i] = 0u8
+          let line = (buf as i64 + line_start) as ptr
+          let tag_pos = os.linux.strstr(line, vdso_tag as ptr)
+          if tag_pos as i64 != 0i64
+            -- Parse base address from start of line "7fff...abc-... r-xp ..."
+            let mut addr : u64 = 0u64; let mut p : i64 = line_start
+            while buf[p] != 45u8   -- '-'
+              let c = buf[p]
+              let d = if c >= 48u8 && c <= 57u8 then c as u64 - 48u64
+                      else if c >= 97u8 && c <= 102u8 then c as u64 - 87u64
+                      else if c >= 65u8 && c <= 70u8 then c as u64 - 55u64
+                      else 0u64
+              addr = addr * 16u64 + d; p = p + 1i64
+            found = addr as ptr
+          i = i + 1i64
+        os.linux.free(buf as ptr)
+        found
+
+-- §5  ELF SYMBOL LOOKUP IN VDSO
+
+fn vdso_lookup_symbol : (ptr, ptr) -> ptr
+  | (vdso_addr, sym_name) ->
+    if vdso_addr as i64 == 0i64 then 0 as ptr
+    else
+      -- Parse ELF header
+      let ehdr = vdso_addr as *u32
+      -- Check ELF magic
+      if ehdr[0u32] != ELF_MAGIC then 0 as ptr
+      else
+        -- ELF64 header layout (64-bit):
+        --  0x00: e_ident[16]
+        --  0x10: e_type (u16), e_machine (u16), e_version (u32)
+        --  0x18: e_entry (u64), e_phoff (u64), e_shoff (u64)
+        --  0x30: e_flags (u32), e_ehsize (u16), e_phentsize (u16), e_phnum (u16)
+        --  0x3A: e_shentsize (u16), e_shnum (u16), e_shstrndx (u16)
+        let e_shoff     = (vdso_addr as i64 + 0x28i64) as *u64 as *u64; let shoff = e_shoff[0i64]
+        let e_shnum     = (vdso_addr as i64 + 0x3Cu64 as i64) as *u16; let shnum = e_shnum[0u16] as i64
+        let e_shstrndx  = (vdso_addr as i64 + 0x3Ei64) as *u16; let shstrndx = e_shstrndx[0u16] as i64
+        let e_shentsize = (vdso_addr as i64 + 0x3Ai64) as *u16; let shentsize = e_shentsize[0u16] as i64
+
+        -- Find .dynstr and .dynsym sections
+        let mut dynstr_off : u64 = 0u64; let mut dynstr_size : u64 = 0u64
+        let mut dynsym_off : u64 = 0u64; let mut dynsym_size : u64 = 0u64
+        let mut dynsym_entsize : u64 = 24u64
+
+        let mut si : i64 = 0i64
+        while si < shnum
+          let shdr = (vdso_addr as i64 + shoff as i64 + si * shentsize) as ptr
+          -- ELF64 section header:
+          --  0x00: sh_name (u32), sh_type (u32)
+          --  0x08: sh_flags (u64), sh_addr (u64), sh_offset (u64), sh_size (u64)
+          --  0x28: sh_link (u32), sh_info (u32), sh_addralign (u64), sh_entsize (u64)
+          let sh_type   = (shdr as i64 + 4i64) as *u32; let stype = sh_type[0u32]
+          let sh_offset = (shdr as i64 + 24i64) as *u64; let soff = sh_offset[0i64]
+          let sh_size   = (shdr as i64 + 32i64) as *u64; let ssize = sh_size[0i64]
+          let sh_entsize_p = (shdr as i64 + 56i64) as *u64
+          if stype == SHT_STRTAB && si != shstrndx
+            dynstr_off  = soff; dynstr_size = ssize
+          else if stype == SHT_DYNSYM
+            dynsym_off  = soff; dynsym_size = ssize
+            dynsym_entsize = sh_entsize_p[0i64]
+          si = si + 1i64
+
+        if dynstr_off == 0u64 || dynsym_off == 0u64 then 0 as ptr
+        else
+          let dynstr = (vdso_addr as i64 + dynstr_off as i64) as *u8
+          let dynsym = (vdso_addr as i64 + dynsym_off as i64) as *u8
+          let nsyms  = (dynsym_size / dynsym_entsize) as i64
+
+          -- ELF64 symbol entry (Sym64):
+          --  0x00: st_name (u32), st_info (u8), st_other (u8), st_shndx (u16)
+          --  0x08: st_value (u64), st_size (u64)
+          let mut si2 : i64 = 0i64
+          let mut result : ptr = 0 as ptr
+          while si2 < nsyms && result as i64 == 0i64
+            let sym = (dynsym as i64 + si2 * dynsym_entsize as i64) as *u32
+            let st_name = sym[0u32] as i64
+            let name = (dynstr as i64 + st_name) as ptr
+            if os.linux.strcmp(name, sym_name) == 0i32
+              let st_value = ((dynsym as i64 + si2 * dynsym_entsize as i64 + 8i64) as *u64)[0i64]
+              result = (vdso_addr as i64 + st_value as i64) as ptr
+            si2 = si2 + 1i64
+          result
+
+-- §6  VDSO INIT
+
+fn vdso_init : () -> ()
+  | () ->
+    if vdso_initialized then ()
+    else
+      vdso_base = vdso_find_base()
+      if vdso_base as i64 != 0i64
+        vdso_clock_gettime = vdso_lookup_symbol(vdso_base, VDSO_CLOCK_GETTIME as ptr)
+        vdso_gettimeofday  = vdso_lookup_symbol(vdso_base, VDSO_GETTIMEOFDAY as ptr)
+        vdso_getcpu        = vdso_lookup_symbol(vdso_base, VDSO_GETCPU as ptr)
+        vdso_time          = vdso_lookup_symbol(vdso_base, VDSO_TIME as ptr)
+      vdso_initialized = true
+
+-- §7  FAST CLOCK WRAPPERS
+-- If vDSO is available, calls directly into it (no syscall).
+-- Falls back to syscall if vDSO not found.
+
+fn fast_clock_gettime : (i32, ptr) -> i32
+  | (clkid, tp) ->
+    vdso_init()
+    if vdso_clock_gettime as i64 != 0i64
+      -- Call vDSO directly: fn(clockid_t, *timespec) -> int
+      let f = vdso_clock_gettime as fn(i32, ptr) -> i32
+      f(clkid, tp)
+    else
+      os.linux.clock_gettime(clkid as i64, tp) as i32
+
+fn fast_gettimeofday : (ptr, ptr) -> i32
+  | (tv, tz) ->
+    vdso_init()
+    if vdso_gettimeofday as i64 != 0i64
+      let f = vdso_gettimeofday as fn(ptr, ptr) -> i32
+      f(tv, tz)
+    else
+      os.linux.gettimeofday(tv, tz) as i32
+
+fn fast_time : ptr -> i64
+  | t ->
+    vdso_init()
+    if vdso_time as i64 != 0i64
+      let f = vdso_time as fn(ptr) -> i64
+      f(t)
+    else
+      os.linux.clock_gettime(os.linux.CLOCK_REALTIME, t)
+
+-- §8  MONOTONIC HELPERS using vDSO
+
+fn vdso_monotonic_ns : () -> i64
+  | () ->
+    let ts : *i64 = os.linux.malloc(16i64) as *i64
+    fast_clock_gettime(os.linux.CLOCK_MONOTONIC as i32, ts as ptr)
+    let v = ts[0i64] * 1000000000i64 + ts[1i64]
+    os.linux.free(ts as ptr); v
+
+fn vdso_realtime_ns : () -> i64
+  | () ->
+    let ts : *i64 = os.linux.malloc(16i64) as *i64
+    fast_clock_gettime(os.linux.CLOCK_REALTIME as i32, ts as ptr)
+    let v = ts[0i64] * 1000000000i64 + ts[1i64]
+    os.linux.free(ts as ptr); v
+
+fn vdso_boottime_ns : () -> i64
+  | () ->
+    let ts : *i64 = os.linux.malloc(16i64) as *i64
+    fast_clock_gettime(os.linux.CLOCK_BOOTTIME as i32, ts as ptr)
+    let v = ts[0i64] * 1000000000i64 + ts[1i64]
+    os.linux.free(ts as ptr); v

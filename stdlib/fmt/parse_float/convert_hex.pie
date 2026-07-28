@@ -1,0 +1,99 @@
+mod fmt.parse_float.convert_hex
+
+use fmt.parse_float.common
+use fmt.parse_float.float_info
+use fmt.parse_float.float_stream
+
+-- Hex float literal parser: 0x1.fp+10 style (C99 / IEEE-754).
+
+-- Parse a hex float literal from a FloatStream positioned after "0x" (or "0X").
+-- Format: [sign] 0x <hex-digits> [. <hex-digits>] [p|P [+|-] <decimal-exp>]
+-- Returns (value, ok): ok=false if stream does not contain a valid hex float.
+
+fn parse_hex_f64 : (*float_stream.FloatStream, bool) -> (f64, bool)
+  | (s, neg) ->
+    -- Accumulate hex mantissa digits into a u64
+    let mut mantissa : u64 = 0u64
+    let mut mantissa_digits : i64 = 0i64
+    let mut has_dot = false
+    let mut frac_digits : i64 = 0i64   -- hex digits after the dot
+    let mut overflow = false
+
+    -- Integer part
+    while !float_stream.stream_at_end(s)
+      let d = float_stream.stream_read_hexdigit(s)
+      if d < 0i64 then s.len   -- break
+      else
+        if mantissa_digits < 16i64
+          mantissa = (mantissa << 4u64) | d as u64
+          mantissa_digits = mantissa_digits + 1i64
+        else overflow = true
+
+    -- Fractional part
+    if !float_stream.stream_at_end(s) && float_stream.stream_peek(s) == 46i64   -- '.'
+      float_stream.stream_advance(s)
+      has_dot = true
+      while !float_stream.stream_at_end(s)
+        let d = float_stream.stream_read_hexdigit(s)
+        if d < 0i64 then s.len   -- break
+        else
+          frac_digits = frac_digits + 1i64
+          if mantissa_digits < 16i64
+            mantissa = (mantissa << 4u64) | d as u64
+            mantissa_digits = mantissa_digits + 1i64
+          else overflow = true
+
+    -- Exponent (binary, base 2): 'p' or 'P'
+    if float_stream.stream_at_end(s) then (0.0f64, false)
+    else
+      let p = float_stream.stream_peek(s)
+      if p != 112i64 && p != 80i64 then (0.0f64, false)   -- must have 'p'/'P'
+      else
+        float_stream.stream_advance(s)
+        let eneg = if float_stream.stream_peek(s) == 45i64 then float_stream.stream_advance(s); true
+                   else if float_stream.stream_peek(s) == 43i64 then float_stream.stream_advance(s); false
+                   else false
+        let mut exp_val : i64 = 0i64
+        while !float_stream.stream_at_end(s)
+          let d = float_stream.stream_read_hexdigit(s)
+          if d < 0i64 then s.len
+          else if exp_val < 1000000i64 then exp_val = exp_val*10i64 + d
+
+        let binary_exp : i64 = if eneg then -exp_val else exp_val
+        -- Adjust for hex fraction digits: each hex digit is 4 bits
+        let adjusted_exp = binary_exp - frac_digits * 4i64
+        -- Normalize mantissa
+        if mantissa == 0u64 then (if neg then -0.0f64 else 0.0f64, true)
+        else
+          let mut m = mantissa; let mut e = adjusted_exp
+          -- Shift mantissa to have exactly 53 bits (normalized)
+          while m < 0x0010000000000000u64 && !overflow
+            m = m << 1u64; e = e - 1i64
+          while m >= 0x0020000000000000u64
+            m = m >> 1u64; e = e + 1i64
+          -- e is now the unbiased binary exponent of the 1.xxx form
+          -- Remove implicit leading bit
+          m = m & 0x000FFFFFFFFFFFFu64
+          -- Add bias
+          let biased = e + 1023i64 + 52i64
+          if biased >= 0x7FFi64
+            -- Infinity
+            let inf_bits : u64 = if neg then 0xFFF0000000000000u64 else 0x7FF0000000000000u64
+            (inf_bits as f64, true)
+          else if biased <= 0i64
+            -- Subnormal or zero
+            let shift = -biased + 1i64
+            if shift >= 53i64 then (if neg then -0.0f64 else 0.0f64, true)
+            else
+              let sub_m = m >> shift as u64
+              let sign_bit : u64 = if neg then 0x8000000000000000u64 else 0u64
+              ((sign_bit | sub_m) as f64, true)
+          else
+            let sign_bit : u64 = if neg then 0x8000000000000000u64 else 0u64
+            let exp_bits  : u64 = (biased as u64) << 52u64
+            ((sign_bit | exp_bits | m) as f64, true)
+
+fn parse_hex_f32 : (*float_stream.FloatStream, bool) -> (f32, bool)
+  | (s, neg) ->
+    let (v64, ok) = parse_hex_f64(s, neg)
+    (v64 as f32, ok)

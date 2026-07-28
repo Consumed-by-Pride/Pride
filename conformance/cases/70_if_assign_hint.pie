@@ -1,0 +1,7 @@
+-- EXPECT: type-warn 4:12 did you mean
+fn f : i32 -> i32
+  | n ->
+      if n = 5
+        1
+      else
+        0

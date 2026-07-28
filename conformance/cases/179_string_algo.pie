@@ -1,0 +1,35 @@
+-- EXPECT-CLEAN
+fn str_len : *u8 -> i64
+  | s ->
+    let mut i : i64 = 0i64
+    while s[i] != 0u8
+      i = i + 1i64
+    i
+
+fn str_count_char : (*u8, i64, u8) -> i64
+  | (s, len, ch) ->
+    let mut count : i64 = 0i64
+    let mut i     : i64 = 0i64
+    while i < len
+      if s[i] == ch then count = count + 1i64
+      i = i + 1i64
+    count
+
+fn str_copy : (*u8, *u8, i64) -> ()
+  | (dst, src, len) ->
+    let mut i : i64 = 0i64
+    while i < len
+      dst[i] = src[i]
+      i = i + 1i64
+    dst[len] = 0u8
+
+fn str_reverse_inplace : (*u8, i64) -> ()
+  | (s, len) ->
+    let mut lo : i64 = 0i64
+    let mut hi : i64 = len - 1i64
+    while lo < hi
+      let tmp : u8 = s[lo]
+      s[lo] = s[hi]
+      s[hi] = tmp
+      lo = lo + 1i64
+      hi = hi - 1i64

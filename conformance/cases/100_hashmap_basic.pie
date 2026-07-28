@@ -1,0 +1,10 @@
+-- Test: hashmap-style struct with arena
+struct Entry
+    key : i64
+    val : i64
+
+fn entry_new : (i64, i64) -> Entry
+  | (k, v) -> Entry { key: k, val: v }
+
+fn entry_sum : Entry -> i64
+  | e -> e.key + e.val

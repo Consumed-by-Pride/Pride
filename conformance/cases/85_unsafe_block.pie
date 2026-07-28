@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+fn poke : (ptr, u8) -> () ! [Unsafe]
+  | (addr, val) ->
+      unsafe
+        let p = addr as *u8
+        *p = val

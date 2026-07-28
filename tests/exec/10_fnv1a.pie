@@ -1,0 +1,42 @@
+-- EXPECT: 2554721226862139266
+fn fnv1a : (*u8, i64) -> i64
+  | (data, len) ->
+      let mut hash : i64 = -3750763034362895579
+      let mut i : i64 = 0
+      while i < len
+        hash = hash ^ data[i] as i64
+        hash = hash *% 1099511628211
+        i = i + 1
+      hash
+
+fn print_u64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : u64 = n as u64
+      if x == 0u64
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0u64
+          tmp[tlen] = (x % 10u64 + 48u64) as u8
+          x = x / 10u64
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      let msg : *u8 = "Hello, Pride!"
+      let h = fnv1a(msg, 13)
+      print_u64_nl(h)
+      syscall(231, 0)

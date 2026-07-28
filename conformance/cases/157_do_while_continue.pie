@@ -1,0 +1,12 @@
+-- EXPECT-CLEAN
+fn count_valid : (*i64, i64) -> i64
+  | (arr, n) ->
+    let mut i : i64 = 0i64 - 1i64
+    let mut count : i64 = 0i64
+    do
+      i = i + 1i64
+      if arr[i] < 0i64
+        continue
+      count = count + 1i64
+    while i < n - 1i64
+    count

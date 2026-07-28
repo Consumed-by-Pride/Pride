@@ -1,0 +1,5 @@
+-- Test: recursive fibonacci
+fn fib : i64 -> i64
+  | n ->
+    if n <= 1i64 then n
+    else fib(n - 1i64) + fib(n - 2i64)

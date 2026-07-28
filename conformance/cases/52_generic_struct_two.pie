@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+struct Pair<A, B>
+  fst : A
+  snd : B
+fn getfst<A, B> : Pair<A, B> -> A
+  | p -> p.fst

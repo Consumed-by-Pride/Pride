@@ -1,0 +1,5 @@
+-- EXPECT-CLEAN
+struct Box<T>
+  val : T
+fn unbox<T> : Box<T> -> T
+  | b -> b.val
