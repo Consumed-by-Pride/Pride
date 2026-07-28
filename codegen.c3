@@ -824,6 +824,16 @@ fn bool infer_fn_types(ssi_ir::SsiModule* ir, ssi_ir::SsiFunc* f, TypeTable* t)
                     if (buf[0] == 'v' && buf[1] == 'o') buf[0] = 0;
                 }
 
+                // Priority 1b: a rank ≥ 2 tensor INDEX materialises a
+                // headered sub-tensor — its VALUE is a pointer, not the
+                // element type synth_index reports (which drops all ranks).
+                if (iv.op == ssi_ir::IrOp.IR_INDEX && iv.src != null
+                    && iv.src.child_count >= 1 && iv.src.children[0] != null
+                    && iv.src.children[0].type_annotation != null
+                    && iv.src.children[0].type_annotation.kind == Nk.NODE_TYPE_TENSOR
+                    && iv.src.children[0].type_annotation.child_count > 2)
+                { snprintf(&buf[0], TYMAP_ENTRY, "ptr"); }
+
                 // Priority 2: propagate from operand (for bin/un/sigma/cast)
                 if (buf[0] == 0 && iv.arg_count >= 1 && iv.args[0] != null)
                 {
@@ -1710,6 +1720,26 @@ fn usz str_const_decoded_len(ssi_ir::IrVal* v)
 // used as one value (stored into memory in one piece); emit_vref alone
 // renders `@.str.N`, the raw byte-global pointer, which is not a value of
 // the record type.
+// Recursively read a tensor literal's static shape from its nesting:
+// `[| a, b |]` is rank 1 with dims[0] = 2, `[| [|..|], [|..|] |]` adds a
+// rank. Writes dims[0..rank) and returns the rank (0 = not a tensor shape
+// we can materialise). Ragged shapes are the type checker's error, not
+// codegen's — by this point every sibling row has the same length.
+fn usz tensor_lit_shape(Node* n, long* dims, usz cap)
+{
+    if (n == null || cap == 0) return 0;
+    Node* c0 = n.child_count >= 1 ? n.children[0] : null;
+    if (c0 != null && c0.kind == Nk.NODE_EXPR_TENSOR_LIT && cap > 1)
+    {
+        usz sub = tensor_lit_shape(c0, dims + 1, cap - 1);
+        if (sub == 0) return 0;
+        dims[0] = (long)n.child_count;
+        return sub + 1;
+    }
+    dims[0] = (long)n.child_count;
+    return 1;
+}
+
 fn void cgen_emit_str_const_record(CgenModule* cg, ssi_ir::IrVal* v)
 {
     if (v == null || v.op != ssi_ir::IrOp.IR_CONST_STR)
@@ -2583,6 +2613,35 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 ssi_ir::IrVal* lhs = v.arg_count >= 1 ? v.args[0] : null;
                 ssi_ir::IrVal* rhs = v.arg_count >= 2 ? v.args[1] : null;
                 bool fp = is_float_val_ty(lhs, tm);
+
+                // Elementwise tensor arithmetic + - * /  → the runtime helper
+                // (shape-checked, allocates the result header). Detection is
+                // by the LHS operand's source annotation: tensor literals and
+                // tensor-typed binders alike carry NODE_TYPE_TENSOR. Without
+                // this dispatch `a + b` on two heap-ptr tensors fell into
+                // generic pointer arithmetic.
+                if (v.bop == Tt.TOKEN_PLUS || v.bop == Tt.TOKEN_MINUS
+                    || v.bop == Tt.TOKEN_STAR || v.bop == Tt.TOKEN_SLASH)
+                {
+                    Node* tbsrc = v.src;
+                    Node* tlann = (tbsrc != null && tbsrc.child_count >= 1
+                                   && tbsrc.children[0] != null)
+                                  ? tbsrc.children[0].type_annotation : null;
+                    if (tlann != null && tlann.kind == Nk.NODE_TYPE_TENSOR)
+                    {
+                        int ew_op = (v.bop == Tt.TOKEN_PLUS)  ? 0
+                                  : (v.bop == Tt.TOKEN_MINUS) ? 1
+                                  : (v.bop == Tt.TOKEN_STAR)  ? 2 : 3;
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        cg.out.writes(" = call ptr @__pride_tensor_elemwise(ptr ");
+                        cg.emit_vref(lhs);
+                        cg.out.writes(", ptr ");
+                        cg.emit_vref(rhs);
+                        cg.out.writes(", i32 "); cg.out.writei(ew_op);
+                        cg.out.writes(")\n");
+                        return;
+                    }
+                }
 
                 // Matmul: emit as call (may hook BLAS)
                 if (v.bop == Tt.TOKEN_AT)
@@ -4201,6 +4260,114 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         && san.p.ident.name_ptr[2] == 'r')
                     { base_is_str = true; }
                 }
+                // Tensor indexing (PrideTensor wire format — compiler_rt §8:
+                // rank, dims[rank], double data[]). A rank-1 index loads the
+                // element (a double) and converts to the element type the
+                // program sees; a rank ≥ 2 index materialises a headered
+                // sub-tensor VIEW: fresh rank-(R-1) tensor on the stack with
+                // dims from the annotation and its row memcpy'd out of the
+                // source. Every tensor-typed value then always points at a
+                // full header — chained indexing t[i][j] stays uniform.
+                Node* tbase_ann = (v.src != null && v.src.child_count >= 1
+                                   && v.src.children[0] != null)
+                                  ? v.src.children[0].type_annotation : null;
+                if (tbase_ann != null && tbase_ann.kind == Nk.NODE_TYPE_TENSOR
+                    && base != null)
+                {
+                    usz trank = tbase_ann.child_count >= 1 ? tbase_ann.child_count - 1 : 1;
+                    long data_off = (long)(1 + trank) * 8;
+                    if (trank <= 1)
+                    {
+                        cg.out.writes("  %td.gep.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = getelementptr inbounds i8, ptr ");
+                        cg.emit_vref(base);
+                        cg.out.writes(", i64 "); cg.out.writei((long)data_off); cg.out.writes("\n");
+                        cg.out.writes("  %gep.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = getelementptr inbounds double, ptr %td.gep.v");
+                        cg.out.writei(v.id);
+                        cg.out.writes(", i64 ");
+                        cg.emit_vref(index);
+                        cg.out.writes("\n");
+                        char* erty = (tm != null) ? tm.get(v.id) : null;
+                        if (erty == null || erty[0] == 0) erty = (char*)"double";
+                        if (erty[0] == 'd')
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = load double, ptr %gep.v"); cg.out.writei(v.id);
+                            cg.out.writes("\n");
+                        }
+                        else if (erty[0] == 'f')
+                        {
+                            cg.out.writes("  %v.ld"); cg.out.writei(v.id);
+                            cg.out.writes(" = load double, ptr %gep.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = fptrunc double %v.ld"); cg.out.writei(v.id);
+                            cg.out.writes(" to float\n");
+                        }
+                        else
+                        {
+                            cg.out.writes("  %v.ld"); cg.out.writei(v.id);
+                            cg.out.writes(" = load double, ptr %gep.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = fptosi double %v.ld"); cg.out.writei(v.id);
+                            cg.out.writes(" to "); cg.out.writes(erty); cg.out.writes("\n");
+                        }
+                        return;
+                    }
+                    long row_elems = 1;
+                    for (usz di = 2; di < tbase_ann.child_count; di++)
+                    {
+                        Node* dc = tbase_ann.children[di];
+                        row_elems *= (dc != null && dc.kind == Nk.NODE_LIT_INT)
+                                     ? (long)dc.p.lit_int.int_val : 1;
+                    }
+                    long row_bytes = row_elems * 8;
+                    long sub_hdr = (long)trank * 8;   // (1 + (rank-1)) * 8
+                    cg.out.writes("  %th.v"); cg.out.writei(v.id);
+                    cg.out.writes(" = alloca i8, i64 ");
+                    cg.out.writei((long)(sub_hdr + row_bytes)); cg.out.writes("\n");
+                    cg.out.writes("  store i64 "); cg.out.writeu((ulong)(trank - 1));
+                    cg.out.writes(", ptr %th.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                    for (usz di = 2; di < tbase_ann.child_count; di++)
+                    {
+                        Node* dc = tbase_ann.children[di];
+                        long dv = (dc != null && dc.kind == Nk.NODE_LIT_INT)
+                                  ? (long)dc.p.lit_int.int_val : 0;
+                        cg.out.writes("  %th.d"); cg.out.writei(v.id);
+                        cg.out.writes("."); cg.out.writeu(di - 1);
+                        cg.out.writes(" = getelementptr inbounds i64, ptr %th.v");
+                        cg.out.writei(v.id);
+                        cg.out.writes(", i64 "); cg.out.writeu((ulong)(di - 1)); cg.out.writes("\n");
+                        cg.out.writes("  store i64 "); cg.out.writei((long)dv);
+                        cg.out.writes(", ptr %th.d"); cg.out.writei(v.id);
+                        cg.out.writes("."); cg.out.writeu(di - 1); cg.out.writes("\n");
+                    }
+                    cg.out.writes("  %tr.off.v"); cg.out.writei(v.id);
+                    cg.out.writes(" = mul i64 ");
+                    cg.emit_vref(index);
+                    cg.out.writes(", "); cg.out.writei((long)row_bytes); cg.out.writes("\n");
+                    cg.out.writes("  %tr.base.v"); cg.out.writei(v.id);
+                    cg.out.writes(" = getelementptr inbounds i8, ptr ");
+                    cg.emit_vref(base);
+                    cg.out.writes(", i64 "); cg.out.writei((long)data_off); cg.out.writes("\n");
+                    cg.out.writes("  %tr.src.v"); cg.out.writei(v.id);
+                    cg.out.writes(" = getelementptr inbounds i8, ptr %tr.base.v");
+                    cg.out.writei(v.id);
+                    cg.out.writes(", i64 %tr.off.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                    cg.out.writes("  %th.dst.v"); cg.out.writei(v.id);
+                    cg.out.writes(" = getelementptr inbounds i8, ptr %th.v"); cg.out.writei(v.id);
+                    cg.out.writes(", i64 "); cg.out.writei((long)sub_hdr); cg.out.writes("\n");
+                    cg.out.writes("  call void @llvm.memcpy.p0.p0.i64(ptr %th.dst.v");
+                    cg.out.writei(v.id);
+                    cg.out.writes(", ptr %tr.src.v"); cg.out.writei(v.id);
+                    cg.out.writes(", i64 "); cg.out.writei((long)row_bytes);
+                    cg.out.writes(", i1 false)\n");
+                    cg.out.writes("  %v"); cg.out.writei(v.id);
+                    cg.out.writes(" = bitcast ptr %th.v"); cg.out.writei(v.id);
+                    cg.out.writes(" to ptr\n");
+                    if (tm != null) { tm.set(v.id, (char*)"ptr"); }
+                    return;
+                }
                 if (base_is_str)
                 {
                     // Data pointer: the literal's byte global directly, else
@@ -4756,9 +4923,135 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 // skip this path and use insertvalue below.
                 char* agg_ty = (tm != null) ? tm.get(v.id) : null;
                 bool is_struct_lit = (v.op == ssi_ir::IrOp.IR_STRUCT);
+                // Tensor literal: the runtime wire format (compiler_rt.c §8)
+                // is   PrideTensor { u64 rank, u64 dims[rank], double data[] }
+                // with the helpers (matmul/elemwise) reading exactly that.
+                // The legacy path allocated a bare count*8 double buffer —
+                // no header — so __pride_matmul read the first ELEMENT as the
+                // rank, and elementwise `+` never reached the helper at all.
+                // Int elements also became `store double 1` (invalid IR).
+                if (agg_ty != null && agg_ty[0] == 'p' && v.arg_count > 0 && !is_struct_lit
+                    && v.src != null && v.src.kind == Nk.NODE_EXPR_TENSOR_LIT)
+                {
+                    long[4] tdims;
+                    usz trank = tensor_lit_shape(v.src, &tdims[0], 4);
+                    if (trank > 0)
+                    {
+                        long telems = 1;
+                        for (usz ti = 0; ti < trank; ti++) telems *= tdims[ti];
+                        long hdr_bytes = (long)(1 + trank) * 8;
+                        // One buffer: header + data.
+                        cg.out.writes("  %ten."); cg.out.writei(v.id);
+                        cg.out.writes(" = call ptr @malloc(i64 ");
+                        cg.out.writei((long)(hdr_bytes + telems * 8));
+                        cg.out.writes(")\n");
+                        cg.out.writes("  store i64 "); cg.out.writeu((ulong)trank);
+                        cg.out.writes(", ptr %ten."); cg.out.writei(v.id);
+                        cg.out.writes("\n");
+                        for (usz di = 0; di < trank; di++)
+                        {
+                            cg.out.writes("  %td.gep."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(di);
+                            cg.out.writes(" = getelementptr inbounds i64, ptr %ten.");
+                            cg.out.writei(v.id); cg.out.writes(", i64 ");
+                            cg.out.writeu((ulong)(1 + di)); cg.out.writes("\n");
+                            cg.out.writes("  store i64 "); cg.out.writei((long)tdims[di]);
+                            cg.out.writes(", ptr %td.gep."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(di); cg.out.writes("\n");
+                        }
+                        cg.out.writes("  %tdp."); cg.out.writei(v.id);
+                        cg.out.writes(" = getelementptr inbounds i8, ptr %ten.");
+                        cg.out.writei(v.id); cg.out.writes(", i64 ");
+                        cg.out.writei((long)hdr_bytes); cg.out.writes("\n");
+                        if (trank == 1)
+                        {
+                            // Leaf rank: convert each element to double.
+                            for (usz ti = 0; ti < v.arg_count; ti++)
+                            {
+                                cg.out.writes("  %ten.gep."); cg.out.writei(v.id);
+                                cg.out.writes("."); cg.out.writeu(ti);
+                                cg.out.writes(" = getelementptr inbounds double, ptr %tdp.");
+                                cg.out.writei(v.id); cg.out.writes(", i64 ");
+                                cg.out.writeu(ti); cg.out.writes("\n");
+                                char* ety = (tm != null && v.args[ti] != null)
+                                            ? tm.get(v.args[ti].id) : null;
+                                if (ety == null || ety[0] == 0) ety = "double";
+                                if (ety[0] == 'f' && ety[1] == 'l')   // float
+                                {
+                                    cg.out.writes("  %ten.cv."); cg.out.writei(v.id);
+                                    cg.out.writes("."); cg.out.writeu(ti);
+                                    cg.out.writes(" = fpext float ");
+                                    if (v.args[ti] != null) { cg.emit_vref(v.args[ti]); }
+                                    else { cg.out.writes("0.0"); }
+                                    cg.out.writes(" to double\n");
+                                    cg.out.writes("  store double %ten.cv.");
+                                    cg.out.writei(v.id); cg.out.writes(".");
+                                    cg.out.writeu(ti);
+                                }
+                                else if (ety[0] == 'i')   // any integer
+                                {
+                                    cg.out.writes("  %ten.cv."); cg.out.writei(v.id);
+                                    cg.out.writes("."); cg.out.writeu(ti);
+                                    cg.out.writes(" = sitofp ");
+                                    cg.out.writes(ety); cg.out.writes(" ");
+                                    if (v.args[ti] != null) { cg.emit_vref(v.args[ti]); }
+                                    else { cg.out.writes("0"); }
+                                    cg.out.writes(" to double\n");
+                                    cg.out.writes("  store double %ten.cv.");
+                                    cg.out.writei(v.id); cg.out.writes(".");
+                                    cg.out.writeu(ti);
+                                }
+                                else   // already double (or unknown: store as-is)
+                                {
+                                    cg.out.writes("  store double ");
+                                    if (v.args[ti] != null) { cg.emit_vref(v.args[ti]); }
+                                    else { cg.out.writes("0.0"); }
+                                }
+                                cg.out.writes(", ptr %ten.gep."); cg.out.writei(v.id);
+                                cg.out.writes("."); cg.out.writeu(ti); cg.out.writes("\n");
+                            }
+                        }
+                        else
+                        {
+                            // Higher ranks: each child is its own headered
+                            // tensor; consolidate their data regions into this
+                            // buffer with one memcpy per child.
+                            long child_elems = telems / tdims[0];
+                            long child_bytes = child_elems * 8;
+                            long child_data_off = (long)trank * 8;   // (1+(rank-1))*8
+                            for (usz ti = 0; ti < v.arg_count; ti++)
+                            {
+                                cg.out.writes("  %csrc."); cg.out.writei(v.id);
+                                cg.out.writes("."); cg.out.writeu(ti);
+                                cg.out.writes(" = getelementptr inbounds i8, ptr ");
+                                if (v.args[ti] != null) { cg.emit_vref(v.args[ti]); }
+                                else { cg.out.writes("null"); }
+                                cg.out.writes(", i64 "); cg.out.writei((long)child_data_off);
+                                cg.out.writes("\n");
+                                cg.out.writes("  %cdst."); cg.out.writei(v.id);
+                                cg.out.writes("."); cg.out.writeu(ti);
+                                cg.out.writes(" = getelementptr inbounds i8, ptr %tdp.");
+                                cg.out.writei(v.id); cg.out.writes(", i64 ");
+                                cg.out.writei((long)(child_bytes * (long)ti));
+                                cg.out.writes("\n");
+                                cg.out.writes("  call void @llvm.memcpy.p0.p0.i64(ptr %cdst.");
+                                cg.out.writei(v.id); cg.out.writes(".");
+                                cg.out.writeu(ti); cg.out.writes(", ptr %csrc.");
+                                cg.out.writei(v.id); cg.out.writes(".");
+                                cg.out.writeu(ti);
+                                cg.out.writes(", i64 "); cg.out.writei((long)child_bytes);
+                                cg.out.writes(", i1 false)\n");
+                            }
+                        }
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        cg.out.writes(" = bitcast ptr %ten."); cg.out.writei(v.id);
+                        cg.out.writes(" to ptr\n");
+                        return;
+                    }
+                }
+                // Tensor: allocate elem_count * 8 bytes (double), store each element
                 if (agg_ty != null && agg_ty[0] == 'p' && v.arg_count > 0 && !is_struct_lit)
                 {
-                    // Tensor: allocate elem_count * 8 bytes (double), store each element
                     cg.out.writes("  %ten."); cg.out.writei(v.id);
                     cg.out.writes(" = call ptr @malloc(i64 ");
                     cg.out.writei((long)(v.arg_count * 8));
@@ -6827,6 +7120,7 @@ fn void CgenModule.emit_runtime_decls(CgenModule* cg)
     cg.out.writes("declare i64  @__pride_get_arm_arg(i64)\n");
     // Tensor matmul (`@` operator) — implemented in runtime/compiler_rt.c
     cg.out.writes("declare ptr  @__pride_matmul(ptr, ptr)\n");
+    cg.out.writes("declare ptr  @__pride_tensor_elemwise(ptr, ptr, i32)\n");
     // Str runtime helpers (string builder used by fmt)
     cg.out.writes("declare void @pride_str_init(ptr)\n");
     cg.out.writes("declare void @pride_str_push_str(ptr, ptr, i64)\n");

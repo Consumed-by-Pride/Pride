@@ -1697,7 +1697,22 @@ fn Node* TypeChecker.synth_index(TypeChecker* self, Node* e)
         case Nk.NODE_TYPE_SLICE:
             return bt.child_count >= 1 ? bt.children[0] : null;
         case Nk.NODE_TYPE_TENSOR:
-            // tensor index drops one rank; for simplicity yield the element type
+            // Tensor indexing drops ONE rank: Tensor<T; d0, d1, ...> →
+            // Tensor<T; d1, ...>; only a rank-1 index yields the bare
+            // element. (Yielding T for every rank meant `t[i][j]` typed and
+            // lowered the outer index as though it indexed an f64 — the
+            // row's rank header was then read as the value.)
+            if (bt.child_count > 2)
+            {
+                // Result is [elem, dims[1..]] = children[0] + children[2..].
+                Node*[8] tbuf;
+                usz tn = 0;
+                tbuf[tn] = bt.children[0]; tn++;
+                for (usz ti = 2; ti < bt.child_count && tn < 8; ti++)
+                { tbuf[tn] = bt.children[ti]; tn++; }
+                return ast::node_n(self.arena, Nk.NODE_TYPE_TENSOR, &tbuf[0],
+                                   tn, e.line, e.col);
+            }
             return bt.child_count >= 1 ? bt.children[0] : null;
         default:
             // A Str is indexable: `s[i]` is the byte at offset i —
