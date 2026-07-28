@@ -25,8 +25,17 @@
 module integrity;
 
 import ast;
+import lexer;
+import parser;
+import resolve;
+import typecheck;
+import effectcheck;
+import lint;
 
 extern fn int printf(char* fmt, ...);
+extern fn void* malloc(usz size);
+extern fn usz   strlen(char* s);
+extern fn void  free(void* ptr);
 
 alias Node = ast::AstNode;
 alias Nk = ast::NodeKind;
@@ -478,4 +487,280 @@ fn int Verifier.verify(Verifier* self, Node* program)
     if (program == null) return 0;
     self.walk(program, null, 0, false);
     return self.total();
+}
+
+
+// ── Spec-lock doctests (r14) ──────────────────────────────────────────────
+// Canonical, minimal Pride snippets — the exact surface syntax v.md teaches
+// — run through the REAL frontend pipeline in-process (`pride --self-test`),
+// each with a declared expectation. Documentation syntax stops rotting in
+// silence: a regression in any documented form becomes a named failure with
+// the stage, the snippet, and what was expected vs what was found — never a
+// quiet "EXPECTED diagnostic" folded into somebody else's conformance tally.
+//
+// Every snippet runs the same stages as a real compile of the same text:
+//   lex → parse → resolve → typecheck → effectcheck → lint
+//
+// Expectation language:
+//   "clean"         — zero diagnostics at every stage (mirrors conformance
+//                     EXPECT-CLEAN exactly)
+//   "parse:<sub>"   — at least one PARSE error whose text contains <sub>
+//   "resolve:<sub>" — at least one RESOLVER error containing <sub>
+//   "type:<sub>"    — at least one TYPE diagnostic containing <sub>
+//   "effect:<sub>"  — at least one EFFECT diagnostic containing <sub>
+// (Negative tests assert the DIAGNOSTIC exists; other diagnostics around it
+// are tolerated — a good error message staying loud is what matters.)
+
+struct DocTest
+{
+    char* group;     // the doc section the syntax comes from
+    char* name;      // short slug printed in reports
+    char* expect;    // expectation per the language above
+    char* src;       // the canonical snippet, verbatim as a user writes it
+}
+
+const DocTest[13] R14_DOCTESTS =
+{
+    // §6 — functions are clause-based; both layouts.
+    { "6 functions", "clause-multiline", "clean",
+      "fn add : (i64, i64) -> i64\n  | (a, b) -> a + b\n\n"
+      "fn main : () -> i64\n  | () -> add(40, 2)\n" },
+    { "6 functions", "clause-oneline", "clean",
+      "fn inc : i64 -> i64 | x -> x + 1\n\n"
+      "fn main : () -> i64\n  | () -> inc(40)\n" },
+
+    // §9 — unions, both representations (r13 shape rule).
+    { "9 unions", "c-union-fields", "clean",
+      "union FloatBits\n  f : f32\n  i : u32\n\n"
+      "fn get_i : FloatBits -> u32\n  | fb -> fb.i\n\n"
+      "fn get_f : FloatBits -> f32\n  | fb -> fb.f\n" },
+    { "9 unions", "tagged-union-match", "clean",
+      "type Opt = union\n  some : i32\n  none : ()\n"
+      "fn unwrap : Opt -> i32\n  | { some: v } -> v\n  | { none: n } -> n\n" },
+
+    // §776 — transmute takes its target from the ascription / codomain.
+    { "transmute", "transmute-fn-codomain", "clean",
+      "fn float_bits : f32 -> u32\n  | x -> transmute(x)\n\n"
+      "fn bits_float : u32 -> f32\n  | b -> transmute(b)\n" },
+    { "transmute", "transmute-let-ascription", "clean",
+      "fn main : () -> i64\n  | () ->\n"
+      "      let bits : u32 = transmute(3.14f32)\n      bits as i64\n" },
+
+    // §16 — term rewriting: first-class rules, |> application.
+    { "16 rewriting", "rewrite-metavars", "clean",
+      "let arith = rewrite\n  | x + 0 \xe2\x86\xa6 x\n  | x * 1 \xe2\x86\xa6 x\n"
+      "fn apply_it : i64 -> i64\n  | n -> n |> arith\n" },
+
+    // §17 — pattern generation language.
+    { "17 pgl", "pgen-metavars", "clean",
+      "pgen elim_add_zero<T> ->\n  [x : T]\n  where [x + 0]\n  \xe2\x86\xa6 x\n" },
+
+    // §18 — code quotation sigils.
+    { "18 quotation", "sigil-tree", "clean",
+      "fn main : () -> i64\n  | () ->\n"
+      "      let _node = ~Tree (1 + 2 * 3)\n      0\n" },
+
+    // §19 — IRDL dialects: declare, lower, use.
+    { "19 irdl", "dialect-lowering", "clean",
+      "fn add : (i32, i32) -> i32\n  | (a, b) -> a + b\n"
+      "dialect Gpu\n  opcode gadd\n"
+      "irdl\n  Gpu.gadd [x : i32, y : i32] \xe2\x86\xa6 add(x, y)\n"
+      "fn use_dialect : (i32, i32) -> i32\n  | (p, q) -> Gpu.gadd(p, q)\n" },
+
+    // r13 negative — a C-union has no discriminant; matching one is a hard
+    // type error, loudly, at the first arm.
+    { "9 unions", "match-c-union-is-error", "type:discriminant",
+      "union FloatBits\n  f : f32\n  i : u32\n\n"
+      "fn main : () -> i64\n  | () ->\n"
+      "      let fb = FloatBits.i(1u32)\n"
+      "      match fb\n"
+      "        | { i: v } -> v\n"
+      "        | { f: w } -> 0\n" },
+
+    // r13 negative — an aggregate payload cannot fit the 64-bit cell.
+    { "9 unions", "aggregate-payload-ctor-is-error", "type:64-bit cell",
+      "struct Pair\n  a : i32\n  b : i32\n\n"
+      "union PairOrInt\n  i : i32\n  p : Pair\n\n"
+      "fn main : () -> i64\n  | () ->\n"
+      "      let _x = PairOrInt.p(Pair { a: 1, b: 2 })\n      0\n" },
+
+    // Front-end honesty — unknown names are loud (E0270-class), never
+    // silently zero-fabricated.
+    { "diagnostics", "undefined-name-is-loud", "resolve:undefined",
+      "fn main : () -> i64\n  | () -> missing_fn(1)\n" },
+};
+
+const usz R14_DOCTEST_COUNT = 13;
+
+// ── runner helpers ────────────────────────────────────────────────────────
+
+fn bool dt_contains(char* hay, char* needle)
+{
+    if (hay == null || needle == null) return false;
+    usz hl = strlen(hay);
+    usz nl = strlen(needle);
+    if (nl == 0 || nl > hl) return false;
+    for (usz i = 0; i + nl <= hl; i++)
+    {
+        bool eq = true;
+        for (usz k = 0; k < nl; k++)
+        {
+            if (hay[i + k] != needle[k]) { eq = false; break; }
+        }
+        if (eq) return true;
+    }
+    return false;
+}
+
+fn bool dt_prefix_eq(char* s, char* prefix)
+{
+    if (s == null || prefix == null) return false;
+    usz pl = strlen(prefix);
+    for (usz i = 0; i < pl; i++)
+    {
+        if (s[i] != prefix[i]) return false;
+    }
+    return true;
+}
+
+// Print one diagnostic line (compact form; the same facts the normal
+// reporters show, just denser so --self-test stays scannable).
+fn void dt_print_diag(char* stage, char* msg, int line, int col)
+{
+    printf("      [%s %d:%d] %s\n", stage, line, col, msg);
+}
+
+// ── the runner ────────────────────────────────────────────────────────────
+// Runs every registered snippet through the frontend and checks its
+// expectation. Returns the number of FAILED doctests (0 = all locked).
+fn int run_doctests()
+{
+    int dt_pass = 0;
+    int dt_fail = 0;
+    printf("=== spec-lock doctests (r14) ===\n");
+
+    for (usz ti = 0; ti < R14_DOCTEST_COUNT; ti++)
+    {
+        DocTest* dt = &R14_DOCTESTS[ti];
+        usz src_len = strlen(dt.src);
+
+        lexer::Lexer lx;
+        lx.init(dt.src, src_len);
+
+        ast::AstArena arena;
+        if (!arena.init(ast::DEFAULT_ARENA_BYTES))
+        {
+            printf("  FAIL %s/%s: arena allocation failed\n", dt.group, dt.name);
+            dt_fail++;
+            continue;
+        }
+
+        parser::Parser p;
+        p.init(&lx, &arena);
+        Node* program = p.parse_program();
+
+        resolve::Resolver* r = (resolve::Resolver*)malloc(resolve::Resolver::size);
+        if (r != null)
+        {
+            r.init();
+            if (program != null) r.resolve_program(program);
+        }
+
+        typecheck::TypeChecker tc;
+        tc.init(&arena, false);
+        if (program != null) tc.check_program(program);
+
+        effectcheck::EffectChecker ec;
+        ec.init(false);
+        if (program != null) ec.check_program(program);
+
+        lint::Linter* lt = (lint::Linter*)malloc(lint::Linter::size);
+        if (lt != null)
+        {
+            lt.init(false);
+            if (program != null) lt.run(program);
+        }
+
+        int lex_count  = lx.get_diag_count();
+        int parse_cnt  = p.error_count;
+        int res_cnt    = (r != null) ? r.error_count : 0;
+        int type_cnt   = tc.diag_count;
+        int eff_cnt    = ec.diag_count;
+        int lint_cnt   = (lt != null) ? lt.diag_count : 0;
+        int total      = lex_count + parse_cnt + res_cnt + type_cnt + eff_cnt + lint_cnt;
+
+        bool ok = false;
+        bool want_clean = dt_prefix_eq(dt.expect, "clean");
+        if (want_clean)
+        {
+            ok = (total == 0);
+        }
+        else
+        {
+            // "<stage>:<substring>" — find the stage tag, assert the text.
+            char* sub = null;
+            int stage_id = 0;   // 1 parse, 2 resolve, 3 type, 4 effect, 5 lint
+            if (dt_prefix_eq(dt.expect, "parse:"))   { stage_id = 1; sub = dt.expect + 6; }
+            if (dt_prefix_eq(dt.expect, "resolve:")) { stage_id = 2; sub = dt.expect + 8; }
+            if (dt_prefix_eq(dt.expect, "type:"))    { stage_id = 3; sub = dt.expect + 5; }
+            if (dt_prefix_eq(dt.expect, "effect:"))  { stage_id = 4; sub = dt.expect + 7; }
+            if (dt_prefix_eq(dt.expect, "lint:"))    { stage_id = 5; sub = dt.expect + 5; }
+            switch (stage_id)
+            {
+                case 1:
+                    for (int i = 0; i < parse_cnt && !ok; i++)
+                    { if (dt_contains(p.errors[i].msg, sub)) ok = true; }
+                case 2:
+                    if (r != null) for (int i = 0; i < res_cnt && !ok; i++)
+                    { if (dt_contains(r.errors[i].msg, sub)) ok = true; }
+                case 3:
+                    for (int i = 0; i < type_cnt && !ok; i++)
+                    { if (dt_contains(tc.diags[i].msg, sub)) ok = true; }
+                case 4:
+                    for (int i = 0; i < eff_cnt && !ok; i++)
+                    { if (dt_contains(ec.diags[i].msg, sub)) ok = true; }
+                case 5:
+                    if (lt != null) for (int i = 0; i < lint_cnt && !ok; i++)
+                    { if (dt_contains(lt.diags[i].msg, sub)) ok = true; }
+                default:
+                    break;
+            }
+        }
+
+        if (ok)
+        {
+            dt_pass++;
+        }
+        else
+        {
+            dt_fail++;
+            printf("  FAIL %s/%s — expected [%s], found %d diagnostic(s)\n",
+                   dt.group, dt.name, dt.expect, total);
+            for (int i = 0; i < lex_count && i < 4; i++)
+            {
+                lexer::Diagnostic d = lx.get_diag(i);
+                dt_print_diag("lex", d.msg, d.line, d.col);
+            }
+            for (int i = 0; i < parse_cnt && i < 4; i++)
+            { dt_print_diag("parse", p.errors[i].msg, p.errors[i].line, p.errors[i].col); }
+            if (r != null) for (int i = 0; i < res_cnt && i < 4; i++)
+            { dt_print_diag("resolve", r.errors[i].msg, r.errors[i].line, r.errors[i].col); }
+            for (int i = 0; i < type_cnt && i < 4; i++)
+            { dt_print_diag(tc.diags[i].is_error ? "type-err" : "type-warn",
+                            tc.diags[i].msg, tc.diags[i].line, tc.diags[i].col); }
+            for (int i = 0; i < eff_cnt && i < 4; i++)
+            { dt_print_diag(ec.diags[i].is_error ? "effect-err" : "effect-warn",
+                            ec.diags[i].msg, ec.diags[i].line, ec.diags[i].col); }
+            if (lt != null) for (int i = 0; i < lint_cnt && i < 4; i++)
+            { dt_print_diag(lt.diags[i].is_error ? "lint-err" : "lint-warn",
+                            lt.diags[i].msg, lt.diags[i].line, lt.diags[i].col); }
+        }
+
+        if (lt != null) free((void*)lt);
+        if (r != null) free((void*)r);
+        arena.destroy();
+    }
+
+    printf("spec-lock: pass=%d fail=%d\n", dt_pass, dt_fail);
+    return dt_fail;
 }
