@@ -1032,9 +1032,51 @@ fn void report_integrity(integrity::Verifier* iv)
     }
 }
 
+// ── Host-adaptive LLVM toolchain resolution ────────────────────────────────
+// The verified pipeline is LLVM 22.1.x (pinned `-22` tool names); on hosts
+// without the 22 toolchain installed we fall back to the unversioned default
+// LLVM on PATH, so the same compiler binary works in every dev environment.
+// Resolved once per process, on first use.
+bool tc_resolved = false;
+bool tc_is22 = false;
+char[16] tc_llvm_as;
+char[16] tc_opt;
+char[16] tc_llc;
+char[16] tc_lld;
+
+fn bool tool_probe(char* name)
+{
+    char[320] probe;
+    snprintf(&probe[0], 320, "command -v %s >/dev/null 2>&1", name);
+    return system(&probe[0]) == 0;
+}
+
+fn void tc_pick(char* out, char* pinned, char* plain)
+{
+    char* sel = tc_is22 ? pinned : plain;
+    usz nl = cstr_len2(sel);
+    for (usz ti = 0; ti < nl && ti < 15; ti++) out[ti] = sel[ti];
+    out[nl < 15 ? nl : 15] = 0;
+}
+
+fn void resolve_toolchain()
+{
+    if (tc_resolved) return;
+    tc_resolved = true;
+    tc_is22 = tool_probe((char*)"llvm-as-22");
+    tc_pick(&tc_llvm_as[0], (char*)"llvm-as-22", (char*)"llvm-as");
+    tc_pick(&tc_opt[0],     (char*)"opt-22",     (char*)"opt");
+    tc_pick(&tc_llc[0],     (char*)"llc-22",     (char*)"llc");
+    tc_pick(&tc_lld[0],     (char*)"ld.lld-22",  (char*)"ld.lld");
+}
+
 fn void print_version()
 {
-    printf("pride 0.1.0 (LLVM 19 pipeline, x86_64-linux)\n");
+    printf("pride 0.1.0 (x86_64-linux)\n");
+    resolve_toolchain();
+    printf("LLVM pipeline: %s (resolved: %s, %s, %s, %s)\n",
+           tc_is22 ? "22.1.x pinned" : "host default (install llvm-22 for the verified pipeline)",
+           &tc_llvm_as[0], &tc_opt[0], &tc_llc[0], &tc_lld[0]);
 }
 
 // Single source of truth for the CLI surface. Keep in sync with the argument
@@ -1081,7 +1123,9 @@ fn void print_help()
     printf("  -V, --version        print the version and exit\n");
     printf("\n");
     printf("notes:\n");
-    printf("  --emit-obj/--emit-bin shell out to llvm-as, opt, llc, ld.lld.\n");
+    printf("  --emit-obj/--emit-bin shell out to the LLVM toolchain (22.1 pinned names\n");
+    printf("                       llvm-as-22/opt-22/llc-22/ld.lld-22 preferred, unversioned\n");
+    printf("                       host default used when 22 is not installed).\n");
     printf("  --emit-bin links runtime/compiler_rt.o + compiler_rt_arch.o found next to\n");
     printf("  the pride executable (build them with `make runtime`).\n");
 }
@@ -1506,11 +1550,12 @@ fn int main(int argc, char** argv)
             char[64] debug_flag;
             snprintf(&debug_flag[0], 64, "%s", (emit_debug || emit_debug_info) ? "-g" : "");
 
-            // llvm-as: .ll → .bc
+            // llvm-as: .ll → .bc  (resolved toolchain: 22-pinned or host default)
+            resolve_toolchain();
             char[2048] cmd;
-            snprintf(&cmd[0], 2048, "llvm-as %s -o %s.bc 2>&1", &ll_path[0], &stem[0]);
+            snprintf(&cmd[0], 2048, "%s %s -o %s.bc 2>&1", &tc_llvm_as[0], &ll_path[0], &stem[0]);
             int r2 = system(&cmd[0]);
-            if (r2 != 0) { printf("llvm-as     : FAILED\n"); }
+            if (r2 != 0) { printf("%s     : FAILED\n", &tc_llvm_as[0]); }
             else
             {
                 // opt: run LLVM optimizer passes on .bc for better execution speed
@@ -1521,20 +1566,21 @@ fn int main(int argc, char** argv)
                 {
                     char[2048] opt_cmd;
                     snprintf(&opt_cmd[0], 2048,
-                        "opt --passes='default<%s>' %s.bc -o %s.opt.bc 2>/dev/null && mv %s.opt.bc %s.bc",
+                        "%s --passes='default<%s>' %s.bc -o %s.opt.bc 2>/dev/null && mv %s.opt.bc %s.bc",
+                        &tc_opt[0],
                         opt_level >= 3 ? "O3" : opt_level >= 2 ? "O2" : "O1",
                         &stem[0], &stem[0], &stem[0], &stem[0]);
                     system(&opt_cmd[0]);   // failures are soft — still have original .bc
                 }
                 printf("opt            : ok\n");
                 // llc: .bc → .o  (use mcpu=native for best codegen on this machine)
-                snprintf(&cmd[0], 2048, "llc %s %s -filetype=obj %s.bc -o %s.o 2>&1",
-                         &opt_str[0], &debug_flag[0], &stem[0], &stem[0]);
+                snprintf(&cmd[0], 2048, "%s %s %s -filetype=obj %s.bc -o %s.o 2>&1",
+                         &tc_llc[0], &opt_str[0], &debug_flag[0], &stem[0], &stem[0]);
                 r2 = system(&cmd[0]);
-                if (r2 != 0) { printf("llc         : FAILED\n"); }
+                if (r2 != 0) { printf("%s         : FAILED\n", &tc_llc[0]); }
                 else
                 {
-                    printf("llc         : ok\n");
+                    printf("%s         : ok\n", &tc_llc[0]);
                     if (emit_bin)
                     {
                         // Link
@@ -1602,7 +1648,7 @@ fn int main(int argc, char** argv)
                         // crtn, runtime objects, libc/libgcc, canonical ELF interpreter.
                         char[4608] linkcmd;
                         snprintf(&linkcmd[0], 4608,
-                            "ld.lld /usr/lib/x86_64-linux-gnu/crt1.o "
+                            "%s /usr/lib/x86_64-linux-gnu/crt1.o "
                             "/usr/lib/x86_64-linux-gnu/crti.o "
                             "%s.o %s"
                             "/usr/lib/x86_64-linux-gnu/crtn.o -o %s "
@@ -1610,10 +1656,11 @@ fn int main(int argc, char** argv)
                             "-L/usr/lib/gcc/x86_64-linux-gnu/14 "
                             "-lc -lm -lpthread -lgcc -lgcc_s %s %s %s "
                             "--dynamic-linker /lib64/ld-linux-x86-64.so.2 2>&1",
+                            &tc_lld[0],
                             &stem[0], &rt_args[0], &bin_path[0],
                             &lto_flag[0], &strip_flag[0], &gc_flag[0]);
                         r2 = system(&linkcmd[0]);
-                        if (r2 != 0) { printf("ld.lld      : FAILED\n"); }
+                        if (r2 != 0) { printf("%s      : FAILED\n", &tc_lld[0]); }
                         else { printf("linked         : %s\n", &bin_path[0]); }
                     }
                 }
