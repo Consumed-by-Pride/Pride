@@ -180,7 +180,9 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
 {
     if (cap == 0) return buf;
     buf[0] = 0;
-    if (t == null || depth > 16) { snprintf(buf, cap, "i64"); return buf; }
+    // Defensive fuel only (trees are acyclic). 16 was too small for honestly
+    // nested aggregates; on overflow emit void* ptr instead of a WRONG i64.
+    if (t == null || depth > 64) { snprintf(buf, cap, "ptr"); return buf; }
     // Union/intersection types: lower as first component's LLVM type.
     // ∪ and ∩ are type-system-only annotations; LLVM uses the first operand's repr.
     if (t.kind == Nk.NODE_TYPE_UNION || t.kind == Nk.NODE_TYPE_INTERSECT)
@@ -248,12 +250,16 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
                 {
                     Node* fd = fblk.children[fi];
                     if (fd == null || fd.kind != Nk.NODE_FIELD_DECL || fd.child_count < 2) continue;
-                    if (!first_field) { usz ol = strlen(buf); if (ol + 2 < cap) { buf[ol]=','; buf[ol+1]=' '; buf[ol+2]=0; } }
+                    usz ol = strlen(buf);
+                    if (!first_field) { if (ol + 2 < cap) { buf[ol]=','; buf[ol+1]=' '; buf[ol+2]=0; ol += 2; } }
                     first_field = false;
-                    char[64] ft; ft[0] = 0;
-                    type_to_llvm_buf(fd.children[1], &ft[0], 64, depth + 1);
-                    usz ol = strlen(buf); usz fl = strlen(&ft[0]);
-                    if (ol + fl < cap) { for (usz k = 0; k < fl; k++) buf[ol+k] = ft[k]; buf[ol+fl] = 0; }
+                    // Recurse directly into the remaining caller buffer — no
+                    // fixed-size temp (a nested aggregate used to clip at 64
+                    // bytes here, emitting unbalanced `{ i64, { ...` type text).
+                    if (ol < cap - 1)
+                    {
+                        type_to_llvm_buf(fd.children[1], buf + ol, cap - ol, depth + 1);
+                    }
                 }
             }
             usz ol = strlen(buf);
@@ -326,12 +332,13 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
             {
                 Node* fd3 = fblk3.children[fi3];
                 if (fd3 == null || fd3.kind != Nk.NODE_FIELD_DECL || fd3.child_count < 2) continue;
-                if (!ff3) { usz ol3 = strlen(buf); if (ol3 + 2 < cap) { buf[ol3]=','; buf[ol3+1]=' '; buf[ol3+2]=0; } }
+                usz ol3 = strlen(buf);
+                if (!ff3) { if (ol3 + 2 < cap) { buf[ol3]=','; buf[ol3+1]=' '; buf[ol3+2]=0; ol3 += 2; } }
                 ff3 = false;
-                char[64] ft3; ft3[0] = 0;
-                type_to_llvm_buf(fd3.children[1], &ft3[0], 64, depth + 1);
-                usz ol3 = strlen(buf); usz fl3 = strlen(&ft3[0]);
-                if (ol3 + fl3 < cap) { for (usz k3 = 0; k3 < fl3; k3++) buf[ol3+k3] = ft3[k3]; buf[ol3+fl3] = 0; }
+                if (ol3 < cap - 1)
+                {
+                    type_to_llvm_buf(fd3.children[1], buf + ol3, cap - ol3, depth + 1);
+                }
             }
         }
         usz ol3 = strlen(buf); if (ol3 + 2 < cap) { buf[ol3]=' '; buf[ol3+1]='}'; buf[ol3+2]=0; }
@@ -364,15 +371,17 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
     { return type_to_llvm_buf(t.children[0], buf, cap, depth+1); }
     if (t.kind == Nk.NODE_TYPE_TUPLE)
     {
-        // Tuple → struct.  Build { T0, T1, ... } in buf.
+        // Tuple → struct.  Build { T0, T1, ... } in buf, recursing directly
+        // into the remaining caller buffer (previously each element printed
+        // through a 32-byte temp: any nesting deeper than ~4 levels clipped
+        // mid-type and emitted UNBALANCED braces → llvm-as rejected the IR).
         usz off = 0;
         if (off < cap-2) { buf[off++] = '{'; buf[off++] = ' '; }
         for (usz i = 0; i < t.child_count && off < cap-4; i++)
         {
             if (i > 0 && off < cap-2) { buf[off++] = ','; buf[off++] = ' '; }
-            char[32] sub; type_to_llvm_buf(t.children[i], &sub[0], 32, depth+1);
-            usz sl = strlen(&sub[0]);
-            if (off + sl < cap-3) { for (usz j = 0; j < sl; j++) buf[off++] = sub[j]; }
+            type_to_llvm_buf(t.children[i], buf + off, cap - off, depth + 1);
+            off += strlen(buf + off);
         }
         if (off < cap-2) { buf[off++] = ' '; buf[off++] = '}'; }
         buf[off] = 0;
@@ -381,21 +390,19 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
     if (t.kind == Nk.NODE_TYPE_ARRAY && t.child_count >= 2)
     {
         Node* elem = t.children[0]; Node* sz_node = t.children[1];
-        char[32] esub; type_to_llvm_buf(elem, &esub[0], 32, depth+1);
         ulong sz_val = (sz_node != null && sz_node.kind == Nk.NODE_LIT_INT) ? sz_node.p.lit_int.int_val : 0;
-        {
-            char[24] szbuf;
-            snprintf(&szbuf[0], 24, "%d", (int)sz_val);
-            snprintf(buf, cap, "[");
-            usz bl = strlen(buf); if (bl < cap-1) {
-                usz i2 = 0; while (szbuf[i2] && bl < cap-1) buf[bl++] = szbuf[i2++];
-                if (bl < cap-1) buf[bl++] = ' ';
-                if (bl+1 < cap) { buf[bl++] = 'x'; buf[bl++] = ' '; }
-                usz ei = 0; while (esub[ei] && bl < cap-1) buf[bl++] = esub[ei++];
-                if (bl < cap-1) buf[bl++] = ']';
-                buf[bl] = 0;
-            }
-        }
+        char[24] szbuf;
+        snprintf(&szbuf[0], 24, "%d", (int)sz_val);
+        usz bl = 0;
+        if (bl < cap-1) buf[bl++] = '[';
+        usz i2 = 0; while (szbuf[i2] && bl < cap-1) buf[bl++] = szbuf[i2++];
+        if (bl < cap-1) buf[bl++] = ' ';
+        if (bl+1 < cap) { buf[bl++] = 'x'; buf[bl++] = ' '; }
+        // Element type: recurse directly into the remaining caller buffer
+        // (a 32-byte temp used to clip nested aggregate element types).
+        if (bl < cap-1) { type_to_llvm_buf(elem, buf + bl, cap - bl, depth + 1); bl += strlen(buf + bl); }
+        if (bl < cap-1) buf[bl++] = ']';
+        buf[bl] = 0;
         return buf;
     }
     // Fallback: opaque
@@ -405,6 +412,43 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
 
 // Extract the i-th parameter type and the return type from a fn decl's signature.
 // param_idx == -1 means: get the return type.
+// Decide whether fn_decl's binder EXPLODES a tuple domain into N scalar
+// LLVM parameters: true iff the first clause binder is a tuple pattern with
+// exactly as many elements as the domain tuple. A single binder (ident,
+// wildcard, …) over a tuple domain binds the domain AS ONE aggregate value
+// (typecheck's bind_pattern_types stamps the binder with the full tuple
+// type) — callers and callees must agree on that ABI or the call site
+// marshals an aggregate argument into a mismatching scalar parameter
+// (observed: `%arg.c = bitcast { i64, i64 } %x to i32` — invalid IR).
+fn bool fn_binder_explodes_tuple(Node* fn_decl, Node* param_t)
+{
+    if (fn_decl == null || param_t == null) return false;
+    if (param_t.kind != Nk.NODE_TYPE_TUPLE) return false;
+    // A DECL_FN's layout is [name, TYPE_FN signature, body-block]; the
+    // Prolog clauses are children OF the body block. (Closures store clauses
+    // directly as children.) Find the first clause either way.
+    Node* clause = null;
+    for (usz i = 0; i < fn_decl.child_count && clause == null; i++)
+    {
+        Node* ch = fn_decl.children[i];
+        if (ch == null) continue;
+        if (ch.kind == Nk.NODE_CLAUSE) { clause = ch; break; }
+        if (ch.child_count > 0)
+        {
+            for (usz k = 0; k < ch.child_count; k++)
+            {
+                Node* cc = ch.children[k];
+                if (cc != null && cc.kind == Nk.NODE_CLAUSE) { clause = cc; break; }
+            }
+        }
+    }
+    if (clause == null) return false;
+    Node* pat = clause.child_count >= 1 ? clause.children[0] : null;
+    return pat != null && pat.kind == Nk.NODE_PATTERN_TUPLE
+        && pat.child_count == param_t.child_count
+        && param_t.child_count >= 1;
+}
+
 fn void fn_param_llvm_type(Node* fn_decl, int param_idx, char* buf, usz cap)
 {
     buf[0] = 0;
@@ -444,12 +488,29 @@ fn void fn_param_llvm_type(Node* fn_decl, int param_idx, char* buf, usz cap)
         return;
     }
 
-    // Parameter type: may be a tuple (multi-arg) or a single type
+    // Parameter type: may be a tuple (multi-arg) or a single type.
+    // Tuple domain with an EXPLODING binder → per-component scalar params.
+    // Tuple domain with a SINGLE binder → ONE aggregate param carrying the
+    // whole tuple (the binder IS the aggregate; see fn_binder_explodes_tuple).
     if (param_t != null && param_t.kind == Nk.NODE_TYPE_TUPLE)
     {
-        if ((usz)param_idx < param_t.child_count)
+        if (param_t.child_count == 0)
         {
-            type_to_llvm_buf(param_t.children[param_idx], buf, cap, 0);
+            // () unit domain: no value parameter
+            snprintf(buf, cap, "void");
+            return;
+        }
+        if (fn_binder_explodes_tuple(fn_decl, param_t))
+        {
+            if ((usz)param_idx < param_t.child_count)
+            {
+                type_to_llvm_buf(param_t.children[param_idx], buf, cap, 0);
+                return;
+            }
+        }
+        else if (param_idx == 0)
+        {
+            type_to_llvm_buf(param_t, buf, cap, 0);
             return;
         }
     }
@@ -946,7 +1007,8 @@ struct CgenModule
 // Entry k holds the LLVM type string for IrVal with id k, as a null-terminated
 // char[64]. A value_count of 0 means the table is not yet built.
 
-const usz TYMAP_ENTRY = 64;   // bytes per entry — enough for any Pride type
+const usz TYMAP_ENTRY = 256;  // bytes per entry — must hold fully-expanded
+                              // nested aggregate types ({ i64, { i64, ... } })
 
 // TypeTable uses a generation counter for O(1) "clear".
 // Increment gen instead of zeroing — valid entries have gen[id] == current_gen.
@@ -2013,6 +2075,42 @@ fn bool phi_edge_coercion(TypeTable* tm, ssi_ir::IrVal* ph, usz ai,
     return true;
 }
 
+// Split an anonymous struct/tuple type string "{ T0, T1, ... }" into its
+// element type strings (brace-depth aware, so nested aggregates and named
+// types are handled). Returns the element count, or 0 when TY is not a
+// non-empty struct type, an element is empty/malformed, or arity overflows
+// (callers fall back to their pre-existing path in all 0 cases).
+const int STRUCT_SPLIT_CAP = 16;
+const int STRUCT_SPLIT_LEN = 256;  // element type strings (deep aggregates need >64)
+fn int split_struct_ty(char* ty, char* out, usz elem_cap)
+{
+    // out is STRUCT_SPLIT_CAP * elem_cap bytes
+    if (ty == null || ty[0] != '{') return 0;
+    usz len = strlen(ty);
+    if (len < 2 || ty[len - 1] != '}') return 0;
+    usz n = 0; int depth = 0; usz start = 0;
+    for (usz i = 0; i < len; i++)
+    {
+        char ch = ty[i];
+        if (ch == '{') { depth++; if (depth == 1) { start = i + 1; continue; } }
+        if (ch == '}') { depth--; }
+        bool boundary = (depth == 1 && ch == ',') || (i == len - 1);
+        if (!boundary) continue;
+        usz e = i;   // element is [start, e) — for i == len-1 this excludes '}'
+        while (start < e && ty[start] == ' ') start++;
+        while (e > start && ty[e - 1] == ' ') e--;
+        if (e <= start) return 0;   // empty element ("{ }" or "{ , ..}") — malformed
+        if (n >= STRUCT_SPLIT_CAP) return 0;
+        char* dst = out + n * elem_cap;
+        usz w = 0;
+        for (usz k = start; k < e && w + 1 < elem_cap; k++) { dst[w] = ty[k]; w++; }
+        dst[w] = 0;
+        n++;
+        start = i + 1;
+    }
+    return (int)n;
+}
+
 // Write the LLVM type for val id from the type table (or "i64" fallback).
 fn void CgenModule.writes_ty(CgenModule* cg, TypeTable* tm, int id)
 {
@@ -2784,8 +2882,8 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         if (!callee_named_pre && ia==1 && aval_c.op==ssi_ir::IrOp.IR_UNKNOWN
                             && aval_c.binder!=null
                             && aval_c.binder.kind==Nk.NODE_DECL_FN) { continue; }
-                        char[64] ptbuf;
-                        fn_param_llvm_type(callee_decl2, apos, &ptbuf[0], 64);
+                        char[TYMAP_ENTRY] ptbuf;
+                        fn_param_llvm_type(callee_decl2, apos, &ptbuf[0], TYMAP_ENTRY);
                         apos++;
                         char* pt = &ptbuf[0];
                         if (pt[0]==0 || (pt[0]=='v'&&pt[1]=='o')) { continue; }
@@ -2797,8 +2895,18 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             else { for (usz qc=0;qc<ql1;qc++) if (aty_c[qc]!=pt[qc]) { eq=false; break; } }
                         }
                         if (eq) { continue; }
+                        // Aggregate→aggregate is a MULTI-instruction rewrite
+                        // handled complete with its own instruction lines (the
+                        // final insertvalue carries the canonical name) — all
+                        // other coercions are single instructions continuing
+                        // the shared prefix line below.
+                        bool agg_to_agg = (aty_c[0]=='{' && pt[0]=='{');
                         // Emit coerce instruction
-                        cg.out.writes("  %arg.c."); cg.out.writeu(ia); cg.out.writes(".v"); cg.out.writei(v.id);
+                        if (!agg_to_agg)
+                        {
+                            cg.out.writes("  %arg.c."); cg.out.writeu(ia);
+                            cg.out.writes(".v"); cg.out.writei(v.id);
+                        }
                         bool ai_c = aty_c[0]=='i'; bool pi_c = pt[0]=='i';
                         bool af_c = aty_c[0]=='f'||aty_c[0]=='d'; bool pf_c = pt[0]=='f'||pt[0]=='d';
                         if (ai_c && pi_c)
@@ -2868,10 +2976,93 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                 cg.emit_vref(aval_c); cg.out.writes(", 0\n");
                             }
                         }
-                        else
+                        else if (aty_c[0]=='{' && pt[0]=='{')
                         {
-                            cg.out.writes(" = bitcast "); cg.out.writes(aty_c); cg.out.writes(" ");
-                            cg.emit_vref(aval_c); cg.out.writes(" to "); cg.out.writes(pt); cg.out.writes("\n");
+                            // Aggregate → aggregate: rebuild the value with the
+                            // callee's parameter type via per-element extract +
+                            // scalar coercion + insert. (Aggregate bitcast has
+                            // never been valid LLVM; it appeared when a tuple
+                            // argument met a tuple parameter of a different —
+                            // but elementwise-convertible — type.)
+                            char[STRUCT_SPLIT_CAP * STRUCT_SPLIT_LEN] from_elems;
+                            char[STRUCT_SPLIT_CAP * STRUCT_SPLIT_LEN] to_elems;
+                            int nf = split_struct_ty(aty_c, &from_elems[0], STRUCT_SPLIT_LEN);
+                            int nt = split_struct_ty(pt,    &to_elems[0],   STRUCT_SPLIT_LEN);
+                            if (nf > 0 && nf == nt)
+                            {
+                                for (int ei = 0; ei < nf; ei++)
+                                {
+                                    char* fe = (char*)&from_elems[0] + (usz)ei * STRUCT_SPLIT_LEN;
+                                    char* te = (char*)&to_elems[0]   + (usz)ei * STRUCT_SPLIT_LEN;
+                                    cg.out.writes("  %arg.c."); cg.out.writeu(ia);
+                                    cg.out.writes(".x"); cg.out.writei((long)ei);
+                                    cg.out.writes(".v"); cg.out.writei(v.id);
+                                    cg.out.writes(" = extractvalue "); cg.out.writes(aty_c);
+                                    cg.out.writes(" "); cg.emit_vref(aval_c);
+                                    cg.out.writes(", "); cg.out.writei((long)ei); cg.out.writes("\n");
+                                    // Element coercion (trunc/sext/fpext/…) when needed
+                                    char* eopc = coerce_op(fe, te);
+                                    if (eopc != null)
+                                    {
+                                        cg.out.writes("  %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".w"); cg.out.writei((long)ei);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                        cg.out.writes(" = "); cg.out.writes(eopc);
+                                        cg.out.writes(" "); cg.out.writes(fe);
+                                        cg.out.writes(" %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".x"); cg.out.writei((long)ei);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                        cg.out.writes(" to "); cg.out.writes(te); cg.out.writes("\n");
+                                    }
+                                    // Insert; the LAST insertvalue carries the canonical
+                                    // coerced-arg name the call site references.
+                                    bool last_i = (ei == nf - 1);
+                                    if (last_i)
+                                    {
+                                        cg.out.writes("  %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                    }
+                                    else
+                                    {
+                                        cg.out.writes("  %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".i"); cg.out.writei((long)ei);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                    }
+                                    cg.out.writes(" = insertvalue "); cg.out.writes(pt);
+                                    if (ei == 0)
+                                    {
+                                        cg.out.writes(" undef");
+                                    }
+                                    else
+                                    {
+                                        cg.out.writes(" %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".i"); cg.out.writei((long)(ei - 1));
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                    }
+                                    cg.out.writes(", ");
+                                    cg.out.writes(te);
+                                    if (eopc != null)
+                                    {
+                                        cg.out.writes(" %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".w"); cg.out.writei((long)ei);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                    }
+                                    else
+                                    {
+                                        cg.out.writes(" %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".x"); cg.out.writei((long)ei);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                    }
+                                    cg.out.writes(", "); cg.out.writei((long)ei); cg.out.writes("\n");
+                                }
+                            }
+                            else
+                            {
+                                cg.out.writes("  %arg.c."); cg.out.writeu(ia);
+                                cg.out.writes(".v"); cg.out.writei(v.id);
+                                cg.out.writes(" = bitcast "); cg.out.writes(aty_c); cg.out.writes(" ");
+                                cg.emit_vref(aval_c); cg.out.writes(" to "); cg.out.writes(pt); cg.out.writes("\n");
+                            }
                         }
                     }
                 }
@@ -3028,8 +3219,8 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     }
                     char* arg_ty_base = (tm != null && aarg_base != null) ? tm.get(aarg_base.id) : null;
                     if (arg_ty_base == null || arg_ty_base[0] == 0) { arg_ty_base = arg_ty; }
-                    char[64] ptype3_buf;
-                    fn_param_llvm_type(callee_decl2, arg_pos2, &ptype3_buf[0], 64);
+                    char[TYMAP_ENTRY] ptype3_buf;
+                    fn_param_llvm_type(callee_decl2, arg_pos2, &ptype3_buf[0], TYMAP_ENTRY);
                     char* ptype3 = &ptype3_buf[0];
                     arg_pos2++;
                     bool teq3 = true;
@@ -3260,8 +3451,8 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                 if (!first_field) { cg.out.writes(", "); }
                                 first_field = false;
                                 Node* ft = fd.child_count >= 2 ? fd.children[1] : null;
-                                char[64] ftbuf; ftbuf[0] = 0;
-                                type_to_llvm_buf(ft, &ftbuf[0], 64, 0);
+                                char[TYMAP_ENTRY] ftbuf; ftbuf[0] = 0;
+                                type_to_llvm_buf(ft, &ftbuf[0], TYMAP_ENTRY, 0);
                                 cg.out.writes(ftbuf[0] != 0 ? &ftbuf[0] : "i64");
                             }
                         }
@@ -3428,7 +3619,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 {
                     // Array index store: GEP then store.
                     // Determine element type from the lhs Index annotation (persistent storage)
-                    char[64] elem_ty_buf;
+                    char[TYMAP_ENTRY] elem_ty_buf;
                     elem_ty_buf[0] = 0;
                     char* elem_ty_st = &elem_ty_buf[0];
                     if (v.src != null && v.src.child_count >= 1 && v.src.children[0] != null)
@@ -3602,8 +3793,8 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                     if (!first_f) { cg.out.writes(", "); }
                                     first_f = false;
                                     Node* ft3 = fd3.child_count >= 2 ? fd3.children[1] : null;
-                                    char[64] ftb3; ftb3[0] = 0;
-                                    type_to_llvm_buf(ft3, &ftb3[0], 64, 0);
+                                    char[TYMAP_ENTRY] ftb3; ftb3[0] = 0;
+                                    type_to_llvm_buf(ft3, &ftb3[0], TYMAP_ENTRY, 0);
                                     cg.out.writes(ftb3[0] != 0 ? &ftb3[0] : "i64");
                                 }
                             }
@@ -4800,6 +4991,26 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 {
                     // syscall(num, arg0..arg5) via inline asm on x86_64
                     // Use LLVM inline asm: call i64 asm "syscall", "={rax},{rax},{rdi},..."
+                    // Every asm operand must be EXACTLY i64: narrower values
+                    // (i32 fn results, bools, ...) and pointers (mmap returns,
+                    // ...) are retyped through the shared coercion service —
+                    // previously operands were printed as i64 regardless of
+                    // their actual type, producing invalid IR.
+                    usz scn = v.arg_count < 7 ? v.arg_count : 7;
+                    for (usz sci = 0; sci < scn; sci++)
+                    {
+                        ssi_ir::IrVal* a = v.args[sci];
+                        if (a == null || a.op == ssi_ir::IrOp.IR_CONST_INT) continue;
+                        char* at = resolve_ty(tm, a);
+                        if (at == null || at[0] == 0) continue;
+                        char* opc = coerce_op(at, (char*)"i64");
+                        if (opc == null) continue;
+                        cg.out.writes("  %sysarg."); cg.out.writeu(sci);
+                        cg.out.writes(".v"); cg.out.writei(v.id);
+                        cg.out.writes(" = "); cg.out.writes(opc); cg.out.writes(" ");
+                        cg.out.writes(at); cg.out.writes(" "); cg.emit_vref(a);
+                        cg.out.writes(" to i64\n");
+                    }
                     cg.out.writes("  %v"); cg.out.writei(v.id);
                     cg.out.writes(" = call i64 asm sideeffect \"syscall\",");
                     cg.out.writes("\"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9}\"");
@@ -4807,14 +5018,29 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     for (usz sci = 0; sci < v.arg_count && sci < 7; sci++)
                     {
                         if (sci > 0) cg.out.writes(", ");
-                        cg.out.writes("i64 "); cg.emit_vref(v.args[sci]);
+                        // Reference the coerced operand when one was anchored
+                        // above (same predicate — the two sites stay in lockstep).
+                        bool did_coerce = false;
+                        ssi_ir::IrVal* a = v.args[sci];
+                        if (a != null && a.op != ssi_ir::IrOp.IR_CONST_INT)
+                        {
+                            char* at = resolve_ty(tm, a);
+                            if (at != null && at[0] != 0
+                                && coerce_op(at, (char*)"i64") != null) { did_coerce = true; }
+                        }
+                        cg.out.writes("i64 ");
+                        if (did_coerce)
+                        {
+                            cg.out.writes("%sysarg."); cg.out.writeu(sci);
+                            cg.out.writes(".v"); cg.out.writei(v.id);
+                        }
+                        else { cg.emit_vref(a); }
                     }
                     // Pad missing args with 0
                     for (usz sci2 = v.arg_count; sci2 < 7; sci2++)
                     { if (sci2 > 0) cg.out.writes(", "); cg.out.writes("i64 0"); }
                     cg.out.writes(") nounwind\n");
-                }
-                else if (v.binder != null && v.binder.kind == Nk.NODE_EXPR_CLOSURE)
+                }                else if (v.binder != null && v.binder.kind == Nk.NODE_EXPR_CLOSURE)
                 {
                     // Closure fat pointer: { ptr thunk, ptr env }
                     int cid = (int)(v.ival & 0x7FFFFFFF);

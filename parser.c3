@@ -919,6 +919,18 @@ fn Node* Parser.parse_fn(Parser* self)
         s.push(self.parse_effect_row());
     }
 
+    // Common user error: `fn f : T -> U = | p -> body`. Pride has NO `=`
+    // between the signature and the clauses (v.md §6.1) — be loud about it
+    // instead of letting the `=` cascade into top-level Invalid-node garbage
+    // that previously compiled through with only soft warnings and emitted
+    // `ret <ty> undef`. Consume the `=` and parse the clauses as usual so
+    // this stays a single, precise diagnostic.
+    if (self.check(Tt.TOKEN_EQ))
+    {
+        self.error("unexpected '=' after function signature (clauses follow the signature directly: `| pattern -> body`)");
+        self.advance();   // consume '='; clauses still parse → single clean diagnostic
+    }
+
     // The function body region (where clause, attributes, and clauses) usually
     // sits under a single INDENT. We open it here once and close it once, so
     // the where/attr/clause sub-parsers all work at the current level without
@@ -2607,30 +2619,50 @@ fn Node* Parser.parse_stmt(Parser* self)
         case Tt.TOKEN_KW_BREAK:
             {
                 self.advance();
-                self.skip_newlines();  // label may be on next line: break\n  'label
-                // Accept LABEL_REF, LIT_CHAR ('x), or check raw source for ' followed by ident
-                // (guards against tokenizer edge cases in indented block context)
-                bool is_label_tok = self.check(Tt.TOKEN_LABEL_REF) || self.check(Tt.TOKEN_LIT_CHAR);
-                // Raw source fallback: if cur points to a ' char followed by [a-zA-Z_]
-                if (!is_label_tok && self.cur.start != null && self.cur.len >= 2)
+                // A label may sit on the next line (break\n  'label), but a
+                // break VALUE must be on the SAME line as `break` — otherwise
+                // the following statement is silently swallowed as break's
+                // result expression (that was the root of the 'unreachable
+                // code after break' lint gap: the dead statement became a
+                // child of the Break node, so it never appeared as a block
+                // statement and no warning could fire).
+                bool at_line_end = self.check(Tt.TOKEN_NEWLINE) || self.check(Tt.TOKEN_DEDENT)
+                                || self.check(Tt.TOKEN_EOF) || self.at_end();
+                if (!at_line_end)
+                {
+                    // Same line: label reference, or break-with-value.
+                    bool is_label_tok = self.check(Tt.TOKEN_LABEL_REF) || self.check(Tt.TOKEN_LIT_CHAR);
+                    if (!is_label_tok && self.cur.start != null && self.cur.len >= 2)
+                    {
+                        char c0 = self.cur.start[0];
+                        char c1 = self.cur.start[1];
+                        if (c0 == '\'' && ((c1 >= 'a' && c1 <= 'z') || (c1 >= 'A' && c1 <= 'Z') || c1 == '_')) { is_label_tok = true; }
+                    }
+                    if (is_label_tok)
+                    {
+                        Tok lbl = self.advance();
+                        Node* lbl_node = self.name_from(lbl, Nk.NODE_IDENT);
+                        return ast::node1(self.arena, Nk.NODE_STMT_BREAK_LABEL, lbl_node, t.line, t.col);
+                    }
+                    Node* bval = self.parse_expr();
+                    if (bval != null)
+                    { return ast::node1(self.arena, Nk.NODE_STMT_BREAK, bval, t.line, t.col); }
+                    return ast::node0(self.arena, Nk.NODE_STMT_BREAK, t.line, t.col);
+                }
+                // End of line: only a label may still follow (next line).
+                self.skip_newlines();
+                bool is_label_nl = self.check(Tt.TOKEN_LABEL_REF) || self.check(Tt.TOKEN_LIT_CHAR);
+                if (!is_label_nl && self.cur.start != null && self.cur.len >= 2)
                 {
                     char c0 = self.cur.start[0];
                     char c1 = self.cur.start[1];
-                    if (c0 == '\'' && ((c1 >= 'a' && c1 <= 'z') || (c1 >= 'A' && c1 <= 'Z') || c1 == '_')) { is_label_tok = true; }
+                    if (c0 == '\'' && ((c1 >= 'a' && c1 <= 'z') || (c1 >= 'A' && c1 <= 'Z') || c1 == '_')) { is_label_nl = true; }
                 }
-                if (is_label_tok)
+                if (is_label_nl)
                 {
                     Tok lbl = self.advance();
                     Node* lbl_node = self.name_from(lbl, Nk.NODE_IDENT);
                     return ast::node1(self.arena, Nk.NODE_STMT_BREAK_LABEL, lbl_node, t.line, t.col);
-                }
-                // break VAL — break with a result value from the loop
-                if (!self.check(Tt.TOKEN_NEWLINE) && !self.check(Tt.TOKEN_DEDENT)
-                    && !self.check(Tt.TOKEN_EOF) && !self.at_end())
-                {
-                    Node* bval = self.parse_expr();
-                    if (bval != null)
-                    { return ast::node1(self.arena, Nk.NODE_STMT_BREAK, bval, t.line, t.col); }
                 }
                 return ast::node0(self.arena, Nk.NODE_STMT_BREAK, t.line, t.col);
             }
@@ -3373,80 +3405,32 @@ fn Node* Parser.parse_primary(Parser* self)
                 // as sub-expressions.  Otherwise it's a plain string literal.
                 char* src    = t.start;
                 usz   src_len = t.len;
-                // Quick check: any '{' in the string body?
+                // Quick check: any NON-EMPTY '{' hole in the string body?
+                // `{name}` is (unimplemented) interpolation; `{}` is a
+                // positional format! template hole (fine inside format!) and
+                // `{{` is an escaped literal brace — neither is an error.
                 bool has_holes = false;
-                for (usz si = 0; si < src_len; si++)
+                for (usz si = 0; si + 1 < src_len; si++)
                 {
-                    if (src[si] == '{' && si + 1 < src_len && src[si+1] != '{')
+                    if (src[si] == '{')
                     {
-                        has_holes = true;
-                        break;
+                        if (src[si+1] == '{') { si++; continue; }   // escaped '{'
+                        if (src[si+1] != '}') { has_holes = true; break; }
                     }
                 }
                 if (!has_holes)
                 {
                     return ast::node_str(self.arena, Nk.NODE_LIT_STRING, t.start, t.len, t.line, t.col);
                 }
-                // Build interpolated string: split on {expr} holes.
-                // We re-parse hole content from the lexer's raw source.
-                // For now: collect segment and hole child nodes.
-                Scratch iparts;
-                iparts.reset();
-                uint seg_count = 0;
-                usz  seg_start  = 0;  // start of current literal segment inside src
-                usz  si         = 0;
-                while (si < src_len)
-                {
-                    if (src[si] == '{' && si + 1 < src_len && src[si+1] != '{')
-                    {
-                        // Emit the literal segment before this hole.
-                        Node* seg = ast::node_str(self.arena, Nk.NODE_LIT_STRING,
-                                                   src + seg_start, si - seg_start,
-                                                   t.line, t.col);
-                        iparts.push(seg);
-                        seg_count++;
-                        // Find closing '}'.
-                        usz hole_start = si + 1;
-                        usz hole_end   = hole_start;
-                        int depth = 1;
-                        while (hole_end < src_len && depth > 0)
-                        {
-                            if (src[hole_end] == '{')      { depth++; }
-                            else if (src[hole_end] == '}') { depth--; }
-                            if (depth > 0) { hole_end++; }
-                        }
-                        // The hole expression is src[hole_start..hole_end].
-                        // We emit an IDENT placeholder node pointing into the source.
-                        // Full re-lexing of holes requires a sub-lexer; for now emit
-                        // a raw-bytes node carrying the expression source text so that
-                        // the semantic analyser can re-parse it with a nested lexer.
-                        Node* hole_expr = ast::node_str(self.arena, Nk.NODE_LIT_RAW_BYTES,
-                                                         src + hole_start, hole_end - hole_start,
-                                                         t.line, t.col);
-                        iparts.push(hole_expr);
-                        si = hole_end + 1;   // skip past '}'
-                        seg_start = si;
-                    }
-                    else if (src[si] == '{' && si + 1 < src_len && src[si+1] == '{'
-                             ||  src[si] == '}' && si + 1 < src_len && src[si+1] == '}')
-                    {
-                        si += 2;   // escaped {{ or }} — skip both, keep in segment
-                    }
-                    else
-                    {
-                        si++;
-                    }
-                }
-                // Trailing segment after the last hole.
-                Node* tail_seg = ast::node_str(self.arena, Nk.NODE_LIT_STRING,
-                                               src + seg_start, src_len - seg_start,
-                                               t.line, t.col);
-                iparts.push(tail_seg);
-                seg_count++;
-                return ast::node_interp_string(self.arena,
-                                               iparts.items(), iparts.count,
-                                               seg_count, false,
-                                               t.line, t.col);
+                // Interpolation holes in a plain string literal have NO working
+                // lowering: holes were collected as raw source bytes for a
+                // nested-lexer re-parse that was never implemented, so the
+                // program compiled cleanly and then printed nothing/garbage —
+                // a silent miscompile. Fail loudly instead and point at the
+                // supported path. Recovery: degrade to the plain literal text
+                // (a single diagnostic, downstream still sees a normal string).
+                self.error("named interpolation holes `{name}` are not supported; use format! with positional holes: format!(\"value: {}\", x)");
+                return ast::node_str(self.arena, Nk.NODE_LIT_STRING, t.start, t.len, t.line, t.col);
             }
         case Tt.TOKEN_LIT_RAW_BYTES:
             self.advance();
@@ -3474,32 +3458,32 @@ fn Node* Parser.parse_primary(Parser* self)
 
         case Tt.TOKEN_IDENT:
             {
-                // Check for compile-time macro calls: include_bytes!(...), env!(...), concat!(...)
-                // Syntax: IDENT LPAREN args RPAREN (the ! is optional/skipped for simplicity)
-                // NOTE: these MUST be exact full-name comparisons (tok_text_eq checks
-                // every byte), not partial byte-position sniffing — a partial check
-                // (e.g. only testing a handful of index positions) can silently
-                // collide with ordinary identifiers of the same length and hijack
-                // real function calls (e.g. a 6-letter name starting 'co' and
-                // ending 't', like a hypothetical user function, could otherwise
-                // be mistaken for "concat").
+                // Compile-time macro calls: include_bytes!(...), env!(...),
+                // concat!(...), format!(...). The BANG IS MANDATORY:
+                // `name!(...)` is a macro invocation, a bare `name(...)` is
+                // ALWAYS an ordinary function call. Treating the bare form as
+                // a macro hijacked any user-declared function with one of these
+                // exact names — silently rewriting its call sites into
+                // format-string construction (a real observed miscompile:
+                // `fn format : i32 -> i32` + `format(41)` produced a
+                // { ptr, i64, i64 } format record instead of a call).
+                // NOTE: these MUST stay exact full-name comparisons
+                // (tok_text_eq checks every byte), never partial byte sniffing.
                 bool ib = tok_text_eq(t, "include_bytes", 13);
                 bool ev = tok_text_eq(t, "env", 3);
                 bool cc = tok_text_eq(t, "concat", 6);
                 bool fm = tok_text_eq(t, "format", 6);
-                if (ib||ev||cc||fm)
+                bool macro_head = (ib||ev||cc||fm)
+                    && self.peek1().type == Tt.TOKEN_BANG
+                    && self.peek2().type == Tt.TOKEN_LPAREN;
+                if (macro_head)
                 {
                     self.advance();  // consume IDENT
-                    // Consume optional ! (macro-style invocation: name!(...))
-                    if (self.check(Tt.TOKEN_BANG)) self.advance();
-                }
-                if ((ib||ev||cc||fm) && self.check(Tt.TOKEN_LPAREN))
-                {
-                    self.advance();  // consume LPAREN
+                    self.advance();  // consume !
+                    self.advance();  // consume (
                     if (fm)
                     {
                         // format!("template", arg0, arg1, ...) — collect all args
-                        // ( already consumed above
                         Scratch fs;
                         fs.reset();
                         while (!self.check(Tt.TOKEN_RPAREN) && !self.check(Tt.TOKEN_EOF))

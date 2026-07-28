@@ -267,6 +267,29 @@ fn Node* TypeChecker.unfold(TypeChecker* self, Node* t)
     return t;
 }
 
+// True when `t` denotes a non-scalar VALUE layout: a tuple type or a
+// struct/union declaration (seen directly or through a nominal type name).
+// Scalars (int/float/bool/ptr) return false. Used to gate meaningless
+// aggregate → scalar `as` casts.
+fn bool TypeChecker.is_aggregate_ty(TypeChecker* self, Node* t)
+{
+    if (t == null) return false;
+    if (t.kind == Nk.NODE_TYPE_TUPLE) return true;
+    if (t.kind == Nk.NODE_DECL_STRUCT || t.kind == Nk.NODE_DECL_UNION) return true;
+    if (t.kind == Nk.NODE_TYPEVAR && t.resolved != null)
+    {
+        Node* d = t.resolved;
+        if (d.kind == Nk.NODE_DECL_STRUCT || d.kind == Nk.NODE_DECL_UNION) return true;
+        if (d.kind == Nk.NODE_DECL_TYPE && d.child_count >= 1)
+        {
+            Node* body = d.children[d.child_count - 1];
+            return body != null
+               && (body.kind == Nk.NODE_DECL_STRUCT || body.kind == Nk.NODE_DECL_UNION);
+        }
+    }
+    return false;
+}
+
 fn bool TypeChecker.subtype(TypeChecker* self, Node* a, Node* b)
 {
     // Depth-guarded wrapper: a 1000-deep ∩/∪ type chain would otherwise recurse
@@ -622,10 +645,41 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
         case Nk.NODE_EXPR_STRUCT_LIT:
             return self.synth_struct_lit(e);
 
+        case Nk.NODE_EXPR_FORMAT:
+            // format!(...) produces the runtime format record { ptr, i64, i64 }.
+            // Synthesize the template + argument expressions, and give the
+            // result its TRUE aggregate type: it used to be untyped, so
+            // consumers checked against nothing and `s as i64` compiled to
+            // the invalid `bitcast i64 <struct>` (llvm-as rejects).
+            for (usz ffi = 0; ffi < e.child_count; ffi++)
+            {
+                if (e.children[ffi] != null) self.synth(e.children[ffi]);
+            }
+            return ast::node3(self.arena, Nk.NODE_TYPE_TUPLE,
+                              self.mk_prim(Prim.PRIM_PTR),
+                              self.mk_prim(Prim.PRIM_I64),
+                              self.mk_prim(Prim.PRIM_I64),
+                              0, 0);
+
         case Nk.NODE_EXPR_CAST:
             // expr as Type — result is the target type (child 1).
-            if (e.child_count >= 1) self.synth(e.children[0]);
-            return e.child_count >= 2 ? e.children[1] : null;
+            {
+                Node* st = e.child_count >= 1 ? self.synth(e.children[0]) : null;
+                Node* dt = e.child_count >= 2 ? e.children[1] : null;
+                if (st != null && dt != null
+                    && self.is_aggregate_ty(st) && !self.is_aggregate_ty(dt))
+                {
+                    // Aggregate → non-aggregate casts have no meaningful
+                    // lowering: codegen used to emit the invalid
+                    // `bitcast { ptr, i64, i64 } %x to i64` (which llvm-as
+                    // rejects, or worse, silently truncates). Destructure the
+                    // struct/tuple first; scalar↔scalar, ptr↔int and
+                    // same-shape aggregate casts are unaffected.
+                    self.hard("cannot cast a struct/tuple value to a scalar or pointer type (extract a field or component first)",
+                              e.line, e.col);
+                }
+                return dt;
+            }
 
         case Nk.NODE_EXPR_IF:
             return self.synth_if(e);
@@ -2485,6 +2539,31 @@ fn Node* TypeChecker.synth_match(TypeChecker* self, Node* e)
         {
             self.bind_pattern_types(pat, scrut);
         }
+        else if (scrut != null && pat != null && pat.kind == Nk.NODE_PATTERN_OR)
+        {
+            self.bind_pattern_types(pat, scrut);
+        }
+        else if (scrut != null && pat != null && pat.kind == Nk.NODE_PATTERN_TUPLE)
+        {
+            // Tuple arms destructure the scrutinee (aliasing/projection
+            // lowering). Components must be IRREFUTABLE: a literal or nested
+            // pattern inside a match tuple arm would need decision-tree
+            // component testing, which was never implemented — it previously
+            // accepted EVERY tuple silently (a miscompile). Bind the
+            // component to a name and refine with a guard instead.
+            self.bind_pattern_types(pat, scrut);
+            for (usz k = 0; k < pat.child_count; k++)
+            {
+                Node* comp = pat.children[k];
+                if (comp == null) continue;
+                if (comp.kind == Nk.NODE_PATTERN_LITERAL || comp.kind == Nk.NODE_PATTERN_STRUCT
+                    || comp.kind == Nk.NODE_PATTERN_TUPLE   || comp.kind == Nk.NODE_PATTERN_OR)
+                {
+                    self.hard("refutable component in a match tuple pattern (bind it and refine with a guard)",
+                              comp.line, comp.col);
+                }
+            }
+        }
 
         // Synthesize guard + body.
         for (usz j = 1; j < arm.child_count; j++)
@@ -3072,6 +3151,29 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
                 pat.type_annotation = ty;
             }
 
+        case Nk.NODE_PATTERN_OR:
+            // Bind every alternative to the scrutinee type (ident binders get
+            // stamped; literals are checked by the caller's body walk). Only
+            // literals, binders and '_' are lowered — a struct/tuple/union
+            // alternative would need decision-tree dispatch that does not
+            // exist, and previously compiled to a DEAD arm silently.
+            // NOTE: do NOT stamp the OR node itself — the lowering's test
+            // IR_BINs carry it as src and would wrongly inherit the
+            // scrutinee type instead of i1.
+            for (usz oi = 0; oi < pat.child_count; oi++)
+            {
+                Node* alt = pat.children[oi];
+                if (alt == null) continue;
+                if (alt.kind != Nk.NODE_PATTERN_LITERAL
+                    && alt.kind != Nk.NODE_PATTERN_IDENT
+                    && alt.kind != Nk.NODE_PATTERN_WILDCARD)
+                {
+                    self.hard("unsupported alternative in an or-pattern (only literals, binders and '_' are lowered; use separate arms)",
+                              alt.line, alt.col);
+                    continue;
+                }
+                self.bind_pattern_types(alt, ty);
+            }
         case Nk.NODE_PATTERN_TUPLE:
             // Always stamp the tuple pattern itself with the given type.
             // This lets IR_PARAM codegen find the type via pv.src.type_annotation
@@ -3097,12 +3199,20 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
             else if (tt != null && tt.kind == Nk.NODE_TYPE_TUPLE
                      && tt.child_count > 0 && pat.child_count > 0)
             {
-                // Mismatched arity: bind as many as we can (soft).
-                usz n = pat.child_count < tt.child_count ? pat.child_count : tt.child_count;
-                for (usz i = 0; i < n; i++)
-                {
-                    self.bind_pattern_types(pat.children[i], tt.children[i]);
-                }
+                // Tuple PATTERN vs tuple DOMAIN arity mismatch. Binding a
+                // prefix silently (the old behaviour) left the trailing
+                // binders untyped, which downstream lowered into unbound SSA
+                // values — a miscompile, not an inconvenience. It is now a
+                // hard type error: destructure exactly the domain arity, or
+                // bind the whole tuple under one name instead.
+                self.hard("pattern arity does not match tuple domain arity",
+                          pat.line, pat.col);
+            }
+            else if (tt != null && tt.kind != Nk.NODE_TYPE_TUPLE && pat.child_count >= 2)
+            {
+                // Tuple pattern against a non-tuple type: equally a hard
+                // error (was silently ignored, leaving the binders untyped).
+                self.hard("tuple pattern against non-tuple type", pat.line, pat.col);
             }
 
         // Newtype destructuring:  Dollars(d)  — PatStruct[TypeVar, PatIdent]
