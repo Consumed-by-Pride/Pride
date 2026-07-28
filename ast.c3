@@ -1760,3 +1760,39 @@ fn bool union_payload_is_scalar(AstNode* ty)
     if (l == 3 && n[0]=='f' && n[1]=='6' && n[2]=='4')             return true;
     return false;
 }
+
+// Representation rule for union declarations (r13) — v.md §9 ordains the
+// untagged C-union ("same bytes, different interpretation", accessed by
+// field name) and the implementation also has the r7 discriminated union
+// ({ i32 tag, i64 payload }, dispatched by `{ variant: binder }` patterns /
+// `Make.v(...)` constructors). Both use the surface keyword `union`; the
+// shapes are distinguished by payload kinds:
+//
+//   * ANY unit-payload variant (`none : ()`)  → tagged discriminated union.
+//     the unit variant only has meaning as a discriminant marker.
+//   * ALL variants carry data payloads        → untagged C-union: every
+//     field overlaps one 64-bit bitbox. `union Res ok : i32 / err : i32`
+//     therefore picks the C-union (it has no meaningful discriminant), and
+//     matching such a value by variant pattern is a hard type error — the
+//     repr holds no tag to test.
+fn bool union_is_c_union(AstNode* udecl)
+{
+    if (udecl == null || udecl.kind != NodeKind.NODE_DECL_UNION) return false;
+    AstNode* blk = null;
+    for (usz i = 0; i < udecl.child_count; i++)
+    {
+        AstNode* c = udecl.children[i];
+        if (c != null && c.kind == NodeKind.NODE_EXPR_BLOCK) { blk = c; break; }
+    }
+    if (blk == null) return false;
+    int nfields = 0;
+    for (usz i = 0; i < blk.child_count; i++)
+    {
+        AstNode* fd = blk.children[i];
+        if (fd == null || fd.kind != NodeKind.NODE_FIELD_DECL) continue;
+        nfields++;
+        AstNode* pt = fd.child_count >= 2 ? fd.children[1] : null;
+        if (pt == null || pt.kind == NodeKind.NODE_EXPR_UNIT) return false;
+    }
+    return nfields >= 1;
+}

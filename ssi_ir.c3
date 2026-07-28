@@ -1306,6 +1306,86 @@ fn IrVal* SsiModule.union_payload(SsiModule* m, IrVal* v, Node* src)
     return t;
 }
 
+// Bit-exact payload boxing into / unboxing from the i64 slot (shared by the
+// tagged { i32, i64 } payload and the untagged C-union bitbox). Numeric
+// casts do NOT preserve bits for floats (`1.5 as i64` is fptosi), so float
+// payloads move through transmute-style IR_CAST nodes — pure reinterprets.
+fn IrVal* SsiModule.bitbox_to_i64(SsiModule* m, IrVal* v, Node* payload_ty, Node* src)
+{
+    if (v == null) return v;
+    int ln = src != null ? src.line : 0;
+    int lc = src != null ? src.col : 0;
+    bool is_f32 = payload_ty != null && payload_ty.kind == Nk.NODE_TYPE_PRIMITIVE
+        && payload_ty.p.ident.name_len == 3 && payload_ty.p.ident.name_ptr[0] == 'f';
+    bool is_f64 = payload_ty != null && payload_ty.kind == Nk.NODE_TYPE_PRIMITIVE
+        && payload_ty.p.ident.name_len == 3 && payload_ty.p.ident.name_ptr[0] == 'f'
+        && payload_ty.p.ident.name_ptr[1] == '6';
+    Node* i64ty = ast::node_name(m.arena, Nk.NODE_TYPE_PRIMITIVE, (char*)"i64", 3, ln, lc);
+    if (is_f64)
+    {
+        // double → i64: one transmute (same width).
+        Node* tn = ast::node1(m.arena, Nk.NODE_EXPR_TRANSMUTE, src, ln, lc);
+        tn.type_annotation = i64ty;
+        IrVal* tv = m.new_val(IrOp.IR_CAST, tn);
+        if (tv != null) { tv.add_arg(v, -1); m.emit(tv); return tv; }
+        return v;
+    }
+    if (is_f32)
+    {
+        // Constants with an `f32` suffix still materialize as LLVM `double`
+        // (the float-literal repr), so narrow semantically to float FIRST
+        // (fptrunc is bit-exact for a genuine f32 value; a same-type float
+        // stays a no-op fadd) and only then reinterpret — transmuting the
+        // double straight to i32 would fall through to a numeric fptosi and
+        // lose the bits entirely.
+        Node* f32ty = ast::node_name(m.arena, Nk.NODE_TYPE_PRIMITIVE, (char*)"f32", 3, ln, lc);
+        IrVal* f32v = m.cast_to(v, f32ty, src);
+        Node* i32ty = ast::node_name(m.arena, Nk.NODE_TYPE_PRIMITIVE, (char*)"i32", 3, ln, lc);
+        Node* tn = ast::node1(m.arena, Nk.NODE_EXPR_TRANSMUTE, src, ln, lc);
+        tn.type_annotation = i32ty;
+        IrVal* tv = m.new_val(IrOp.IR_CAST, tn);
+        if (tv != null) { tv.add_arg(f32v, -1); m.emit(tv); }
+        else { tv = f32v; }
+        return m.cast_to(tv, i64ty, src);
+    }
+    // Integers, bools, pointers: the semantic cast chain (sext/zext/trunc/
+    // ptrtoint) is bit-exact through the readback's trunc.
+    return m.cast_to(v, i64ty, src);
+}
+
+fn IrVal* SsiModule.unbox_from_i64(SsiModule* m, IrVal* v, Node* payload_ty, Node* src)
+{
+    if (v == null || payload_ty == null) return v;
+    int ln = src != null ? src.line : 0;
+    int lc = src != null ? src.col : 0;
+    bool is_f32 = payload_ty.kind == Nk.NODE_TYPE_PRIMITIVE
+        && payload_ty.p.ident.name_len == 3 && payload_ty.p.ident.name_ptr[0] == 'f'
+        && payload_ty.p.ident.name_ptr[1] != '6';
+    bool is_f64 = payload_ty.kind == Nk.NODE_TYPE_PRIMITIVE
+        && payload_ty.p.ident.name_len == 3 && payload_ty.p.ident.name_ptr[0] == 'f'
+        && payload_ty.p.ident.name_ptr[1] == '6';
+    if (is_f64)
+    {
+        Node* tn = ast::node1(m.arena, Nk.NODE_EXPR_TRANSMUTE, src, ln, lc);
+        tn.type_annotation = payload_ty;
+        IrVal* tv = m.new_val(IrOp.IR_CAST, tn);
+        if (tv != null) { tv.add_arg(v, -1); m.emit(tv); return tv; }
+        return v;
+    }
+    if (is_f32)
+    {
+        // i64 → i32 (trunc: low bits) → float (transmute).
+        Node* i32ty = ast::node_name(m.arena, Nk.NODE_TYPE_PRIMITIVE, (char*)"i32", 3, ln, lc);
+        IrVal* tv = m.cast_to(v, i32ty, src);
+        Node* tn = ast::node1(m.arena, Nk.NODE_EXPR_TRANSMUTE, src, ln, lc);
+        tn.type_annotation = payload_ty;
+        IrVal* bv = m.new_val(IrOp.IR_CAST, tn);
+        if (bv != null) { bv.add_arg(tv, -1); m.emit(bv); return bv; }
+        return tv;
+    }
+    return m.cast_to(v, payload_ty, src);
+}
+
 // i32 constant carrying a variant ordinal (typed so the aggregate repr
 // prints { i32, ... } rather than { i64, ... }).
 fn IrVal* SsiModule.tag_const(SsiModule* m, int ord, Node* src)
@@ -1779,7 +1859,7 @@ fn void SsiModule.bind_let_pattern(SsiModule* m, Node* pat, IrVal* val)
                         continue;
                     }
                     IrVal* pv = m.union_payload(val, pf);
-                    IrVal* cv = m.cast_to(pv, pty, pf);
+                    IrVal* cv = m.unbox_from_i64(pv, pty, pf);
                     m.bind_let_pattern(bind, cv);
                 }
             }
@@ -2464,6 +2544,24 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                         vmem.p.ident.name_ptr, vmem.p.ident.name_len, &payload_ty);
                     if (ord >= 0)
                     {
+                        // Untagged C-union (r13): the whole value is one i64
+                        // bitbox holding the payload BIT-EXACTLY; no tag slot
+                        // exists. Non-scalar fields cannot fit the cell — the
+                        // front-end's hard diagnostic gates that; emit a
+                        // parseable zero here.
+                        if (ast::union_is_c_union(vdecl))
+                        {
+                            if (!ast::union_payload_is_scalar(payload_ty))
+                            {
+                                Node* zlit2 = ast::node_int(m.arena, 0, 64, true, n.line, n.col);
+                                IrVal* z64 = m.new_val(IrOp.IR_CONST_INT, zlit2);
+                                if (z64 != null) { z64.ival = 0; m.emit(z64); }
+                                return z64;
+                            }
+                            Node* carg = n.child_count >= 3 ? n.children[2] : null;
+                            IrVal* cav = m.lower_expr(carg);
+                            return m.bitbox_to_i64(cav, payload_ty, n);
+                        }
                         bool unit_payload = payload_ty == null || payload_ty.kind == Nk.NODE_EXPR_UNIT;
                         IrVal* tagv = m.tag_const(ord, n);
                         IrVal* pay64 = null;
@@ -2477,9 +2575,7 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                         {
                             Node* varg = n.child_count >= 3 ? n.children[2] : null;
                             IrVal* argv64 = m.lower_expr(varg);
-                            Node* i64ty = ast::node_name(m.arena, Nk.NODE_TYPE_PRIMITIVE,
-                                                         (char*)"i64", 3, n.line, n.col);
-                            pay64 = m.cast_to(argv64, i64ty, n);
+                            pay64 = m.bitbox_to_i64(argv64, payload_ty, n);
                         }
                         IrVal* ag = m.new_val(IrOp.IR_TUPLE, n);
                         if (ag != null)

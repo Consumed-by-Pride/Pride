@@ -592,6 +592,12 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
             // Default integer literal type is i64 (v.md §3.4).
             return self.int_lit_type(e);
         case Nk.NODE_LIT_FLOAT:
+            // Honour the parsed width suffix: `2.0f32` IS an f32 (the parser
+            // records it in lit_float.bits). Typing it f64 made every mixed
+            // f32 expression promote to f64 while codegen emitted f32
+            // operands — the val's annotation and its LLVM type disagreed
+            // (e.g. `fptosi double` on a float). Default f64 unchanged.
+            if (e.p.lit_float.bits == 32) { return self.mk_prim(Prim.PRIM_F32); }
             return self.mk_prim(Prim.PRIM_F64);
         case Nk.NODE_LIT_BOOL:
             return self.mk_prim(Prim.PRIM_BOOL);
@@ -1414,6 +1420,24 @@ fn Node* TypeChecker.synth_field(TypeChecker* self, Node* e)
     // so stay silent and return an abstract type rather than false-warning.
     if (is_generic_param_type(self.unfold(bt))) return null;
 
+    // Untagged C-union field access (r13, v.md §9): `fb.i` reinterprets the
+    // one shared 64-bit cell at that field's payload type — "same bytes,
+    // different interpretation". This is the union's legitimate field
+    // operation, so it synthesizes the payload type itself (a union is not a
+    // struct; struct_fields_of only covers the tagged-repr internals).
+    {
+        Node* udecl = ast::union_decl_of(bt);
+        if (udecl != null && ast::union_is_c_union(udecl) && name != null)
+        {
+            Node* payload_ty = null;
+            int ord = ast::union_variant_lookup(udecl,
+                name.p.ident.name_ptr, name.p.ident.name_len, &payload_ty);
+            if (ord >= 0 && payload_ty != null) { return payload_ty; }
+            self.soft("unknown field in union type", name.line, name.col);
+            return null;
+        }
+    }
+
     Node* fields = self.struct_fields_of(bt);
     if (fields == null)
     {
@@ -1469,10 +1493,22 @@ fn Node* TypeChecker.synth_method_call(TypeChecker* self, Node* e)
         Node* udecl = ast::union_decl_of(base);
         if (udecl != null)
         {
+            Node* payload_ty = null;
             int vord = ast::union_variant_lookup(udecl,
-                name.p.ident.name_ptr, name.p.ident.name_len, null);
+                name.p.ident.name_ptr, name.p.ident.name_len, &payload_ty);
             if (vord >= 0)
             {
+                // Untagged C-union (r13): the whole value is one 64-bit
+                // bitbox, so an aggregate payload (tuple/struct/array)
+                // physically cannot fit the cell. Fail loudly instead of
+                // silently truncating somebody's struct to 8 bytes.
+                if (ast::union_is_c_union(udecl)
+                    && !ast::union_payload_is_scalar(payload_ty))
+                {
+                    self.hard("C-union field payload doesn't fit the 64-bit cell "
+                              "(untagged unions hold one scalar per field)",
+                              e.line, e.col);
+                }
                 e.type_annotation = base;
                 return base;
             }
@@ -2728,6 +2764,16 @@ fn Node* TypeChecker.synth_block(TypeChecker* self, Node* e)
 
 fn void TypeChecker.check(TypeChecker* self, Node* e, Node* expected)
 {
+    // `let bits : u32 = transmute(3.14f32)` (v.md §776): the transmute's
+    // TARGET type comes from the ascription — there is no other syntactic
+    // place for it. Stamp it so codegen's bitcast arm sees an honest dst
+    // type (bottom-up synth alone would default the val to i64 and the
+    // f32 bits would never survive).
+    if (e != null && e.kind == Nk.NODE_EXPR_TRANSMUTE
+        && expected != null && e.type_annotation == null)
+    {
+        e.type_annotation = expected;
+    }
     // Ascribing a closure literal — `let f : (T -> U) = | x -> ...` —
     // propagates the fn type INTO the literal: every clause's binders take
     // the domain type and every body is checked against the codomain (via
@@ -3214,6 +3260,13 @@ fn void TypeChecker.check_clause(TypeChecker* self, Node* clause, Node* arg, Nod
 
     if (ret != null && body != null)
     {
+        // `fn float_bits : f32 -> u32 | x -> transmute(x)` (conformance 89):
+        // like the let-ascription case in check(), the only syntactic place
+        // for the transmute's TARGET type is the fn's declared codomain.
+        if (body.kind == Nk.NODE_EXPR_TRANSMUTE && body.type_annotation == null)
+        {
+            body.type_annotation = ret;
+        }
         Node* bt = self.synth(body);
         // arg_fits allows an untyped numeric literal body to adapt to the
         // declared numeric return type (e.g. `| () -> 42` for `-> i32`).
@@ -3319,6 +3372,16 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
                     // the union type (lowering recovers the union decl from
                     // that annotation to compute the discriminant).
                     Node* udecl = ast::union_decl_of(ty);
+                    // Untagged C-union (r13): the repr is one 64-bit cell
+                    // with NO discriminant slot — there is nothing a variant
+                    // pattern could test. v.md §9 makes fields (not matches)
+                    // the interpretation mechanism, so reject loudly.
+                    if (ast::union_is_c_union(udecl))
+                    {
+                        self.hard("untagged C-union has no discriminant — access its fields, don't match it",
+                                  pat.line, pat.col);
+                        return;
+                    }
                     pat.type_annotation = ty;
                     pat.flags |= ast::FLAG_REFUTABLE;
                     for (usz vi2 = 0; vi2 < pat.child_count; vi2++)

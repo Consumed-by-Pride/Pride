@@ -230,8 +230,14 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
     {
         Node* d = t.resolved;
         if (d.kind == Nk.NODE_DECL_ENUM) { snprintf(buf, cap, "{ i32, i64 }"); return buf; }
-        // Tagged union: same { tag : i32, payload : i64 } repr as enums.
-        if (d.kind == Nk.NODE_DECL_UNION) { snprintf(buf, cap, "{ i32, i64 }"); return buf; }
+        // Union reprs (r13): tagged { i32, i64 } when a unit-payload variant
+        // exists; a single i64 bitbox for the untagged C-union form.
+        if (d.kind == Nk.NODE_DECL_UNION)
+        {
+            if (ast::union_is_c_union(d)) { snprintf(buf, cap, "i64"); }
+            else                          { snprintf(buf, cap, "{ i32, i64 }"); }
+            return buf;
+        }
         if (d.kind == Nk.NODE_DECL_NEWTYPE && d.child_count >= 2)
         { return type_to_llvm_buf(d.children[1], buf, cap, depth+1); }  // transparent
         if (d.kind == Nk.NODE_DECL_STRUCT)
@@ -351,8 +357,14 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
      || t.kind == Nk.NODE_TYPE_MUT_REF
      || t.kind == Nk.NODE_TYPE_SLICE)
     { snprintf(buf,cap,"ptr"); return buf; }
-    // Bare tagged-union node used directly as a type (via DECL_TYPE recursion):
-    if (t.kind == Nk.NODE_DECL_UNION || t.kind == Nk.NODE_DECL_ENUM)
+    // Bare union node used directly as a type (via DECL_TYPE recursion):
+    if (t.kind == Nk.NODE_DECL_UNION)
+    {
+        if (ast::union_is_c_union(t)) { snprintf(buf,cap,"i64"); }
+        else                          { snprintf(buf,cap,"{ i32, i64 }"); }
+        return buf;
+    }
+    if (t.kind == Nk.NODE_DECL_ENUM)
     { snprintf(buf,cap,"{ i32, i64 }"); return buf; }
     if (t.kind == Nk.NODE_TYPE_FN)
     {
@@ -898,6 +910,48 @@ fn bool infer_fn_types(ssi_ir::SsiModule* ir, ssi_ir::SsiFunc* f, TypeTable* t)
                     }
                 }
 
+                // Untagged C-union field access (r13): the field REINTERPRETS
+                // the i64 bitbox at the payload's type, so the result type is
+                // the payload type — never the field-expression annotation
+                // (Priority 1) and never the i64 box (Priority 2/3).
+                if (buf[0] == 0 && iv.op == ssi_ir::IrOp.IR_FIELD
+                    && iv.src != null && iv.src.kind == Nk.NODE_EXPR_FIELD
+                    && iv.src.child_count >= 2 && iv.arg_count >= 1
+                    && iv.args[0] != null)
+                {
+                    Node* udecl3 = null;
+                    for (int usrc2 = 0; usrc2 < 2 && udecl3 == null; usrc2++)
+                    {
+                        Node* bt6 = null;
+                        if (usrc2 == 0)
+                        {
+                            if (iv.args[0].src != null)
+                            { bt6 = iv.args[0].src.type_annotation; }
+                        }
+                        else if (iv.src.children[0] != null)
+                        { bt6 = iv.src.children[0].type_annotation; }
+                        if (bt6 != null)
+                        {
+                            if (bt6.kind == Nk.NODE_TYPE_PTR
+                                && bt6.child_count >= 1 && bt6.children[0] != null)
+                            { bt6 = bt6.children[0]; }
+                            udecl3 = ast::union_decl_of(bt6);
+                        }
+                    }
+                    if (udecl3 != null && ast::union_is_c_union(udecl3)
+                        && iv.src.children[1] != null)
+                    {
+                        Node* pay3 = null;
+                        int ord3 = ast::union_variant_lookup(udecl3,
+                            iv.src.children[1].p.ident.name_ptr,
+                            iv.src.children[1].p.ident.name_len, &pay3);
+                        if (ord3 >= 0)
+                        {
+                            type_to_llvm_buf(pay3, &buf[0], TYMAP_ENTRY, 0);
+                        }
+                    }
+                }
+
                 // Priority 3: opcode-based fallback
                 if (buf[0] == 0)
                 {
@@ -916,7 +970,18 @@ fn bool infer_fn_types(ssi_ir::SsiModule* ir, ssi_ir::SsiFunc* f, TypeTable* t)
                                 // LLVM IR: i8/i16/i32/i64/i128 (no u-prefix; signedness is in instructions)
                                 snprintf(&buf[0], TYMAP_ENTRY, "i%d", (int)lit_bits);
                             }
-                        case ssi_ir::IrOp.IR_CONST_FLOAT:  snprintf(&buf[0], TYMAP_ENTRY, "double");
+                        case ssi_ir::IrOp.IR_CONST_FLOAT:
+                            // Honour the literal's parsed width: `1.0f32` is a
+                            // float, anything else the default f64 (v.md §3.4).
+                            // Materializing an f32 literal as double is NOT
+                            // semantics-preserving — transmute/bitbox consumers
+                            // then read a 64-bit box where 32 bits were meant.
+                            {
+                                char flit_bits = (iv.src != null && iv.src.kind == Nk.NODE_LIT_FLOAT)
+                                                 ? iv.src.p.lit_float.bits : (char)64;
+                                if (flit_bits == 32) { snprintf(&buf[0], TYMAP_ENTRY, "float"); }
+                                else                 { snprintf(&buf[0], TYMAP_ENTRY, "double"); }
+                            }
                         case ssi_ir::IrOp.IR_CONST_BOOL:   snprintf(&buf[0], TYMAP_ENTRY, "i1");
                         case ssi_ir::IrOp.IR_CONST_STR:    snprintf(&buf[0], TYMAP_ENTRY, "ptr");
                         case ssi_ir::IrOp.IR_CONST_NULL:   snprintf(&buf[0], TYMAP_ENTRY, "ptr");
@@ -1524,7 +1589,12 @@ fn void CgenModule.emit_val_type(CgenModule* cg, ssi_ir::IrVal* v, bool in_ret)
     switch (v.op)
     {
         case ssi_ir::IrOp.IR_CONST_INT:    cg.out.writes("i64");
-        case ssi_ir::IrOp.IR_CONST_FLOAT:  cg.out.writes("double");
+        case ssi_ir::IrOp.IR_CONST_FLOAT:
+            {
+                char flit_bits = (v.src != null && v.src.kind == Nk.NODE_LIT_FLOAT)
+                                 ? v.src.p.lit_float.bits : (char)64;
+                cg.out.writes(flit_bits == 32 ? "float" : "double");
+            }
         case ssi_ir::IrOp.IR_CONST_BOOL:   cg.out.writes("i1");
         case ssi_ir::IrOp.IR_CONST_STR:    cg.out.writes("{ ptr, i64 }");
         case ssi_ir::IrOp.IR_CONST_NULL:   cg.out.writes("ptr");
@@ -1569,7 +1639,14 @@ fn void CgenModule.emit_vref(CgenModule* cg, ssi_ir::IrVal* v)
             }
             cg.out.writeu(v.ival);
         case ssi_ir::IrOp.IR_CONST_FLOAT:
-            cg.out.writef(v.fval);
+            // `float`-typed literals (f32 suffix) must print at f32 precision:
+            // a %.17g double rendering (3.1400000000000001) can OVERFLOW or
+            // mis-round the float it is paired with — the type just narrowed,
+            // the text must follow it.
+            if (v.src != null && v.src.kind == Nk.NODE_LIT_FLOAT
+                && v.src.p.lit_float.bits == 32)
+            { cg.out.writef((double)(float)v.fval); }
+            else { cg.out.writef(v.fval); }
         case ssi_ir::IrOp.IR_CONST_BOOL:
             cg.out.writes(v.bval ? "1" : "0");
         case ssi_ir::IrOp.IR_CONST_NULL:
@@ -3575,6 +3652,129 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     field_name_node = v.src.children[1];
                 }
 
+                // Untagged C-union field access (r13): the whole value is one
+                // i64 bitbox in a register — there is NO memory, NO GEP, NO
+                // tag. Reading a field reinterprets the box at that field's
+                // payload width (same bytes, different interpretation).
+                {
+                    Node* udecl2 = null;
+                    for (int usrc = 0; usrc < 2 && udecl2 == null; usrc++)
+                    {
+                        Node* bt5 = null;
+                        if (usrc == 0)
+                        {
+                            if (base != null && base.src != null)
+                            { bt5 = base.src.type_annotation; }
+                        }
+                        else if (v.src != null && v.src.kind == Nk.NODE_EXPR_FIELD
+                            && v.src.child_count >= 1 && v.src.children[0] != null)
+                        { bt5 = v.src.children[0].type_annotation; }
+                        if (bt5 != null)
+                        {
+                            if (bt5.kind == Nk.NODE_TYPE_PTR
+                                && bt5.child_count >= 1 && bt5.children[0] != null)
+                            { bt5 = bt5.children[0]; }
+                            udecl2 = ast::union_decl_of(bt5);
+                        }
+                    }
+                    if (udecl2 != null && ast::union_is_c_union(udecl2)
+                        && field_name_node != null)
+                    {
+                        Node* pay2 = null;
+                        int ord2 = ast::union_variant_lookup(udecl2,
+                            field_name_node.p.ident.name_ptr,
+                            field_name_node.p.ident.name_len, &pay2);
+                        if (ord2 >= 0)
+                        {
+                            char[TYMAP_ENTRY] pbuf2;
+                            pbuf2[0] = 0;
+                            type_to_llvm_buf(pay2, &pbuf2[0], TYMAP_ENTRY, 0);
+                            if (pbuf2[0] == 0) { pbuf2[0] = 'i'; pbuf2[1] = '6'; pbuf2[2] = '4'; pbuf2[3] = 0; }
+                            // The bitbox is always an i64 register value; if the
+                            // operand's recorded type was coerced (casts), bind
+                            // it to an i64 name first.
+                            char* bty5 = (tm != null && base != null) ? tm.get(base.id) : null;
+                            if (pbuf2[0] == 'i' && pbuf2[1] == '6' && pbuf2[2] == '4' && pbuf2[3] == 0)
+                            {
+                                // i64 view: identity rename.
+                                cg.out.writes("  %v"); cg.out.writei(v.id);
+                                cg.out.writes(" = add i64 ");
+                                if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
+                                    && bty5[2] == '4' && bty5[3] == 0)
+                                { cg.emit_vref(base); }
+                                else { cg.out.writes("0"); }
+                                cg.out.writes(", 0\n");
+                            }
+                            else if (pbuf2[0] == 'f' && pbuf2[1] == 'l')
+                            {
+                                // f32: low 32 bits bitcast.
+                                cg.out.writes("  %v"); cg.out.writei(v.id);
+                                if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
+                                    && bty5[2] == '4' && bty5[3] == 0)
+                                {
+                                    cg.out.writes(".t = trunc i64 ");
+                                    cg.emit_vref(base);
+                                }
+                                else { cg.out.writes(".t = trunc i64 0"); }
+                                cg.out.writes(" to i32\n");
+                                cg.out.writes("  %v"); cg.out.writei(v.id);
+                                cg.out.writes(" = bitcast i32 %v"); cg.out.writei(v.id);
+                                cg.out.writes(".t to float\n");
+                            }
+                            else if (pbuf2[0] == 'd')
+                            {
+                                // f64: full-width bitcast.
+                                cg.out.writes("  %v"); cg.out.writei(v.id);
+                                if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
+                                    && bty5[2] == '4' && bty5[3] == 0)
+                                {
+                                    cg.out.writes(" = bitcast i64 ");
+                                    cg.emit_vref(base);
+                                }
+                                else { cg.out.writes(" = bitcast i64 0"); }
+                                cg.out.writes(" to double\n");
+                            }
+                            else if (pbuf2[0] == 'p')
+                            {
+                                cg.out.writes("  %v"); cg.out.writei(v.id);
+                                if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
+                                    && bty5[2] == '4' && bty5[3] == 0)
+                                {
+                                    cg.out.writes(" = inttoptr i64 ");
+                                    cg.emit_vref(base);
+                                }
+                                else { cg.out.writes(" = inttoptr i64 0"); }
+                                cg.out.writes(" to ptr\n");
+                            }
+                            else if (pbuf2[0] == 'i')
+                            {
+                                // Sub-64 integer/bool view: low-bits trunc.
+                                cg.out.writes("  %v"); cg.out.writei(v.id);
+                                if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
+                                    && bty5[2] == '4' && bty5[3] == 0)
+                                {
+                                    cg.out.writes(" = trunc i64 ");
+                                    cg.emit_vref(base);
+                                }
+                                else { cg.out.writes(" = trunc i64 0"); }
+                                cg.out.writes(" to "); cg.out.writes(&pbuf2[0]); cg.out.writes("\n");
+                            }
+                            else
+                            {
+                                // Any other payload: keep the raw box.
+                                cg.out.writes("  %v"); cg.out.writei(v.id);
+                                cg.out.writes(" = add i64 ");
+                                if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
+                                    && bty5[2] == '4' && bty5[3] == 0)
+                                { cg.emit_vref(base); }
+                                else { cg.out.writes("0"); }
+                                cg.out.writes(", 0\n");
+                            }
+                            return;
+                        }
+                    }
+                }
+
                 // Resolve struct decl from base's type annotation.
                 // Try multiple sources in priority order:
                 //   1. base.src.type_annotation (IR param/let source node type)
@@ -4204,6 +4404,41 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 bool dst_fp = (dst_type_str[0]=='f'||dst_type_str[0]=='d');
                 bool src_int = (src_type_str[0]=='i');
                 bool dst_int = (dst_type_str[0]=='i');
+
+                // transmute(e) — BIT-EXACT reinterpret, never a numeric
+                // conversion. The lowering only ever requests same-width
+                // moves (f32↔i32, f64↔i64, int-int); for int-int a width
+                // mismatch still preserves the dst's low bits (zext/trunc).
+                if (v.src != null && v.src.kind == Nk.NODE_EXPR_TRANSMUTE
+                    && (src_int || src_fp) && (dst_int || dst_fp))
+                {
+                    int sw2 = 0; int dw2 = 0;
+                    if (src_type_str[0]=='i')
+                    { for (usz ci = 1; src_type_str[ci] >= '0' && src_type_str[ci] <= '9'; ci++) sw2 = sw2*10+(int)(src_type_str[ci]-'0'); }
+                    else { sw2 = (src_type_str[0]=='f') ? 32 : 64; }
+                    if (dst_type_str[0]=='i')
+                    { for (usz ci = 1; dst_type_str[ci] >= '0' && dst_type_str[ci] <= '9'; ci++) dw2 = dw2*10+(int)(dst_type_str[ci]-'0'); }
+                    else { dw2 = (dst_type_str[0]=='f') ? 32 : 64; }
+                    if (sw2 == dw2)
+                    {
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        cg.out.writes(" = bitcast "); cg.out.writes(src_type_str);
+                        cg.out.writes(" "); cg.emit_vref(src);
+                        cg.out.writes(" to "); cg.out.writes(dst_type_str); cg.out.writes("\n");
+                        return;
+                    }
+                    if (src_int && dst_int)
+                    {
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        cg.out.writes(sw2 < dw2 ? " = zext " : " = trunc ");
+                        cg.out.writes(src_type_str); cg.out.writes(" ");
+                        cg.emit_vref(src);
+                        cg.out.writes(" to "); cg.out.writes(dst_type_str); cg.out.writes("\n");
+                        return;
+                    }
+                    // Width-mismatched float↔int transmutes never arrive
+                    // from the lowering; fall through to the general path.
+                }
 
                 // ptr → integer: ptrtoint (address cast, NOT a load)
                 // `p as i64` = the pointer value as integer, NOT *p.
