@@ -1107,6 +1107,8 @@ fn void print_help()
     printf("  --test               discover test_ functions / #[test] functions\n");
     printf("  --json               emit diagnostics as a JSON array\n");
     printf("  --verify             print frontend integrity findings (pre-lowering audit)\n");
+    printf("  --self-test          run the spec-lock doctests (canonical doc snippets\n");
+    printf("                       through the real frontend with asserted outcomes)\n");
     printf("\n");
     printf("inspection dumps:\n");
     printf("  --dump-ast           print the parsed AST\n");
@@ -1292,6 +1294,14 @@ fn int main(int argc, char** argv)
         else if (arg_is(a_raw, a_len, "--stage"))        { dump_stage = true; }
         else if (arg_is(a_raw, a_len, "--irdl"))         { dump_irdl = true; }
         else if (arg_is(a_raw, a_len, "--verify"))       { verify_frontend = true; }
+        else if (arg_is(a_raw, a_len, "--self-test"))
+        {
+            // The spec-lock doctests (r14) run entirely in-process: no source
+            // file is read, the pipeline runs on the embedded canonical
+            // snippets. Exit code mirrors the failure count, like --test.
+            int dt_fail_count = integrity::run_doctests();
+            return dt_fail_count > 0 ? 1 : 0;
+        }
         else if (arg_is(a_raw, a_len, "--debug"))        { emit_debug = true; }
         else if (arg_is(a_raw, a_len, "--lto"))          { emit_lto = true; }
         else if (arg_is(a_raw, a_len, "--strip"))        { emit_strip = true; }
@@ -1855,5 +1865,8 @@ fn int main(int argc, char** argv)
     free((void*)r);
     arena.destroy();
     free((void*)src);
-    return (lx.had_errors() || p.had_error || resolve_failed || type_failed || effect_failed || lint_failed || irdl_failed || integrity_failed) ? 2 : 0;
+    // A failed LLVM emission (codegen hard errors, e.g. unsupported argument
+    // coercions that would previously ship a mangled .ll) is a hard failure:
+    // "llvm emit : FAILED" was printed but the process still exited 0.
+    return (lx.had_errors() || p.had_error || resolve_failed || type_failed || effect_failed || lint_failed || irdl_failed || integrity_failed || !codegen_ok) ? 2 : 0;
 }

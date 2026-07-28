@@ -592,6 +592,12 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
             // Default integer literal type is i64 (v.md §3.4).
             return self.int_lit_type(e);
         case Nk.NODE_LIT_FLOAT:
+            // Honour the parsed width suffix: `2.0f32` IS an f32 (the parser
+            // records it in lit_float.bits). Typing it f64 made every mixed
+            // f32 expression promote to f64 while codegen emitted f32
+            // operands — the val's annotation and its LLVM type disagreed
+            // (e.g. `fptosi double` on a float). Default f64 unchanged.
+            if (e.p.lit_float.bits == 32) { return self.mk_prim(Prim.PRIM_F32); }
             return self.mk_prim(Prim.PRIM_F64);
         case Nk.NODE_LIT_BOOL:
             return self.mk_prim(Prim.PRIM_BOOL);
@@ -1414,6 +1420,24 @@ fn Node* TypeChecker.synth_field(TypeChecker* self, Node* e)
     // so stay silent and return an abstract type rather than false-warning.
     if (is_generic_param_type(self.unfold(bt))) return null;
 
+    // Untagged C-union field access (r13, v.md §9): `fb.i` reinterprets the
+    // one shared 64-bit cell at that field's payload type — "same bytes,
+    // different interpretation". This is the union's legitimate field
+    // operation, so it synthesizes the payload type itself (a union is not a
+    // struct; struct_fields_of only covers the tagged-repr internals).
+    {
+        Node* udecl = ast::union_decl_of(bt);
+        if (udecl != null && ast::union_is_c_union(udecl) && name != null)
+        {
+            Node* payload_ty = null;
+            int ord = ast::union_variant_lookup(udecl,
+                name.p.ident.name_ptr, name.p.ident.name_len, &payload_ty);
+            if (ord >= 0 && payload_ty != null) { return payload_ty; }
+            self.soft("unknown field in union type", name.line, name.col);
+            return null;
+        }
+    }
+
     Node* fields = self.struct_fields_of(bt);
     if (fields == null)
     {
@@ -1458,6 +1482,38 @@ fn Node* TypeChecker.synth_method_call(TypeChecker* self, Node* e)
     for (usz i = 2; i < e.child_count; i++) self.synth(e.children[i]);
 
     Node* bt = self.synth(base);
+    // Union variant constructor: `U.variant(args)` — the base name resolves
+    // to a union decl and the member to one of its variants. The value's
+    // type is the union's nominal type (the base TypeVar itself). Without
+    // this the constructor typechecked to nothing: `let o = Opt.some(41)`
+    // stayed untyped, so a later `match o` never learned its scrutinee was a
+    // union and variant arms fell through to the irrefutable legacy path.
+    if (bt == null && base != null && name != null && name.p.ident.name_ptr != null)
+    {
+        Node* udecl = ast::union_decl_of(base);
+        if (udecl != null)
+        {
+            Node* payload_ty = null;
+            int vord = ast::union_variant_lookup(udecl,
+                name.p.ident.name_ptr, name.p.ident.name_len, &payload_ty);
+            if (vord >= 0)
+            {
+                // Untagged C-union (r13): the whole value is one 64-bit
+                // bitbox, so an aggregate payload (tuple/struct/array)
+                // physically cannot fit the cell. Fail loudly instead of
+                // silently truncating somebody's struct to 8 bytes.
+                if (ast::union_is_c_union(udecl)
+                    && !ast::union_payload_is_scalar(payload_ty))
+                {
+                    self.hard("C-union field payload doesn't fit the 64-bit cell "
+                              "(untagged unions hold one scalar per field)",
+                              e.line, e.col);
+                }
+                e.type_annotation = base;
+                return base;
+            }
+        }
+    }
     if (bt == null || name == null) return null;
 
     Node* fields = self.struct_fields_of(bt);
@@ -2534,6 +2590,13 @@ fn Node* TypeChecker.synth_match(TypeChecker* self, Node* e)
         if (scrut_is_union && pat != null && pat.kind == Nk.NODE_PATTERN_STRUCT)
         {
             pat.flags |= ast::FLAG_REFUTABLE;
+            // Resolve variant names against the union's variant list, type the
+            // payload binders, and stamp the pattern with the union type —
+            // the lowering recovers the discriminant from that annotation.
+            // Previously only fn-CLAUSE patterns were bound; match arms fell
+            // through to the legacy irrefutable path and miscompiled (the
+            // result φ referenced unbound payload parameters).
+            self.bind_pattern_types(pat, scrut);
         }
         if (scrut != null && pat != null && pat.kind == Nk.NODE_PATTERN_IDENT)
         {
@@ -2701,6 +2764,64 @@ fn Node* TypeChecker.synth_block(TypeChecker* self, Node* e)
 
 fn void TypeChecker.check(TypeChecker* self, Node* e, Node* expected)
 {
+    // `let bits : u32 = transmute(3.14f32)` (v.md §776): the transmute's
+    // TARGET type comes from the ascription — there is no other syntactic
+    // place for it. Stamp it so codegen's bitcast arm sees an honest dst
+    // type (bottom-up synth alone would default the val to i64 and the
+    // f32 bits would never survive).
+    if (e != null && e.kind == Nk.NODE_EXPR_TRANSMUTE
+        && expected != null && e.type_annotation == null)
+    {
+        e.type_annotation = expected;
+    }
+    // Ascribing a closure literal — `let f : (T -> U) = | x -> ...` —
+    // propagates the fn type INTO the literal: every clause's binders take
+    // the domain type and every body is checked against the codomain (via
+    // check_clause, the same routine fn decls use). Without this the clause
+    // binders stayed untyped, so the closure thunk's LLVM parameters fell
+    // back to generic i64 slots and could not marshal aggregate arguments
+    // (unions, tuples, fn values) even though the user fully annotated the
+    // closure's type.
+    if (e != null && e.kind == Nk.NODE_EXPR_CLOSURE && expected != null)
+    {
+        Node* ft = self.unfold(expected);
+        if (ft != null && ft.kind == Nk.NODE_TYPE_FN)
+        {
+            Node* dom = ft.child_count >= 1 ? ft.children[0] : null;
+            Node* cod = ft.child_count >= 2 ? ft.children[1] : null;
+            // Peel effect-row form: TYPE_FN[dom->cod, EFFECT_ROW]
+            if (cod != null && cod.kind == Nk.NODE_EFFECT_ROW
+                && dom != null && dom.kind == Nk.NODE_TYPE_FN)
+            {
+                Node* icod = dom.child_count >= 2 ? dom.children[1] : null;
+                dom = dom.child_count >= 1 ? dom.children[0] : null;
+                cod = icod;
+            }
+            for (usz ci = 0; ci < e.child_count; ci++)
+            {
+                Node* cl = e.children[ci];
+                if (cl != null && cl.kind == Nk.NODE_CLAUSE)
+                {
+                    self.check_clause(cl, dom, cod);
+                    // The thunk's return type is recovered from a clause
+                    // body's type annotation downstream; synth computes but
+                    // does not always STAMP it on the body node (match
+                    // expressions notably). Stamp the checked type so the
+                    // thunk define header, its ret coercion, and every call
+                    // site agree on one result type.
+                    if (cod != null && cl.child_count >= 2)
+                    {
+                        Node* cbody = cl.children[cl.child_count - 1];
+                        if (cbody != null && cbody.type_annotation == null)
+                        {
+                            Node* bt = self.synth(cbody);
+                            cbody.type_annotation = (bt != null) ? bt : cod;
+                        }
+                    }
+                }
+            }
+        }
+    }
     Node* actual = self.synth(e);
     if (actual == null || expected == null) return;   // unknown: permit
     // Use arg_fits so untyped numeric literals adapt to the expected type
@@ -3052,6 +3173,20 @@ fn void TypeChecker.check_fn(TypeChecker* self, Node* fn_node)
 fn Node* TypeChecker.apply_where(TypeChecker* self, Node* fn_node, Node* ty)
 {
     if (ty == null) return ty;
+    // The equality applies under a pointer constructor as well: with
+    // `where C = A`, the return type `*C` must compare equal to the body's
+    // `*A` (the clause-body check is syntactic). One constructor level is
+    // enough in practice (v.md §18 examples are all `*C`-shaped).
+    if (ty.kind == Nk.NODE_TYPE_PTR && ty.child_count >= 1
+        && ty.children[0] != null && ty.children[0].kind == Nk.NODE_TYPEVAR)
+    {
+        Node* inner = self.apply_where(fn_node, ty.children[0]);
+        if (inner != ty.children[0])
+        {
+            return ast::node1(self.arena, Nk.NODE_TYPE_PTR, inner, ty.line, ty.col);
+        }
+        return ty;
+    }
     if (ty.kind != Nk.NODE_TYPEVAR) return ty;
     if (ty.resolved == null) return ty;
 
@@ -3125,6 +3260,13 @@ fn void TypeChecker.check_clause(TypeChecker* self, Node* clause, Node* arg, Nod
 
     if (ret != null && body != null)
     {
+        // `fn float_bits : f32 -> u32 | x -> transmute(x)` (conformance 89):
+        // like the let-ascription case in check(), the only syntactic place
+        // for the transmute's TARGET type is the fn's declared codomain.
+        if (body.kind == Nk.NODE_EXPR_TRANSMUTE && body.type_annotation == null)
+        {
+            body.type_annotation = ret;
+        }
         Node* bt = self.synth(body);
         // arg_fits allows an untyped numeric literal body to adapt to the
         // declared numeric return type (e.g. `| () -> 42` for `-> i32`).
@@ -3219,8 +3361,70 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
         // child[0] = the newtype name (TypeVar), child[1..] = field binders.
         // The single binder gets the newtype's underlying type.
         case Nk.NODE_PATTERN_STRUCT:
-            if (ty != null && pat.child_count >= 2)
             {
+                bool field_form = pat.child_count >= 1 && pat.children[0] != null
+                              && pat.children[0].kind == Nk.NODE_PATTERN_FIELD;
+                if (field_form)
+                {
+                    // Union-variant pattern `{ name: binder }`: resolve every
+                    // field against the union's variant list, type the binder
+                    // with the variant payload, and stamp the pattern with
+                    // the union type (lowering recovers the union decl from
+                    // that annotation to compute the discriminant).
+                    Node* udecl = ast::union_decl_of(ty);
+                    // Untagged C-union (r13): the repr is one 64-bit cell
+                    // with NO discriminant slot — there is nothing a variant
+                    // pattern could test. v.md §9 makes fields (not matches)
+                    // the interpretation mechanism, so reject loudly.
+                    if (ast::union_is_c_union(udecl))
+                    {
+                        self.hard("untagged C-union has no discriminant — access its fields, don't match it",
+                                  pat.line, pat.col);
+                        return;
+                    }
+                    pat.type_annotation = ty;
+                    pat.flags |= ast::FLAG_REFUTABLE;
+                    for (usz vi2 = 0; vi2 < pat.child_count; vi2++)
+                    {
+                        Node* pf = pat.children[vi2];
+                        if (pf == null || pf.kind != Nk.NODE_PATTERN_FIELD || pf.child_count < 2) continue;
+                        Node* vn = pf.children[0];
+                        Node* bind = pf.children[1];
+                        if (vn == null) continue;
+                        Node* payload_ty = null;
+                        int ord = ast::union_variant_lookup(
+                            udecl, vn.p.ident.name_ptr, vn.p.ident.name_len, &payload_ty);
+                        if (ord < 0)
+                        {
+                            self.hard("unknown variant in union pattern (check the union's variant list)",
+                                      vn.line, vn.col);
+                            continue;
+                        }
+                        if (bind != null && bind.kind == Nk.NODE_PATTERN_IDENT)
+                        {
+                            // Unit payload: a `marker` binder is tolerated (the
+                            // lowering binds it to the variant's unit value) but
+                            // it carries NO type — stamping `()` would make a
+                            // returned marker (`{ none: n } -> n`, conformance
+                            // 63) trip the clause-body/return-type consistency
+                            // check. There is nothing to prove about a
+                            // zero-width value; soft typing leaves it alone.
+                            if (payload_ty != null && payload_ty.kind == Nk.NODE_EXPR_UNIT)
+                            {
+                                continue;
+                            }
+                            if (!ast::union_payload_is_scalar(payload_ty))
+                            {
+                                self.hard("variant payload is not lowered yet (only scalar payloads fit the { i32, i64 } repr)",
+                                          bind.line, bind.col);
+                            }
+                            self.bind_pattern_types(bind, payload_ty);
+                            pf.type_annotation = payload_ty;
+                        }
+                    }
+                }
+                else if (ty != null && pat.child_count >= 2)
+                {
                 // Resolve underlying type from the newtype decl.
                 Node* nt_name = pat.children[0];
                 Node* underlying = ty;   // default: same type
@@ -3236,6 +3440,7 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
                 {
                     Node* fp = pat.children[i];
                     if (fp != null) self.bind_pattern_types(fp, underlying);
+                }
                 }
             }
 

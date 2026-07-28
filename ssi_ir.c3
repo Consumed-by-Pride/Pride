@@ -272,7 +272,22 @@ struct SsiModule
     // a NODE_STMT_BREAK_LABEL used as a statement, which acts as a label decl).
     char*     pending_label_name;
     usz       pending_label_nlen;
+
+    // Module-scope `let`/`let mut` with literal initializers (r15): keyed by
+    // binder pattern node so a read can seed the value like `const`. Seeded
+    // once from build(); fn-local lets never enter this table.
+    TopLet[TOP_LET_CAP] top_lets;
+    usz                 top_let_count;
 }
+
+// A module-scope let with a compile-time-evaluable (literal) initializer.
+struct TopLet
+{
+    Node* binder;   // PATTERN_IDENT of the binding
+    Node* init;     // literal initializer expression
+}
+
+const usz TOP_LET_CAP = 512;
 
 // Cap on lowering recursion depth (degrade gracefully, never overflow).
 const int LOWER_MAX_DEPTH = 1200;
@@ -589,6 +604,62 @@ fn void SsiModule.env_push(SsiModule* m, Node* binder, IrVal* val)
     m.env_count++;
 }
 
+// Inline-evaluate a DECL_CONST / DECL_STATIC read: the bound env value wins
+// when one exists (env_lookup is keyed by binder pattern while a use resolves
+// to the DECL node, so re-lookup via the decl's pattern child), otherwise the
+// literal initializer is materialized, otherwise the whole initializer
+// expression is lowered. Shared by the ident fallback (top-level constants)
+// and the module-namespace FIELD path (`math::pi`). Null when nothing was
+// found — callers then keep their generic fallback.
+fn IrVal* SsiModule.lower_const_static(SsiModule* m, Node* decl_c)
+{
+    if (decl_c == null) return null;
+    if (decl_c.child_count >= 1 && decl_c.children[0] != null)
+    {
+        IrVal* cur = m.env_lookup(decl_c.children[0]);
+        if (cur != null) return cur;
+    }
+    // Inline-evaluate integer/bool/null constant from AST initializer.
+    // children[0] = pattern binder (skip), children[1..] = type/init.
+    // Walk from child 1 onward to find the init expression (skip type annotations).
+    for (usz ci = 1; ci < decl_c.child_count; ci++)
+    {
+        Node* cc = decl_c.children[ci];
+        if (cc == null || ssi::is_type_or_row(cc)) continue;
+        // Integer literal
+        if (cc.kind == Nk.NODE_LIT_INT)
+        {
+            IrVal* cv = m.new_val(IrOp.IR_CONST_INT, cc);
+            if (cv != null) { cv.ival = cc.p.lit_int.int_val; m.emit(cv); }
+            return cv;
+        }
+        // Bool literal
+        if (cc.kind == Nk.NODE_LIT_BOOL)
+        {
+            IrVal* cv = m.new_val(IrOp.IR_CONST_BOOL, cc);
+            if (cv != null) { cv.bval = cc.p.lit_bool.bool_val; m.emit(cv); }
+            return cv;
+        }
+        // Null literal
+        if (cc.kind == Nk.NODE_LIT_NULL)
+        {
+            IrVal* cv = m.new_val(IrOp.IR_CONST_NULL, cc);
+            if (cv != null) { m.emit(cv); }
+            return cv;
+        }
+        // Float literal
+        if (cc.kind == Nk.NODE_LIT_FLOAT)
+        {
+            IrVal* cv = m.new_val(IrOp.IR_CONST_FLOAT, cc);
+            if (cv != null) { cv.fval = cc.p.lit_float.f64_val; m.emit(cv); }
+            return cv;
+        }
+        // For other const initializers, lower the whole expression.
+        return m.lower_expr(cc);
+    }
+    return null;
+}
+
 // ── Address-taken locals ─────────────────────────────────────────────────────
 // A local whose address is observed (`&x`) cannot live purely in SSA values:
 // every mutation through that pointer must be visible to all observers, so the
@@ -766,7 +837,65 @@ fn void SsiModule.build(SsiModule* m, Node* program)
 {
     if (program == null) return;
     m.program_node = program;  // store for impl lookup
+    m.seed_top_lets(program);
     m.lower_program(program);
+}
+
+// Collect module-scope `let` bindings whose initializer is a compile-time
+// literal (int/unsigned/bool/float/char/null — anything the const-inliner
+// can evaluate without a runtime). These read back like `const`: a module
+// `let x : i64 = 10` used to lower to NOTHING, so every read silently saw 0.
+// Record one module-scope literal `let` (DECL_LET whose binder is a plain
+// PATTERN_IDENT and whose initializer is a compile-time literal).
+fn void SsiModule.seed_one_top_let(SsiModule* m, Node* d) @private
+{
+    if (d == null || d.kind != Nk.NODE_DECL_LET) return;
+    if (m.top_let_count >= TOP_LET_CAP) return;
+    Node* pat = d.child_count >= 1 ? d.children[0] : null;
+    if (pat == null || pat.kind != Nk.NODE_PATTERN_IDENT) return;
+    // Find the initializer: last non-type, non-row child.
+    Node* init = null;
+    for (usz ci = 1; ci < d.child_count; ci++)
+    {
+        Node* c = d.children[ci];
+        if (c == null || ssi::is_type_or_row(c)) continue;
+        init = c;
+    }
+    if (init == null) return;
+    bool is_lit = init.kind == Nk.NODE_LIT_INT || init.kind == Nk.NODE_LIT_BOOL
+        || init.kind == Nk.NODE_LIT_FLOAT || init.kind == Nk.NODE_LIT_CHAR
+        || init.kind == Nk.NODE_LIT_NULL || init.kind == Nk.NODE_LIT_STRING;
+    if (!is_lit) return;
+    TopLet* tl = &m.top_lets[m.top_let_count];
+    tl.binder = pat;
+    tl.init = init;
+    m.top_let_count++;
+}
+
+fn void SsiModule.seed_top_lets(SsiModule* m, Node* program)
+{
+    m.top_let_count = 0;
+    for (usz i = 0; i < program.child_count && m.top_let_count < TOP_LET_CAP; i++)
+    {
+        Node* d = program.children[i];
+        if (d == null) continue;
+        if (d.kind == Nk.NODE_DECL_LET) { m.seed_one_top_let(d); continue; }
+        // One level of module nesting: literal lets inside a `mod` block seed
+        // the same way — a use/import of the member (chased to the DECL_LET)
+        // reads back through the same binder-keyed lookup.
+        if (d.kind == Nk.NODE_DECL_MOD)
+        {
+            for (usz j = 0; j < d.child_count; j++)
+            {
+                Node* blk = d.children[j];
+                if (blk == null || blk.kind != Nk.NODE_EXPR_BLOCK) continue;
+                for (usz k = 0; k < blk.child_count; k++)
+                {
+                    m.seed_one_top_let(blk.children[k]);
+                }
+            }
+        }
+    }
 }
 
 fn void SsiModule.lower_program(SsiModule* m, Node* n)
@@ -948,8 +1077,9 @@ fn void SsiModule.lower_closure_thunk(SsiModule* m, Node* closure_node)
             {
                 Node* cl2 = closure_node.children[cpi];
                 if (cl2 == null) continue;
-                Node* pp = cl2.child_count >= 1 ? cl2.children[0] : null;
-                mark_local_binders(pp, &locals_arr2[0], &local_count2, 128);
+                // Whole-clause marking (pattern + body), same rule as
+                // lower_closure: body-local binders are not captures.
+                mark_local_binders(cl2, &locals_arr2[0], &local_count2, 128);
             }
             for (usz cpi = 0; cpi < closure_node.child_count; cpi++)
             { collect_free_vars(closure_node.children[cpi], &locals_arr2[0], local_count2,
@@ -1217,6 +1347,202 @@ fn void SsiModule.lower_clause_body(SsiModule* m, Node* clause)
 
 // Build a boolean test that a clause's pattern matches the parameter values, or
 // null if the pattern is irrefutable (always matches).
+// ── Union variant (tagged-sum) lowering ────────────────────────────────────
+// Tagged repr: `{ i32 tag, i64 payload }` — the same layout the `?` desugar
+// and DECL_ENUM printing assume. A `{ name: binder }` pattern tests the tag
+// against the variant ordinal and binds `extractvalue payload` coerced back
+// to the payload type.
+
+// Recover (union type, variant ordinal, payload type) from a union-variant
+// `{ name: binder }` pattern. Typecheck stamped the pattern with the union
+// type; the first PATTERN_FIELD carries the variant name.
+fn bool variant_pattern_info(Node* pat, Node** out_union_ty, int* out_ord, Node** out_payload)
+{
+    if (pat == null || pat.kind != Nk.NODE_PATTERN_STRUCT || pat.child_count < 1) return false;
+    Node* pf0 = pat.children[0];
+    if (pf0 == null || pf0.kind != Nk.NODE_PATTERN_FIELD || pf0.child_count < 1) return false;
+    Node* ty = pat.type_annotation != null ? pat.type_annotation : pf0.type_annotation;
+    if (ast::union_decl_of(ty) == null) return false;
+    Node* vn = pf0.children[0];
+    if (vn == null || vn.p.ident.name_ptr == null) return false;
+    Node* payload = null;
+    int ord = ast::union_variant_lookup(ast::union_decl_of(ty),
+                vn.p.ident.name_ptr, vn.p.ident.name_len, &payload);
+    if (ord < 0) return false;
+    if (out_union_ty != null) *out_union_ty = ty;
+    if (out_ord != null) *out_ord = ord;
+    if (out_payload != null) *out_payload = payload;
+    return true;
+}
+
+// The repr-extraction values (tag/payload extractvalue) and the fabricated
+// dispatch booleans (tag == ordinal tests, guard-folding and/or) need LLVM
+// types of their OWN — the extracted slot type (i32 tag / i64 payload) or i1
+// — while their natural src nodes (the variant pattern / field) carry the
+// UNION type annotation. tymap Priority 1 copies iv.src.type_annotation
+// verbatim, which would type an `extractvalue { i32, i64 }, 0` as the whole
+// aggregate: every downstream consumer (icmp operands, cast sources, ret/call
+// printers) then emitted aggregate-typed references to an i32/i64 definition
+// (observed as "aggregate cmp (type error, soft)" constants and as
+// `bitcast i32 %v to i32` where %v was defined i64). Fabricate a fresh
+// annotation-carrying holder node as the src instead.
+fn Node* SsiModule.typed_holder_src(SsiModule* m, Nk kind, Node* like, char* tyname, usz tylen)
+{
+    int ln = like != null ? like.line : 0;
+    int lc = like != null ? like.col : 0;
+    Node* h = ast::node_raw(m.arena, kind, ln, lc);
+    if (h != null)
+    {
+        h.type_annotation = ast::node_name(m.arena, Nk.NODE_TYPE_PRIMITIVE, tyname, tylen, ln, lc);
+    }
+    return h;
+}
+
+// i1 holder for a fabricated dispatch boolean.
+fn Node* SsiModule.bool_test_src(SsiModule* m, Node* like)
+{
+    return m.typed_holder_src(Nk.NODE_EXPR_BINARY, like, (char*)"i1", 2);
+}
+
+// and_cond/or_cond receive pattern nodes as src whose type annotation may be
+// a union decl (variant arms): substitute a boolean holder for exactly those
+// (scalar / unannotated srcs flow through unchanged).
+fn Node* SsiModule.cond_src(SsiModule* m, Node* src)
+{
+    if (src != null && src.type_annotation != null
+        && ast::union_decl_of(src.type_annotation) != null)
+    {
+        return m.bool_test_src(src);
+    }
+    return src;
+}
+
+// tag(v) / payload(v): extractvalue on the { i32, i64 } repr. The src carries
+// the SLOT type (i32 / i64), not the pattern's union annotation.
+fn IrVal* SsiModule.union_tag(SsiModule* m, IrVal* v, Node* src)
+{
+    IrVal* t = m.new_val(IrOp.IR_INDEX,
+                m.typed_holder_src(Nk.NODE_EXPR_INDEX, src, (char*)"i32", 3));
+    if (t != null && v != null) { t.add_arg(v, -1); t.ival = 0; m.emit(t); }
+    return t;
+}
+
+fn IrVal* SsiModule.union_payload(SsiModule* m, IrVal* v, Node* src)
+{
+    IrVal* t = m.new_val(IrOp.IR_INDEX,
+                m.typed_holder_src(Nk.NODE_EXPR_INDEX, src, (char*)"i64", 3));
+    if (t != null && v != null) { t.add_arg(v, -1); t.ival = 1; m.emit(t); }
+    return t;
+}
+
+// Bit-exact payload boxing into / unboxing from the i64 slot (shared by the
+// tagged { i32, i64 } payload and the untagged C-union bitbox). Numeric
+// casts do NOT preserve bits for floats (`1.5 as i64` is fptosi), so float
+// payloads move through transmute-style IR_CAST nodes — pure reinterprets.
+fn IrVal* SsiModule.bitbox_to_i64(SsiModule* m, IrVal* v, Node* payload_ty, Node* src)
+{
+    if (v == null) return v;
+    int ln = src != null ? src.line : 0;
+    int lc = src != null ? src.col : 0;
+    bool is_f32 = payload_ty != null && payload_ty.kind == Nk.NODE_TYPE_PRIMITIVE
+        && payload_ty.p.ident.name_len == 3 && payload_ty.p.ident.name_ptr[0] == 'f';
+    bool is_f64 = payload_ty != null && payload_ty.kind == Nk.NODE_TYPE_PRIMITIVE
+        && payload_ty.p.ident.name_len == 3 && payload_ty.p.ident.name_ptr[0] == 'f'
+        && payload_ty.p.ident.name_ptr[1] == '6';
+    Node* i64ty = ast::node_name(m.arena, Nk.NODE_TYPE_PRIMITIVE, (char*)"i64", 3, ln, lc);
+    if (is_f64)
+    {
+        // double → i64: one transmute (same width).
+        Node* tn = ast::node1(m.arena, Nk.NODE_EXPR_TRANSMUTE, src, ln, lc);
+        tn.type_annotation = i64ty;
+        IrVal* tv = m.new_val(IrOp.IR_CAST, tn);
+        if (tv != null) { tv.add_arg(v, -1); m.emit(tv); return tv; }
+        return v;
+    }
+    if (is_f32)
+    {
+        // Constants with an `f32` suffix still materialize as LLVM `double`
+        // (the float-literal repr), so narrow semantically to float FIRST
+        // (fptrunc is bit-exact for a genuine f32 value; a same-type float
+        // stays a no-op fadd) and only then reinterpret — transmuting the
+        // double straight to i32 would fall through to a numeric fptosi and
+        // lose the bits entirely.
+        Node* f32ty = ast::node_name(m.arena, Nk.NODE_TYPE_PRIMITIVE, (char*)"f32", 3, ln, lc);
+        IrVal* f32v = m.cast_to(v, f32ty, src);
+        Node* i32ty = ast::node_name(m.arena, Nk.NODE_TYPE_PRIMITIVE, (char*)"i32", 3, ln, lc);
+        Node* tn = ast::node1(m.arena, Nk.NODE_EXPR_TRANSMUTE, src, ln, lc);
+        tn.type_annotation = i32ty;
+        IrVal* tv = m.new_val(IrOp.IR_CAST, tn);
+        if (tv != null) { tv.add_arg(f32v, -1); m.emit(tv); }
+        else { tv = f32v; }
+        return m.cast_to(tv, i64ty, src);
+    }
+    // Integers, bools, pointers: the semantic cast chain (sext/zext/trunc/
+    // ptrtoint) is bit-exact through the readback's trunc.
+    return m.cast_to(v, i64ty, src);
+}
+
+fn IrVal* SsiModule.unbox_from_i64(SsiModule* m, IrVal* v, Node* payload_ty, Node* src)
+{
+    if (v == null || payload_ty == null) return v;
+    int ln = src != null ? src.line : 0;
+    int lc = src != null ? src.col : 0;
+    bool is_f32 = payload_ty.kind == Nk.NODE_TYPE_PRIMITIVE
+        && payload_ty.p.ident.name_len == 3 && payload_ty.p.ident.name_ptr[0] == 'f'
+        && payload_ty.p.ident.name_ptr[1] != '6';
+    bool is_f64 = payload_ty.kind == Nk.NODE_TYPE_PRIMITIVE
+        && payload_ty.p.ident.name_len == 3 && payload_ty.p.ident.name_ptr[0] == 'f'
+        && payload_ty.p.ident.name_ptr[1] == '6';
+    if (is_f64)
+    {
+        Node* tn = ast::node1(m.arena, Nk.NODE_EXPR_TRANSMUTE, src, ln, lc);
+        tn.type_annotation = payload_ty;
+        IrVal* tv = m.new_val(IrOp.IR_CAST, tn);
+        if (tv != null) { tv.add_arg(v, -1); m.emit(tv); return tv; }
+        return v;
+    }
+    if (is_f32)
+    {
+        // i64 → i32 (trunc: low bits) → float (transmute).
+        Node* i32ty = ast::node_name(m.arena, Nk.NODE_TYPE_PRIMITIVE, (char*)"i32", 3, ln, lc);
+        IrVal* tv = m.cast_to(v, i32ty, src);
+        Node* tn = ast::node1(m.arena, Nk.NODE_EXPR_TRANSMUTE, src, ln, lc);
+        tn.type_annotation = payload_ty;
+        IrVal* bv = m.new_val(IrOp.IR_CAST, tn);
+        if (bv != null) { bv.add_arg(tv, -1); m.emit(bv); return bv; }
+        return tv;
+    }
+    return m.cast_to(v, payload_ty, src);
+}
+
+// i32 constant carrying a variant ordinal (typed so the aggregate repr
+// prints { i32, ... } rather than { i64, ... }).
+fn IrVal* SsiModule.tag_const(SsiModule* m, int ord, Node* src)
+{
+    int ln = src != null ? src.line : 0;
+    int lc = src != null ? src.col  : 0;
+    Node* lit = ast::node_int(m.arena, (ulong)ord, 32, true, ln, lc);
+    IrVal* c = m.new_val(IrOp.IR_CONST_INT, lit);
+    if (c != null) { c.ival = (ulong)ord; m.emit(c); }
+    return c;
+}
+
+// Fabricate an `expr as ToTy` cast over an ALREADY-LOWERED value — the
+// enum-payload repr coercion in both directions (i64 slot <-> payload type).
+// The fabricated EXPR_CAST node carries the destination in type_annotation,
+// which is exactly where tymap inference and IR_CAST codegen look for it.
+fn IrVal* SsiModule.cast_to(SsiModule* m, IrVal* v, Node* to_ty, Node* src)
+{
+    if (v == null || to_ty == null) return v;
+    int ln = src != null ? src.line : 0;
+    int lc = src != null ? src.col  : 0;
+    Node* cd = ast::node2(m.arena, Nk.NODE_EXPR_CAST, src != null ? src : to_ty, to_ty, ln, lc);
+    cd.type_annotation = to_ty;
+    IrVal* c = m.new_val(IrOp.IR_CAST, cd);
+    if (c != null) { c.add_arg(v, -1); m.emit(c); return c; }
+    return v;
+}
+
 fn IrVal* SsiModule.clause_test(SsiModule* m, Node* pat, IrVal** params, usz arity)
 {
     if (pat == null) return null;
@@ -1248,6 +1574,22 @@ fn IrVal* SsiModule.single_test(SsiModule* m, Node* pat, IrVal* v)
                 return t;
             }
             return null;
+        case Nk.NODE_PATTERN_STRUCT:
+            // Union-variant pattern: test the tag against the ordinal.
+            {
+                int ord = 0; Node* vp_ty = null; Node* vp_un = null;
+                if (variant_pattern_info(pat, &vp_un, &ord, &vp_ty))
+                {
+                    IrVal* tg = m.union_tag(v, pat);
+                    IrVal* tc = m.tag_const(ord, pat);
+                    // bool holder src: `pat` carries the union annotation; the
+                    // icmp result must stay i1 in the tymap.
+                    IrVal* t = m.new_val(IrOp.IR_BIN, m.bool_test_src(pat));
+                    if (t != null) { t.bop = Tt.TOKEN_EQEQ; t.add_arg(tg, -1); t.add_arg(tc, -1); m.emit(t); }
+                    return t;
+                }
+                return null;
+            }
         case Nk.NODE_PATTERN_OR:
             // | a | b | ... : test every alternative; any match suffices.
             // An irrefutable alternative (ident binder / '_') makes the whole
@@ -1271,7 +1613,7 @@ fn IrVal* SsiModule.and_cond(SsiModule* m, IrVal* a, IrVal* b, Node* src)
 {
     if (a == null) return b;
     if (b == null) return a;
-    IrVal* t = m.new_val(IrOp.IR_BIN, src);
+    IrVal* t = m.new_val(IrOp.IR_BIN, m.cond_src(src));
     if (t != null) { t.bop = Tt.TOKEN_AMPAMP; t.add_arg(a, -1); t.add_arg(b, -1); m.emit(t); }
     return t;
 }
@@ -1280,7 +1622,7 @@ fn IrVal* SsiModule.or_cond(SsiModule* m, IrVal* a, IrVal* b, Node* src)
 {
     if (a == null) return b;
     if (b == null) return a;
-    IrVal* t = m.new_val(IrOp.IR_BIN, src);
+    IrVal* t = m.new_val(IrOp.IR_BIN, m.cond_src(src));
     if (t != null) { t.bop = Tt.TOKEN_PIPEPIPE; t.add_arg(a, -1); t.add_arg(b, -1); m.emit(t); }
     return t;
 }
@@ -1622,6 +1964,34 @@ fn void SsiModule.bind_let_pattern(SsiModule* m, Node* pat, IrVal* val)
                 if (proj != null) m.emit(proj);
                 m.bind_let_pattern(pat.children[i], proj);
             }
+        case Nk.NODE_PATTERN_STRUCT:
+            // Union-variant pattern: each field binder receives the payload
+            // extracted from the { i32, i64 } repr and coerced back to the
+            // payload type (`_` on a unit payload binds nothing).
+            {
+                int ord = 0; Node* vp_ty = null; Node* vp_un = null;
+                if (!variant_pattern_info(pat, &vp_un, &ord, &vp_ty)) return;
+                for (usz i = 0; i < pat.child_count; i++)
+                {
+                    Node* pf = pat.children[i];
+                    if (pf == null || pf.kind != Nk.NODE_PATTERN_FIELD || pf.child_count < 2) continue;
+                    Node* bind = pf.children[1];
+                    if (bind == null || bind.kind != Nk.NODE_PATTERN_IDENT) continue;
+                    Node* pty = pf.type_annotation != null ? pf.type_annotation : vp_ty;
+                    if (pty != null && pty.kind == Nk.NODE_EXPR_UNIT)
+                    {
+                        // Unit payload: no slot to extract, but the binder must
+                        // still name a DEFINED value (the variant's unit) —
+                        // leaving it unbound would turn every use into an
+                        // opaque global reference.
+                        m.bind_let_pattern(bind, m.mk_unit(pf));
+                        continue;
+                    }
+                    IrVal* pv = m.union_payload(val, pf);
+                    IrVal* cv = m.unbox_from_i64(pv, pty, pf);
+                    m.bind_let_pattern(bind, cv);
+                }
+            }
         default:
             for (usz i = 0; i < pat.child_count; i++) m.bind_let_pattern(pat.children[i], val);
     }
@@ -1961,9 +2331,14 @@ fn IrVal* SsiModule.lower_closure(SsiModule* m, Node* closure_node)
     {
         Node* clause = closure_node.children[ci];
         if (clause == null) continue;
-        // Clause child[0] = pattern
-        Node* pat = clause.child_count >= 1 ? clause.children[0] : null;
-        mark_local_binders(pat, &locals[0], &local_count, 128);
+        // Walk the WHOLE clause (pattern + guard + body), not just its
+        // parameter pattern: every binder the body introduces (lets,
+        // match-arm pattern binders) is local to the closure, never a
+        // capture. Pattern-only marking left body-local binders looking
+        // "free", so they were captured: unbound at closure-creation time,
+        // the slot froze a unit value and the thunk emitted the invalid
+        // `inttoptr void {} to ptr`.
+        mark_local_binders(clause, &locals[0], &local_count, 128);
     }
 
     Node*[64] captures;
@@ -2097,58 +2472,56 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                 }
                 if (cur != null) return cur;
 
-                // DECL_CONST / DECL_STATIC with an integer/bool initializer:
-                // env_lookup uses the PatIdent as key but ident.resolved is the DECL node.
-                // If that lookup missed, try looking up via the decl's pattern child.
+                // Module-scope `let` with a literal initializer behaves like
+                // `const` (r15): v.md §5 makes plain `let` an immutable
+                // binding by default, and a module-scope immutable binding of
+                // a compile-time literal IS a constant. It used to lower to
+                // nothing at all — reading it silently produced 0, a
+                // miscompile of a program that resolved and typechecked
+                // fine. Env lookup here just seeds the value once, keyed by
+                // the binder pattern, exactly like a fn-local binding.
+                if (n.resolved.kind == Nk.NODE_PATTERN_IDENT
+                    || n.resolved.kind == Nk.NODE_DECL_LET)
+                {
+                    // The binder whose identity keys a top-level literal let:
+                    // direct uses resolve to the PATTERN_IDENT; a use reached
+                    // through a chased member import resolves to the DECL_LET
+                    // (whose pattern is children[0]).
+                    Node* want = n.resolved;
+                    if (want.kind == Nk.NODE_DECL_LET)
+                    {
+                        want = (want.child_count >= 1) ? want.children[0] : null;
+                    }
+                    Node* let_init = null;
+                    bool lit_let = false;
+                    // Recover the initializer: the tree is parent-less, so
+                    // match by identity against the module's seeded top-level
+                    // lets.
+                    for (usz tli = 0; tli < m.top_let_count && want != null; tli++)
+                    {
+                        TopLet* tl = &m.top_lets[tli];
+                        if (tl.binder == want) { let_init = tl.init; lit_let = true; break; }
+                    }
+                    if (lit_let && let_init != null)
+                    {
+                        IrVal* lv = m.lower_expr(let_init);
+                        if (lv != null)
+                        {
+                            m.env_push(n.resolved, lv);
+                            return lv;
+                        }
+                    }
+                    // Fall through: a module-scope `let mutable` or
+                    // non-literal init has no constant answer here.
+                }
+
+                // DECL_CONST / DECL_STATIC with an inline-evaluable
+                // initializer: shared with the module-namespace FIELD path.
                 if (n.resolved.kind == Nk.NODE_DECL_CONST
                     || n.resolved.kind == Nk.NODE_DECL_STATIC)
                 {
-                    Node* decl_c = n.resolved;
-                    // Try pattern child (children[0]) as lookup key
-                    if (decl_c.child_count >= 1 && decl_c.children[0] != null)
-                    {
-                        cur = m.env_lookup(decl_c.children[0]);
-                        if (cur != null) return cur;
-                    }
-                    // Inline-evaluate integer/bool/null constant from AST initializer.
-                    // children[0] = pattern binder (skip), children[1..] = type/init.
-                    // Walk from child 1 onward to find the init expression (skip type annotations).
-                    for (usz ci = 1; ci < decl_c.child_count; ci++)
-                    {
-                        Node* cc = decl_c.children[ci];
-                        if (cc == null || ssi::is_type_or_row(cc)) continue;
-                        // Integer literal
-                        if (cc.kind == Nk.NODE_LIT_INT)
-                        {
-                            IrVal* cv = m.new_val(IrOp.IR_CONST_INT, cc);
-                            if (cv != null) { cv.ival = cc.p.lit_int.int_val; m.emit(cv); }
-                            return cv;
-                        }
-                        // Bool literal
-                        if (cc.kind == Nk.NODE_LIT_BOOL)
-                        {
-                            IrVal* cv = m.new_val(IrOp.IR_CONST_BOOL, cc);
-                            if (cv != null) { cv.bval = cc.p.lit_bool.bool_val; m.emit(cv); }
-                            return cv;
-                        }
-                        // Null literal
-                        if (cc.kind == Nk.NODE_LIT_NULL)
-                        {
-                            IrVal* cv = m.new_val(IrOp.IR_CONST_NULL, cc);
-                            if (cv != null) { m.emit(cv); }
-                            return cv;
-                        }
-                        // Float literal
-                        if (cc.kind == Nk.NODE_LIT_FLOAT)
-                        {
-                            IrVal* cv = m.new_val(IrOp.IR_CONST_FLOAT, cc);
-                            if (cv != null) { cv.fval = cc.p.lit_float.f64_val; m.emit(cv); }
-                            return cv;
-                        }
-                        // For other const initializers, lower the whole expression.
-                        IrVal* cval = m.lower_expr(cc);
-                        return cval;
-                    }
+                    IrVal* csv = m.lower_const_static(n.resolved);
+                    if (csv != null) return csv;
                 }
             }
             // Unresolved (global / fn ref): an opaque named value. Emit it so it
@@ -2279,6 +2652,69 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
         case Nk.NODE_EXPR_METHOD_CALL:
             // Effect operation perform: `Effect.op(args)` → IR_EFFECT_OP.
             if (is_effect_method_call(n)) { return m.lower_effect_perform(n); }
+            // Union variant constructor: `U.variant(args)` → tagged repr
+            // `{ i32 ordinal, i64 payload }`. Resolved by shape, not by name:
+            // the base must resolve to a union decl and the member must be a
+            // variant of it (previously this fell through to a generic call
+            // and produced an inttoptr call through a NULL callee).
+            {
+                Node* vbase = n.child_count >= 1 ? n.children[0] : null;
+                Node* vmem  = n.child_count >= 2 ? n.children[1] : null;
+                Node* vdecl = vbase != null ? ast::union_decl_of(vbase) : null;
+                bool mem_named = vmem != null
+                    && (vmem.kind == Nk.NODE_IDENT || vmem.kind == Nk.NODE_TYPEVAR)
+                    && vmem.p.ident.name_ptr != null;
+                if (vdecl != null && mem_named)
+                {
+                    Node* payload_ty = null;
+                    int ord = ast::union_variant_lookup(vdecl,
+                        vmem.p.ident.name_ptr, vmem.p.ident.name_len, &payload_ty);
+                    if (ord >= 0)
+                    {
+                        // Untagged C-union (r13): the whole value is one i64
+                        // bitbox holding the payload BIT-EXACTLY; no tag slot
+                        // exists. Non-scalar fields cannot fit the cell — the
+                        // front-end's hard diagnostic gates that; emit a
+                        // parseable zero here.
+                        if (ast::union_is_c_union(vdecl))
+                        {
+                            if (!ast::union_payload_is_scalar(payload_ty))
+                            {
+                                Node* zlit2 = ast::node_int(m.arena, 0, 64, true, n.line, n.col);
+                                IrVal* z64 = m.new_val(IrOp.IR_CONST_INT, zlit2);
+                                if (z64 != null) { z64.ival = 0; m.emit(z64); }
+                                return z64;
+                            }
+                            Node* carg = n.child_count >= 3 ? n.children[2] : null;
+                            IrVal* cav = m.lower_expr(carg);
+                            return m.bitbox_to_i64(cav, payload_ty, n);
+                        }
+                        bool unit_payload = payload_ty == null || payload_ty.kind == Nk.NODE_EXPR_UNIT;
+                        IrVal* tagv = m.tag_const(ord, n);
+                        IrVal* pay64 = null;
+                        if (unit_payload)
+                        {
+                            Node* zlit = ast::node_int(m.arena, 0, 64, true, n.line, n.col);
+                            pay64 = m.new_val(IrOp.IR_CONST_INT, zlit);
+                            if (pay64 != null) { pay64.ival = 0; m.emit(pay64); }
+                        }
+                        else
+                        {
+                            Node* varg = n.child_count >= 3 ? n.children[2] : null;
+                            IrVal* argv64 = m.lower_expr(varg);
+                            pay64 = m.bitbox_to_i64(argv64, payload_ty, n);
+                        }
+                        IrVal* ag = m.new_val(IrOp.IR_TUPLE, n);
+                        if (ag != null)
+                        {
+                            ag.add_arg(tagv, -1);
+                            ag.add_arg(pay64, -1);
+                            m.emit(ag);
+                            return ag;
+                        }
+                    }
+                }
+            }
             {
                 IrVal* v = m.new_val(IrOp.IR_CALL, n);
                 for (usz i = 0; i < n.child_count; i++)
@@ -2293,6 +2729,42 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
             }
 
         case Nk.NODE_EXPR_FIELD:
+            // Module namespace access: `math::f` / `alias::f`. The base names
+            // a module (direct decl or import alias) and the member ident's
+            // .resolved is stamped at the declaration INSIDE the module — this
+            // node is a namespaced NAME, not a data projection. A module has
+            // no runtime value, so the old IR_FIELD lowering projected from a
+            // fabricated null base and a call became an indirect call through
+            // inttoptr(0) (garbage result, or SIGTRAP once the optimizer sees
+            // the UB). Emit the member exactly like a top-level use of the
+            // same declaration: fn → direct reference (IR_UNKNOWN with the
+            // DECL_FN binder, which codegen turns into @pride_name with proper
+            // parameter marshalling), const/static → inline evaluation.
+            {
+                Node* fbase = n.child_count >= 1 ? n.children[0] : null;
+                Node* fmem  = n.child_count >= 2 ? n.children[1] : null;
+                Node* fbtgt = fbase != null ? fbase.resolved : null;
+                bool base_is_ns = fbtgt != null
+                    && (fbtgt.kind == Nk.NODE_DECL_MOD
+                        || fbtgt.kind == Nk.NODE_DECL_USE
+                        || fbtgt.kind == Nk.NODE_DECL_IMPORT);
+                if (base_is_ns && fmem != null && fmem.resolved != null)
+                {
+                    Node* md = fmem.resolved;
+                    if (md.kind == Nk.NODE_DECL_FN)
+                    {
+                        IrVal* fref = m.new_val(IrOp.IR_UNKNOWN, n);
+                        if (fref != null) { fref.binder = md; m.emit(fref); }
+                        return fref;
+                    }
+                    if (md.kind == Nk.NODE_DECL_CONST
+                        || md.kind == Nk.NODE_DECL_STATIC)
+                    {
+                        IrVal* csv = m.lower_const_static(md);
+                        if (csv != null) return csv;
+                    }
+                }
+            }
             IrVal* base = m.lower_expr(n.child_count >= 1 ? n.children[0] : null);
             IrVal* v = m.new_val(IrOp.IR_FIELD, n);
             if (v != null) { v.add_arg(base, -1); m.emit(v); }
@@ -3220,6 +3692,11 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
     IrBlock* db = m.blk(default_blk);
     if (db != null) db.term = TermKind.TERM_UNREACHABLE;
     bool default_filled = false;
+    // When the default block is repurposed as the guard-chain forwarder, its
+    // TRAP role moves to a fresh block: chain-exhausted (and guarded-literal)
+    // false edges must trap on a failed match, not loop back into the chain
+    // head (an infinite loop — a hang where the language promises UB/trap).
+    int trap_blk = default_blk;
 
     usz pre_mark = m.env_mark();
 
@@ -3339,10 +3816,20 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         // cannot route per case value — the chain re-tests instead).
         bool or_chain_irrefutable = is_or && or_has_irrefutable;
         bool or_tested_chain = is_or && !or_has_irrefutable && or_all_case_lits && guard != null;
-        bool chain_arm = is_wild || is_bind || is_tuple || or_chain_irrefutable || or_tested_chain;
+        // Union-variant struct arm `{ name: binder }`: refutable, goes through
+        // the default chain with its tag test folded into the dispatch block
+        // (same tested-chain shape as guarded OR arms — a switch cannot prove
+        // a tag without giving every variant value its own case routing).
+        bool is_variant_arm = !is_or
+            && variant_pattern_info(pat, null, null, null);
+        bool chain_arm = is_wild || is_bind || is_tuple || or_chain_irrefutable || or_tested_chain
+            || is_variant_arm;
 
         int arm_blk = m.new_block();
-        int guard_blk = (guard != null) ? m.new_block() : -1;
+        // Variant arms need the tag test evaluated in a dispatch block even
+        // without a user guard.
+        bool needs_test_blk = (guard != null) || is_variant_arm;
+        int guard_blk = needs_test_blk ? m.new_block() : -1;
         int dispatch = (guard_blk >= 0) ? guard_blk : arm_blk;
 
         if (chain_arm)
@@ -3354,6 +3841,9 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
                 db.term = TermKind.TERM_BR;
                 m.link(default_blk, dispatch);
                 default_filled = true;
+                trap_blk = m.new_block();
+                IrBlock* ttb = m.blk(trap_blk);
+                if (ttb != null) ttb.term = TermKind.TERM_UNREACHABLE;
             }
             else { m.link(b0, arm_blk); }   // trailing catch-all: unreachable
             // A previous chain guard falls through to this arm on false.
@@ -3450,18 +3940,27 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         usz amark = m.env_mark();
         // Bind pattern variables against the SCRUTINEE VALUE, never fresh
         // unbound parameters: an ident arm aliases it, a tuple arm destructures
-        // it via projections. (Other pattern shapes keep the legacy binding
-        // until they get properly typed destructuring.)
-        if (is_bind || is_tuple)   { m.bind_let_pattern(pat, sval); }
-        else if (or_ident != null) { m.bind_let_pattern(or_ident, sval); }
-        else                       { m.bind_pattern(null, pat); }
+        // it via projections, a union-variant arm extracts its payload slot.
+        // (Other pattern shapes keep the legacy binding until they get
+        // properly typed destructuring.)
+        if (is_bind || is_tuple || is_variant_arm) { m.bind_let_pattern(pat, sval); }
+        else if (or_ident != null)               { m.bind_let_pattern(or_ident, sval); }
+        else                                     { m.bind_pattern(null, pat); }
 
         // Guarded arm: evaluate the guard in its own dispatch block with the
         // pattern bindings live; true → body, false → continue matching.
         if (guard_blk >= 0)
         {
             m.cur = guard_blk;
-            IrVal* gval = m.lower_expr(guard.child_count >= 1 ? guard.children[0] : null);
+            IrVal* gval = guard != null
+                ? m.lower_expr(guard.child_count >= 1 ? guard.children[0] : null)
+                : null;
+            if (is_variant_arm)
+            {
+                // The switch proved nothing: run the variant tag test here
+                // and AND any user guard into it.
+                gval = m.and_cond(m.single_test(pat, sval), gval, pat);
+            }
             if (or_tested_chain)
             {
                 // Reached via the default chain: the switch proved nothing
@@ -3533,8 +4032,8 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
 
     // An open guard chain falls through to the trap when exhausted
     // (non-exhaustive match on values no arm claimed).
-    if (pending_false >= 0) { m.link(pending_false, default_blk); pending_false = -1; }
-    for (usz q = 0; q < n_lit_pend; q++) { m.link(lit_pend[q], default_blk); }
+    if (pending_false >= 0) { m.link(pending_false, trap_blk); pending_false = -1; }
+    for (usz q = 0; q < n_lit_pend; q++) { m.link(lit_pend[q], trap_blk); }
     n_lit_pend = 0;
 
     // A match whose arms recorded NO switch cases (pure irrefutable arms —
