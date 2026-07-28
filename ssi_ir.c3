@@ -604,6 +604,62 @@ fn void SsiModule.env_push(SsiModule* m, Node* binder, IrVal* val)
     m.env_count++;
 }
 
+// Inline-evaluate a DECL_CONST / DECL_STATIC read: the bound env value wins
+// when one exists (env_lookup is keyed by binder pattern while a use resolves
+// to the DECL node, so re-lookup via the decl's pattern child), otherwise the
+// literal initializer is materialized, otherwise the whole initializer
+// expression is lowered. Shared by the ident fallback (top-level constants)
+// and the module-namespace FIELD path (`math::pi`). Null when nothing was
+// found — callers then keep their generic fallback.
+fn IrVal* SsiModule.lower_const_static(SsiModule* m, Node* decl_c)
+{
+    if (decl_c == null) return null;
+    if (decl_c.child_count >= 1 && decl_c.children[0] != null)
+    {
+        IrVal* cur = m.env_lookup(decl_c.children[0]);
+        if (cur != null) return cur;
+    }
+    // Inline-evaluate integer/bool/null constant from AST initializer.
+    // children[0] = pattern binder (skip), children[1..] = type/init.
+    // Walk from child 1 onward to find the init expression (skip type annotations).
+    for (usz ci = 1; ci < decl_c.child_count; ci++)
+    {
+        Node* cc = decl_c.children[ci];
+        if (cc == null || ssi::is_type_or_row(cc)) continue;
+        // Integer literal
+        if (cc.kind == Nk.NODE_LIT_INT)
+        {
+            IrVal* cv = m.new_val(IrOp.IR_CONST_INT, cc);
+            if (cv != null) { cv.ival = cc.p.lit_int.int_val; m.emit(cv); }
+            return cv;
+        }
+        // Bool literal
+        if (cc.kind == Nk.NODE_LIT_BOOL)
+        {
+            IrVal* cv = m.new_val(IrOp.IR_CONST_BOOL, cc);
+            if (cv != null) { cv.bval = cc.p.lit_bool.bool_val; m.emit(cv); }
+            return cv;
+        }
+        // Null literal
+        if (cc.kind == Nk.NODE_LIT_NULL)
+        {
+            IrVal* cv = m.new_val(IrOp.IR_CONST_NULL, cc);
+            if (cv != null) { m.emit(cv); }
+            return cv;
+        }
+        // Float literal
+        if (cc.kind == Nk.NODE_LIT_FLOAT)
+        {
+            IrVal* cv = m.new_val(IrOp.IR_CONST_FLOAT, cc);
+            if (cv != null) { cv.fval = cc.p.lit_float.f64_val; m.emit(cv); }
+            return cv;
+        }
+        // For other const initializers, lower the whole expression.
+        return m.lower_expr(cc);
+    }
+    return null;
+}
+
 // ── Address-taken locals ─────────────────────────────────────────────────────
 // A local whose address is observed (`&x`) cannot live purely in SSA values:
 // every mutation through that pointer must be visible to all observers, so the
@@ -2426,58 +2482,13 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                     // non-literal init has no constant answer here.
                 }
 
-                // DECL_CONST / DECL_STATIC with an integer/bool initializer:
-                // env_lookup uses the PatIdent as key but ident.resolved is the DECL node.
-                // If that lookup missed, try looking up via the decl's pattern child.
+                // DECL_CONST / DECL_STATIC with an inline-evaluable
+                // initializer: shared with the module-namespace FIELD path.
                 if (n.resolved.kind == Nk.NODE_DECL_CONST
                     || n.resolved.kind == Nk.NODE_DECL_STATIC)
                 {
-                    Node* decl_c = n.resolved;
-                    // Try pattern child (children[0]) as lookup key
-                    if (decl_c.child_count >= 1 && decl_c.children[0] != null)
-                    {
-                        cur = m.env_lookup(decl_c.children[0]);
-                        if (cur != null) return cur;
-                    }
-                    // Inline-evaluate integer/bool/null constant from AST initializer.
-                    // children[0] = pattern binder (skip), children[1..] = type/init.
-                    // Walk from child 1 onward to find the init expression (skip type annotations).
-                    for (usz ci = 1; ci < decl_c.child_count; ci++)
-                    {
-                        Node* cc = decl_c.children[ci];
-                        if (cc == null || ssi::is_type_or_row(cc)) continue;
-                        // Integer literal
-                        if (cc.kind == Nk.NODE_LIT_INT)
-                        {
-                            IrVal* cv = m.new_val(IrOp.IR_CONST_INT, cc);
-                            if (cv != null) { cv.ival = cc.p.lit_int.int_val; m.emit(cv); }
-                            return cv;
-                        }
-                        // Bool literal
-                        if (cc.kind == Nk.NODE_LIT_BOOL)
-                        {
-                            IrVal* cv = m.new_val(IrOp.IR_CONST_BOOL, cc);
-                            if (cv != null) { cv.bval = cc.p.lit_bool.bool_val; m.emit(cv); }
-                            return cv;
-                        }
-                        // Null literal
-                        if (cc.kind == Nk.NODE_LIT_NULL)
-                        {
-                            IrVal* cv = m.new_val(IrOp.IR_CONST_NULL, cc);
-                            if (cv != null) { m.emit(cv); }
-                            return cv;
-                        }
-                        // Float literal
-                        if (cc.kind == Nk.NODE_LIT_FLOAT)
-                        {
-                            IrVal* cv = m.new_val(IrOp.IR_CONST_FLOAT, cc);
-                            if (cv != null) { cv.fval = cc.p.lit_float.f64_val; m.emit(cv); }
-                            return cv;
-                        }
-                        // For other const initializers, lower the whole expression.
-                        IrVal* cval = m.lower_expr(cc);
-                        return cval;
-                    }
+                    IrVal* csv = m.lower_const_static(n.resolved);
+                    if (csv != null) return csv;
                 }
             }
             // Unresolved (global / fn ref): an opaque named value. Emit it so it
@@ -2685,6 +2696,42 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
             }
 
         case Nk.NODE_EXPR_FIELD:
+            // Module namespace access: `math::f` / `alias::f`. The base names
+            // a module (direct decl or import alias) and the member ident's
+            // .resolved is stamped at the declaration INSIDE the module — this
+            // node is a namespaced NAME, not a data projection. A module has
+            // no runtime value, so the old IR_FIELD lowering projected from a
+            // fabricated null base and a call became an indirect call through
+            // inttoptr(0) (garbage result, or SIGTRAP once the optimizer sees
+            // the UB). Emit the member exactly like a top-level use of the
+            // same declaration: fn → direct reference (IR_UNKNOWN with the
+            // DECL_FN binder, which codegen turns into @pride_name with proper
+            // parameter marshalling), const/static → inline evaluation.
+            {
+                Node* fbase = n.child_count >= 1 ? n.children[0] : null;
+                Node* fmem  = n.child_count >= 2 ? n.children[1] : null;
+                Node* fbtgt = fbase != null ? fbase.resolved : null;
+                bool base_is_ns = fbtgt != null
+                    && (fbtgt.kind == Nk.NODE_DECL_MOD
+                        || fbtgt.kind == Nk.NODE_DECL_USE
+                        || fbtgt.kind == Nk.NODE_DECL_IMPORT);
+                if (base_is_ns && fmem != null && fmem.resolved != null)
+                {
+                    Node* md = fmem.resolved;
+                    if (md.kind == Nk.NODE_DECL_FN)
+                    {
+                        IrVal* fref = m.new_val(IrOp.IR_UNKNOWN, n);
+                        if (fref != null) { fref.binder = md; m.emit(fref); }
+                        return fref;
+                    }
+                    if (md.kind == Nk.NODE_DECL_CONST
+                        || md.kind == Nk.NODE_DECL_STATIC)
+                    {
+                        IrVal* csv = m.lower_const_static(md);
+                        if (csv != null) return csv;
+                    }
+                }
+            }
             IrVal* base = m.lower_expr(n.child_count >= 1 ? n.children[0] : null);
             IrVal* v = m.new_val(IrOp.IR_FIELD, n);
             if (v != null) { v.add_arg(base, -1); m.emit(v); }
