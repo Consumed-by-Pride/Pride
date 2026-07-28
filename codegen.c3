@@ -4181,6 +4181,58 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 // Two patterns:
                 //   A. let (ok, v) = f() — IR_INDEX with 1 arg, field idx in v.ival
                 //   B. arr[expr] with struct base — IR_INDEX with 2 args, base is struct
+                //
+                // String indexing (v.md §10.2: `s[i]` is the byte at offset
+                // i, u8-typed by synth_index). A Str-typed base must NOT take
+                // the tuple-extractvalue path — extractvalue of a byte-global
+                // is invalid IR, and "field 1" of the { ptr, len } record is
+                // the LENGTH, not element i. Load the byte through the data
+                // pointer instead.
+                bool base_is_str = false;
+                if (base != null && base.op == ssi_ir::IrOp.IR_CONST_STR)
+                { base_is_str = true; }
+                else if (v.src != null && v.src.child_count >= 1 && v.src.children[0] != null)
+                {
+                    Node* san = v.src.children[0].type_annotation;
+                    if (san != null && san.kind == Nk.NODE_TYPE_PRIMITIVE
+                        && san.p.ident.name_len == 3
+                        && san.p.ident.name_ptr[0] == 'S'
+                        && san.p.ident.name_ptr[1] == 't'
+                        && san.p.ident.name_ptr[2] == 'r')
+                    { base_is_str = true; }
+                }
+                if (base_is_str)
+                {
+                    // Data pointer: the literal's byte global directly, else
+                    // field 0 of the fat record value.
+                    if (base != null && base.op == ssi_ir::IrOp.IR_CONST_STR)
+                    {
+                        cg.out.writes("  %gep.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = getelementptr inbounds i8, ptr @.str.");
+                        cg.out.writei(base.id);
+                    }
+                    else
+                    {
+                        char* srt = (tm != null) ? tm.get(base.id) : null;
+                        if (srt == null) srt = resolve_ty(tm, base);
+                        if (srt == null || srt[0] != '{') srt = (char*)"{ ptr, i64 }";
+                        cg.out.writes("  %str.ptr.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = extractvalue "); cg.out.writes(srt);
+                        cg.out.writes(" ");
+                        if (base != null) { cg.emit_vref(base); } else { cg.out.writes("undef"); }
+                        cg.out.writes(", 0\n");
+                        cg.out.writes("  %gep.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = getelementptr inbounds i8, ptr %str.ptr.v");
+                        cg.out.writei(v.id);
+                    }
+                    cg.out.writes(", i64 ");
+                    cg.emit_vref(index);
+                    cg.out.writes("\n");
+                    cg.out.writes("  %v"); cg.out.writei(v.id);
+                    cg.out.writes(" = load i8, ptr %gep.v"); cg.out.writei(v.id);
+                    cg.out.writes("\n");
+                    return;
+                }
                 if (base != null)
                 {
                     char* base_struct_ty = (tm != null) ? tm.get(base.id) : null;

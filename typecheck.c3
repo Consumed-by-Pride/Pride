@@ -1700,6 +1700,12 @@ fn Node* TypeChecker.synth_index(TypeChecker* self, Node* e)
             // tensor index drops one rank; for simplicity yield the element type
             return bt.child_count >= 1 ? bt.children[0] : null;
         default:
+            // A Str is indexable: `s[i]` is the byte at offset i —
+            // v.md §10.2 writes `IO.write_byte(s[i])`, and write_byte takes
+            // u8, so the element type is u8. Without this arm a string base
+            // fell to "indexing a non-indexable value" and downstream codegen
+            // coerced whatever the tuple path produced.
+            if (type_prim(bt) == Prim.PRIM_STR) return self.mk_prim(Prim.PRIM_U8);
             // ptr (untyped) indexes to unknown; anything else is an error.
             if (type_prim(bt) == Prim.PRIM_PTR) return null;
             self.soft("indexing a non-indexable value (expected pointer/array/slice)", e.line, e.col);
