@@ -919,6 +919,18 @@ fn Node* Parser.parse_fn(Parser* self)
         s.push(self.parse_effect_row());
     }
 
+    // Common user error: `fn f : T -> U = | p -> body`. Pride has NO `=`
+    // between the signature and the clauses (v.md §6.1) — be loud about it
+    // instead of letting the `=` cascade into top-level Invalid-node garbage
+    // that previously compiled through with only soft warnings and emitted
+    // `ret <ty> undef`. Consume the `=` and parse the clauses as usual so
+    // this stays a single, precise diagnostic.
+    if (self.check(Tt.TOKEN_EQ))
+    {
+        self.error("unexpected '=' after function signature (clauses follow the signature directly: `| pattern -> body`)");
+        self.advance();   // consume '='; clauses still parse → single clean diagnostic
+    }
+
     // The function body region (where clause, attributes, and clauses) usually
     // sits under a single INDENT. We open it here once and close it once, so
     // the where/attr/clause sub-parsers all work at the current level without
