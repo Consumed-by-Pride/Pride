@@ -1,0 +1,18 @@
+-- Test: bitwise operations
+fn bits_set : (i64, i64) -> i64
+  | (val, mask) -> val | mask
+
+fn bits_clear : (i64, i64) -> i64
+  | (val, mask) -> val & ~mask
+
+fn bits_toggle : (i64, i64) -> i64
+  | (val, mask) -> val xor mask
+
+fn bits_count : i64 -> i64
+  | n ->
+    let mut count : i64 = 0i64
+    let mut x : i64 = n
+    while x != 0i64
+      count = count + (x & 1i64)
+      x = x >> 1i64
+    count

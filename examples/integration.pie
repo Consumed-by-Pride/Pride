@@ -1,0 +1,50 @@
+-- Master integration: exercises every frontend feature, all CORRECT.
+-- Expected: 0 parse, 0 resolve, 0 type, 0 effect errors/warnings.
+
+type Num   = i32 ∪ i64
+type Vec3  = struct
+  x : f32
+  y : f32
+  z : f32
+
+effect IO
+  put : u8 -> ()
+
+-- generic + constraint + clause matching + guards
+fn clamp<T : Num> : (T, T, T) -> T
+  | (lo, hi, v) ->
+      if v < lo
+        lo
+      else if v > hi
+        hi
+      else
+        v
+
+-- field access + auto-deref + mutation
+fn translate : (*Vec3, f32) -> ()
+  | (p, d) ->
+      let mut sum : f32 = p.x
+      sum = sum + d
+
+-- effect declared + performed
+fn emit : u8 -> () ! [IO]
+  | b -> IO.put(b)
+
+-- tensor matmul with checked shapes
+fn transform : (Tensor<f32; 2, 2>, Tensor<f32; 2>) -> Tensor<f32; 2>
+  | (m, v) -> m @ v
+
+-- exhaustive bool match + recursion
+fn parity : i32 -> bool
+  | 0 -> true
+  | n -> not_parity(n - 1)
+
+fn not_parity : i32 -> bool
+  | 0 -> false
+  | n -> parity(n - 1)
+
+-- handler discharges IO
+fn run : () -> ()
+  | () ->
+      handle emit(65)
+        | IO.put _byte k -> k ()

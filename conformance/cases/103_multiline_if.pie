@@ -1,0 +1,9 @@
+-- Test: complex if-else-if chain
+fn classify_int : i64 -> i64
+  | n ->
+    if n < 0i64 then 0i64 - 1i64
+    else if n == 0i64 then 0i64
+    else if n < 10i64 then 1i64
+    else if n < 100i64 then 2i64
+    else if n < 1000i64 then 3i64
+    else 4i64

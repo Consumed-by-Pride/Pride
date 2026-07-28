@@ -1,0 +1,587 @@
+mod os.linux.io_uring
+
+use os.linux
+use os.linux.structs
+
+-- io_uring interface — Linux kernel asynchronous I/O.
+-- io_uring is Linux's asynchronous I/O interface (kernel 5.1+).
+-- Ring-based: submissions go in the SQ (submission queue),
+-- completions come out of the CQ (completion queue).
+-- Zero-copy, zero-syscall for polled I/O, SQPOLL mode.
+
+-- §1  SQE (Submission Queue Entry) — 64 bytes
+-- Full field layout from include/uapi/linux/io_uring.h
+
+struct IoUringSqe
+  opcode        : u8    -- IORING_OP_*
+  flags         : u8    -- IOSQE_* flags
+  ioprio        : u16   -- I/O priority
+  fd            : i32   -- file descriptor or registered fd
+  off_or_addr2  : u64   -- offset or second address
+  addr_or_splice_off_in : u64  -- pointer to buffer or splice offset
+  len           : u32   -- buffer size or number of iovecs
+  op_flags      : u32   -- per-opcode flags union (rw_flags, fsync_flags, etc.)
+  user_data     : u64   -- application-defined: returned in CQE
+  buf_index_or_buf_group : u16  -- index into registered buffers or buffer group
+  personality   : u16   -- registered credentials to use
+  splice_fd_in_or_file_index : i32
+  addr3         : u64
+  __pad2        : u64
+
+-- IOSQE flags (sqe.flags)
+const IOSQE_FIXED_FILE       : u8 = 1u8 << 0u8
+const IOSQE_IO_DRAIN         : u8 = 1u8 << 1u8
+const IOSQE_IO_LINK          : u8 = 1u8 << 2u8
+const IOSQE_IO_HARDLINK      : u8 = 1u8 << 3u8
+const IOSQE_ASYNC            : u8 = 1u8 << 4u8
+const IOSQE_BUFFER_SELECT    : u8 = 1u8 << 5u8
+const IOSQE_CQE_SKIP_SUCCESS : u8 = 1u8 << 6u8
+
+-- §2  CQE (Completion Queue Entry) — 16 bytes
+
+struct IoUringCqe
+  user_data : u64   -- copied from SQE
+  res       : i32   -- result: >=0 success, <0 errno negated
+  flags     : u32   -- IORING_CQE_F_* flags
+
+-- CQE flags
+const IORING_CQE_F_BUFFER     : u32 = 1u32 << 0u32
+const IORING_CQE_F_MORE       : u32 = 1u32 << 1u32
+const IORING_CQE_F_SOCK_NONEMPTY : u32 = 1u32 << 2u32
+const IORING_CQE_F_NOTIF      : u32 = 1u32 << 3u32
+
+fn cqe_buffer_id : *IoUringCqe -> u32
+  | cqe -> (cqe.flags >> 16u32) & 0xFFFFu32
+
+-- §3  PARAMS (passed to io_uring_setup)
+
+struct IoUringParams
+  sq_entries    : u32
+  cq_entries    : u32
+  flags         : u32   -- IORING_SETUP_*
+  sq_thread_cpu : u32
+  sq_thread_idle : u32
+  features      : u32   -- IORING_FEAT_*
+  wq_fd         : u32
+  resv0         : u32; resv1 : u32; resv2 : u32
+  sq_off        : IoSqringOffsets
+  cq_off        : IoCqringOffsets
+
+-- Offsets within the ring mmap (sq_off)
+struct IoSqringOffsets
+  head        : u32
+  tail        : u32
+  ring_mask   : u32
+  ring_entries : u32
+  flags       : u32
+  dropped     : u32
+  array       : u32
+  resv1       : u32
+  user_addr   : u64
+
+-- Offsets within the ring mmap (cq_off)
+struct IoCqringOffsets
+  head         : u32
+  tail         : u32
+  ring_mask    : u32
+  ring_entries : u32
+  overflow     : u32
+  cqes         : u32
+  flags        : u32
+  resv1        : u32
+  user_addr    : u64
+
+-- §4  RING MANAGEMENT STRUCT
+-- The userspace ring management object.
+-- Encapsulates the mmap'd SQ/CQ rings and SQE array.
+
+struct IoUring
+  -- fd from io_uring_setup
+  fd             : i64
+  -- mmap'd ring memory
+  sq_ring        : ptr   -- mmap of IORING_OFF_SQ_RING
+  cq_ring        : ptr   -- mmap of IORING_OFF_CQ_RING
+  sqe_array      : ptr   -- mmap of IORING_OFF_SQES (*IoUringSqe[])
+  sq_ring_size   : i64
+  cq_ring_size   : i64
+  sqe_array_size : i64
+  -- cached offsets
+  sq_head_off    : i64
+  sq_tail_off    : i64
+  sq_mask_off    : i64
+  sq_entries_off : i64
+  sq_flags_off   : i64
+  sq_dropped_off : i64
+  sq_array_off   : i64
+  cq_head_off    : i64
+  cq_tail_off    : i64
+  cq_mask_off    : i64
+  cq_entries_off : i64
+  cq_overflow_off : i64
+  cq_cqes_off    : i64
+  -- params copy
+  params         : IoUringParams
+  -- submission state
+  sq_sqe_head    : u32   -- next SQE to fill (local)
+  sq_sqe_tail    : u32   -- last SQE submitted to kernel tail
+
+-- §5  MMAP OFFSETS (for io_uring ring memory regions)
+const IORING_OFF_SQ_RING : i64 = 0i64
+const IORING_OFF_CQ_RING : i64 = 134217728i64   -- 0x8000000
+const IORING_OFF_SQES    : i64 = 268435456i64   -- 0x10000000
+const IORING_OFF_PBUF_RING : i64 = -2147483648i64 -- 0x80000000 (negative on 64-bit)
+
+-- §6  INIT / DEINIT
+
+fn io_uring_init : (i64, *IoUring) -> i64
+  | (entries, ring) ->
+    let mut params = IoUringParams {
+      sq_entries: 0u32, cq_entries: 0u32, flags: 0u32,
+      sq_thread_cpu: 0u32, sq_thread_idle: 0u32, features: 0u32,
+      wq_fd: 0u32, resv0: 0u32, resv1: 0u32, resv2: 0u32,
+      sq_off: IoSqringOffsets { head:0u32, tail:0u32, ring_mask:0u32, ring_entries:0u32,
+                                 flags:0u32, dropped:0u32, array:0u32, resv1:0u32, user_addr:0u64 },
+      cq_off: IoCqringOffsets { head:0u32, tail:0u32, ring_mask:0u32, ring_entries:0u32,
+                                 overflow:0u32, cqes:0u32, flags:0u32, resv1:0u32, user_addr:0u64 }
+    }
+    let fd = os.linux.io_uring_setup(entries, &params as ptr)
+    if fd < 0i64 then fd
+    else
+      ring.fd = fd
+      ring.params = params
+      -- mmap the SQ ring
+      let sq_sz = params.sq_off.array as i64 + params.sq_entries as i64 * 4i64
+      ring.sq_ring = os.linux.mmap(0 as ptr, sq_sz,
+        os.linux.PROT_READ | os.linux.PROT_WRITE,
+        os.linux.MAP_SHARED | os.linux.MAP_POPULATE,
+        fd, IORING_OFF_SQ_RING)
+      if ring.sq_ring as i64 == os.linux.MAP_FAILED then os.linux.close(fd); -(os.linux.ENOMEM)
+      else
+        ring.sq_ring_size = sq_sz
+        -- cache offsets
+        ring.sq_head_off    = params.sq_off.head as i64
+        ring.sq_tail_off    = params.sq_off.tail as i64
+        ring.sq_mask_off    = params.sq_off.ring_mask as i64
+        ring.sq_entries_off = params.sq_off.ring_entries as i64
+        ring.sq_flags_off   = params.sq_off.flags as i64
+        ring.sq_dropped_off = params.sq_off.dropped as i64
+        ring.sq_array_off   = params.sq_off.array as i64
+        -- mmap the CQ ring (may be same as SQ ring if IORING_FEAT_SINGLE_MMAP)
+        let cq_sz = params.cq_off.cqes as i64 + params.cq_entries as i64 * 16i64
+        if params.features & os.linux.IORING_FEAT_SINGLE_MMAP != 0u32
+          ring.cq_ring = ring.sq_ring
+          ring.cq_ring_size = 0i64
+        else
+          ring.cq_ring = os.linux.mmap(0 as ptr, cq_sz,
+            os.linux.PROT_READ | os.linux.PROT_WRITE,
+            os.linux.MAP_SHARED | os.linux.MAP_POPULATE,
+            fd, IORING_OFF_CQ_RING)
+          ring.cq_ring_size = cq_sz
+        ring.cq_head_off     = params.cq_off.head as i64
+        ring.cq_tail_off     = params.cq_off.tail as i64
+        ring.cq_mask_off     = params.cq_off.ring_mask as i64
+        ring.cq_entries_off  = params.cq_off.ring_entries as i64
+        ring.cq_overflow_off = params.cq_off.overflow as i64
+        ring.cq_cqes_off     = params.cq_off.cqes as i64
+        -- mmap SQE array
+        let sqe_sz = params.sq_entries as i64 * 64i64
+        ring.sqe_array = os.linux.mmap(0 as ptr, sqe_sz,
+          os.linux.PROT_READ | os.linux.PROT_WRITE,
+          os.linux.MAP_SHARED | os.linux.MAP_POPULATE,
+          fd, IORING_OFF_SQES)
+        ring.sqe_array_size = sqe_sz
+        ring.sq_sqe_head = 0u32; ring.sq_sqe_tail = 0u32
+        0i64
+
+fn io_uring_deinit : *IoUring -> ()
+  | ring ->
+    if ring.sq_ring as i64 != 0i64 && ring.sq_ring as i64 != os.linux.MAP_FAILED
+      os.linux.munmap(ring.sq_ring, ring.sq_ring_size)
+    if ring.cq_ring as i64 != 0i64 && ring.cq_ring != ring.sq_ring
+       && ring.cq_ring as i64 != os.linux.MAP_FAILED
+      os.linux.munmap(ring.cq_ring, ring.cq_ring_size)
+    if ring.sqe_array as i64 != 0i64 && ring.sqe_array as i64 != os.linux.MAP_FAILED
+      os.linux.munmap(ring.sqe_array, ring.sqe_array_size)
+    if ring.fd >= 0i64 then os.linux.close(ring.fd)
+    ring.fd = -1i64
+
+-- §7  SQ ACCESSORS
+
+fn sq_head : *IoUring -> u32
+  | r -> (r.sq_ring as i64 + r.sq_head_off) as *u32 |> (p -> p[0u32])
+  -- Note: uses acquire load in real code; we approximate
+
+fn sq_tail : *IoUring -> *u32
+  | r -> (r.sq_ring as i64 + r.sq_tail_off) as *u32
+
+fn sq_mask : *IoUring -> u32
+  | r -> ((r.sq_ring as i64 + r.sq_mask_off) as *u32)[0u32]
+
+fn sq_flags : *IoUring -> u32
+  | r -> ((r.sq_ring as i64 + r.sq_flags_off) as *u32)[0u32]
+
+fn sq_dropped : *IoUring -> u32
+  | r -> ((r.sq_ring as i64 + r.sq_dropped_off) as *u32)[0u32]
+
+fn sq_array : *IoUring -> *u32
+  | r -> (r.sq_ring as i64 + r.sq_array_off) as *u32
+
+-- §8  CQ ACCESSORS
+
+fn cq_head : *IoUring -> *u32
+  | r -> (r.cq_ring as i64 + r.cq_head_off) as *u32
+
+fn cq_tail : *IoUring -> u32
+  | r -> ((r.cq_ring as i64 + r.cq_tail_off) as *u32)[0u32]
+
+fn cq_mask : *IoUring -> u32
+  | r -> ((r.cq_ring as i64 + r.cq_mask_off) as *u32)[0u32]
+
+fn cq_overflow : *IoUring -> u32
+  | r -> ((r.cq_ring as i64 + r.cq_overflow_off) as *u32)[0u32]
+
+fn cq_cqes : *IoUring -> *IoUringCqe
+  | r -> (r.cq_ring as i64 + r.cq_cqes_off) as *IoUringCqe
+
+-- §9  SUBMISSION
+
+fn io_uring_get_sqe : *IoUring -> *IoUringSqe
+  | ring ->
+    let mask  = sq_mask(ring)
+    let tail  = sq_tail(ring)[0u32]
+    let head  = ring.sq_sqe_head
+    let next  = head +% 1u32
+    if next -% tail > ring.params.sq_entries then 0 as *IoUringSqe   -- ring full
+    else
+      let sqe_idx = head & mask
+      let sqe = (ring.sqe_array as i64 + sqe_idx as i64 * 64i64) as *IoUringSqe
+      -- zero the SQE
+      os.linux.memset(sqe as ptr, 0i32, 64u64)
+      ring.sq_sqe_head = next
+      sqe
+
+fn io_uring_submit : *IoUring -> i64
+  | ring ->
+    let mask = sq_mask(ring)
+    let ktail_ptr = sq_tail(ring)
+    let mut ktail = ktail_ptr[0u32]
+    let arr = sq_array(ring)
+    let mut submitted : u32 = 0u32
+    while submitted < ring.sq_sqe_head -% ktail
+      let sqe_idx = (ktail + submitted) & mask
+      arr[ktail & mask] = sqe_idx
+      ktail = ktail +% 1u32; submitted = submitted +% 1u32
+    if submitted > 0u32
+      -- write barrier equivalent: just write
+      ktail_ptr[0u32] = ktail
+      os.linux.io_uring_enter(ring.fd, submitted as i64, 0i64, 0i64, 0 as ptr, 0i64)
+    else 0i64
+
+fn io_uring_submit_and_wait : (*IoUring, i64) -> i64
+  | (ring, wait_nr) ->
+    let mask = sq_mask(ring)
+    let ktail_ptr = sq_tail(ring)
+    let mut ktail = ktail_ptr[0u32]
+    let arr = sq_array(ring)
+    let mut submitted : u32 = 0u32
+    while submitted < ring.sq_sqe_head -% ktail
+      arr[(ktail + submitted) & mask] = (ktail + submitted) & mask
+      submitted = submitted +% 1u32
+    ktail_ptr[0u32] = ktail +% submitted
+    let flags = if wait_nr > 0i64 then os.linux.IORING_ENTER_GETEVENTS else 0i64
+    os.linux.io_uring_enter(ring.fd, submitted as i64, wait_nr, flags, 0 as ptr, 0i64)
+
+-- §10  COMPLETION
+
+fn io_uring_peek_cqe : *IoUring -> *IoUringCqe
+  | ring ->
+    let head = cq_head(ring)[0u32]
+    let tail = cq_tail(ring)
+    if head == tail then 0 as *IoUringCqe
+    else
+      let mask = cq_mask(ring)
+      (cq_cqes(ring) as i64 + (head & mask) as i64 * 16i64) as *IoUringCqe
+
+fn io_uring_cqe_seen : (*IoUring, *IoUringCqe) -> ()
+  | (ring, cqe) ->
+    if cqe as i64 != 0i64
+      let head_ptr = cq_head(ring)
+      head_ptr[0u32] = head_ptr[0u32] +% 1u32
+
+fn io_uring_wait_cqe : *IoUring -> *IoUringCqe
+  | ring ->
+    let cqe = io_uring_peek_cqe(ring)
+    if cqe as i64 != 0i64 then cqe
+    else
+      os.linux.io_uring_enter(ring.fd, 0i64, 1i64, os.linux.IORING_ENTER_GETEVENTS, 0 as ptr, 0i64)
+      io_uring_peek_cqe(ring)
+
+-- §11  SQE PREP HELPERS (fill common SQE fields)
+
+fn io_uring_prep_read : (*IoUringSqe, i32, ptr, u32, u64) -> ()
+  | (sqe, fd, buf, nbytes, offset) ->
+    sqe.opcode = os.linux.IORING_OP_READ as u8
+    sqe.fd     = fd
+    sqe.addr_or_splice_off_in = buf as u64
+    sqe.len    = nbytes
+    sqe.off_or_addr2 = offset
+
+fn io_uring_prep_write : (*IoUringSqe, i32, ptr, u32, u64) -> ()
+  | (sqe, fd, buf, nbytes, offset) ->
+    sqe.opcode = os.linux.IORING_OP_WRITE as u8
+    sqe.fd     = fd
+    sqe.addr_or_splice_off_in = buf as u64
+    sqe.len    = nbytes
+    sqe.off_or_addr2 = offset
+
+fn io_uring_prep_readv : (*IoUringSqe, i32, ptr, u32, u64) -> ()
+  | (sqe, fd, iov, iovcnt, offset) ->
+    sqe.opcode = os.linux.IORING_OP_READV as u8
+    sqe.fd     = fd
+    sqe.addr_or_splice_off_in = iov as u64
+    sqe.len    = iovcnt
+    sqe.off_or_addr2 = offset
+
+fn io_uring_prep_writev : (*IoUringSqe, i32, ptr, u32, u64) -> ()
+  | (sqe, fd, iov, iovcnt, offset) ->
+    sqe.opcode = os.linux.IORING_OP_WRITEV as u8
+    sqe.fd     = fd
+    sqe.addr_or_splice_off_in = iov as u64
+    sqe.len    = iovcnt
+    sqe.off_or_addr2 = offset
+
+fn io_uring_prep_recv : (*IoUringSqe, i32, ptr, u32, i32) -> ()
+  | (sqe, fd, buf, len, flags) ->
+    sqe.opcode   = os.linux.IORING_OP_RECV as u8
+    sqe.fd       = fd
+    sqe.addr_or_splice_off_in = buf as u64
+    sqe.len      = len
+    sqe.op_flags = flags as u32
+
+fn io_uring_prep_send : (*IoUringSqe, i32, ptr, u32, i32) -> ()
+  | (sqe, fd, buf, len, flags) ->
+    sqe.opcode   = os.linux.IORING_OP_SEND as u8
+    sqe.fd       = fd
+    sqe.addr_or_splice_off_in = buf as u64
+    sqe.len      = len
+    sqe.op_flags = flags as u32
+
+fn io_uring_prep_accept : (*IoUringSqe, i32, ptr, ptr, i32) -> ()
+  | (sqe, fd, addr, addrlen, flags) ->
+    sqe.opcode   = os.linux.IORING_OP_ACCEPT as u8
+    sqe.fd       = fd
+    sqe.addr_or_splice_off_in = addr as u64
+    sqe.off_or_addr2 = addrlen as u64
+    sqe.op_flags = flags as u32
+
+fn io_uring_prep_connect : (*IoUringSqe, i32, ptr, u32) -> ()
+  | (sqe, fd, addr, addrlen) ->
+    sqe.opcode   = os.linux.IORING_OP_CONNECT as u8
+    sqe.fd       = fd
+    sqe.addr_or_splice_off_in = addr as u64
+    sqe.off_or_addr2 = addrlen as u64
+
+fn io_uring_prep_openat : (*IoUringSqe, i32, ptr, i32, u32) -> ()
+  | (sqe, dfd, path, flags, mode) ->
+    sqe.opcode   = os.linux.IORING_OP_OPENAT as u8
+    sqe.fd       = dfd
+    sqe.addr_or_splice_off_in = path as u64
+    sqe.op_flags = flags as u32
+    sqe.len      = mode
+
+fn io_uring_prep_close : (*IoUringSqe, i32) -> ()
+  | (sqe, fd) ->
+    sqe.opcode = os.linux.IORING_OP_CLOSE as u8
+    sqe.fd     = fd
+
+fn io_uring_prep_statx : (*IoUringSqe, i32, ptr, i32, u32, ptr) -> ()
+  | (sqe, dfd, path, flags, mask, statxbuf) ->
+    sqe.opcode   = os.linux.IORING_OP_STATX as u8
+    sqe.fd       = dfd
+    sqe.addr_or_splice_off_in = path as u64
+    sqe.op_flags = flags as u32
+    sqe.len      = mask
+    sqe.off_or_addr2 = statxbuf as u64
+
+fn io_uring_prep_timeout : (*IoUringSqe, ptr, u32, i32) -> ()
+  | (sqe, ts, count, flags) ->
+    sqe.opcode   = os.linux.IORING_OP_TIMEOUT as u8
+    sqe.fd       = -1i32
+    sqe.addr_or_splice_off_in = ts as u64
+    sqe.len      = 1u32
+    sqe.off_or_addr2 = count as u64
+    sqe.op_flags = flags as u32
+
+fn io_uring_prep_cancel : (*IoUringSqe, u64, i32) -> ()
+  | (sqe, user_data, flags) ->
+    sqe.opcode   = os.linux.IORING_OP_ASYNC_CANCEL as u8
+    sqe.fd       = -1i32
+    sqe.addr_or_splice_off_in = user_data
+    sqe.op_flags = flags as u32
+
+fn io_uring_prep_nop : *IoUringSqe -> ()
+  | sqe -> sqe.opcode = os.linux.IORING_OP_NOP as u8; sqe.fd = -1i32
+
+fn io_uring_prep_fsync : (*IoUringSqe, i32, u32) -> ()
+  | (sqe, fd, flags) ->
+    sqe.opcode   = os.linux.IORING_OP_FSYNC as u8
+    sqe.fd       = fd
+    sqe.op_flags = flags
+
+fn io_uring_prep_fallocate : (*IoUringSqe, i32, i32, i64, i64) -> ()
+  | (sqe, fd, mode, offset, len) ->
+    sqe.opcode   = os.linux.IORING_OP_FALLOCATE as u8
+    sqe.fd       = fd
+    sqe.op_flags = mode as u32
+    sqe.off_or_addr2 = offset as u64
+    sqe.addr_or_splice_off_in = len as u64
+
+fn io_uring_prep_unlinkat : (*IoUringSqe, i32, ptr, i32) -> ()
+  | (sqe, dfd, path, flags) ->
+    sqe.opcode   = os.linux.IORING_OP_UNLINKAT as u8
+    sqe.fd       = dfd
+    sqe.addr_or_splice_off_in = path as u64
+    sqe.op_flags = flags as u32
+
+fn io_uring_prep_renameat : (*IoUringSqe, i32, ptr, i32, ptr, i32) -> ()
+  | (sqe, old_dfd, old_path, new_dfd, new_path, flags) ->
+    sqe.opcode   = os.linux.IORING_OP_RENAMEAT as u8
+    sqe.fd       = old_dfd
+    sqe.addr_or_splice_off_in = old_path as u64
+    sqe.addr3    = new_path as u64
+    sqe.len      = new_dfd as u32
+    sqe.op_flags = flags as u32
+
+fn io_uring_prep_mkdirat : (*IoUringSqe, i32, ptr, u32) -> ()
+  | (sqe, dfd, path, mode) ->
+    sqe.opcode   = os.linux.IORING_OP_MKDIRAT as u8
+    sqe.fd       = dfd
+    sqe.addr_or_splice_off_in = path as u64
+    sqe.len      = mode
+
+fn io_uring_prep_socket : (*IoUringSqe, i32, i32, i32, u32) -> ()
+  | (sqe, domain, type_, protocol, flags) ->
+    sqe.opcode   = os.linux.IORING_OP_SOCKET as u8
+    sqe.fd       = domain
+    sqe.off_or_addr2 = type_ as u64
+    sqe.len      = protocol as u32
+    sqe.op_flags = flags
+
+fn io_uring_prep_shutdown : (*IoUringSqe, i32, i32) -> ()
+  | (sqe, fd, how) ->
+    sqe.opcode   = os.linux.IORING_OP_SHUTDOWN as u8
+    sqe.fd       = fd
+    sqe.len      = how as u32
+
+fn io_uring_prep_poll_add : (*IoUringSqe, i32, u32) -> ()
+  | (sqe, fd, events) ->
+    sqe.opcode   = os.linux.IORING_OP_POLL_ADD as u8
+    sqe.fd       = fd
+    sqe.op_flags = events
+
+fn io_uring_prep_poll_remove : (*IoUringSqe, u64) -> ()
+  | (sqe, user_data) ->
+    sqe.opcode   = os.linux.IORING_OP_POLL_REMOVE as u8
+    sqe.fd       = -1i32
+    sqe.addr_or_splice_off_in = user_data
+
+fn io_uring_prep_splice : (*IoUringSqe, i32, i64, i32, i64, u32, u32) -> ()
+  | (sqe, fd_in, off_in, fd_out, off_out, nbytes, flags) ->
+    sqe.opcode   = os.linux.IORING_OP_SPLICE as u8
+    sqe.fd       = fd_out
+    sqe.off_or_addr2 = off_out as u64
+    sqe.splice_fd_in_or_file_index = fd_in
+    sqe.addr_or_splice_off_in = off_in as u64
+    sqe.len      = nbytes
+    sqe.op_flags = flags
+
+fn io_uring_prep_provide_buffers : (*IoUringSqe, ptr, i32, i32, i32, i32) -> ()
+  | (sqe, addr, len, nr, bgid, bid) ->
+    sqe.opcode   = os.linux.IORING_OP_PROVIDE_BUFFERS as u8
+    sqe.fd       = nr
+    sqe.addr_or_splice_off_in = addr as u64
+    sqe.len      = len as u32
+    sqe.off_or_addr2 = bid as u64
+    sqe.buf_index_or_buf_group = bgid as u16
+
+fn io_uring_prep_remove_buffers : (*IoUringSqe, i32, i32) -> ()
+  | (sqe, nr, bgid) ->
+    sqe.opcode   = os.linux.IORING_OP_REMOVE_BUFFERS as u8
+    sqe.fd       = nr
+    sqe.buf_index_or_buf_group = bgid as u16
+
+fn io_uring_prep_msg_ring : (*IoUringSqe, i32, u32, u64, u32) -> ()
+  | (sqe, fd, len, data, flags) ->
+    sqe.opcode   = os.linux.IORING_OP_MSG_RING as u8
+    sqe.fd       = fd
+    sqe.len      = len
+    sqe.off_or_addr2 = data
+    sqe.op_flags = flags
+
+fn io_uring_prep_waitid : (*IoUringSqe, i32, i32, ptr, i32, i32) -> ()
+  | (sqe, idtype, id, infop, options, flags) ->
+    sqe.opcode   = os.linux.IORING_OP_WAITID as u8
+    sqe.fd       = idtype
+    sqe.addr_or_splice_off_in = id as u64
+    sqe.addr3    = infop as u64
+    sqe.len      = options as u32
+    sqe.op_flags = flags as u32
+
+-- §12  REGISTERED BUFFERS / FILES
+
+fn io_uring_register_buffers : (*IoUring, ptr, u32) -> i64
+  | (ring, iov, nr) ->
+    os.linux.io_uring_register(ring.fd, os.linux.IORING_REGISTER_BUFFERS, iov, nr as i64)
+
+fn io_uring_unregister_buffers : *IoUring -> i64
+  | ring ->
+    os.linux.io_uring_register(ring.fd, os.linux.IORING_UNREGISTER_BUFFERS, 0 as ptr, 0i64)
+
+fn io_uring_register_files : (*IoUring, ptr, u32) -> i64
+  | (ring, fds, nr) ->
+    os.linux.io_uring_register(ring.fd, os.linux.IORING_REGISTER_FILES, fds, nr as i64)
+
+fn io_uring_unregister_files : *IoUring -> i64
+  | ring ->
+    os.linux.io_uring_register(ring.fd, os.linux.IORING_UNREGISTER_FILES, 0 as ptr, 0i64)
+
+fn io_uring_register_eventfd : (*IoUring, i64) -> i64
+  | (ring, eventfd) ->
+    let fd_ptr : *i32 = os.linux.malloc(4i64) as *i32
+    fd_ptr[0i32] = eventfd as i32
+    let r = os.linux.io_uring_register(ring.fd, os.linux.IORING_REGISTER_EVENTFD, fd_ptr as ptr, 1i64)
+    os.linux.free(fd_ptr as ptr); r
+
+fn io_uring_unregister_eventfd : *IoUring -> i64
+  | ring ->
+    os.linux.io_uring_register(ring.fd, os.linux.IORING_UNREGISTER_EVENTFD, 0 as ptr, 0i64)
+
+-- §13  PROBE (query supported operations)
+
+struct IoUringProbeOp
+  op     : u8
+  resv   : u8
+  flags  : u16   -- IO_URING_OP_SUPPORTED = 1
+  resv2  : u32
+
+const IORING_OP_SUPPORTED : u16 = 1u16
+
+struct IoUringProbe
+  last_op : u8
+  ops_len : u8
+  resv    : u16
+  resv2   : u32
+  resv3   : u32
+  resv4   : u32
+  ops     : IoUringProbeOp   -- ops_len entries follow
+
+fn io_uring_register_probe : (*IoUring, *IoUringProbe, u32) -> i64
+  | (ring, probe, nr) ->
+    os.linux.io_uring_register(ring.fd, os.linux.IORING_REGISTER_PROBE, probe as ptr, nr as i64)
+
+fn io_uring_opcode_supported : (*IoUringProbe, u8) -> bool
+  | (probe, op) ->
+    if op > probe.last_op then false
+    else
+      let op_flags = ((probe as i64 + 16i64 + op as i64 * 8i64) as *IoUringProbeOp).flags
+      op_flags & IORING_OP_SUPPORTED != 0u16

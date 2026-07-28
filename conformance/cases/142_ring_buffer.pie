@@ -1,0 +1,27 @@
+-- EXPECT-CLEAN
+type RingBuf = struct
+  head  : i64
+  tail  : i64
+  cap   : i64
+  count : i64
+
+fn ring_empty : RingBuf -> bool
+  | rb -> rb.count == 0
+
+fn ring_is_full : RingBuf -> bool
+  | rb -> rb.count >= rb.cap
+
+fn ring_size : RingBuf -> i64
+  | rb -> rb.count
+
+fn ring_capacity : RingBuf -> i64
+  | rb -> rb.cap
+
+fn ring_head_idx : RingBuf -> i64
+  | rb -> rb.head
+
+fn ring_tail_idx : RingBuf -> i64
+  | rb -> rb.tail
+
+fn ring_advance : (i64, i64) -> i64
+  | (idx, cap) -> (idx + 1) % cap

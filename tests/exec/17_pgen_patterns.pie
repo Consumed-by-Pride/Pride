@@ -1,0 +1,55 @@
+-- EXPECT: 100\n0\n8\nno
+fn classify : i64 -> i64
+  | 0 -> 100
+  | 1 -> 1
+  | 2 -> 4
+  | n -> n * n
+fn clamped_square : i64 -> i64
+  | n ->
+      if n < 0 then 0
+      else if n > 100 then 10000
+      else n * n
+struct Pair
+  fst : i64
+  snd : i64
+fn pair_decide : Pair -> i64
+  | p ->
+      if p.fst == 0 then 0
+      else if p.snd == 0 then p.fst
+      else p.fst + p.snd
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      print_i64_nl(classify(0))
+      print_i64_nl(clamped_square(-5))
+      let p = Pair { fst: 4, snd: 4 }
+      print_i64_nl(pair_decide(p))
+      let q = Pair { fst: 0, snd: 99 }
+      if pair_decide(q) == 0
+        syscall(1, 1, "no\n" as i64, 3)
+      else
+        syscall(1, 1, "yes\n" as i64, 4)
+      syscall(231, 0)

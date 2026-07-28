@@ -1,0 +1,62 @@
+-- piecc.pie: A micro C compiler testing Pride's advanced features
+-- 1. Arena allocator and flat AST (using struct/arrays)
+-- 2. Semantic Subtyping (Unions & Intersections)
+-- 3. MSP (comptime / stage / quote / splice)
+-- 4. Rewrite Optimizer & Effects
+-- 5. x86_64 ELF Emitter
+
+-- Type declarations for Semantic Subtyping
+type IntType = i32 ∪ i64
+type ValidType = IntType ∩ IntType
+
+struct Token
+  kind : i64
+  val  : i64
+
+-- Algebraic Effects
+effect OptEffects
+  log_rewrite : i64 -> ()
+
+-- Term Rewriting dialect
+dialect IR
+  opcode add
+  opcode load
+  opcode store
+
+irdl
+  -- constant fold
+  IR.add [x : i64, 0] ↦ x
+
+rewrite
+  | IR.add(a, 0) ↦ a
+
+fn type_check : ValidType -> i64
+  | x -> x as i64
+
+fn opt_pass : i64 -> i64 ! [OptEffects, UB]
+  | 0 -> ub! "zero is not allowed here"
+  | n -> 
+      OptEffects.log_rewrite(n)
+      IR.add(n, 0)
+
+fn emit_elf : () -> () ! [IO, Alloc]
+  | () ->
+      let buf : *u8 = alloc [u8; 64]
+      -- Just writing a dummy header
+      buf[0] = 127u8
+      buf[1] = 69u8
+      buf[2] = 76u8
+      buf[3] = 70u8
+      syscall(1, 1, buf as i64, 4)
+      free buf
+
+fn main : () -> () ! [IO, Alloc, OptEffects, UB]
+  | () ->
+      let v : ValidType = 42i32
+      let t = type_check(v)
+      let opt_v = opt_pass(t)
+      -- MSP block
+      let comptime_val = stage 10 + 10
+      
+      if opt_v == 42
+        emit_elf()

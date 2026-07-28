@@ -1,0 +1,24 @@
+-- EXPECT-CLEAN
+fn vm_decode_op  : u32 -> u8  | instr -> ((instr >> 24u32) & 0xFFu32) as u8
+fn vm_decode_rd  : u32 -> u8  | instr -> ((instr >> 16u32) & 0xFFu32) as u8
+fn vm_decode_ra  : u32 -> u8  | instr -> ((instr >> 8u32)  & 0xFFu32) as u8
+fn vm_decode_rb  : u32 -> u8  | instr -> (instr & 0xFFu32) as u8
+
+fn vm_encode : (u8, u8, u8, u8) -> u32
+  | (op, rd, ra, rb) ->
+    ((op as u32) << 24u32) | ((rd as u32) << 16u32) | ((ra as u32) << 8u32) | (rb as u32)
+
+fn vm_execute_add : (*i64, u8, u8, u8) -> ()
+  | (regs, rd, ra, rb) ->
+    regs[rd as i64] = regs[ra as i64] + regs[rb as i64]
+
+fn vm_execute_sub : (*i64, u8, u8, u8) -> ()
+  | (regs, rd, ra, rb) ->
+    regs[rd as i64] = regs[ra as i64] - regs[rb as i64]
+
+fn vm_execute_mul : (*i64, u8, u8, u8) -> ()
+  | (regs, rd, ra, rb) ->
+    regs[rd as i64] = regs[ra as i64] * regs[rb as i64]
+
+fn vm_execute_loadi : (*i64, u8, i64) -> ()
+  | (regs, rd, imm) -> regs[rd as i64] = imm

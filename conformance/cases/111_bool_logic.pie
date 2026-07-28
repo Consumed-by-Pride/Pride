@@ -1,0 +1,9 @@
+-- Test: boolean operators
+fn all_true : (bool, bool, bool) -> bool
+  | (a, b, c) -> a && b && c
+
+fn any_true : (bool, bool, bool) -> bool
+  | (a, b, c) -> a || b || c
+
+fn none_true : (bool, bool, bool) -> bool
+  | (a, b, c) -> !a && !b && !c

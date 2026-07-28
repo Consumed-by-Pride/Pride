@@ -1,0 +1,8 @@
+-- EXPECT-CLEAN
+fn safe_freeze : i32 -> i32
+  | n ->
+    let x = n + 1
+    freeze x
+
+fn safe_id : i32 -> i32
+  | n -> n

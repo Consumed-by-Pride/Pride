@@ -1,0 +1,34 @@
+-- EXPECT-CLEAN
+struct RingBuf
+    buf  : *i64
+    head : i64
+    tail : i64
+    cap  : i64
+
+fn ring_push : (*RingBuf, i64) -> bool
+  | (r, val) ->
+    let next_t : i64 = (r.tail + 1i64) % r.cap
+    if next_t == r.head then false
+    else
+      r.buf[r.tail] = val
+      r.tail = next_t
+      true
+
+fn ring_pop : *RingBuf -> (bool, i64)
+  | r ->
+    if r.head == r.tail then (false, 0i64)
+    else
+      let val : i64 = r.buf[r.head]
+      r.head = (r.head + 1i64) % r.cap
+      (true, val)
+
+fn ring_len : *RingBuf -> i64
+  | r ->
+    if r.tail >= r.head then r.tail - r.head
+    else r.cap - r.head + r.tail
+
+fn ring_is_empty : *RingBuf -> bool
+  | r -> r.head == r.tail
+
+fn ring_is_full : *RingBuf -> bool
+  | r -> (r.tail + 1i64) % r.cap == r.head

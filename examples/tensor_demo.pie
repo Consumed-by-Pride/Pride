@@ -1,0 +1,17 @@
+-- Tensor math with compile-time shape checking. Self-contained.
+
+-- a 3-vector and a 2x2 matrix
+let v : Tensor<f32; 3>    = [| 1.0, 2.0, 3.0 |]
+let m : Tensor<f32; 2, 2> = [| [| 1.0, 2.0 |], [| 3.0, 4.0 |] |]
+let n : Tensor<f32; 2, 2> = [| [| 5.0, 6.0 |], [| 7.0, 8.0 |] |]
+
+-- 2x2 @ 2x2 -> 2x2  (OK)
+let mm = m @ n
+
+-- matrix @ vector with matching inner dims -> vector
+let w : Tensor<f32; 2> = [| 10.0, 20.0 |]
+let mv = m @ w
+
+-- generic tensor function
+fn scale<T> : (Tensor<T; 2, 2>, T) -> Tensor<T; 2, 2>
+  | (t, s) -> t

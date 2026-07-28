@@ -1,0 +1,6 @@
+-- EXPECT: type-warn 5:11 assigned value type does not match
+fn f : i32 -> i32
+  | n ->
+      let mut x : i32 = n
+      x = true
+      x

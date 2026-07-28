@@ -1,0 +1,157 @@
+mod os.uefi.tables.runtime_services
+
+use os.uefi
+use os.uefi.status
+
+-- UEFI Runtime Services table. Port of Zig's std/os/uefi/tables/runtime_services.zig.
+-- Runtime Services remain available after ExitBootServices().
+-- Used for: getting/setting UEFI variables, RTC time, virtual memory map, reset.
+
+-- §1  RUNTIME SERVICES STRUCT
+
+struct RuntimeServices
+  hdr : os.uefi.EfiTableHeader   -- signature: 0x56524553544e5552 ("RUNTIMEV")
+
+  -- Time Services
+  get_time              : ptr   -- fn(*EfiTime, *EfiTimeCapabilities) -> u64  #cc(uefi)
+  set_time              : ptr   -- fn(*EfiTime) -> u64
+  get_wakeup_time       : ptr   -- fn(*bool, *bool, *EfiTime) -> u64
+  set_wakeup_time       : ptr   -- fn(bool, *EfiTime) -> u64
+
+  -- Virtual Memory Services
+  set_virtual_address_map  : ptr   -- fn(map_size, desc_size, desc_version, *EfiMemoryDescriptor) -> u64
+  convert_pointer          : ptr   -- fn(debug_disposition, **address) -> u64
+
+  -- Variable Services
+  get_variable     : ptr   -- fn(*u16 name, *Guid, *attrs, *data_size, *data) -> u64
+  get_next_variable_name : ptr   -- fn(*name_size, *name, *guid) -> u64
+  set_variable     : ptr   -- fn(*u16 name, *Guid, attrs, data_size, *data) -> u64
+
+  -- Miscellaneous Services
+  get_next_high_monotonic_count : ptr   -- fn(*count) -> u64
+  reset_system      : ptr   -- fn(reset_type, reset_status, data_size, *reset_data) -> ()
+  update_capsule    : ptr
+  query_capsule_capabilities : ptr
+  query_variable_info : ptr   -- fn(attrs, *max_var_storage, *remain_var_storage, *max_var_size) -> u64
+
+-- §2  EFI TIME
+
+struct EfiTime
+  year        : u16
+  month       : u8
+  day         : u8
+  hour        : u8
+  minute      : u8
+  second      : u8
+  pad1        : u8
+  nanosecond  : u32
+  timezone    : i16    -- minutes from UTC, EFI_UNSPECIFIED_TIMEZONE = 0x07FF
+  daylight    : u8
+  pad2        : u8
+
+const EFI_UNSPECIFIED_TIMEZONE : i16 = 2047i16   -- 0x07FF
+const EFI_TIME_ADJUST_DAYLIGHT : u8 = 1u8
+const EFI_TIME_IN_DAYLIGHT     : u8 = 2u8
+
+struct EfiTimeCapabilities
+  resolution   : u32   -- 1e-6 parts per million
+  accuracy     : u32   -- hertz
+  sets_to_zero : bool
+
+-- §3  RESET TYPE
+
+const EFI_RESET_COLD    : u32 = 0u32
+const EFI_RESET_WARM    : u32 = 1u32
+const EFI_RESET_SHUTDOWN : u32 = 2u32
+const EFI_RESET_PLATFORM_SPECIFIC : u32 = 3u32
+
+-- §4  VARIABLE ATTRIBUTES
+
+const EFI_VARIABLE_NON_VOLATILE                          : u32 = 1u32
+const EFI_VARIABLE_BOOTSERVICE_ACCESS                    : u32 = 2u32
+const EFI_VARIABLE_RUNTIME_ACCESS                        : u32 = 4u32
+const EFI_VARIABLE_HARDWARE_ERROR_RECORD                 : u32 = 8u32
+const EFI_VARIABLE_AUTHENTICATED_WRITE_ACCESS            : u32 = 16u32
+const EFI_VARIABLE_TIME_BASED_AUTHENTICATED_WRITE_ACCESS : u32 = 32u32
+const EFI_VARIABLE_APPEND_WRITE                          : u32 = 64u32
+
+-- §5  HELPER FUNCTIONS
+
+fn rt_get_time : (*RuntimeServices, *EfiTime, *EfiTimeCapabilities) -> u64
+  | (rt, time, caps) ->
+    let f = rt.get_time as fn(*EfiTime, *EfiTimeCapabilities) -> u64
+    f(time, caps)
+
+fn rt_set_time : (*RuntimeServices, *EfiTime) -> u64
+  | (rt, time) ->
+    let f = rt.set_time as fn(*EfiTime) -> u64
+    f(time)
+
+fn rt_get_variable : (*RuntimeServices, *u16, *os.uefi.Guid, *u32, *u64, ptr) -> u64
+  | (rt, name, guid, attrs, data_size, data) ->
+    let f = rt.get_variable as fn(*u16, *os.uefi.Guid, *u32, *u64, ptr) -> u64
+    f(name, guid, attrs, data_size, data)
+
+fn rt_set_variable : (*RuntimeServices, *u16, *os.uefi.Guid, u32, u64, ptr) -> u64
+  | (rt, name, guid, attrs, data_size, data) ->
+    let f = rt.set_variable as fn(*u16, *os.uefi.Guid, u32, u64, ptr) -> u64
+    f(name, guid, attrs, data_size, data)
+
+fn rt_get_next_variable_name : (*RuntimeServices, *u64, *u16, *os.uefi.Guid) -> u64
+  | (rt, name_size, name, guid) ->
+    let f = rt.get_next_variable_name as fn(*u64, *u16, *os.uefi.Guid) -> u64
+    f(name_size, name, guid)
+
+fn rt_reset_system : (*RuntimeServices, u32, u64, u64, ptr) -> ()
+  | (rt, reset_type, reset_status, data_size, reset_data) ->
+    let f = rt.reset_system as fn(u32, u64, u64, ptr) -> ()
+    f(reset_type, reset_status, data_size, reset_data)
+
+fn rt_set_virtual_address_map : (*RuntimeServices, u64, u64, u32, *os.uefi.EfiMemoryDescriptor) -> u64
+  | (rt, map_size, desc_size, desc_version, virtual_map) ->
+    let f = rt.set_virtual_address_map as fn(u64, u64, u32, *os.uefi.EfiMemoryDescriptor) -> u64
+    f(map_size, desc_size, desc_version, virtual_map)
+
+fn rt_query_variable_info : (*RuntimeServices, u32, *u64, *u64, *u64) -> u64
+  | (rt, attrs, max_storage, remaining, max_size) ->
+    let f = rt.query_variable_info as fn(u32, *u64, *u64, *u64) -> u64
+    f(attrs, max_storage, remaining, max_size)
+
+fn rt_get_next_high_monotonic_count : (*RuntimeServices, *u32) -> u64
+  | (rt, count) ->
+    let f = rt.get_next_high_monotonic_count as fn(*u32) -> u64
+    f(count)
+
+-- §6  USAGE EXAMPLES
+--
+-- Example 1: Read RTC time
+--   let rt = (efi_system_table as *SystemTable).runtime_services as *RuntimeServices
+--   let mut t = EfiTime { year:0u16, month:0u8, day:0u8, hour:0u8, minute:0u8, second:0u8,
+--                          pad1:0u8, nanosecond:0u32, timezone:EFI_UNSPECIFIED_TIMEZONE,
+--                          daylight:0u8, pad2:0u8 }
+--   let r = rt_get_time(rt, &t, 0 as *EfiTimeCapabilities)
+--   assert(r == EFI_SUCCESS)
+--   -- t.year, t.month, t.day etc. now set
+--
+-- Example 2: Read a UEFI variable
+--   let var_name : *u16 = ... -- L"BootOrder"
+--   let guid = EFI_GLOBAL_VARIABLE_GUID
+--   let mut attrs : u32 = 0u32
+--   let mut data_size : u64 = 0u64
+--   -- First call to get size:
+--   rt_get_variable(rt, var_name, &guid, &attrs, &data_size, 0 as ptr)
+--   -- Allocate and read:
+--   let data : ptr = 0 as ptr
+--   bs_allocate_pool(bs, EFI_LOADER_DATA, data_size, &data)
+--   rt_get_variable(rt, var_name, &guid, &attrs, &data_size, data)
+--
+-- Example 3: System reset
+--   rt_reset_system(rt, EFI_RESET_SHUTDOWN, EFI_SUCCESS, 0u64, 0 as ptr)
+--   -- execution does not return
+
+-- §7  WELL-KNOWN VARIABLE GUIDs
+
+const EFI_GLOBAL_VARIABLE_GUID : os.uefi.Guid = os.uefi.Guid {
+  data1: 0x8BE4DF61u32, data2: 0x93CAu16, data3: 0x11D2u16,
+  data4: 0xAA0D00E098032B8Cu64
+}

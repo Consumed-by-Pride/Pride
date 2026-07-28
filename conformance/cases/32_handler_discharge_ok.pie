@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+effect Log
+  emit : i32 -> ()
+fn do_work : () -> () ! [Log]
+  | () -> ()
+fn run : () -> ()
+  | () ->
+      handle do_work()
+        | Log.emit _x k -> k(())

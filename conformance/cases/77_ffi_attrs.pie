@@ -1,0 +1,4 @@
+-- EXPECT-CLEAN
+fn malloc : u64 -> ptr #extern("malloc") #cc(c)
+fn alloc8 : () -> ptr
+  | () -> malloc(8)

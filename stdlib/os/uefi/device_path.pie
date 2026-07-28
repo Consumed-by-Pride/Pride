@@ -1,0 +1,266 @@
+mod os.uefi.device_path
+
+use os.uefi
+
+-- UEFI Device Path protocol types. Port of Zig's std/os/uefi/device_path.zig.
+-- Device paths describe hardware locations in the firmware.
+-- Format: sequence of typed nodes, terminated by End node.
+
+-- §1  DEVICE PATH NODE HEADER
+
+struct DevicePathNode
+  type_    : u8    -- main type
+  subtype  : u8
+  length   : u16   -- total length of this node in bytes (includes header)
+
+-- §2  DEVICE PATH MAIN TYPES
+
+const EFI_DP_HARDWARE   : u8 = 0x01u8
+const EFI_DP_ACPI       : u8 = 0x02u8
+const EFI_DP_MESSAGING  : u8 = 0x03u8
+const EFI_DP_MEDIA      : u8 = 0x04u8
+const EFI_DP_BIOS_BOOT  : u8 = 0x05u8
+const EFI_DP_END        : u8 = 0x7Fu8
+
+-- §3  END NODE SUBTYPES
+
+const EFI_DP_END_ENTIRE   : u8 = 0xFFu8
+const EFI_DP_END_INSTANCE : u8 = 0x01u8
+
+-- §4  HARDWARE SUBTYPES
+
+const EFI_HW_PCI        : u8 = 0x01u8
+const EFI_HW_PC_CARD    : u8 = 0x02u8
+const EFI_HW_MMIO       : u8 = 0x03u8
+const EFI_HW_VENDOR     : u8 = 0x04u8
+const EFI_HW_CONTROLLER : u8 = 0x05u8
+const EFI_HW_BMC        : u8 = 0x06u8
+
+struct PciDevicePath
+  type_    : u8    -- EFI_DP_HARDWARE
+  subtype  : u8    -- EFI_HW_PCI
+  length   : u16   -- 6
+  function : u8
+  device   : u8
+
+struct MemoryMappedDevicePath
+  type_           : u8
+  subtype         : u8
+  length          : u16    -- 24
+  memory_type     : u32
+  start_address   : u64
+  end_address     : u64
+
+struct VendorDevicePath
+  type_        : u8
+  subtype      : u8
+  length       : u16   -- variable: 20 + vendor_data_size
+  vendor_guid  : os.uefi.Guid
+  -- vendor_data follows
+
+-- §5  ACPI SUBTYPES
+
+const EFI_ACPI_ACPI      : u8 = 0x01u8
+const EFI_ACPI_EXPANDED  : u8 = 0x02u8
+const EFI_ACPI_ADR       : u8 = 0x03u8
+const EFI_ACPI_NVDIMM    : u8 = 0x04u8
+
+struct AcpiDevicePath
+  type_    : u8
+  subtype  : u8
+  length   : u16   -- 8
+  hid      : u32   -- EisaId
+  uid      : u32
+
+struct AcpiExpandedDevicePath
+  type_    : u8
+  subtype  : u8
+  length   : u16   -- variable
+  hid      : u32
+  uid      : u32
+  cid      : u32
+  -- hid_str, uid_str, cid_str follow
+
+-- §6  MESSAGING SUBTYPES (network, storage, etc.)
+
+const EFI_MSG_ATAPI    : u8 = 0x01u8
+const EFI_MSG_SCSI     : u8 = 0x02u8
+const EFI_MSG_FIBRE    : u8 = 0x03u8
+const EFI_MSG_IEEE1394 : u8 = 0x04u8
+const EFI_MSG_USB      : u8 = 0x05u8
+const EFI_MSG_I2O      : u8 = 0x06u8
+const EFI_MSG_INFINIBAND : u8 = 0x09u8
+const EFI_MSG_VENDOR   : u8 = 0x0Au8
+const EFI_MSG_MAC_ADDR : u8 = 0x0Bu8
+const EFI_MSG_IPV4     : u8 = 0x0Cu8
+const EFI_MSG_IPV6     : u8 = 0x0Du8
+const EFI_MSG_UART     : u8 = 0x0Eu8
+const EFI_MSG_USB_CLASS : u8 = 0x0Fu8
+const EFI_MSG_USB_WWID : u8 = 0x10u8
+const EFI_MSG_LUNIT    : u8 = 0x11u8
+const EFI_MSG_SATA     : u8 = 0x12u8
+const EFI_MSG_ISCSI    : u8 = 0x13u8
+const EFI_MSG_VLAN     : u8 = 0x14u8
+const EFI_MSG_FIBRE_EX : u8 = 0x15u8
+const EFI_MSG_SASEX    : u8 = 0x16u8
+const EFI_MSG_NVME     : u8 = 0x17u8
+const EFI_MSG_URI      : u8 = 0x18u8
+const EFI_MSG_UFS      : u8 = 0x19u8
+const EFI_MSG_SD       : u8 = 0x1Au8
+const EFI_MSG_BT       : u8 = 0x1Bu8
+const EFI_MSG_WIFI     : u8 = 0x1Cu8
+const EFI_MSG_EMMC     : u8 = 0x1Du8
+const EFI_MSG_BTLE     : u8 = 0x1Eu8
+
+struct MacAddressDevicePath
+  type_       : u8
+  subtype     : u8
+  length      : u16    -- 37
+  mac_address : os.uefi.MacAddress
+  if_type     : u8
+
+struct Ipv4DevicePath
+  type_             : u8
+  subtype           : u8
+  length            : u16   -- 27
+  local_ip_address  : os.uefi.Ipv4Address
+  remote_ip_address : os.uefi.Ipv4Address
+  local_port        : u16
+  remote_port       : u16
+  protocol          : u16
+  static_ip_address : bool
+  gateway_ip_address : os.uefi.Ipv4Address
+  subnet_mask        : os.uefi.Ipv4Address
+
+struct Ipv6DevicePath
+  type_             : u8
+  subtype           : u8
+  length            : u16   -- 60
+  local_ip_address  : os.uefi.Ipv6Address
+  remote_ip_address : os.uefi.Ipv6Address
+  local_port        : u16
+  remote_port       : u16
+  protocol          : u16
+  ip_address_origin : u8
+  prefix_length     : u8
+  gateway_ip_address : os.uefi.Ipv6Address
+
+struct NvmeDevicePath
+  type_          : u8
+  subtype        : u8
+  length         : u16   -- 16
+  namespace_id   : u32
+  ieee_eui64     : u64
+
+struct UriDevicePath
+  type_    : u8
+  subtype  : u8
+  length   : u16   -- variable: 4 + uri length
+  -- uri bytes follow
+
+-- §7  MEDIA SUBTYPES
+
+const EFI_MEDIA_HARD_DRIVE : u8 = 0x01u8
+const EFI_MEDIA_CD_ROM     : u8 = 0x02u8
+const EFI_MEDIA_VENDOR     : u8 = 0x03u8
+const EFI_MEDIA_FILE_PATH  : u8 = 0x04u8
+const EFI_MEDIA_PROTOCOL   : u8 = 0x05u8
+const EFI_MEDIA_PIWG_FW_FILE : u8 = 0x06u8
+const EFI_MEDIA_PIWG_FW_VOLUME : u8 = 0x07u8
+const EFI_MEDIA_RELATIVE_OFFSET_RANGE : u8 = 0x08u8
+const EFI_MEDIA_RAMDISK    : u8 = 0x09u8
+
+struct HardDriveDevicePath
+  type_            : u8
+  subtype          : u8
+  length           : u16    -- 42
+  partition_number : u32
+  partition_start  : u64
+  partition_size   : u64
+  partition_signature : u64   -- 16 bytes: GUID or MBR sig + 12 zero bytes
+  partition_sig_hi : u64
+  mbr_type         : u8
+  signature_type   : u8
+
+const MBR_TYPE_MBR             : u8 = 0x01u8
+const MBR_TYPE_GUID_PARTITION  : u8 = 0x02u8
+const SIG_TYPE_NO_SIGNATURE    : u8 = 0x00u8
+const SIG_TYPE_MBR             : u8 = 0x01u8
+const SIG_TYPE_GUID            : u8 = 0x02u8
+
+struct FilePathDevicePath
+  type_    : u8
+  subtype  : u8
+  length   : u16   -- variable: 4 + path_string_size (UCS-2)
+  -- path_string *u16 follows
+
+-- §8  DEVICE PATH ITERATOR
+
+fn dp_node_next : *DevicePathNode -> *DevicePathNode
+  | node ->
+    (node as i64 + node.length as i64) as *DevicePathNode
+
+fn dp_is_end : *DevicePathNode -> bool
+  | node -> node.type_ == EFI_DP_END
+
+fn dp_is_end_entire : *DevicePathNode -> bool
+  | node -> node.type_ == EFI_DP_END && node.subtype == EFI_DP_END_ENTIRE
+
+fn dp_size : *DevicePathNode -> u64
+  | dp ->
+    -- Count bytes until (and including) the end-entire node
+    let mut node = dp
+    while !dp_is_end_entire(node)
+      node = dp_node_next(node)
+    (node as i64 - dp as i64 + 4i64) as u64   -- +4 for end node size
+
+fn dp_append_end : ptr -> ()
+  | dp ->
+    -- Appends an end-entire node at the pointer position
+    let end_node = dp as *DevicePathNode
+    end_node.type_   = EFI_DP_END
+    end_node.subtype = EFI_DP_END_ENTIRE
+    end_node.length  = 4u16
+
+fn dp_file_path_size : *u16 -> u16
+  | path ->
+    -- Size of a FilePathDevicePath for the given UCS-2 path string
+    let mut n : u16 = 0u16
+    while (path as *u16)[n as i64] != 0u16 then n = n + 1u16
+    4u16 + (n + 1u16) * 2u16   -- header + (len+1) * 2 bytes
+
+fn dp_from_file_path : (*u16, ptr) -> *FilePathDevicePath
+  | (path, buf) ->
+    -- Fill a FilePathDevicePath at buf for the given UCS-2 path
+    let n_chars = {
+      let mut n : u16 = 0u16
+      while (path as *u16)[n as i64] != 0u16 then n = n + 1u16
+      n
+    }
+    let sz = 4u16 + (n_chars + 1u16) * 2u16
+    let node = buf as *FilePathDevicePath
+    node.type_   = EFI_DP_MEDIA
+    node.subtype = EFI_MEDIA_FILE_PATH
+    node.length  = sz
+    -- Copy path string
+    let dst = (buf as i64 + 4i64) as *u16
+    let mut i : u16 = 0u16
+    while i <= n_chars then dst[i as i64] = (path as *u16)[i as i64]; i = i + 1u16
+    buf as *FilePathDevicePath
+
+-- §9  USAGE EXAMPLES
+--
+-- Example 1: Walk device path nodes
+--   let dp : *DevicePathNode = get_device_path_from_handle(image_handle)
+--   let mut node = dp
+--   while !dp_is_end(node)
+--     -- process node.type_ and node.subtype
+--     node = dp_node_next(node)
+--
+-- Example 2: Build a file path device path
+--   let path_str = L"\\EFI\\BOOT\\bootx64.efi" (as *u16)
+--   let sz = dp_file_path_size(path_str)
+--   let buf : ptr = bs_allocate_pool_raw(bs, sz + 4) -- +4 for end node
+--   let fp = dp_from_file_path(path_str, buf)
+--   dp_append_end((buf as i64 + sz as i64) as ptr)
+--   -- Now buf contains the complete device path

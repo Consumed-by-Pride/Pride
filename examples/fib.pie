@@ -1,0 +1,43 @@
+-- fib.pie — Fibonacci in Pride (runs end-to-end)
+-- Shows: recursive functions, syscalls, integer math
+
+fn fib : i64 -> i64
+  | 0 -> 0
+  | 1 -> 1
+  | n -> fib(n - 1) + fib(n - 2)
+
+fn i64_to_digits : (i64, *u8) -> i64
+  | (0, buf) ->
+      buf[0] = 48u8
+      1
+  | (n, buf) ->
+      let mut tmp : *u8 = alloc [u8; 20]
+      let mut len : i64 = 0
+      let mut x = n
+      while x > 0
+        tmp[len] = (x % 10 + 48) as u8
+        x = x / 10
+        len = len + 1
+      -- reverse
+      let mut i : i64 = 0
+      while i < len
+        buf[i] = tmp[len - 1 - i]
+        i = i + 1
+      free tmp
+      len
+
+fn print_i64 : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 24]
+      let len = i64_to_digits(n, buf)
+      buf[len] = 10u8  -- newline
+      syscall(1, 1, buf as i64, len + 1)
+      free buf
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      let mut i : i64 = 0
+      while i <= 30
+        print_i64(fib(i))
+        i = i + 1
+      syscall(231, 0)

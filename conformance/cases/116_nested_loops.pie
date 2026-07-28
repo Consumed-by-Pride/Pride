@@ -1,0 +1,12 @@
+-- Test: nested loops
+fn matrix_sum : i64 -> i64
+  | n ->
+    let mut s : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i < n
+      let mut j : i64 = 0i64
+      while j < n
+        s = s + i * n + j
+        j = j + 1i64
+      i = i + 1i64
+    s

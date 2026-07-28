@@ -1,0 +1,8 @@
+-- EXPECT-CLEAN
+fn addr : i32 -> *i32
+  | n ->
+    let x = n
+    &x
+
+fn deref_ptr : *i32 -> i32
+  | p -> *p

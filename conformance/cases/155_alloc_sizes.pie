@@ -1,0 +1,7 @@
+-- EXPECT-CLEAN
+fn alloc_u8_22  : () -> *u8  ! [Alloc] | () -> alloc [u8; 22]
+fn alloc_i64_10 : () -> *i64 ! [Alloc] | () -> alloc [i64; 10]
+fn alloc_f64_4  : () -> *f64 ! [Alloc] | () -> alloc [f64; 4]
+fn alloc_i32_1  : () -> *i32 ! [Alloc] | () -> alloc i32
+fn alloc_f32_1  : () -> *f32 ! [Alloc] | () -> alloc f32
+fn alloc_u64_8  : () -> *u64 ! [Alloc] | () -> alloc [u64; 8]

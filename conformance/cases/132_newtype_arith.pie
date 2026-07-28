@@ -1,0 +1,11 @@
+-- EXPECT-CLEAN
+newtype Dollars = i64
+newtype Cents = i64
+
+fn to_cents : Dollars -> Cents
+  | Dollars(d) -> Cents(d * 100)
+  | _ -> Cents(0)
+
+fn add_dollars : (Dollars, Dollars) -> Dollars
+  | (Dollars(a), Dollars(b)) -> Dollars(a + b)
+  | _ -> Dollars(0)

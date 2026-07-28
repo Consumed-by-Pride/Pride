@@ -1,0 +1,6 @@
+-- EXPECT: type-warn 6:27 struct field value type does not match
+struct Point
+  x : i32
+  y : i32
+fn mk : i32 -> i32
+  | n -> Point { x: n, y: true }.x

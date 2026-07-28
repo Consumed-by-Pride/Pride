@@ -1,0 +1,6 @@
+-- EXPECT-COUNT: effect-warn=0
+-- EXPECT-COUNT: type-err=0
+fn sink : i32 -> () ! [IO]
+  | _x -> ()
+fn caller : i32 -> () ! [IO]
+  | _x -> sink(_x)
