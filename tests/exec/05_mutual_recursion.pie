@@ -1,0 +1,18 @@
+-- EXPECT: true
+fn is_even : i64 -> i64
+  | n ->
+      if n == 0 then 1
+      else is_odd(n - 1)
+
+fn is_odd : i64 -> i64
+  | n ->
+      if n == 0 then 0
+      else is_even(n - 1)
+
+fn main : () -> () ! [IO]
+  | () ->
+      if is_even(100) == 1
+        syscall(1, 1, "true\n" as i64, 5)
+      else
+        syscall(1, 1, "false\n" as i64, 6)
+      syscall(231, 0)

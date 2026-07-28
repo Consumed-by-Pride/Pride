@@ -1,0 +1,12 @@
+-- EXPECT-CLEAN
+effect Log
+  emit : i64 -> ()
+
+effect IO
+  read : () -> i64
+
+fn f : () -> i64 ! [Log, IO]
+  | () ->
+      let v = IO.read()
+      Log.emit(v)
+      v

@@ -1,0 +1,5 @@
+-- EXPECT-CLEAN
+pgen elim_add_zero<T> ->
+  [x : T]
+  where [x + 0]
+  ↦ x

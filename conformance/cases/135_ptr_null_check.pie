@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+fn safe_deref : *i32 -> i32
+  | null -> 0
+  | p -> *p
+
+fn maybe_write : (*i32, i32) -> ()
+  | (null, _) -> ()
+  | (p, v) ->
+      *p = v

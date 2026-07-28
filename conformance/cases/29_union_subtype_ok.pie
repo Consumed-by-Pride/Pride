@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+type IorL = i32 ∪ i64
+fn want : IorL -> i32
+  | _x -> 0
+fn caller : i32 -> i32
+  | n -> want(n)

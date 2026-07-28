@@ -1,0 +1,188 @@
+mod os.linux.x86_64
+
+-- x86-64 Linux architecture-specific types and values.
+
+-- §1  ARCHITECTURE CONSTANT
+const ARCH_NAME : *u8 = "x86_64"
+
+-- §2  STAT STRUCT (x86-64 layout — struct stat64 / statx)
+-- This is the layout returned by stat(2)/fstat(2)/lstat(2) on x86-64.
+struct Stat
+  dev     : u64
+  ino     : u64
+  nlink   : u64
+  mode    : u32
+  uid     : u32
+  gid     : u32
+  __pad0  : u32
+  rdev    : u64
+  size    : i64
+  blksize : i64
+  blocks  : i64
+  atim_sec  : i64
+  atim_nsec : i64
+  mtim_sec  : i64
+  mtim_nsec : i64
+  ctim_sec  : i64
+  ctim_nsec : i64
+  __unused0 : i64
+  __unused1 : i64
+  __unused2 : i64
+
+-- §3  STATX STRUCT (extended stat — kernel 4.11+)
+struct StatxTimestamp
+  sec  : i64
+  nsec : u32
+  __pad : i32
+
+struct Statx
+  mask         : u32   -- what was filled in
+  blksize      : u32
+  attributes   : u64
+  nlink        : u32
+  uid          : u32
+  gid          : u32
+  mode         : u16
+  __spare0     : u16
+  ino          : u64
+  size         : u64
+  blocks       : u64
+  attributes_mask : u64
+  atime        : StatxTimestamp
+  btime        : StatxTimestamp
+  ctime        : StatxTimestamp
+  mtime        : StatxTimestamp
+  rdev_major   : u32
+  rdev_minor   : u32
+  dev_major    : u32
+  dev_minor    : u32
+  mnt_id       : u64
+  dio_mem_align   : u32
+  dio_offset_align : u32
+  __spare2     : u64
+  __spare2b    : u64
+  __spare2c    : u64
+  __spare2d    : u64
+  __spare2e    : u64
+  __spare2f    : u64
+  __spare2g    : u64
+
+-- §4  USER_DESC (set_thread_area / get_thread_area)
+struct UserDesc
+  entry_number    : u32
+  base_addr       : u32
+  limit           : u32
+  flags           : u32
+  -- flags bits: seg_32bit(0), contents(1:2), read_exec_only(3),
+  --             limit_in_pages(4), seg_not_present(5), useable(6), lm(7)
+
+-- §5  VDSO SYMBOL NAMES
+const VDSO_CLOCK_GETTIME  : *u8 = "__vdso_clock_gettime"
+const VDSO_GETTIMEOFDAY   : *u8 = "__vdso_gettimeofday"
+const VDSO_GETCPU         : *u8 = "__vdso_getcpu"
+const VDSO_TIME           : *u8 = "__vdso_time"
+const VDSO_CLOCK_GETRES   : *u8 = "__vdso_clock_getres"
+
+-- §6  HARDWARE CAPABILITIES (HWCAP from /proc/cpuinfo)
+const HWCAP_FPU    : u64 = 1u64 << 0u64
+const HWCAP_VME    : u64 = 1u64 << 1u64
+const HWCAP_DE     : u64 = 1u64 << 2u64
+const HWCAP_PSE    : u64 = 1u64 << 3u64
+const HWCAP_TSC    : u64 = 1u64 << 4u64
+const HWCAP_MSR    : u64 = 1u64 << 5u64
+const HWCAP_PAE    : u64 = 1u64 << 6u64
+const HWCAP_MCE    : u64 = 1u64 << 7u64
+const HWCAP_CX8    : u64 = 1u64 << 8u64
+const HWCAP_APIC   : u64 = 1u64 << 9u64
+const HWCAP_SEP    : u64 = 1u64 << 11u64
+const HWCAP_MTRR   : u64 = 1u64 << 12u64
+const HWCAP_PGE    : u64 = 1u64 << 13u64
+const HWCAP_MCA    : u64 = 1u64 << 14u64
+const HWCAP_CMOV   : u64 = 1u64 << 15u64
+const HWCAP_PAT    : u64 = 1u64 << 16u64
+const HWCAP_PSE36  : u64 = 1u64 << 17u64
+const HWCAP_PN     : u64 = 1u64 << 18u64
+const HWCAP_CLFLUSH: u64 = 1u64 << 19u64
+const HWCAP_DS     : u64 = 1u64 << 21u64
+const HWCAP_ACPI   : u64 = 1u64 << 22u64
+const HWCAP_MMX    : u64 = 1u64 << 23u64
+const HWCAP_FXSR   : u64 = 1u64 << 24u64
+const HWCAP_SSE    : u64 = 1u64 << 25u64
+const HWCAP_SSE2   : u64 = 1u64 << 26u64
+const HWCAP_SS     : u64 = 1u64 << 27u64
+const HWCAP_HT     : u64 = 1u64 << 28u64
+const HWCAP_TM     : u64 = 1u64 << 29u64
+const HWCAP_IA64   : u64 = 1u64 << 30u64
+const HWCAP_PBE    : u64 = 1u64 << 31u64
+
+-- §7  SC (syscall constants for arch_prctl)
+const ARCH_SET_GS        : i64 = 0x1001i64
+const ARCH_SET_FS        : i64 = 0x1002i64
+const ARCH_GET_FS        : i64 = 0x1003i64
+const ARCH_GET_GS        : i64 = 0x1004i64
+const ARCH_GET_CPUID     : i64 = 0x1011i64
+const ARCH_SET_CPUID     : i64 = 0x1012i64
+const ARCH_GET_XCOMP_SUPP : i64 = 0x1021i64
+const ARCH_GET_XCOMP_PERM : i64 = 0x1022i64
+const ARCH_REQ_XCOMP_PERM : i64 = 0x1023i64
+const ARCH_GET_XCOMP_GUEST_PERM : i64 = 0x1024i64
+const ARCH_REQ_XCOMP_GUEST_PERM : i64 = 0x1025i64
+const ARCH_MAP_VDSO_X32  : i64 = 0x2001i64
+const ARCH_MAP_VDSO_32   : i64 = 0x2002i64
+const ARCH_MAP_VDSO_64   : i64 = 0x2003i64
+const ARCH_CET_STATUS    : i64 = 0x3001i64
+const ARCH_CET_DISABLE   : i64 = 0x3002i64
+const ARCH_CET_LOCK      : i64 = 0x3003i64
+const ARCH_CET_EXEC      : i64 = 0x3004i64
+const ARCH_CET_ALLOC_SHSTK : i64 = 0x3005i64
+const ARCH_CET_PUSH_SHSTK  : i64 = 0x3006i64
+
+-- §8  SIGCONTEXT / MCONTEXT (x86-64 signal frame layout)
+struct SigContext
+  r8      : u64; r9  : u64; r10 : u64; r11 : u64
+  r12     : u64; r13 : u64; r14 : u64; r15 : u64
+  di      : u64; si  : u64; bp  : u64; bx  : u64
+  dx      : u64; ax  : u64; cx  : u64; sp  : u64
+  ip      : u64; flags : u64
+  cs      : u16; gs : u16; fs : u16; ss_pad : u16
+  err     : u64; trapno : u64; oldmask : u64; cr2 : u64
+  fpstate : u64   -- *FpState
+  reserved : u64
+  mask    : u64
+
+-- §9  PTREGS (kernel register layout at syscall entry)
+struct PtRegs
+  r15 : u64; r14 : u64; r13 : u64; r12 : u64
+  bp  : u64; bx  : u64
+  r11 : u64; r10 : u64; r9  : u64; r8  : u64
+  ax  : u64; cx  : u64; dx  : u64; si  : u64; di : u64
+  orig_ax : u64; ip : u64; cs : u64; flags : u64
+  sp  : u64; ss  : u64
+
+-- §10  CPUID LEAF VALUES (common ones)
+const CPUID_LEAF_VENDOR   : u32 = 0x00000000u32
+const CPUID_LEAF_FEATURES : u32 = 0x00000001u32
+const CPUID_LEAF_CACHE    : u32 = 0x00000002u32
+const CPUID_LEAF_SERIAL   : u32 = 0x00000003u32
+const CPUID_LEAF_TOPOLOGY : u32 = 0x00000004u32
+const CPUID_LEAF_MWAIT    : u32 = 0x00000005u32
+const CPUID_LEAF_THERMAL  : u32 = 0x00000006u32
+const CPUID_LEAF_EXTFEAT  : u32 = 0x00000007u32
+const CPUID_LEAF_PERFTOPO : u32 = 0x0000000Bu32
+const CPUID_LEAF_XSTATE   : u32 = 0x0000000Du32
+const CPUID_LEAF_EXTENDED : u32 = 0x80000000u32
+const CPUID_LEAF_EXTBRAND1: u32 = 0x80000002u32
+const CPUID_LEAF_EXTBRAND2: u32 = 0x80000003u32
+const CPUID_LEAF_EXTBRAND3: u32 = 0x80000004u32
+const CPUID_LEAF_L1CACHE  : u32 = 0x80000005u32
+const CPUID_LEAF_L2CACHE  : u32 = 0x80000006u32
+const CPUID_LEAF_ADVFEAT  : u32 = 0x80000007u32
+const CPUID_LEAF_ADDRSZ   : u32 = 0x80000008u32
+
+-- §11  ARCH-SPECIFIC DERIVED SIZES
+const MINSIGSTKSZ : i64 = 2048i64
+const SIGSTKSZ    : i64 = 8192i64
+const PAGE_SIZE   : i64 = 4096i64
+const CACHE_LINE  : i64 = 64i64
+const PTR_SIZE    : i64 = 8i64
+const LONG_SIZE   : i64 = 8i64

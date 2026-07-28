@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+fn puts #[extern("puts")] : ptr -> i32
+fn strlen #[extern("strlen")] : ptr -> i64
+fn memcpy #[extern("memcpy")] : (ptr, ptr, i64) -> ptr
+fn f : ptr -> i64
+  | s -> strlen(s)

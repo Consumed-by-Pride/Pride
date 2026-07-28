@@ -1,0 +1,9 @@
+-- Test: tuple pattern in let
+fn swap : (i64, i64) -> (i64, i64)
+  | (a, b) -> (b, a)
+
+fn fst : (i64, i64) -> i64
+  | (a, _) -> a
+
+fn snd : (i64, i64) -> i64
+  | (_, b) -> b

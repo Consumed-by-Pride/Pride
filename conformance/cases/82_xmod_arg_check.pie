@@ -1,0 +1,8 @@
+-- EXPECT: type-warn 8:20 call argument type does not match
+mod mathx
+  fn sq : i32 -> i32
+    | n -> n * n
+fn ok : i32 -> i32
+  | n -> mathx::sq(n)
+fn bad : f64 -> i32
+  | x -> mathx::sq(x)

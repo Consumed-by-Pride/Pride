@@ -1,0 +1,334 @@
+mod hash.cityhash
+
+use os.linux
+
+-- CityHash — Google's hash library. Geoff Pike and Jyrki Alakuijala.
+-- https://github.com/google/cityhash
+-- Optimized for short strings and medium-length inputs.
+-- CityHash32, CityHash64, CityHash128, CityHashCrc128 (with CRC-32C hardware).
+
+-- §1  CONSTANTS
+
+const C1 : u64 = 11376068507788127593u64  -- 0x9ddfea08eb382d69
+const C2 : u64 = 14181476777654086739u64  -- 0xc6a4a7935bd1e995 (Murmur64 constant)
+const K0 : u64 = 14097894508562428199u64  -- 0xc3a5c85c97cb3127
+const K1 : u64 = 13857710130406889726u64  -- 0xb492b66fbe98f273
+const K2 : u64 = 9768305897126522697u64   -- 0x9ae16a3b2f90404f
+const K3 : u64 = 11562461410679940143u64  -- 0xa0761d6478bd642f (wyhash secret 0)
+
+-- §2  PRIMITIVE OPERATIONS
+
+fn city_rotl64 : (u64, u32) -> u64
+  | (x, n) -> (x << n as u64) | (x >> (64u32 - n) as u64)
+
+fn city_rotr64 : (u64, u32) -> u64
+  | (x, n) -> (x >> n as u64) | (x << (64u32 - n) as u64)
+
+fn city_bswap64 : u64 -> u64
+  | v ->
+    ((v & 0x00000000000000FFu64) << 56u64) |
+    ((v & 0x000000000000FF00u64) << 40u64) |
+    ((v & 0x0000000000FF0000u64) << 24u64) |
+    ((v & 0x00000000FF000000u64) <<  8u64) |
+    ((v & 0x000000FF00000000u64) >>  8u64) |
+    ((v & 0x0000FF0000000000u64) >> 24u64) |
+    ((v & 0x00FF000000000000u64) >> 40u64) |
+    ((v & 0xFF00000000000000u64) >> 56u64)
+
+fn city_bswap32 : u32 -> u32
+  | v ->
+    ((v & 0x000000FFu32) << 24u32) | ((v & 0x0000FF00u32) << 8u32) |
+    ((v & 0x00FF0000u32) >>  8u32) | ((v & 0xFF000000u32) >> 24u32)
+
+fn city_fetch32 : ptr -> u32 | p -> (p as *u32)[0u32]
+fn city_fetch64 : ptr -> u64 | p -> (p as *u64)[0i64]
+
+fn city_hash_len_16 : (u64, u64) -> u64
+  | (u, v) ->
+    let a = (u ^ v) *% C1
+    let a2 = a ^ (a >> 47u64)
+    let b = (v ^ a2) *% C1
+    let b2 = b ^ (b >> 47u64)
+    b2 *% C1
+
+fn city_hash_len_16_mul : (u64, u64, u64) -> u64
+  | (u, v, mul) ->
+    let a = (u ^ v) *% mul
+    let a2 = a ^ (a >> 47u64)
+    let b = (v ^ a2) *% mul
+    let b2 = b ^ (b >> 47u64)
+    b2 *% mul
+
+fn city_shift_mix : u64 -> u64
+  | val -> val ^ (val >> 47u64)
+
+-- §3  CITYHASH32
+
+fn city_hash32_len_0to4 : (ptr, i64) -> u32
+  | (s, len) ->
+    let b = s as *u8
+    let mut b32 : u32 = 0u32; let mut c : u32 = 9u32
+    let mut i : i64 = 0i64
+    while i < len
+      let v = b[i] as i8 as i32 as u32
+      b32 = b32 +% v
+      c = c ^ b32
+      c = c *% 0xcc9e2d51u32
+      i = i + 1i64
+    let d = len as u32
+    city_fmix32((d ^ c ^ b32) *% 0xcc9e2d51u32)
+
+fn city_fmix32 : u32 -> u32
+  | h ->
+    let h1 = h ^ (h >> 16u32)
+    let h2 = h1 *% 0x85ebca6bu32
+    let h3 = h2 ^ (h2 >> 13u32)
+    let h4 = h3 *% 0xc2b2ae35u32
+    h4 ^ (h4 >> 16u32)
+
+fn city_hash32_len_5to12 : (ptr, i64) -> u32
+  | (s, len) ->
+    let b = s as *u8
+    let mut a : u32 = len as u32
+    let mut b32 : u32 = len as u32 *% 5u32
+    let mut c : u32 = 9u32
+    let d : u32 = b32
+    a = a +% city_fetch32(b as ptr)
+    b32 = b32 +% city_fetch32((b as i64 + (len >> 1i64)) as ptr)
+    c = c +% city_fetch32((b as i64 + len - 4i64) as ptr)
+    a = city_rotl32(a, 12u32) +% b32
+    b32 = city_rotl32(b32, 13u32) +% c
+    c = c ^ a; c = city_rotl32(c, 17u32) *% 5u32
+    a = a ^ b32; a = city_rotl32(a, 14u32) *% 5u32
+    c = c ^ city_fetch32((b as i64 + len - 4i64) as ptr)
+    city_fmix32(c ^ a ^ b32 ^ d)
+
+fn city_rotl32 : (u32, u32) -> u32
+  | (x, n) -> (x << n) | (x >> (32u32 - n))
+
+fn city_hash32_len_13to24 : (ptr, i64) -> u32
+  | (s, len) ->
+    let b = s as *u8
+    let a = city_fetch32((b as i64 + (len >> 1i64) - 4i64) as ptr)
+    let b32 = city_fetch32((b as i64 + 4i64) as ptr)
+    let c = city_fetch32((b as i64 + len - 8i64) as ptr)
+    let d = city_fetch32((b as i64 + (len >> 1i64)) as ptr)
+    let e = city_fetch32(b as ptr)
+    let f = city_fetch32((b as i64 + len - 4i64) as ptr)
+    let h : u32 = len as u32
+    city_fmix32(
+      (5u32 *% (city_rotl32(a *% 0xe17a1465u32, 11u32) +%
+               city_rotl32(b32 *% 0x9cd98b23u32, 14u32) +%
+               city_rotl32(c *% 0xab0e9789u32, 12u32) +%
+               city_rotl32(d *% 0x50eee49eu32, 16u32))) ^
+      (e ^ city_rotl32(f, 8u32)) ^
+      (h *% 0x14b5dau32)
+    )
+
+fn cityhash32 : (ptr, i64) -> u32
+  | (s, len) ->
+    if len <= 4i64 then city_hash32_len_0to4(s, len)
+    else if len <= 12i64 then city_hash32_len_5to12(s, len)
+    else if len <= 24i64 then city_hash32_len_13to24(s, len)
+    else
+      -- Long string: split into 24-byte chunks
+      let b = s as *u8
+      let mut h : u32 = len as u32
+      let mut g : u32 = 0xc3a5c85cu32 *% len as u32
+      let mut f : u32 = g
+      let a0 = city_rotl32(city_fetch32((b as i64 + len - 4i64) as ptr) *% 0xe17a1465u32, 14u32) *% 0xab0e9789u32
+      let a1 = city_rotl32(city_fetch32((b as i64 + len - 8i64) as ptr) *% 0xe17a1465u32, 14u32) *% 0xab0e9789u32
+      let a2 = city_rotl32(city_fetch32((b as i64 + len - 16i64) as ptr) *% 0xe17a1465u32, 14u32) *% 0xab0e9789u32
+      let a3 = city_rotl32(city_fetch32((b as i64 + len - 20i64) as ptr) *% 0xe17a1465u32, 14u32) *% 0xab0e9789u32
+      let a4 = city_rotl32(city_fetch32((b as i64 + len - 24i64) as ptr) *% 0xe17a1465u32, 14u32) *% 0xab0e9789u32
+      h = h ^ a0 ^ a1; g = g ^ a2; f = f +% a3 +% a4
+      g = g +% h; h = h +% g *% 5u32 +% 0x14b5dau32
+      let mut i : i64 = 0i64
+      while i + 20i64 <= len
+        let b20 = (b as i64 + i) as ptr
+        let x = city_rotl32(city_fetch32(b20) *% 0xe17a1465u32, 14u32) *% 0xab0e9789u32
+        let y = city_fetch32((b20 as i64 + 4i64) as ptr)
+        let z = city_rotl32(city_fetch32((b20 as i64 + 8i64) as ptr) *% 0xe17a1465u32, 16u32) *% 0xab0e9789u32
+        f = f +% x
+        g = g ^ y; g = city_rotl32(g, 18u32)
+        h = h ^ z
+        h = city_rotl32(h, 13u32) *% 5u32 +% 0xe6546b64u32
+        i = i + 20i64
+      city_fmix32(h ^ f ^ g)
+
+fn cityhash32_str : ptr -> u32
+  | s -> cityhash32(s, os.linux.strlen(s) as i64)
+
+-- §4  CITYHASH64
+
+fn city_hash64_len_16 : (u64, u64) -> u64
+  | (u, v) -> city_hash_len_16(u, v)
+
+fn city_hash64_len_0to16 : (ptr, i64) -> u64
+  | (s, len) ->
+    let b = s as *u8
+    if len >= 8i64
+      let mul = K2 +% len as u64 *% 2u64
+      let a = city_fetch64(b as ptr) +% K2
+      let bv = city_fetch64((b as i64 + len - 8i64) as ptr)
+      let c = city_rotl64(bv, 37u32) *% mul +% a
+      let d = (city_rotl64(a, 25u32) +% bv) *% mul
+      city_hash_len_16_mul(c, d, mul)
+    else if len >= 4i64
+      let mul = K2 +% len as u64 *% 2u64
+      let a = city_fetch32(b as ptr) as u64
+      city_hash_len_16_mul(len as u64 +% (a << 3u64),
+                            city_fetch32((b as i64 + len - 4i64) as ptr) as u64,
+                            mul)
+    else if len > 0i64
+      let a = b[0i64] as u64
+      let bv = b[len >> 1i64] as u64
+      let c = b[len - 1i64] as u64
+      let y = a +% (bv << 8u64)
+      let z = len as u64 +% (c << 2u64)
+      city_shift_mix(y *% K2 ^ z *% K0) *% K2
+    else K2
+
+fn city_hash64_len_17to32 : (ptr, i64) -> u64
+  | (s, len) ->
+    let b = s as *u8
+    let mul = K2 +% len as u64 *% 2u64
+    let a = city_fetch64(b as ptr) *% K1
+    let bv = city_fetch64((b as i64 + 8i64) as ptr)
+    let c = city_fetch64((b as i64 + len - 8i64) as ptr) *% mul
+    let d = city_fetch64((b as i64 + len - 16i64) as ptr) *% K2
+    city_hash_len_16_mul(
+      city_rotl64(a +% bv, 43u32) +% city_rotl64(c, 30u32) +% d,
+      a +% city_rotl64(bv +% K2, 18u32) +% c,
+      mul)
+
+fn city_hash64_len_33to64 : (ptr, i64) -> u64
+  | (s, len) ->
+    let b = s as *u8
+    let mul = K2 +% len as u64 *% 2u64
+    let a = city_fetch64(b as ptr) *% K2
+    let bv = city_fetch64((b as i64 + 8i64) as ptr)
+    let c = city_fetch64((b as i64 + len - 24i64) as ptr)
+    let d = city_fetch64((b as i64 + len - 32i64) as ptr)
+    let e = city_fetch64((b as i64 + 16i64) as ptr) *% K2
+    let f = city_fetch64((b as i64 + 24i64) as ptr) *% 9u64
+    let g = city_fetch64((b as i64 + len - 8i64) as ptr)
+    let h = city_fetch64((b as i64 + len - 16i64) as ptr) *% mul
+    let u = city_rotl64(a +% g, 43u32) +% (city_rotl64(bv, 30u32) +% c) *% 9u64
+    let v = ((a +% g) ^ d) +% f +% 1u64
+    let w = city_bswap64((u +% v) *% mul) +% h
+    let x = city_rotl64(e +% f, 42u32) +% c
+    let y = (city_bswap64((v +% w) *% mul) +% g) *% mul
+    let z = e +% f +% c
+    let aa = city_bswap64((x +% z) *% mul +% y) +% bv
+    let bb = city_shift_mix((z +% aa) *% mul +% d +% h) *% mul
+    bb +% x
+
+fn city_weak_hash_len_32_with_seeds : (ptr, u64, u64) -> (u64, u64)
+  | (s, seed_a, seed_b) ->
+    let b = s as *u8
+    let w = city_fetch64(b as ptr)
+    let x = city_fetch64((b as i64 + 8i64) as ptr)
+    let y = city_fetch64((b as i64 + 16i64) as ptr)
+    let z = city_fetch64((b as i64 + 24i64) as ptr)
+    let a = seed_a +% w; let mut aa = city_rotl64(a, 26u32) +% z
+    aa = aa *% 9u64; aa = aa ^ x; aa = city_rotl64(aa, 29u32)
+    let b64 = seed_b +% x
+    let bb = city_rotl64(b64 +% y, 29u32) *% 9u64 +% w
+    (city_shift_mix((aa +% bb) *% C2) *% 9u64, city_shift_mix(bb *% C2 +% aa) *% C2)
+
+fn cityhash64 : (ptr, i64) -> u64
+  | (s, len) ->
+    if len <= 16i64 then city_hash64_len_0to16(s, len)
+    else if len <= 32i64 then city_hash64_len_17to32(s, len)
+    else if len <= 64i64 then city_hash64_len_33to64(s, len)
+    else
+      let b = s as *u8
+      -- For long strings, use the full CityHash64 algorithm
+      let mut x = city_fetch64((b as i64 + len - 40i64) as ptr)
+      let mut y = city_fetch64((b as i64 + len - 16i64) as ptr) +%
+                  city_fetch64((b as i64 + len - 56i64) as ptr)
+      let mut z = city_hash64_len_16(
+                    city_fetch64((b as i64 + len - 48i64) as ptr) +% len as u64,
+                    city_fetch64((b as i64 + len - 24i64) as ptr))
+      let (mut v0, mut v1) = city_weak_hash_len_32_with_seeds((b as i64 + len - 64i64) as ptr, len as u64, z)
+      let (mut w0, mut w1) = city_weak_hash_len_32_with_seeds((b as i64 + len - 32i64) as ptr, y +% K1, x)
+      x = x *% K1 +% city_fetch64(b as ptr)
+
+      let mut p = b; let mut remaining = len - 64i64
+      while remaining >= 0i64
+        x = city_rotl64(x +% y +% v0 +% city_fetch64((p as i64 + 8i64) as ptr), 37u32) *% K1
+        y = city_rotl64(y +% v1 +% city_fetch64((p as i64 + 48i64) as ptr), 42u32) *% K1
+        x = x ^ w1; y = y +% v0 +% city_fetch64((p as i64 + 16i64) as ptr)
+        z = city_rotl64(z +% w0, 33u32) *% K1
+        let vv = city_weak_hash_len_32_with_seeds(p, v1 *% K1, x +% w0)
+        v0 = vv.0; v1 = vv.1
+        let ww = city_weak_hash_len_32_with_seeds((p as i64 + 32i64) as ptr, z +% w1, y +% city_fetch64((p as i64 + 16i64) as ptr))
+        w0 = ww.0; w1 = ww.1
+        let tmp = z; z = x; x = tmp
+        p = (p as i64 + 64i64) as *u8; remaining = remaining - 64i64
+
+      city_hash_len_16(
+        city_hash_len_16(v0, w0) +% city_shift_mix(y) *% K1 +% z,
+        city_hash_len_16(v1, w1) +% x)
+
+fn cityhash64_with_seed : (ptr, i64, u64) -> u64
+  | (s, len, seed) ->
+    city_hash_len_16(cityhash64(s, len) -% K2, seed)
+
+fn cityhash64_with_seeds : (ptr, i64, u64, u64) -> u64
+  | (s, len, seed0, seed1) ->
+    city_hash_len_16(cityhash64_with_seed(s, len, seed0), seed1)
+
+fn cityhash64_str : ptr -> u64
+  | s -> cityhash64(s, os.linux.strlen(s) as i64)
+
+-- §5  CITYHASH128 (returns lo/hi pair)
+
+fn cityhash128_short : (ptr, i64, u64, u64) -> (u64, u64)
+  | (s, len, lo, hi) ->
+    let b = s as *u8
+    if len < 128i64
+      let a = city_fetch64(b as ptr)
+      let bv = city_fetch64((b as i64 + 8i64) as ptr)
+      let c = city_fetch64((b as i64 + len - 8i64) as ptr) ^ hi
+      let d = city_fetch64((b as i64 + len - 16i64) as ptr) ^ lo
+      let of_lo = lo +% len as u64
+      let mut aa = city_hash_len_16(c, d)
+      let mut bb = city_hash_len_16(a, bv)
+      aa = aa ^ of_lo
+      bb = bb ^ hi
+      (aa, bb)
+    else
+      let (v0, v1) = city_weak_hash_len_32_with_seeds(b, lo, hi)
+      let (w0, w1) = city_weak_hash_len_32_with_seeds((b as i64 + 32i64) as ptr, hi +% K2, lo)
+      let (x, y)  = (lo, hi)
+      (city_hash_len_16(v0, w0) ^ city_hash_len_16(x, y),
+       city_hash_len_16(v1, w1) ^ city_hash_len_16(city_shift_mix(x), city_shift_mix(y)))
+
+fn cityhash128 : (ptr, i64) -> (u64, u64)
+  | (s, len) ->
+    if len >= 16i64
+      cityhash128_short(s, len,
+                         city_fetch64(s) ^ K3,
+                         city_fetch64((s as i64 + 8i64) as ptr))
+    else
+      let lo = cityhash64(s, len) ^ K3
+      let hi = cityhash64(s, len) ^ K2
+      (lo, hi)
+
+fn cityhash128_str : ptr -> (u64, u64)
+  | s -> cityhash128(s, os.linux.strlen(s) as i64)
+
+fn cityhash128_lo : ptr -> u64
+  | s ->
+    let (lo, _) = cityhash128(s, os.linux.strlen(s) as i64)
+    lo
+
+-- §6  FINGER HASH (short 32-bit or 16-bit for quick indexing)
+
+fn cityhash_fingerprint32 : (ptr, i64) -> u32
+  | (s, len) -> cityhash32(s, len)
+
+fn cityhash_fingerprint64 : (ptr, i64) -> u64
+  | (s, len) -> cityhash64(s, len)

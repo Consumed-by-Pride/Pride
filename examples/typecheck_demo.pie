@@ -1,0 +1,25 @@
+-- Demonstrates semantic subtyping + soft typing. Fully self-contained.
+
+type Small = i8 ∪ i16
+type Big   = i32 ∪ i64
+type AnyInt = Small ∪ Big
+
+-- parameter type flows into the body; i32 ∈ AnyInt → OK
+fn widen : i32 -> AnyInt
+  | n -> n
+
+-- arithmetic preserves type; result i64 matches return → OK
+fn double : i64 -> i64
+  | n -> n * 2
+
+-- comparison yields bool → OK
+fn positive : i32 -> bool
+  | n -> n > 0
+
+-- nested: if-expression unifies branches
+fn clamp : i32 -> i32
+  | n ->
+      if n > 0
+        n
+      else
+        0

@@ -1,0 +1,12 @@
+-- EXPECT-CLEAN
+fn double_val : i64 -> i64
+  | x -> x * 2i64
+
+fn square : i64 -> i64
+  | x -> x * x
+
+fn pipeline : i64 -> i64
+  | x -> square(double_val(x))
+
+fn apply_twice : (i64 -> i64, i64) -> i64
+  | (f, x) -> f(f(x))

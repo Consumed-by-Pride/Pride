@@ -1,0 +1,25 @@
+# Pryde.toml — package manifest for the Pryde package manager (prydc)
+# "The over-engineered C"
+
+[package]
+name    = "my_package"       # package name (snake_case)
+version = "0.1.0"            # semver
+authors = ["Your Name <you@example.com>"]
+edition = "2026"             # Pryde language edition
+license = "MIT"
+description = "A Pryde package"
+
+[build]
+entry     = "src/main.pry"   # compiler entry point
+stdlib    = true             # include stdlib/*.pry automatically
+opt_level = "2"              # LLVM opt level: 0, 1, 2, 3, s, z
+# sources = ["extra.pry"]   # additional source files
+
+# [[dependencies]]           # one block per dependency
+# name    = "mylib"
+# path    = "../mylib"       # local path (symlinked into .pryde/deps/)
+#
+# [[dependencies]]
+# name    = "netlib"
+# git     = "https://github.com/example/netlib.git"
+# version = "0.3.1"

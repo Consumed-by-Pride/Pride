@@ -1,0 +1,5 @@
+-- EXPECT: type-warn 5:12 unknown field
+struct Box
+  v : i32
+fn get : Box -> i32
+  | b -> b.z

@@ -1,0 +1,158 @@
+mod os.windows.kernel32
+
+-- kernel32.dll function declarations — re-exported from os.windows.
+
+-- These are the low-level kernel32 extern declarations.
+-- Higher-level wrappers live in os/windows.pie.
+
+-- §1  FILE I/O
+fn ReadDirectoryChangesW : (ptr, ptr, u32, i32, u32, ptr, ptr, ptr) -> i32  #extern("ReadDirectoryChangesW") #cc(winapi)
+fn ReadDirectoryChangesExW : (ptr, ptr, u32, i32, u32, ptr, ptr, ptr, u32) -> i32  #extern("ReadDirectoryChangesExW") #cc(winapi)
+fn CancelIo                : ptr -> i32                                       #extern("CancelIo") #cc(winapi)
+fn CancelIoEx              : (ptr, ptr) -> i32                               #extern("CancelIoEx") #cc(winapi)
+fn CreateFileW             : (ptr, u32, u32, ptr, u32, u32, ptr) -> ptr      #extern("CreateFileW") #cc(winapi)
+fn CreateNamedPipeW        : (ptr, u32, u32, u32, u32, u32, u32, ptr) -> ptr  #extern("CreateNamedPipeW") #cc(winapi)
+fn GetStdHandle            : u32 -> ptr                                       #extern("GetStdHandle") #cc(winapi)
+fn SetFilePointerEx        : (ptr, i64, ptr, u32) -> i32                     #extern("SetFilePointerEx") #cc(winapi)
+fn SetFileTime             : (ptr, ptr, ptr, ptr) -> i32                     #extern("SetFileTime") #cc(winapi)
+fn WriteFile               : (ptr, ptr, u32, ptr, ptr) -> i32                #extern("WriteFile") #cc(winapi)
+fn GetFileSizeEx           : (ptr, ptr) -> i32                               #extern("GetFileSizeEx") #cc(winapi)
+fn FlushFileBuffers        : ptr -> i32                                       #extern("FlushFileBuffers") #cc(winapi)
+fn SetFileCompletionNotificationModes : (ptr, u8) -> i32                     #extern("SetFileCompletionNotificationModes") #cc(winapi)
+fn GetCurrentDirectoryW    : (u32, ptr) -> u32                               #extern("GetCurrentDirectoryW") #cc(winapi)
+fn ReadFile                : (ptr, ptr, u32, ptr, ptr) -> i32                #extern("ReadFile") #cc(winapi)
+fn GetSystemDirectoryW     : (ptr, u32) -> u32                               #extern("GetSystemDirectoryW") #cc(winapi)
+fn DuplicateHandle         : (ptr, ptr, ptr, ptr, u32, i32, u32) -> i32      #extern("DuplicateHandle") #cc(winapi)
+fn SetHandleInformation    : (ptr, u32, u32) -> i32                          #extern("SetHandleInformation") #cc(winapi)
+fn GetQueuedCompletionStatus   : (ptr, ptr, ptr, ptr, u32) -> i32            #extern("GetQueuedCompletionStatus") #cc(winapi)
+fn GetQueuedCompletionStatusEx : (ptr, ptr, u32, ptr, u32, i32) -> i32      #extern("GetQueuedCompletionStatusEx") #cc(winapi)
+fn PostQueuedCompletionStatus  : (ptr, u32, u64, ptr) -> i32                 #extern("PostQueuedCompletionStatus") #cc(winapi)
+fn GetOverlappedResult         : (ptr, ptr, ptr, i32) -> i32                 #extern("GetOverlappedResult") #cc(winapi)
+fn CreateIoCompletionPort      : (ptr, ptr, u64, u32) -> ptr                 #extern("CreateIoCompletionPort") #cc(winapi)
+
+-- §2  PROCESS MANAGEMENT
+fn TerminateProcess        : (ptr, u32) -> i32                               #extern("TerminateProcess") #cc(winapi)
+fn WaitForSingleObject     : (ptr, u32) -> u32                               #extern("WaitForSingleObject") #cc(winapi)
+fn WaitForSingleObjectEx   : (ptr, u32, i32) -> u32                         #extern("WaitForSingleObjectEx") #cc(winapi)
+fn WaitForMultipleObjects  : (u32, ptr, i32, u32) -> u32                     #extern("WaitForMultipleObjects") #cc(winapi)
+fn WaitForMultipleObjectsEx : (u32, ptr, i32, u32, i32) -> u32              #extern("WaitForMultipleObjectsEx") #cc(winapi)
+fn CreateProcessW          : (ptr, ptr, ptr, ptr, i32, u32, ptr, ptr, ptr, ptr) -> i32  #extern("CreateProcessW") #cc(winapi)
+fn SleepEx                 : (u32, i32) -> u32                               #extern("SleepEx") #cc(winapi)
+fn GetExitCodeProcess      : (ptr, ptr) -> i32                               #extern("GetExitCodeProcess") #cc(winapi)
+fn SetEnvironmentVariableW : (ptr, ptr) -> i32                               #extern("SetEnvironmentVariableW") #cc(winapi)
+fn CreateToolhelp32Snapshot : (u32, u32) -> ptr                              #extern("CreateToolhelp32Snapshot") #cc(winapi)
+fn GetCurrentThreadId      : () -> u32                                       #extern("GetCurrentThreadId") #cc(winapi)
+fn CreateThread            : (ptr, u64, ptr, ptr, u32, ptr) -> ptr           #extern("CreateThread") #cc(winapi)
+
+-- §3  SYNCHRONIZATION
+fn SwitchToThread          : () -> i32                                        #extern("SwitchToThread") #cc(winapi)
+fn InitOnceExecuteOnce     : (ptr, ptr, ptr, ptr) -> i32                     #extern("InitOnceExecuteOnce") #cc(winapi)
+fn SleepConditionVariableSRW : (ptr, ptr, u32, u32) -> i32                   #extern("SleepConditionVariableSRW") #cc(winapi)
+fn WakeConditionVariable   : ptr -> ()                                        #extern("WakeConditionVariable") #cc(winapi)
+fn WakeAllConditionVariable : ptr -> ()                                       #extern("WakeAllConditionVariable") #cc(winapi)
+fn AcquireSRWLockExclusive : ptr -> ()                                        #extern("AcquireSRWLockExclusive") #cc(winapi)
+fn ReleaseSRWLockExclusive : ptr -> ()                                        #extern("ReleaseSRWLockExclusive") #cc(winapi)
+fn AcquireSRWLockShared    : ptr -> ()                                        #extern("AcquireSRWLockShared") #cc(winapi)
+fn ReleaseSRWLockShared    : ptr -> ()                                        #extern("ReleaseSRWLockShared") #cc(winapi)
+fn TryAcquireSRWLockExclusive : ptr -> i32                                    #extern("TryAcquireSRWLockExclusive") #cc(winapi)
+fn TryAcquireSRWLockShared    : ptr -> i32                                    #extern("TryAcquireSRWLockShared") #cc(winapi)
+fn InitializeSRWLock       : ptr -> ()                                        #extern("InitializeSRWLock") #cc(winapi)
+
+-- §4  CONSOLE
+fn GetConsoleMode          : (ptr, ptr) -> i32                               #extern("GetConsoleMode") #cc(winapi)
+fn SetConsoleMode          : (ptr, u32) -> i32                               #extern("SetConsoleMode") #cc(winapi)
+fn GetConsoleScreenBufferInfo : (ptr, ptr) -> i32                            #extern("GetConsoleScreenBufferInfo") #cc(winapi)
+fn SetConsoleActiveScreenBuffer : ptr -> i32                                 #extern("SetConsoleActiveScreenBuffer") #cc(winapi)
+fn SetConsoleCursorPosition : (ptr, i32) -> i32                             #extern("SetConsoleCursorPosition") #cc(winapi)
+fn SetConsoleTextAttribute : (ptr, u16) -> i32                               #extern("SetConsoleTextAttribute") #cc(winapi)
+fn WriteConsoleW           : (ptr, ptr, u32, ptr, ptr) -> i32                #extern("WriteConsoleW") #cc(winapi)
+fn FillConsoleOutputCharacterW : (ptr, u16, u32, i32, ptr) -> i32           #extern("FillConsoleOutputCharacterW") #cc(winapi)
+
+-- §5  MEMORY
+fn VirtualAlloc            : (ptr, u64, u32, u32) -> ptr                     #extern("VirtualAlloc") #cc(winapi)
+fn VirtualFree             : (ptr, u64, u32) -> i32                         #extern("VirtualFree") #cc(winapi)
+fn VirtualProtect          : (ptr, u64, u32, ptr) -> i32                    #extern("VirtualProtect") #cc(winapi)
+fn HeapAlloc               : (ptr, u32, u64) -> ptr                         #extern("HeapAlloc") #cc(winapi)
+fn HeapReAlloc             : (ptr, u32, ptr, u64) -> ptr                    #extern("HeapReAlloc") #cc(winapi)
+fn HeapFree                : (ptr, u32, ptr) -> i32                         #extern("HeapFree") #cc(winapi)
+fn GetProcessHeap          : () -> ptr                                        #extern("GetProcessHeap") #cc(winapi)
+fn LocalFree               : ptr -> ptr                                       #extern("LocalFree") #cc(winapi)
+
+-- §6  STRING/LOCALE
+fn MultiByteToWideChar     : (u32, u32, ptr, i32, ptr, i32) -> i32          #extern("MultiByteToWideChar") #cc(winapi)
+fn WideCharToMultiByte     : (u32, u32, ptr, i32, ptr, i32, ptr, ptr) -> i32  #extern("WideCharToMultiByte") #cc(winapi)
+fn FormatMessageW          : (u32, ptr, u32, u32, ptr, u32, ptr) -> u32     #extern("FormatMessageW") #cc(winapi)
+
+const FORMAT_MESSAGE_FROM_SYSTEM   : u32 = 0x1000u32
+const FORMAT_MESSAGE_IGNORE_INSERTS : u32 = 0x200u32
+const FORMAT_MESSAGE_ALLOCATE_BUFFER : u32 = 0x100u32
+
+-- §7  LIBRARY
+fn LoadLibraryW            : ptr -> ptr                                       #extern("LoadLibraryW") #cc(winapi)
+fn LoadLibraryExW          : (ptr, ptr, u32) -> ptr                         #extern("LoadLibraryExW") #cc(winapi)
+fn FreeLibrary             : ptr -> i32                                       #extern("FreeLibrary") #cc(winapi)
+fn GetProcAddress          : (ptr, ptr) -> ptr                               #extern("GetProcAddress") #cc(winapi)
+fn GetModuleHandleW        : ptr -> ptr                                       #extern("GetModuleHandleW") #cc(winapi)
+fn GetModuleFileNameW      : (ptr, ptr, u32) -> u32                          #extern("GetModuleFileNameW") #cc(winapi)
+
+-- §8  SYSTEM INFO
+fn GetSystemInfo           : ptr -> ()                                        #extern("GetSystemInfo") #cc(winapi)
+fn GetSystemTimeAsFileTime : ptr -> ()                                        #extern("GetSystemTimeAsFileTime") #cc(winapi)
+fn GetTickCount64          : () -> u64                                        #extern("GetTickCount64") #cc(winapi)
+fn QueryPerformanceCounter : ptr -> i32                                       #extern("QueryPerformanceCounter") #cc(winapi)
+fn QueryPerformanceFrequency : ptr -> i32                                     #extern("QueryPerformanceFrequency") #cc(winapi)
+
+struct SystemInfo
+  processor_architecture   : u16
+  __reserved               : u16
+  page_size                : u32
+  minimum_application_address : ptr
+  maximum_application_address : ptr
+  active_processor_mask    : u64
+  number_of_processors     : u32
+  processor_type           : u32
+  allocation_granularity   : u32
+  processor_level          : u16
+  processor_revision       : u16
+
+-- §9  PATH
+fn GetFullPathNameW        : (ptr, u32, ptr, ptr) -> u32                     #extern("GetFullPathNameW") #cc(winapi)
+fn GetLongPathNameW        : (ptr, ptr, u32) -> u32                         #extern("GetLongPathNameW") #cc(winapi)
+fn GetShortPathNameW       : (ptr, ptr, u32) -> u32                         #extern("GetShortPathNameW") #cc(winapi)
+fn SetCurrentDirectoryW    : ptr -> i32                                       #extern("SetCurrentDirectoryW") #cc(winapi)
+fn CreateDirectoryW        : (ptr, ptr) -> i32                               #extern("CreateDirectoryW") #cc(winapi)
+fn RemoveDirectoryW        : ptr -> i32                                       #extern("RemoveDirectoryW") #cc(winapi)
+fn DeleteFileW             : ptr -> i32                                       #extern("DeleteFileW") #cc(winapi)
+fn MoveFileExW             : (ptr, ptr, u32) -> i32                         #extern("MoveFileExW") #cc(winapi)
+fn CopyFileW               : (ptr, ptr, i32) -> i32                         #extern("CopyFileW") #cc(winapi)
+fn GetFileAttributesW      : ptr -> u32                                       #extern("GetFileAttributesW") #cc(winapi)
+fn FindFirstFileW          : (ptr, ptr) -> ptr                               #extern("FindFirstFileW") #cc(winapi)
+fn FindNextFileW           : (ptr, ptr) -> i32                               #extern("FindNextFileW") #cc(winapi)
+fn FindClose               : ptr -> i32                                       #extern("FindClose") #cc(winapi)
+fn GetTempPathW            : (u32, ptr) -> u32                               #extern("GetTempPathW") #cc(winapi)
+fn GetFinalPathNameByHandleW : (ptr, ptr, u32, u32) -> u32                   #extern("GetFinalPathNameByHandleW") #cc(winapi)
+fn CreateSymbolicLinkW     : (ptr, ptr, u32) -> i32                         #extern("CreateSymbolicLinkW") #cc(winapi)
+fn CreateHardLinkW         : (ptr, ptr, ptr) -> i32                         #extern("CreateHardLinkW") #cc(winapi)
+
+-- §10  ERROR
+fn GetLastError            : () -> u32                                        #extern("GetLastError") #cc(winapi)
+fn SetLastError            : u32 -> ()                                        #extern("SetLastError") #cc(winapi)
+fn CloseHandle             : ptr -> i32                                       #extern("CloseHandle") #cc(winapi)
+
+-- §11  MISC
+fn OutputDebugStringW      : ptr -> ()                                        #extern("OutputDebugStringW") #cc(winapi)
+fn IsDebuggerPresent       : () -> i32                                        #extern("IsDebuggerPresent") #cc(winapi)
+fn DebugBreak              : () -> ()                                         #extern("DebugBreak") #cc(winapi)
+fn ExitProcess             : u32 -> ⊥                                        #extern("ExitProcess") #cc(winapi)
+fn GetEnvironmentVariableW : (ptr, ptr, u32) -> u32                          #extern("GetEnvironmentVariableW") #cc(winapi)
+fn SetEnvironmentVariableW2 : (ptr, ptr) -> i32                              #extern("SetEnvironmentVariableW") #cc(winapi)
+fn GetCommandLineW         : () -> ptr                                        #extern("GetCommandLineW") #cc(winapi)
+fn CommandLineToArgvW      : (ptr, ptr) -> ptr                               #extern("CommandLineToArgvW") #cc(winapi)
+fn Sleep                   : u32 -> ()                                        #extern("Sleep") #cc(winapi)
+fn RtlGenRandom            : (ptr, u32) -> i32                               #extern("SystemFunction036") #cc(winapi)
+
+-- §12  DEVICE I/O CONTROL
+fn DeviceIoControl         : (ptr, u32, ptr, u32, ptr, u32, ptr, ptr) -> i32  #extern("DeviceIoControl") #cc(winapi)
+
+const FILE_COMPLETION_NOTIFICATION_MODES_SKIP_COMPLETION_PORT_ON_SUCCESS : u8 = 1u8
+const FILE_COMPLETION_NOTIFICATION_MODES_SKIP_SET_EVENT_ON_HANDLE        : u8 = 2u8

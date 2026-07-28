@@ -1,0 +1,6 @@
+-- EXPECT: type-warn 5:7 immutable binding
+fn f : i32 -> i32
+  | n ->
+      let x : i32 = n
+      x = 5
+      x

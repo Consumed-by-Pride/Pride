@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+fn strlen_manual : *u8 -> i64
+  | p ->
+    let mut n : i64 = 0
+    let mut q = p
+    while *q != 0u8
+      q = q + 1
+      n = n + 1
+    n

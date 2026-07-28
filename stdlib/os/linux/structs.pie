@@ -1,0 +1,731 @@
+mod os.linux.structs
+
+-- Linux kernel data structures — ABI-stable types for x86-64.
+-- Linux kernel ABI struct definitions for x86-64.
+-- These are the types passed to/from the kernel via syscall pointers.
+-- All sizes and offsets match the Linux 6.x x86-64 kernel ABI.
+
+-- §1  TIME TYPES
+
+struct Timespec
+  sec  : i64
+  nsec : i64
+
+struct Timeval
+  sec  : i64
+  usec : i64
+
+struct Timezone
+  minuteswest : i32
+  dsttime     : i32
+
+struct ItimerSpec
+  interval : Timespec
+  value    : Timespec
+
+struct ItimerVal
+  interval : Timeval
+  value    : Timeval
+
+-- §2  FILE SYSTEM TYPES
+
+-- stat(2) result — x86-64 layout (matches struct stat in sys/stat.h)
+struct Stat
+  dev       : u64
+  ino       : u64
+  nlink     : u64
+  mode      : u32
+  uid       : u32
+  gid       : u32
+  __pad0    : u32
+  rdev      : u64
+  size      : i64
+  blksize   : i64
+  blocks    : i64
+  atim_sec  : i64
+  atim_nsec : i64
+  mtim_sec  : i64
+  mtim_nsec : i64
+  ctim_sec  : i64
+  ctim_nsec : i64
+  __unused0 : i64
+  __unused1 : i64
+  __unused2 : i64
+
+-- statx(2) result — kernel 4.11+
+struct StatxTimestamp
+  sec  : i64
+  nsec : u32
+  pad  : i32
+
+struct Statx
+  mask             : u32
+  blksize          : u32
+  attributes       : u64
+  nlink            : u32
+  uid              : u32
+  gid              : u32
+  mode             : u16
+  __spare0         : u16
+  ino              : u64
+  size             : u64
+  blocks           : u64
+  attributes_mask  : u64
+  atime            : StatxTimestamp
+  btime            : StatxTimestamp
+  ctime            : StatxTimestamp
+  mtime            : StatxTimestamp
+  rdev_major       : u32
+  rdev_minor       : u32
+  dev_major        : u32
+  dev_minor        : u32
+  mnt_id           : u64
+  dio_mem_align    : u32
+  dio_offset_align : u32
+  __spare2         : u64
+  __spare3         : u64
+  __spare4         : u64
+  __spare5         : u64
+  __spare6         : u64
+  __spare7         : u64
+  __spare8         : u64
+
+-- statfs(2) result
+struct Statfs
+  type     : i64
+  bsize    : i64
+  blocks   : u64
+  bfree    : u64
+  bavail   : u64
+  files    : u64
+  ffree    : u64
+  fsid_lo  : i32
+  fsid_hi  : i32
+  namelen  : i64
+  frsize   : i64
+  flags    : i64
+  spare0   : i64
+  spare1   : i64
+  spare2   : i64
+  spare3   : i64
+
+-- dirent64 — getdents64(2) entry
+struct Dirent64
+  ino    : u64
+  off    : u64
+  reclen : u16
+  type_  : u8
+  name   : u8   -- first byte of null-terminated name; walk +sizeof(Dirent64) to get name string
+
+-- §3  SOCKET TYPES
+
+const SOCKADDR_DATA_LEN : i64 = 14i64
+const SOCKADDR_STORAGE_SIZE : i64 = 128i64
+
+struct Sockaddr
+  family : u16
+  data   : u8   -- 14 bytes follow; access via specific subtypes below
+
+-- IPv4
+struct SockaddrIn
+  family : u16   -- AF_INET = 2
+  port   : u16   -- big-endian
+  addr   : u32   -- big-endian IPv4 address
+  zero   : u64   -- 8 zero bytes padding
+
+-- IPv6
+struct SockaddrIn6
+  family   : u16   -- AF_INET6 = 10
+  port     : u16
+  flowinfo : u32
+  addr     : u8   -- 16 bytes follow
+  scope_id : u32
+
+-- Unix domain socket
+struct SockaddrUn
+  family : u16   -- AF_UNIX = 1
+  path   : u8    -- 108 bytes follow (null-terminated path)
+
+-- Packet socket (AF_PACKET)
+struct SockaddrLl
+  family   : u16
+  protocol : u16
+  ifindex  : i32
+  hatype   : u16
+  pkttype  : u8
+  halen    : u8
+  addr     : u64   -- 8 bytes
+
+-- Netlink socket
+struct SockaddrNl
+  family : u16
+  pad1   : u16
+  pid    : u32
+  groups : u32
+
+-- XDP socket
+struct SockaddrXdp
+  family         : u16
+  flags          : u16
+  ifindex        : u32
+  queue_id       : u32
+  shared_umem_fd : u32
+
+-- Vsock
+struct SockaddrVm
+  family    : u16
+  reserved1 : u16
+  port      : u32
+  cid       : u32
+  flags     : u8
+  zero      : u32   -- 3 padding bytes as u24 effectively
+
+-- §4  MSGHDR / CMSG
+
+struct IoVec
+  base : ptr
+  len  : u64
+
+struct Msghdr
+  name       : ptr    -- *Sockaddr
+  namelen    : u32
+  __pad1     : u32
+  iov        : ptr    -- *IoVec
+  iovlen     : u64
+  control    : ptr
+  controllen : u64
+  flags      : i32
+  __pad2     : i32
+
+struct MmsghdrHdr
+  hdr : Msghdr
+  len : u32
+  __pad : u32
+
+struct Cmsghdr
+  len   : u64
+  level : i32
+  type_ : i32
+  -- data follows immediately after
+
+-- §5  EPOLL
+
+struct EpollEvent
+  events : u32
+  __pad  : u32   -- x86-64 alignment pad
+  data   : u64   -- union: ptr(usize) | fd(i32) | u32 | u64 — we expose as u64
+
+fn epoll_data_fd : u64 -> i32  | d -> (d & 0xFFFFFFFFu64) as i32
+fn epoll_data_u32 : u64 -> u32 | d -> (d & 0xFFFFFFFFu64) as u32
+fn epoll_data_u64 : u64 -> u64 | d -> d
+fn epoll_make_data_fd  : i32 -> u64 | fd -> fd as u64 & 0xFFFFFFFFu64
+fn epoll_make_data_u64 : u64 -> u64 | v -> v
+
+-- §6  INOTIFY
+
+struct InotifyEvent
+  wd     : i32
+  mask   : u32
+  cookie : u32
+  len    : u32
+  -- name follows: [len]u8 (null-terminated, padded to multiple of 4)
+
+-- §7  SIGNALFD
+
+struct SignalfdSiginfo
+  signo   : u32
+  errno_  : i32
+  code    : i32
+  pid     : u32
+  uid     : u32
+  fd      : i32
+  tid     : u32
+  band    : u32
+  overrun : u32
+  trapno  : u32
+  status  : i32
+  int_    : i32
+  ptr_    : u64
+  utime   : u64
+  stime   : u64
+  addr    : u64
+  addr_lsb : u16
+  __pad2  : u16
+  syscall : i32
+  call_addr : u64
+  arch    : u32
+  __pad   : u8   -- 28 bytes follow
+
+-- §8  TIMERFD
+
+struct ItimerSpecTimerfd
+  interval : Timespec
+  value    : Timespec
+
+-- §9  PERF_EVENT
+
+struct PerfEventAttr
+  type_            : u32
+  size             : u32
+  config           : u64
+  sample_period    : u64   -- or sample_freq
+  sample_type      : u64
+  read_format      : u64
+  flags            : u64   -- packed bits: disabled, inherit, pinned, exclusive, etc.
+  wakeup_events    : u32   -- or wakeup_watermark
+  bp_type          : u32
+  bp_addr          : u64   -- or kprobe_func, uprobe_path
+  bp_len           : u64   -- or kprobe_addr, probe_offset
+  branch_sample_type : u64
+  sample_regs_user : u64
+  sample_stack_user : u32
+  clockid          : i32
+  sample_regs_intr : u64
+  aux_watermark    : u32
+  sample_max_stack : u16
+  __reserved2      : u16
+  aux_sample_size  : u32
+  __reserved3      : u32
+  sig_data         : u64
+
+-- §10  SYSINFO
+
+struct SysInfo
+  uptime    : i64
+  loads0    : u64   -- 1min
+  loads1    : u64   -- 5min
+  loads2    : u64   -- 15min
+  totalram  : u64
+  freeram   : u64
+  sharedram : u64
+  bufferram : u64
+  totalswap : u64
+  freeswap  : u64
+  procs     : u16
+  pad       : u16
+  pad2      : u32
+  totalhigh : u64
+  freehigh  : u64
+  mem_unit  : u32
+  _f        : u8   -- 20 bytes padding follow
+
+-- §11  UTSNAME
+
+struct Utsname
+  sysname    : u8   -- 65 bytes
+  nodename   : u8   -- 65 bytes  (at offset 65)
+  release    : u8   -- 65 bytes  (at offset 130)
+  version    : u8   -- 65 bytes  (at offset 195)
+  machine    : u8   -- 65 bytes  (at offset 260)
+  domainname : u8   -- 65 bytes  (at offset 325)
+  -- total: 390 bytes
+
+const UTSNAME_FIELD_LEN : i64 = 65i64
+
+fn utsname_sysname    : *Utsname -> *u8 | u -> u as *u8
+fn utsname_nodename   : *Utsname -> *u8 | u -> (u as i64 + 65i64)  as *u8
+fn utsname_release    : *Utsname -> *u8 | u -> (u as i64 + 130i64) as *u8
+fn utsname_version    : *Utsname -> *u8 | u -> (u as i64 + 195i64) as *u8
+fn utsname_machine    : *Utsname -> *u8 | u -> (u as i64 + 260i64) as *u8
+fn utsname_domainname : *Utsname -> *u8 | u -> (u as i64 + 325i64) as *u8
+
+-- §12  RLIMIT
+
+struct Rlimit
+  cur : u64   -- RLIM_INFINITY = 0xFFFFFFFFFFFFFFFF
+  max : u64
+
+const RLIM_INFINITY : u64 = 18446744073709551615u64   -- 0xFFFFFFFFFFFFFFFF
+
+-- §13  RUSAGE
+
+struct Rusage
+  utime    : Timeval   -- user time
+  stime    : Timeval   -- system time
+  maxrss   : i64
+  ixrss    : i64
+  idrss    : i64
+  isrss    : i64
+  minflt   : i64
+  majflt   : i64
+  nswap    : i64
+  inblock  : i64
+  oublock  : i64
+  msgsnd   : i64
+  msgrcv   : i64
+  nsignals : i64
+  nvcsw    : i64
+  nivcsw   : i64
+
+-- §14  SIGINFO
+
+struct SiginfoFields   -- simplified — full siginfo_t is a union
+  signo : i32
+  errno_ : i32
+  code   : i32
+  __pad0  : i32
+  -- union follows — we expose as raw bytes
+  data   : u8   -- 112 bytes follow
+
+const SI_MAX_SIZE : i64 = 128i64
+
+-- SI_CODE values
+const SI_USER     : i32 = 0i32
+const SI_KERNEL   : i32 = 128i32
+const SI_QUEUE    : i32 = -1i32
+const SI_TIMER    : i32 = -2i32
+const SI_MESGQ    : i32 = -3i32
+const SI_ASYNCIO  : i32 = -4i32
+const SI_SIGIO    : i32 = -5i32
+const SI_TKILL    : i32 = -6i32
+const SI_DETHREAD : i32 = -7i32
+const SI_ASYNCNL  : i32 = -60i32
+
+-- §15  SIGSET
+
+const NSIG       : i64 = 64i64
+const SIGSET_NWORDS : i64 = 2i64   -- 64 bits / 32 bits per word = 2 words for 64 signals
+
+struct Sigset
+  lo : u64   -- signals 1..64 — we use a single u64 on x86-64 (kernel uses 2 × u32)
+  hi : u64   -- reserved / RT signals 33..64 for compat
+
+fn sigset_empty  : () -> Sigset | () -> Sigset { lo: 0u64, hi: 0u64 }
+fn sigset_full   : () -> Sigset | () -> Sigset { lo: 0xFFFFFFFFFFFFFFFFu64, hi: 0xFFFFFFFFFFFFFFFFu64 }
+fn sigset_add    : (*Sigset, i64) -> () | (s, sig) -> if sig >= 1i64 && sig <= 64i64 then s.lo = s.lo | (1u64 << (sig - 1i64) as u64)
+fn sigset_del    : (*Sigset, i64) -> () | (s, sig) -> if sig >= 1i64 && sig <= 64i64 then s.lo = s.lo & !(1u64 << (sig - 1i64) as u64)
+fn sigset_has    : (*Sigset, i64) -> bool | (s, sig) -> if sig < 1i64 || sig > 64i64 then false else (s.lo >> (sig - 1i64) as u64) & 1u64 != 0u64
+fn sigset_or     : (*Sigset, *Sigset) -> Sigset | (a, b) -> Sigset { lo: a.lo | b.lo, hi: a.hi | b.hi }
+fn sigset_and    : (*Sigset, *Sigset) -> Sigset | (a, b) -> Sigset { lo: a.lo & b.lo, hi: a.hi & b.hi }
+fn sigset_not    : *Sigset -> Sigset | s -> Sigset { lo: !s.lo, hi: !s.hi }
+
+-- §16  SIGACTION
+
+struct KSigaction
+  handler   : ptr    -- fn(i32)->() or fn(i32,ptr,ptr)->()
+  flags     : u64
+  restorer  : ptr    -- required on x86-64 for SA_RESTORER
+  mask      : Sigset
+
+-- §17  STACK (sigaltstack / ucontext stack)
+
+struct Stack
+  sp    : ptr
+  flags : i32
+  __pad : i32
+  size  : u64
+
+-- §18  FLOCK (fcntl file locking)
+
+struct Flock
+  type_  : i16   -- F_RDLCK, F_WRLCK, F_UNLCK
+  whence : i16
+  __pad  : i32
+  start  : i64
+  len    : i64
+  pid    : i32
+  __pad2 : i32
+
+-- §19  SCHED
+
+struct SchedParam
+  priority : i32
+
+struct SchedAttr
+  size      : u32
+  policy    : u32
+  flags     : u64
+  nice      : i32
+  priority  : u32
+  runtime   : u64
+  deadline  : u64
+  period    : u64
+  util_min  : u32
+  util_max  : u32
+
+-- §20  TERMIOS
+
+struct Termios
+  iflag  : u32   -- input mode flags
+  oflag  : u32   -- output mode flags
+  cflag  : u32   -- control mode flags
+  lflag  : u32   -- local mode flags
+  line   : u8    -- line discipline
+  cc     : u8    -- 19 control chars follow (NCCS=19 on Linux)
+  __pad  : u16
+  ispeed : u32   -- input baud rate
+  ospeed : u32   -- output baud rate
+
+-- termios c_cc indices
+const VINTR    : i64 = 0i64
+const VQUIT    : i64 = 1i64
+const VERASE   : i64 = 2i64
+const VKILL    : i64 = 3i64
+const VEOF     : i64 = 4i64
+const VTIME    : i64 = 5i64
+const VMIN     : i64 = 6i64
+const VSWTC    : i64 = 7i64
+const VSTART   : i64 = 8i64
+const VSTOP    : i64 = 9i64
+const VSUSP    : i64 = 10i64
+const VEOL     : i64 = 11i64
+const VREPRINT : i64 = 12i64
+const VDISCARD : i64 = 13i64
+const VWERASE  : i64 = 14i64
+const VLNEXT   : i64 = 15i64
+const VEOL2    : i64 = 16i64
+const NCCS     : i64 = 19i64
+
+-- §21  WINSIZE
+
+struct Winsize
+  rows    : u16
+  cols    : u16
+  xpixel  : u16
+  ypixel  : u16
+
+-- §22  IFCONF / IFREQ (network interface)
+
+struct Ifmap
+  mem_start : u64
+  mem_end   : u64
+  base_addr : u16
+  irq       : u8
+  dma       : u8
+  port      : u8
+  __pad     : u8
+
+struct Ifreq
+  name   : u8   -- 16 bytes (IFNAMSIZ)
+  -- union follows at offset 16: ifr_addr | ifr_dstaddr | ifr_broadaddr |
+  --   ifr_netmask | ifr_hwaddr | ifr_flags | ifr_ifindex | ifr_metric |
+  --   ifr_mtu | ifr_map | ifr_slave | ifr_data | ifr_newname
+  data   : u8   -- 24 bytes union data
+
+const IFNAMSIZ : i64 = 16i64
+
+-- §23  NETLINK
+
+struct NlMsgHdr
+  len   : u32
+  type_ : u16
+  flags : u16
+  seq   : u32
+  pid   : u32
+
+const NLMSG_NOOP       : u16 = 1u16
+const NLMSG_ERROR      : u16 = 2u16
+const NLMSG_DONE       : u16 = 3u16
+const NLMSG_OVERRUN    : u16 = 4u16
+const NLMSG_MIN_TYPE   : u16 = 16u16
+
+const NLM_F_REQUEST    : u16 = 1u16
+const NLM_F_MULTI      : u16 = 2u16
+const NLM_F_ACK        : u16 = 4u16
+const NLM_F_ECHO       : u16 = 8u16
+const NLM_F_ROOT       : u16 = 256u16
+const NLM_F_MATCH      : u16 = 512u16
+const NLM_F_ATOMIC     : u16 = 1024u16
+const NLM_F_DUMP       : u16 = 768u16
+const NLM_F_REPLACE    : u16 = 256u16
+const NLM_F_EXCL       : u16 = 512u16
+const NLM_F_CREATE     : u16 = 1024u16
+const NLM_F_APPEND     : u16 = 2048u16
+
+struct NlAttr
+  len   : u16
+  type_ : u16
+
+struct NlMsgErr
+  error_ : i32
+  msg    : NlMsgHdr
+
+-- NLMSG alignment helpers
+fn nlmsg_align   : i64 -> i64 | n -> (n + 3i64) & -4i64
+fn nlmsg_hdrlen  : () -> i64  | () -> nlmsg_align(16i64)   -- sizeof(NlMsgHdr) = 16
+fn nlmsg_length  : i64 -> i32 | len -> (nlmsg_hdrlen() + len) as i32
+fn nlmsg_ok      : (*NlMsgHdr, i64) -> bool | (nlh, len) -> len >= 16i64 && nlh.len >= 16u32 && nlh.len as i64 <= len
+fn nlmsg_next    : (*NlMsgHdr, i64) -> *NlMsgHdr | (nlh, len) ->
+    (nlh as i64 + nlmsg_align(nlh.len as i64)) as *NlMsgHdr
+fn nla_data      : *NlAttr -> ptr | nla -> (nla as i64 + 4i64) as ptr
+fn nla_len       : *NlAttr -> i64 | nla -> nla.len as i64 - 4i64
+
+-- §24  FUTEX WAITV
+
+struct FutexWaitv
+  val     : u64
+  uaddr   : u64
+  flags   : u32
+  __pad   : u32
+
+-- §25  CAPABILITY TYPES
+
+struct CapUserHeader
+  version : u32
+  pid     : i32
+
+struct CapUserData
+  effective   : u32
+  permitted   : u32
+  inheritable : u32
+
+-- §26  LINUX_REBOOT MAGIC NUMBERS
+
+const LINUX_REBOOT_MAGIC1  : i64 = -19088744i64  -- 0xFEE1DEAD
+const LINUX_REBOOT_MAGIC2  : i64 = 672274793i64  -- 0x28121969
+const LINUX_REBOOT_MAGIC2A : i64 = 85072278i64   -- 0x05121996
+const LINUX_REBOOT_MAGIC2B : i64 = 369367448i64  -- 0x16041998
+const LINUX_REBOOT_MAGIC2C : i64 = 537993216i64  -- 0x20112000
+
+const LINUX_REBOOT_CMD_RESTART   : i64 = 19088743i64
+const LINUX_REBOOT_CMD_HALT      : i64 = -668812971i64
+const LINUX_REBOOT_CMD_CAD_ON    : i64 = -756489200i64
+const LINUX_REBOOT_CMD_CAD_OFF   : i64 = 0i64
+const LINUX_REBOOT_CMD_POWER_OFF : i64 = -1060037440i64
+const LINUX_REBOOT_CMD_RESTART2  : i64 = -477069613i64
+const LINUX_REBOOT_CMD_SW_SUSPEND : i64 = -370621272i64
+const LINUX_REBOOT_CMD_KEXEC     : i64 = 1163412803i64
+
+-- §27  FILE HANDLE (open_by_handle_at)
+
+struct FileHandle
+  handle_bytes : u32
+  handle_type  : i32
+  -- f_handle follows: handle_bytes bytes
+
+-- §28  SERIAL / RS485
+
+struct SerialRs485
+  flags          : u32
+  rts_delay_before_send : u32
+  rts_delay_after_send  : u32
+  padding        : u32
+  padding2       : u32
+
+struct SerialIso7816
+  flags     : u32
+  tg        : u32
+  sc_fi     : u32
+  sc_di     : u32
+  clk_delay : u32
+  reserved  : u32
+  reserved2 : u32
+
+-- §29  LINGER (SO_LINGER socket option)
+
+struct Linger
+  onoff  : i32
+  linger : i32
+
+-- §30  IP PKTINFO
+
+struct InPktinfo
+  ipi_ifindex  : i32
+  ipi_spec_dst : u32
+  ipi_addr     : u32
+
+struct In6Pktinfo
+  ipi6_addr    : u8   -- 16 bytes
+  ipi6_ifindex : u32
+
+-- §31  CPU SET
+
+const CPU_SETSIZE    : i64 = 128i64   -- bytes
+const CPU_SET_NWORDS : i64 = 16i64   -- 128 bytes / 8 bytes per word
+
+-- cpu_set_t is CPU_SETSIZE bytes of bitmask
+-- We represent it as a heap-allocated *u64[16]
+
+fn cpuset_new : () -> *u64
+  | () ->
+    let s = os.linux.malloc(CPU_SETSIZE) as *u64
+    os.linux.memset(s as ptr, 0i32, CPU_SETSIZE as u64)
+    s
+
+fn cpuset_free : *u64 -> () | s -> os.linux.free(s as ptr)
+
+fn cpuset_set : (*u64, i64) -> ()
+  | (s, cpu) ->
+    if cpu >= 0i64 && cpu < CPU_SETSIZE * 8i64
+      s[cpu / 64i64] = s[cpu / 64i64] | (1u64 << (cpu % 64i64) as u64)
+
+fn cpuset_clr : (*u64, i64) -> ()
+  | (s, cpu) ->
+    if cpu >= 0i64 && cpu < CPU_SETSIZE * 8i64
+      s[cpu / 64i64] = s[cpu / 64i64] & !(1u64 << (cpu % 64i64) as u64)
+
+fn cpuset_isset : (*u64, i64) -> bool
+  | (s, cpu) ->
+    if cpu < 0i64 || cpu >= CPU_SETSIZE * 8i64 then false
+    else (s[cpu / 64i64] >> (cpu % 64i64) as u64) & 1u64 != 0u64
+
+fn cpuset_count : *u64 -> i64
+  | s ->
+    let mut count : i64 = 0i64; let mut i : i64 = 0i64
+    while i < CPU_SET_NWORDS
+      let mut w = s[i]; while w != 0u64 then count = count + 1i64; w = w & (w -% 1u64)
+      i = i + 1i64
+    count
+
+fn cpuset_zero : *u64 -> () | s -> os.linux.memset(s as ptr, 0i32, CPU_SETSIZE as u64); ()
+fn cpuset_fill : *u64 -> () | s -> os.linux.memset(s as ptr, 0xFFi32, CPU_SETSIZE as u64); ()
+
+-- §32  DL_PHDR_INFO (dl_iterate_phdr)
+
+struct DlPhdrInfo
+  addr  : u64
+  name  : ptr   -- *u8
+  phdr  : ptr   -- *ElfPhdr
+  phnum : u16
+
+-- §33  MMAP2 STRUCT (for /proc/self/maps parsing)
+
+struct ProcMapsEntry
+  start     : u64
+  end_      : u64
+  prot_r    : bool
+  prot_w    : bool
+  prot_x    : bool
+  is_shared : bool
+  offset    : u64
+  dev_major : u32
+  dev_minor : u32
+  inode     : u64
+  pathname  : u8   -- up to PATH_MAX bytes follow
+
+-- §34  FANOTIFY
+
+struct FanotifyEventMetadata
+  event_len : u32
+  vers      : u8
+  reserved  : u8
+  metadata_len : u16
+  mask      : u64
+  fd        : i32
+  pid       : i32
+
+struct FanotifyResponse
+  fd       : i32
+  response : u32
+
+const FAN_ALLOW : u32 = 1u32
+const FAN_DENY  : u32 = 2u32
+const FAN_AUDIT : u32 = 16u32
+
+-- §35  RSEQ (restartable sequences)
+
+struct Rseq
+  cpu_id_start     : u32
+  cpu_id           : u32
+  rseq_cs          : u64   -- pointer to rseq_cs
+  flags            : u32
+  node_id          : u32
+  mm_cid           : u32
+  __padding        : u32
+
+struct RseqCs
+  version  : u32
+  flags    : u32
+  start_ip : u64
+  post_commit_offset : u64
+  abort_ip : u64

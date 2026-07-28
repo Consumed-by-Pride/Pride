@@ -1,0 +1,29 @@
+-- EXPECT-CLEAN
+-- Sieve of Eratosthenes: arr is a *u8 flag array of size n+1
+fn eratosthenes : (*u8, i64) -> i64
+  | (arr, n) ->
+      -- init: set all to 1
+      let mut j : i64 = 0
+      while j <= n
+        arr[j] = 1
+        j = j + 1
+      -- mark 0,1
+      arr[0] = 0
+      arr[1] = 0
+      -- sieve
+      let mut i : i64 = 2
+      while i * i <= n
+        if arr[i] == 1
+          let mut k : i64 = i * i
+          while k <= n
+            arr[k] = 0
+            k = k + i
+        i = i + 1
+      -- count primes
+      let mut cnt : i64 = 0
+      let mut p : i64 = 2
+      while p <= n
+        if arr[p] == 1
+          cnt = cnt + 1
+        p = p + 1
+      cnt

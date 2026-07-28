@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+effect Log
+  emit : i32 -> ()
+
+fn inner : i32 -> () ! [Log]
+  | n -> Log.emit(n)
+
+fn outer : i32 -> () ! [Log]
+  | n -> inner(n * 2)

@@ -1,0 +1,25 @@
+-- EXPECT-CLEAN
+fn rle_run_length : (*u8, i64, i64) -> i64
+  | (buf, start, len) ->
+    let byte : u8 = buf[start]
+    let mut run : i64 = 1i64
+    while start + run < len && buf[start + run] == byte && run < 254i64
+      run = run + 1i64
+    run
+
+fn rle_should_encode : i64 -> bool
+  | run -> run >= 3i64
+
+fn lz4_hash4_simple : (*u8, i64) -> u32
+  | (buf, pos) ->
+    let b0 : u32 = buf[pos] as u32
+    let b1 : u32 = buf[pos + 1i64] as u32
+    let b2 : u32 = buf[pos + 2i64] as u32
+    let b3 : u32 = buf[pos + 3i64] as u32
+    let seq : u32 = b0 | (b1 << 8u32) | (b2 << 16u32) | (b3 << 24u32)
+    (seq * 2654435761u32) >> 16u32
+
+fn compress_ratio : (i64, i64) -> f64
+  | (orig_size, comp_size) ->
+    if comp_size == 0i64 then 0.0
+    else (orig_size as f64) / (comp_size as f64)

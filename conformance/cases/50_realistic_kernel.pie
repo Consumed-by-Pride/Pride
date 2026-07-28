@@ -1,0 +1,16 @@
+-- EXPECT-COUNT: type-err=0
+-- A kernel-ish bump allocator over a static arena.
+struct Arena
+  base : *u8
+  cursor : u64
+  cap : u64
+fn bump : (*Arena, u64) -> *u8 ! [UB]
+  | (a, size) ->
+      if a.cursor + size > a.cap
+        ub! "arena exhausted"
+      else
+        let p = a.base
+        a.cursor = a.cursor + size
+        p
+fn align_up : (u64, u64) -> u64
+  | (n, alignment) -> (n + alignment - 1) & (0 - alignment)

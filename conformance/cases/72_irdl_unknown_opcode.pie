@@ -1,0 +1,7 @@
+-- EXPECT: irdl-err 7:3 unknown opcode
+fn emit : Str -> Str
+  | s -> s
+dialect Gpu
+  opcode gadd
+irdl
+  Gpu.nope [a : i32] ↦ emit("x")

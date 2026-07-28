@@ -1,0 +1,560 @@
+mod os.linux.bpf
+
+use os.linux
+
+-- eBPF (extended Berkeley Packet Filter) interface.
+
+-- Used for: network filtering, tracing, security (seccomp), XDP, tc, cgroups.
+
+-- §1  BPF COMMANDS (bpf(2) cmd argument)
+const MAP_CREATE          : i32 = 0i32
+const MAP_LOOKUP_ELEM     : i32 = 1i32
+const MAP_UPDATE_ELEM     : i32 = 2i32
+const MAP_DELETE_ELEM     : i32 = 3i32
+const MAP_GET_NEXT_KEY    : i32 = 4i32
+const PROG_LOAD           : i32 = 5i32
+const OBJ_PIN             : i32 = 6i32
+const OBJ_GET             : i32 = 7i32
+const PROG_ATTACH         : i32 = 8i32
+const PROG_DETACH         : i32 = 9i32
+const PROG_TEST_RUN       : i32 = 10i32
+const PROG_RUN            : i32 = 10i32
+const PROG_GET_NEXT_ID    : i32 = 11i32
+const MAP_GET_NEXT_ID     : i32 = 12i32
+const PROG_GET_FD_BY_ID   : i32 = 13i32
+const MAP_GET_FD_BY_ID    : i32 = 14i32
+const OBJ_GET_INFO_BY_FD  : i32 = 15i32
+const PROG_QUERY          : i32 = 16i32
+const RAW_TRACEPOINT_OPEN : i32 = 17i32
+const BTF_LOAD            : i32 = 18i32
+const BTF_GET_FD_BY_ID    : i32 = 19i32
+const TASK_FD_QUERY       : i32 = 20i32
+const MAP_LOOKUP_AND_DELETE_ELEM : i32 = 21i32
+const MAP_FREEZE          : i32 = 22i32
+const BTF_GET_NEXT_ID     : i32 = 23i32
+const MAP_LOOKUP_BATCH    : i32 = 24i32
+const MAP_UPDATE_BATCH    : i32 = 25i32
+const MAP_DELETE_BATCH    : i32 = 26i32
+const LINK_CREATE         : i32 = 28i32
+const LINK_UPDATE         : i32 = 29i32
+const LINK_GET_FD_BY_ID   : i32 = 30i32
+const LINK_GET_NEXT_ID    : i32 = 31i32
+const ENABLE_STATS        : i32 = 32i32
+const ITER_CREATE         : i32 = 33i32
+const LINK_DETACH         : i32 = 34i32
+const PROG_BIND_MAP       : i32 = 35i32
+
+-- §2  MAP TYPES
+const MAP_TYPE_UNSPEC           : u32 = 0u32
+const MAP_TYPE_HASH             : u32 = 1u32
+const MAP_TYPE_ARRAY            : u32 = 2u32
+const MAP_TYPE_PROG_ARRAY       : u32 = 3u32
+const MAP_TYPE_PERF_EVENT_ARRAY : u32 = 4u32
+const MAP_TYPE_PERCPU_HASH      : u32 = 5u32
+const MAP_TYPE_PERCPU_ARRAY     : u32 = 6u32
+const MAP_TYPE_STACK_TRACE      : u32 = 7u32
+const MAP_TYPE_CGROUP_ARRAY     : u32 = 8u32
+const MAP_TYPE_LRU_HASH         : u32 = 9u32
+const MAP_TYPE_LRU_PERCPU_HASH  : u32 = 10u32
+const MAP_TYPE_LPM_TRIE         : u32 = 11u32
+const MAP_TYPE_ARRAY_OF_MAPS    : u32 = 12u32
+const MAP_TYPE_HASH_OF_MAPS     : u32 = 13u32
+const MAP_TYPE_DEVMAP           : u32 = 14u32
+const MAP_TYPE_SOCKMAP          : u32 = 15u32
+const MAP_TYPE_CPUMAP           : u32 = 16u32
+const MAP_TYPE_XSKMAP           : u32 = 17u32
+const MAP_TYPE_SOCKHASH         : u32 = 18u32
+const MAP_TYPE_CGROUP_STORAGE   : u32 = 19u32
+const MAP_TYPE_REUSEPORT_SOCKARRAY : u32 = 20u32
+const MAP_TYPE_PERCPU_CGROUP_STORAGE : u32 = 21u32
+const MAP_TYPE_QUEUE            : u32 = 22u32
+const MAP_TYPE_STACK            : u32 = 23u32
+const MAP_TYPE_SK_STORAGE       : u32 = 24u32
+const MAP_TYPE_DEVMAP_HASH      : u32 = 25u32
+const MAP_TYPE_STRUCT_OPS       : u32 = 26u32
+const MAP_TYPE_RINGBUF          : u32 = 27u32
+const MAP_TYPE_INODE_STORAGE    : u32 = 28u32
+const MAP_TYPE_TASK_STORAGE     : u32 = 29u32
+const MAP_TYPE_BLOOM_FILTER     : u32 = 30u32
+const MAP_TYPE_USER_RINGBUF     : u32 = 31u32
+const MAP_TYPE_CGRP_STORAGE     : u32 = 32u32
+
+-- §3  PROGRAM TYPES
+const PROG_TYPE_UNSPEC           : u32 = 0u32
+const PROG_TYPE_SOCKET_FILTER    : u32 = 1u32
+const PROG_TYPE_KPROBE           : u32 = 2u32
+const PROG_TYPE_SCHED_CLS        : u32 = 3u32
+const PROG_TYPE_SCHED_ACT        : u32 = 4u32
+const PROG_TYPE_TRACEPOINT       : u32 = 5u32
+const PROG_TYPE_XDP              : u32 = 6u32
+const PROG_TYPE_PERF_EVENT       : u32 = 7u32
+const PROG_TYPE_CGROUP_SKB       : u32 = 8u32
+const PROG_TYPE_CGROUP_SOCK      : u32 = 9u32
+const PROG_TYPE_LWT_IN           : u32 = 10u32
+const PROG_TYPE_LWT_OUT          : u32 = 11u32
+const PROG_TYPE_LWT_XMIT         : u32 = 12u32
+const PROG_TYPE_SOCK_OPS         : u32 = 13u32
+const PROG_TYPE_SK_SKB           : u32 = 14u32
+const PROG_TYPE_CGROUP_DEVICE    : u32 = 15u32
+const PROG_TYPE_SK_MSG           : u32 = 16u32
+const PROG_TYPE_RAW_TRACEPOINT   : u32 = 17u32
+const PROG_TYPE_CGROUP_SOCK_ADDR : u32 = 18u32
+const PROG_TYPE_LWT_SEG6LOCAL    : u32 = 19u32
+const PROG_TYPE_LIRC_MODE2       : u32 = 20u32
+const PROG_TYPE_SK_REUSEPORT     : u32 = 21u32
+const PROG_TYPE_FLOW_DISSECTOR   : u32 = 22u32
+const PROG_TYPE_CGROUP_SYSCTL    : u32 = 23u32
+const PROG_TYPE_RAW_TRACEPOINT_WRITABLE : u32 = 24u32
+const PROG_TYPE_CGROUP_SOCKOPT   : u32 = 25u32
+const PROG_TYPE_TRACING          : u32 = 26u32
+const PROG_TYPE_STRUCT_OPS       : u32 = 27u32
+const PROG_TYPE_EXT              : u32 = 28u32
+const PROG_TYPE_LSM              : u32 = 29u32
+const PROG_TYPE_SK_LOOKUP        : u32 = 30u32
+const PROG_TYPE_SYSCALL          : u32 = 31u32
+const PROG_TYPE_NETFILTER        : u32 = 32u32
+
+-- §4  ATTACH TYPES
+const ATTACH_CGROUP_INET_INGRESS : u32 = 0u32
+const ATTACH_CGROUP_INET_EGRESS  : u32 = 1u32
+const ATTACH_CGROUP_INET_SOCK_CREATE : u32 = 2u32
+const ATTACH_CGROUP_SOCK_OPS     : u32 = 3u32
+const ATTACH_SK_SKB_STREAM_PARSER : u32 = 4u32
+const ATTACH_SK_SKB_STREAM_VERDICT : u32 = 5u32
+const ATTACH_CGROUP_DEVICE       : u32 = 6u32
+const ATTACH_SK_MSG_VERDICT      : u32 = 7u32
+const ATTACH_CGROUP_INET4_BIND   : u32 = 8u32
+const ATTACH_CGROUP_INET6_BIND   : u32 = 9u32
+const ATTACH_CGROUP_INET4_CONNECT : u32 = 10u32
+const ATTACH_CGROUP_INET6_CONNECT : u32 = 11u32
+const ATTACH_CGROUP_INET4_POST_BIND : u32 = 12u32
+const ATTACH_CGROUP_INET6_POST_BIND : u32 = 13u32
+const ATTACH_CGROUP_UDP4_SENDMSG : u32 = 14u32
+const ATTACH_CGROUP_UDP6_SENDMSG : u32 = 15u32
+const ATTACH_LIRC_MODE2          : u32 = 16u32
+const ATTACH_FLOW_DISSECTOR      : u32 = 17u32
+const ATTACH_CGROUP_SYSCTL       : u32 = 18u32
+const ATTACH_CGROUP_UDP4_RECVMSG : u32 = 19u32
+const ATTACH_CGROUP_UDP6_RECVMSG : u32 = 20u32
+const ATTACH_CGROUP_GETSOCKOPT   : u32 = 21u32
+const ATTACH_CGROUP_SETSOCKOPT   : u32 = 22u32
+const ATTACH_TRACE_RAW_TP        : u32 = 23u32
+const ATTACH_TRACE_FENTRY        : u32 = 24u32
+const ATTACH_TRACE_FEXIT         : u32 = 25u32
+const ATTACH_MODIFY_RETURN       : u32 = 26u32
+const ATTACH_LSM_MAC             : u32 = 27u32
+const ATTACH_TRACE_ITER          : u32 = 28u32
+const ATTACH_CGROUP_INET4_GETPEERNAME : u32 = 29u32
+const ATTACH_CGROUP_INET6_GETPEERNAME : u32 = 30u32
+const ATTACH_CGROUP_INET4_GETSOCKNAME : u32 = 31u32
+const ATTACH_CGROUP_INET6_GETSOCKNAME : u32 = 32u32
+const ATTACH_XDP                 : u32 = 37u32
+const ATTACH_SK_REUSEPORT_SELECT : u32 = 38u32
+const ATTACH_SK_REUSEPORT_SELECT_OR_MIGRATE : u32 = 39u32
+const ATTACH_PERF_EVENT          : u32 = 40u32
+const ATTACH_TRACE_KPROBE_MULTI  : u32 = 41u32
+const ATTACH_LSM_CGROUP          : u32 = 42u32
+const ATTACH_STRUCT_OPS          : u32 = 43u32
+const ATTACH_NETFILTER           : u32 = 44u32
+
+-- §5  MAP FLAGS
+const MAP_F_NO_PREALLOC      : u32 = 1u32
+const MAP_F_NO_COMMON_LRU    : u32 = 2u32
+const MAP_F_NUMA_NODE        : u32 = 4u32
+const MAP_F_RDONLY           : u32 = 8u32
+const MAP_F_WRONLY           : u32 = 16u32
+const MAP_F_STACK_BUILD_ID   : u32 = 32u32
+const MAP_F_ZERO_SEED        : u32 = 64u32
+const MAP_F_RDONLY_PROG      : u32 = 128u32
+const MAP_F_WRONLY_PROG      : u32 = 256u32
+const MAP_F_CLONE            : u32 = 512u32
+const MAP_F_MMAPABLE         : u32 = 1024u32
+const MAP_F_PRESERVE_ELEMS   : u32 = 2048u32
+const MAP_F_INNER_MAP        : u32 = 4096u32
+const MAP_F_LINK             : u32 = 8192u32
+const MAP_F_PATH_FD          : u32 = 16384u32
+
+-- §6  PROG FLAGS
+const PROG_F_STRICT_ALIGNMENT   : u32 = 1u32
+const PROG_F_ANY_ALIGNMENT      : u32 = 2u32
+const PROG_F_TEST_RND_HI32      : u32 = 4u32
+const PROG_F_TEST_STATE_FREQ    : u32 = 8u32
+const PROG_F_SLEEPABLE          : u32 = 16u32
+const PROG_F_XDP_HAS_FRAGS      : u32 = 32u32
+const PROG_F_XDP_DEV_BOUND_ONLY : u32 = 64u32
+
+-- §7  ELEM FLAGS (for map update)
+const MAP_ELEM_NOEXIST : u64 = 1u64
+const MAP_ELEM_EXIST   : u64 = 2u64
+const MAP_ELEM_LOCK    : u64 = 4u64
+
+-- §8  eBPF INSTRUCTION (64-bit)
+-- opcode | dst_reg:4 | src_reg:4 | offset:16 | imm:32
+struct Insn
+  code    : u8
+  regs    : u8    -- dst(3:0) | src(7:4)
+  off     : i16
+  imm     : i32
+
+fn insn_dst : *Insn -> u8 | i -> i.regs & 0xFu8
+fn insn_src : *Insn -> u8 | i -> (i.regs >> 4u8) & 0xFu8
+fn insn_make_regs : (u8, u8) -> u8 | (dst, src) -> (src << 4u8) | (dst & 0xFu8)
+
+-- §9  REGISTER NAMES
+const R0  : u8 = 0u8   -- return value / caller-saved
+const R1  : u8 = 1u8   -- fn arg 1 / caller-saved
+const R2  : u8 = 2u8   -- fn arg 2
+const R3  : u8 = 3u8   -- fn arg 3
+const R4  : u8 = 4u8   -- fn arg 4
+const R5  : u8 = 5u8   -- fn arg 5
+const R6  : u8 = 6u8   -- callee-saved
+const R7  : u8 = 7u8   -- callee-saved
+const R8  : u8 = 8u8   -- callee-saved
+const R9  : u8 = 9u8   -- callee-saved
+const R10 : u8 = 10u8  -- frame pointer (read-only)
+const FP  : u8 = 10u8
+
+-- §10  INSTRUCTION CLASS BITS
+const CLS_LD    : u8 = 0x00u8
+const CLS_LDX   : u8 = 0x01u8
+const CLS_ST    : u8 = 0x02u8
+const CLS_STX   : u8 = 0x03u8
+const CLS_ALU   : u8 = 0x04u8
+const CLS_JMP   : u8 = 0x05u8
+const CLS_JMP32 : u8 = 0x06u8
+const CLS_ALU64 : u8 = 0x07u8
+
+-- §11  ALU OPERATION CODES
+const ALU_ADD  : u8 = 0x00u8
+const ALU_SUB  : u8 = 0x10u8
+const ALU_MUL  : u8 = 0x20u8
+const ALU_DIV  : u8 = 0x30u8
+const ALU_OR   : u8 = 0x40u8
+const ALU_AND  : u8 = 0x50u8
+const ALU_LSH  : u8 = 0x60u8
+const ALU_RSH  : u8 = 0x70u8
+const ALU_NEG  : u8 = 0x80u8
+const ALU_MOD  : u8 = 0x90u8
+const ALU_XOR  : u8 = 0xa0u8
+const ALU_MOV  : u8 = 0xb0u8
+const ALU_ARSH : u8 = 0xc0u8
+const ALU_END  : u8 = 0xd0u8
+
+const SRC_K    : u8 = 0x00u8   -- use immediate
+const SRC_X    : u8 = 0x08u8   -- use register
+
+-- §12  JMP OPERATION CODES
+const JMP_JA   : u8 = 0x00u8
+const JMP_JEQ  : u8 = 0x10u8
+const JMP_JGT  : u8 = 0x20u8
+const JMP_JGE  : u8 = 0x30u8
+const JMP_JSET : u8 = 0x40u8
+const JMP_JNE  : u8 = 0x50u8
+const JMP_JSGT : u8 = 0x60u8
+const JMP_JSGE : u8 = 0x70u8
+const JMP_CALL : u8 = 0x80u8
+const JMP_EXIT : u8 = 0x90u8
+const JMP_JLT  : u8 = 0xa0u8
+const JMP_JLE  : u8 = 0xb0u8
+const JMP_JSLT : u8 = 0xc0u8
+const JMP_JSLE : u8 = 0xd0u8
+
+-- §13  MEMORY SIZE CODES
+const SIZE_W  : u8 = 0x00u8   -- 4 bytes
+const SIZE_H  : u8 = 0x08u8   -- 2 bytes
+const SIZE_B  : u8 = 0x10u8   -- 1 byte
+const SIZE_DW : u8 = 0x18u8   -- 8 bytes
+
+-- §14  INSTRUCTION HELPERS
+
+fn bpf_mov64_reg : (u8, u8) -> Insn
+  | (dst, src) -> Insn { code: CLS_ALU64 | SRC_X | ALU_MOV, regs: insn_make_regs(dst, src), off: 0i16, imm: 0i32 }
+
+fn bpf_mov64_imm : (u8, i32) -> Insn
+  | (dst, imm) -> Insn { code: CLS_ALU64 | SRC_K | ALU_MOV, regs: insn_make_regs(dst, 0u8), off: 0i16, imm: imm }
+
+fn bpf_alu64_reg : (u8, u8, u8) -> Insn
+  | (op, dst, src) -> Insn { code: CLS_ALU64 | SRC_X | op, regs: insn_make_regs(dst, src), off: 0i16, imm: 0i32 }
+
+fn bpf_alu64_imm : (u8, u8, i32) -> Insn
+  | (op, dst, imm) -> Insn { code: CLS_ALU64 | SRC_K | op, regs: insn_make_regs(dst, 0u8), off: 0i16, imm: imm }
+
+fn bpf_add64_imm : (u8, i32) -> Insn | (dst, imm) -> bpf_alu64_imm(ALU_ADD, dst, imm)
+fn bpf_sub64_imm : (u8, i32) -> Insn | (dst, imm) -> bpf_alu64_imm(ALU_SUB, dst, imm)
+fn bpf_and64_imm : (u8, i32) -> Insn | (dst, imm) -> bpf_alu64_imm(ALU_AND, dst, imm)
+fn bpf_or64_imm  : (u8, i32) -> Insn | (dst, imm) -> bpf_alu64_imm(ALU_OR,  dst, imm)
+fn bpf_lsh64_imm : (u8, i32) -> Insn | (dst, imm) -> bpf_alu64_imm(ALU_LSH, dst, imm)
+fn bpf_rsh64_imm : (u8, i32) -> Insn | (dst, imm) -> bpf_alu64_imm(ALU_RSH, dst, imm)
+fn bpf_add64_reg : (u8, u8) -> Insn  | (dst, src) -> bpf_alu64_reg(ALU_ADD, dst, src)
+
+fn bpf_ldx_mem : (u8, u8, u8, i16) -> Insn
+  | (size, dst, src, off) ->
+    Insn { code: CLS_LDX | size | 0x60u8, regs: insn_make_regs(dst, src), off: off, imm: 0i32 }
+
+fn bpf_stx_mem : (u8, u8, u8, i16) -> Insn
+  | (size, dst, src, off) ->
+    Insn { code: CLS_STX | size | 0x60u8, regs: insn_make_regs(dst, src), off: off, imm: 0i32 }
+
+fn bpf_st_mem : (u8, u8, i16, i32) -> Insn
+  | (size, dst, off, imm) ->
+    Insn { code: CLS_ST | size | 0x60u8, regs: insn_make_regs(dst, 0u8), off: off, imm: imm }
+
+fn bpf_ld_imm64 : (u8, u64) -> (Insn, Insn)
+  | (dst, imm) ->
+    let lo = (imm & 0xFFFFFFFFu64) as i32
+    let hi = (imm >> 32u64) as i32
+    (Insn { code: CLS_LD | SIZE_DW | 0x00u8, regs: insn_make_regs(dst, 0u8), off: 0i16, imm: lo },
+     Insn { code: 0u8, regs: 0u8, off: 0i16, imm: hi })
+
+fn bpf_jmp_imm : (u8, u8, i32, i16) -> Insn
+  | (op, dst, imm, off) ->
+    Insn { code: CLS_JMP | SRC_K | op, regs: insn_make_regs(dst, 0u8), off: off, imm: imm }
+
+fn bpf_jmp_reg : (u8, u8, u8, i16) -> Insn
+  | (op, dst, src, off) ->
+    Insn { code: CLS_JMP | SRC_X | op, regs: insn_make_regs(dst, src), off: off, imm: 0i32 }
+
+fn bpf_exit : () -> Insn
+  | () -> Insn { code: CLS_JMP | JMP_EXIT, regs: 0u8, off: 0i16, imm: 0i32 }
+
+fn bpf_call : i32 -> Insn
+  | helper -> Insn { code: CLS_JMP | JMP_CALL, regs: 0u8, off: 0i16, imm: helper }
+
+fn bpf_ja : i16 -> Insn
+  | off -> Insn { code: CLS_JMP | JMP_JA, regs: 0u8, off: off, imm: 0i32 }
+
+-- §15  BPF HELPER FUNCTIONS (most commonly used)
+const HELPER_MAP_LOOKUP_ELEM    : i32 = 1i32
+const HELPER_MAP_UPDATE_ELEM    : i32 = 2i32
+const HELPER_MAP_DELETE_ELEM    : i32 = 3i32
+const HELPER_PROBE_READ         : i32 = 4i32
+const HELPER_KTIME_GET_NS       : i32 = 5i32
+const HELPER_TRACE_PRINTK       : i32 = 6i32
+const HELPER_GET_PRANDOM_U32    : i32 = 7i32
+const HELPER_GET_SMP_PROCESSOR_ID : i32 = 8i32
+const HELPER_SKB_STORE_BYTES    : i32 = 9i32
+const HELPER_L3_CSUM_REPLACE    : i32 = 10i32
+const HELPER_L4_CSUM_REPLACE    : i32 = 11i32
+const HELPER_TAIL_CALL          : i32 = 12i32
+const HELPER_CLONE_REDIRECT     : i32 = 13i32
+const HELPER_GET_CURRENT_PID_TGID : i32 = 14i32
+const HELPER_GET_CURRENT_UID_GID  : i32 = 15i32
+const HELPER_GET_CURRENT_COMM   : i32 = 16i32
+const HELPER_GET_CGROUP_CLASSID : i32 = 17i32
+const HELPER_SKB_VLAN_PUSH      : i32 = 18i32
+const HELPER_SKB_VLAN_POP       : i32 = 19i32
+const HELPER_SKB_GET_TUNNEL_KEY : i32 = 20i32
+const HELPER_SKB_SET_TUNNEL_KEY : i32 = 21i32
+const HELPER_PERF_EVENT_READ    : i32 = 22i32
+const HELPER_REDIRECT           : i32 = 23i32
+const HELPER_GET_ROUTE_REALM    : i32 = 24i32
+const HELPER_PERF_EVENT_OUTPUT  : i32 = 25i32
+const HELPER_SKB_LOAD_BYTES     : i32 = 26i32
+const HELPER_GET_STACKID        : i32 = 27i32
+const HELPER_CSU_DIFF           : i32 = 28i32
+const HELPER_SKB_UNDER_CGROUP   : i32 = 29i32
+const HELPER_GET_SOCKET_COOKIE  : i32 = 46i32
+const HELPER_GET_CURRENT_TASK   : i32 = 35i32
+const HELPER_PROBE_WRITE_USER   : i32 = 36i32
+const HELPER_CURRENT_TASK_UNDER_CGROUP : i32 = 37i32
+const HELPER_SKBCHANGE_TAIL     : i32 = 38i32
+const HELPER_SKB_PULL_DATA      : i32 = 39i32
+const HELPER_CSO_REPLACE        : i32 = 40i32
+const HELPER_XDP_ADJUST_HEAD    : i32 = 44i32
+const HELPER_PROBE_READ_STR     : i32 = 45i32
+const HELPER_PERF_EVENT_READ_VALUE : i32 = 47i32
+const HELPER_OVERRIDE_RETURN    : i32 = 58i32
+const HELPER_SOCK_OPS_CB_FLAGS_SET : i32 = 59i32
+const HELPER_MSG_REDIRECT_MAP   : i32 = 60i32
+const HELPER_MSG_APPLY_BYTES    : i32 = 61i32
+const HELPER_MSG_CORK_BYTES     : i32 = 62i32
+const HELPER_MSG_PULL_DATA      : i32 = 63i32
+const HELPER_BIND               : i32 = 64i32
+const HELPER_XDP_ADJUST_TAIL    : i32 = 65i32
+const HELPER_SKB_GET_XFRM_STATE : i32 = 66i32
+const HELPER_GET_STACK          : i32 = 67i32
+const HELPER_SKBCHANGE_HEAD     : i32 = 68i32
+const HELPER_XDP_REDIRECT_MAP   : i32 = 69i32
+const HELPER_REDIRECT_NEIGHBOR  : i32 = 84i32
+const HELPER_REDIRECT_PEER      : i32 = 85i32
+const HELPER_RINGBUF_OUTPUT     : i32 = 130i32
+const HELPER_RINGBUF_RESERVE    : i32 = 131i32
+const HELPER_RINGBUF_SUBMIT     : i32 = 132i32
+const HELPER_RINGBUF_DISCARD    : i32 = 133i32
+const HELPER_RINGBUF_QUERY      : i32 = 134i32
+
+-- §16  BPF ATTRIBUTE UNION (the attr argument to bpf(2))
+-- We model it as a raw byte array (128 bytes) + typed accessors.
+-- The bpf(2) syscall uses a union — callers zero-fill and set relevant fields.
+
+struct BpfMapCreateAttr
+  map_type     : u32
+  key_size     : u32
+  value_size   : u32
+  max_entries  : u32
+  map_flags    : u32
+  inner_map_fd : u32
+  numa_node    : u32
+  map_name     : u8   -- 16 bytes (BPF_OBJ_NAME_LEN)
+  map_ifindex  : u32
+  btf_fd       : u32
+  btf_key_type_id    : u32
+  btf_value_type_id  : u32
+  btf_vmlinux_value_type_id : u32
+  map_extra    : u64
+
+struct BpfMapElemAttr
+  map_fd   : u32
+  __pad0   : u32
+  key      : u64
+  value_or_next_key : u64
+  flags    : u64
+
+struct BpfProgLoadAttr
+  prog_type         : u32
+  insn_cnt          : u32
+  insns             : u64   -- ptr to Insn[]
+  license           : u64   -- ptr to *u8
+  log_level         : u32
+  log_size          : u32
+  log_buf           : u64   -- ptr to u8[]
+  kern_version      : u32
+  prog_flags        : u32
+  prog_name         : u8    -- 16 bytes
+  prog_ifindex      : u32
+  expected_attach_type : u32
+  prog_btf_fd       : u32
+  func_info_rec_size : u32
+  func_info         : u64
+  func_info_cnt     : u32
+  line_info_rec_size : u32
+  line_info         : u64
+  line_info_cnt     : u32
+  attach_btf_id     : u32
+  attach_prog_fd    : u32
+  core_relo_cnt     : u32
+  fd_array          : u64
+  core_relos        : u64
+  core_relo_rec_size : u32
+
+-- §17  XDP RETURN CODES
+const XDP_ABORTED : u32 = 0u32
+const XDP_DROP    : u32 = 1u32
+const XDP_PASS    : u32 = 2u32
+const XDP_TX      : u32 = 3u32
+const XDP_REDIRECT: u32 = 4u32
+
+-- §18  SYSCALL WRAPPERS
+
+fn bpf_map_create : (u32, u32, u32, u32, u32) -> i64
+  | (map_type, key_size, value_size, max_entries, flags) ->
+    let attr = os.linux.malloc(128i64) as *u32
+    os.linux.memset(attr as ptr, 0i32, 128u64)
+    attr[0u32] = map_type
+    attr[1u32] = key_size
+    attr[2u32] = value_size
+    attr[3u32] = max_entries
+    attr[4u32] = flags
+    let fd = os.linux.bpf(MAP_CREATE as i64, attr as ptr, 128i64)
+    os.linux.free(attr as ptr); fd
+
+fn bpf_map_lookup : (i64, ptr, ptr) -> i64
+  | (map_fd, key, value) ->
+    let attr = os.linux.malloc(32i64) as *u64
+    os.linux.memset(attr as ptr, 0i32, 32u64)
+    (attr as *u32)[0u32] = map_fd as u32
+    attr[1i64] = key as u64; attr[2i64] = value as u64; attr[3i64] = 0u64
+    let r = os.linux.bpf(MAP_LOOKUP_ELEM as i64, attr as ptr, 32i64)
+    os.linux.free(attr as ptr); r
+
+fn bpf_map_update : (i64, ptr, ptr, u64) -> i64
+  | (map_fd, key, value, flags) ->
+    let attr = os.linux.malloc(32i64) as *u64
+    os.linux.memset(attr as ptr, 0i32, 32u64)
+    (attr as *u32)[0u32] = map_fd as u32
+    attr[1i64] = key as u64; attr[2i64] = value as u64; attr[3i64] = flags
+    let r = os.linux.bpf(MAP_UPDATE_ELEM as i64, attr as ptr, 32i64)
+    os.linux.free(attr as ptr); r
+
+fn bpf_map_delete : (i64, ptr) -> i64
+  | (map_fd, key) ->
+    let attr = os.linux.malloc(32i64) as *u64
+    os.linux.memset(attr as ptr, 0i32, 32u64)
+    (attr as *u32)[0u32] = map_fd as u32
+    attr[1i64] = key as u64
+    let r = os.linux.bpf(MAP_DELETE_ELEM as i64, attr as ptr, 32i64)
+    os.linux.free(attr as ptr); r
+
+fn bpf_map_get_next_key : (i64, ptr, ptr) -> i64
+  | (map_fd, key, next_key) ->
+    let attr = os.linux.malloc(32i64) as *u64
+    os.linux.memset(attr as ptr, 0i32, 32u64)
+    (attr as *u32)[0u32] = map_fd as u32
+    attr[1i64] = key as u64; attr[2i64] = next_key as u64
+    let r = os.linux.bpf(MAP_GET_NEXT_KEY as i64, attr as ptr, 32i64)
+    os.linux.free(attr as ptr); r
+
+fn bpf_prog_load : (u32, ptr, u32, ptr, u32, ptr, u32, u32, u32) -> i64
+  | (prog_type, insns, insn_cnt, license, log_level, log_buf, log_size, kern_version, flags) ->
+    let attr_sz : i64 = 128i64
+    let attr = os.linux.malloc(attr_sz) as *u32
+    os.linux.memset(attr as ptr, 0i32, attr_sz as u64)
+    attr[0u32] = prog_type
+    attr[1u32] = insn_cnt
+    (attr as *u64)[1i64] = insns as u64
+    (attr as *u64)[2i64] = license as u64
+    attr[6u32] = log_level
+    attr[7u32] = log_size
+    (attr as *u64)[4i64] = log_buf as u64
+    attr[10u32] = kern_version
+    attr[11u32] = flags
+    let fd = os.linux.bpf(PROG_LOAD as i64, attr as ptr, attr_sz)
+    os.linux.free(attr as ptr); fd
+
+fn bpf_prog_load_simple : (u32, ptr, u32, ptr) -> i64
+  | (prog_type, insns, insn_cnt, license) ->
+    bpf_prog_load(prog_type, insns, insn_cnt, license, 0u32, 0 as ptr, 0u32, 0u32, 0u32)
+
+fn bpf_obj_pin : (i64, ptr) -> i64
+  | (fd, path) ->
+    let attr = os.linux.malloc(24i64) as *u64
+    os.linux.memset(attr as ptr, 0i32, 24u64)
+    (attr as *u32)[0u32] = fd as u32
+    attr[1i64] = path as u64
+    let r = os.linux.bpf(OBJ_PIN as i64, attr as ptr, 24i64)
+    os.linux.free(attr as ptr); r
+
+fn bpf_obj_get : ptr -> i64
+  | path ->
+    let attr = os.linux.malloc(16i64) as *u64
+    os.linux.memset(attr as ptr, 0i32, 16u64)
+    attr[1i64] = path as u64
+    let r = os.linux.bpf(OBJ_GET as i64, attr as ptr, 16i64)
+    os.linux.free(attr as ptr); r
+
+fn bpf_prog_attach : (i64, i64, u32, u32) -> i64
+  | (prog_fd, target_fd, attach_type, flags) ->
+    let attr = os.linux.malloc(16i64) as *u32
+    os.linux.memset(attr as ptr, 0i32, 16u64)
+    attr[0u32] = target_fd as u32
+    attr[1u32] = prog_fd as u32
+    attr[2u32] = attach_type
+    attr[3u32] = flags
+    let r = os.linux.bpf(PROG_ATTACH as i64, attr as ptr, 16i64)
+    os.linux.free(attr as ptr); r
+
+fn bpf_prog_detach : (i64, u32) -> i64
+  | (target_fd, attach_type) ->
+    let attr = os.linux.malloc(16i64) as *u32
+    os.linux.memset(attr as ptr, 0i32, 16u64)
+    attr[0u32] = target_fd as u32
+    attr[2u32] = attach_type
+    let r = os.linux.bpf(PROG_DETACH as i64, attr as ptr, 16i64)
+    os.linux.free(attr as ptr); r
+
+fn bpf_map_freeze : i64 -> i64
+  | map_fd ->
+    let attr = os.linux.malloc(8i64) as *u32
+    attr[0u32] = map_fd as u32
+    let r = os.linux.bpf(MAP_FREEZE as i64, attr as ptr, 4i64)
+    os.linux.free(attr as ptr); r

@@ -1,0 +1,64 @@
+-- EXPECT: 42\n42\n0\n77
+-- IRDL: declare a dialect, write lowering rules, use them in fns.
+-- Rule dispatch: oadd(x,0)→identity(x), oadd(x,y)→add(x,y),
+--               omul(x,0)→0, omul(x,1)→identity(x)
+fn add : (i64, i64) -> i64
+  | (a, b) -> a + b
+
+fn identity : i64 -> i64
+  | a -> a
+
+dialect Arith
+  opcode oadd
+  opcode omul
+
+irdl
+  Arith.oadd [a : i64, 0] ↦ identity(a)
+  Arith.oadd [a : i64, b : i64] ↦ add(a, b)
+  Arith.omul [a : i64, 0] ↦ 0
+  Arith.omul [a : i64, 1] ↦ identity(a)
+
+fn fold_add_zero : i64 -> i64
+  | x -> Arith.oadd(x, 0)
+
+fn general_add : (i64, i64) -> i64
+  | (x, y) -> Arith.oadd(x, y)
+
+fn mul_by_zero : i64 -> i64
+  | x -> Arith.omul(x, 0)
+
+fn mul_by_one : i64 -> i64
+  | x -> Arith.omul(x, 1)
+
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      print_i64_nl(fold_add_zero(42))
+      print_i64_nl(general_add(10, 32))
+      print_i64_nl(mul_by_zero(999))
+      print_i64_nl(mul_by_one(77))
+      syscall(231, 0)

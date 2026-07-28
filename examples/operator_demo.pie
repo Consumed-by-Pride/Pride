@@ -1,0 +1,24 @@
+-- Pass-3 operator-domain checks. These are all CORRECT — 0 warnings expected.
+
+-- integer bitwise/shift is fine
+fn flags : i32 -> i32
+  | n -> (n << 2) | (n & 7)
+
+-- safe division (non-zero literal)
+fn half : i32 -> i32
+  | n -> n / 2
+
+-- comparison of same kinds
+fn eq : (i32, i32) -> bool
+  | (a, b) -> a == b
+
+-- pointer compared to null (allowed)
+fn is_null : *i32 -> bool
+  | p -> p == null
+
+-- exhaustive bool match (no catch-all needed)
+fn negate : bool -> bool
+  | b ->
+      match b
+        | true  -> false
+        | false -> true

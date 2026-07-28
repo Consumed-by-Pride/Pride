@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+fn alloc_int : () -> *i32 ! [Alloc]
+  | () -> alloc i32
+
+fn free_int : *i32 -> () ! [Alloc]
+  | p -> free p

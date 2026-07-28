@@ -1,0 +1,12 @@
+-- Test: higher-order functions with closures
+fn apply : ((i64 -> i64), i64) -> i64
+  | (f, x) -> f(x)
+
+fn compose : ((i64 -> i64), (i64 -> i64)) -> (i64 -> i64)
+  | (f, g) -> | x -> f(g(x))
+
+fn double : i64 -> i64
+  | x -> x * 2i64
+
+fn inc : i64 -> i64
+  | x -> x + 1i64

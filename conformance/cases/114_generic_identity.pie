@@ -1,0 +1,6 @@
+-- Test: generic identity function
+fn id : A -> A
+  | x -> x
+
+fn id_twice : A -> A
+  | x -> id(id(x))

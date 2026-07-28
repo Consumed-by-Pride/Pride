@@ -1,0 +1,6 @@
+-- EXPECT: lint-warn 4:7 non-exhaustive
+fn f : i32 -> i32
+  | n ->
+      match n
+        | 0 -> 1
+        | 1 -> 2

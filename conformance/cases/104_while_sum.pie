@@ -1,0 +1,9 @@
+-- Test: while loop with accumulator
+fn sum_range : (i64, i64) -> i64
+  | (lo, hi) ->
+    let mut s : i64 = 0i64
+    let mut i : i64 = lo
+    while i <= hi
+      s = s + i
+      i = i + 1i64
+    s

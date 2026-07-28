@@ -1,0 +1,3 @@
+-- EXPECT: type-warn 3:10 clause body type does not match declared return type
+fn f : i32 -> bool
+  | n -> n

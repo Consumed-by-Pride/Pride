@@ -1,0 +1,15 @@
+-- EXPECT-CLEAN
+fn apply_twice : (i64 -> i64, i64) -> i64
+  | (f, x) -> f(f(x))
+
+fn call_fn : (i64, i64 -> i64) -> i64
+  | (x, f) -> f(x)
+
+fn double_it : i64 -> i64
+  | x -> x * 2i64
+
+fn negate : i64 -> i64
+  | x -> 0i64 - x
+
+fn compose_double_negate : i64 -> i64
+  | x -> negate(double_it(x))

@@ -1,0 +1,56 @@
+-- EXPECT: 168\n1229
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+
+fn count_primes : i64 -> i64 ! [Alloc]
+  | limit ->
+      let sieve : *u8 = alloc [u8; limit + 1]
+      let mut i : i64 = 0
+      while i <= limit
+        sieve[i] = 1u8
+        i = i + 1
+      sieve[0] = 0u8
+      sieve[1] = 0u8
+      let mut p : i64 = 2
+      while p * p <= limit
+        if sieve[p] == 1u8
+          let mut j : i64 = p * p
+          while j <= limit
+            sieve[j] = 0u8
+            j = j + p
+        p = p + 1
+      let mut cnt : i64 = 0
+      let mut k : i64 = 0
+      while k <= limit
+        if sieve[k] == 1u8
+          cnt = cnt + 1
+        k = k + 1
+      cnt
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      print_i64_nl(count_primes(1000))
+      print_i64_nl(count_primes(10000))
+      syscall(231, 0)

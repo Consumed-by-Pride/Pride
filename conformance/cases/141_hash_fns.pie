@@ -1,0 +1,27 @@
+-- EXPECT-CLEAN
+fn fnv1a : (*u8, i64) -> u64
+  | (data, len) ->
+      let mut h : u64 = 14695981039346656037u64
+      let mut i : i64 = 0
+      while i < len
+        h = h ^ (data[i] as u64)
+        h = h * 1099511628211u64
+        i = i + 1
+      h
+
+fn djb2 : *u8 -> u64
+  | s ->
+      let mut h : u64 = 5381u64
+      let mut p = s
+      while *p != 0u8
+        h = h * 33u64 ^ (*p as u64)
+        p = p + 1
+      h
+
+fn hash_mix : u64 -> u64
+  | k ->
+      let mut x = k
+      x = x ^ (x >> 33)
+      x = x * 0xFF51AFD7ED558CCDu64
+      x = x ^ (x >> 33)
+      x

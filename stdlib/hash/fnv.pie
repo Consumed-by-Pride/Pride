@@ -1,0 +1,234 @@
+mod hash.fnv
+
+use os.linux
+
+-- FNV-1a hash functions: 32, 64, and 128-bit variants.
+-- Fast, simple, reasonable distribution.
+-- Fowler-Noll-Vo: https://tools.ietf.org/html/draft-eastlake-fnv-14
+-- All variants support streaming (init/update/final) and one-shot (hash).
+
+-- §1  FNV-1a 32-bit
+
+const FNV32_PRIME  : u32 = 16777619u32
+const FNV32_OFFSET : u32 = 2166136261u32
+
+struct Fnv1a32
+  value : u32
+
+fn fnv32_init : () -> Fnv1a32
+  | () -> Fnv1a32 { value: FNV32_OFFSET }
+
+fn fnv32_update : (*Fnv1a32, ptr, i64) -> ()
+  | (h, data, len) ->
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      h.value = h.value ^ b[i] as u32
+      h.value = h.value *% FNV32_PRIME
+      i = i + 1i64
+
+fn fnv32_update_str : (*Fnv1a32, ptr) -> ()
+  | (h, s) ->
+    let cs = s as *u8; let mut i : i64 = 0i64
+    while cs[i] != 0u8
+      h.value = h.value ^ cs[i] as u32
+      h.value = h.value *% FNV32_PRIME
+      i = i + 1i64
+
+fn fnv32_update_u8  : (*Fnv1a32, u8) -> ()
+  | (h, b) -> h.value = (h.value ^ b as u32) *% FNV32_PRIME
+
+fn fnv32_update_u32 : (*Fnv1a32, u32) -> ()
+  | (h, v) ->
+    h.value = (h.value ^ (v & 0xFFu32)) *% FNV32_PRIME
+    h.value = (h.value ^ ((v >> 8u32) & 0xFFu32)) *% FNV32_PRIME
+    h.value = (h.value ^ ((v >> 16u32) & 0xFFu32)) *% FNV32_PRIME
+    h.value = (h.value ^ ((v >> 24u32) & 0xFFu32)) *% FNV32_PRIME
+
+fn fnv32_update_u64 : (*Fnv1a32, u64) -> ()
+  | (h, v) ->
+    let mut i : i64 = 0i64
+    while i < 8i64
+      h.value = (h.value ^ ((v >> (i * 8i64) as u64) & 0xFFu64) as u32) *% FNV32_PRIME
+      i = i + 1i64
+
+fn fnv32_final : *Fnv1a32 -> u32 | h -> h.value
+
+fn fnv32_hash : (ptr, i64) -> u32
+  | (data, len) ->
+    let mut h = fnv32_init()
+    fnv32_update(&h, data, len)
+    fnv32_final(&h)
+
+fn fnv32_hash_str : ptr -> u32
+  | s ->
+    let mut h = fnv32_init()
+    fnv32_update_str(&h, s)
+    fnv32_final(&h)
+
+-- §2  FNV-1a 64-bit
+
+const FNV64_PRIME  : u64 = 1099511628211u64
+const FNV64_OFFSET : u64 = 14695981039346656037u64
+
+struct Fnv1a64
+  value : u64
+
+fn fnv64_init : () -> Fnv1a64
+  | () -> Fnv1a64 { value: FNV64_OFFSET }
+
+fn fnv64_update : (*Fnv1a64, ptr, i64) -> ()
+  | (h, data, len) ->
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      h.value = h.value ^ b[i] as u64
+      h.value = h.value *% FNV64_PRIME
+      i = i + 1i64
+
+fn fnv64_update_str : (*Fnv1a64, ptr) -> ()
+  | (h, s) ->
+    let cs = s as *u8; let mut i : i64 = 0i64
+    while cs[i] != 0u8
+      h.value = h.value ^ cs[i] as u64
+      h.value = h.value *% FNV64_PRIME
+      i = i + 1i64
+
+fn fnv64_update_u8  : (*Fnv1a64, u8) -> ()
+  | (h, b) -> h.value = (h.value ^ b as u64) *% FNV64_PRIME
+
+fn fnv64_update_u32 : (*Fnv1a64, u32) -> ()
+  | (h, v) ->
+    let mut i : i64 = 0i64
+    while i < 4i64
+      h.value = (h.value ^ ((v as u64 >> (i * 8i64) as u64) & 0xFFu64)) *% FNV64_PRIME
+      i = i + 1i64
+
+fn fnv64_update_u64 : (*Fnv1a64, u64) -> ()
+  | (h, v) ->
+    let mut i : i64 = 0i64
+    while i < 8i64
+      h.value = (h.value ^ ((v >> (i * 8i64) as u64) & 0xFFu64)) *% FNV64_PRIME
+      i = i + 1i64
+
+fn fnv64_update_i64 : (*Fnv1a64, i64) -> ()
+  | (h, v) -> fnv64_update_u64(h, v as u64)
+
+fn fnv64_final : *Fnv1a64 -> u64 | h -> h.value
+
+fn fnv64_hash : (ptr, i64) -> u64
+  | (data, len) ->
+    let mut h = fnv64_init()
+    fnv64_update(&h, data, len)
+    fnv64_final(&h)
+
+fn fnv64_hash_str : ptr -> u64
+  | s ->
+    let mut h = fnv64_init()
+    fnv64_update_str(&h, s)
+    fnv64_final(&h)
+
+-- §3  FNV-1a 128-bit (lo/hi pair)
+
+const FNV128_PRIME_LO  : u64 = 315u64
+const FNV128_PRIME_HI  : u64 = 16777216u64   -- 2^24
+const FNV128_OFFSET_LO : u64 = 7113472399480571277u64   -- same as FNV128_OFFSET_LO_REAL
+const FNV128_OFFSET_HI : u64 = 0u64
+
+-- Real FNV-1a 128-bit offset basis:
+-- 144066263297769815596495629667062367629
+-- = 0x6c62272e07bb014262b821756295c58d
+const FNV128_OFFSET_LO_REAL : u64 = 7113472399480571277u64   -- low 64 bits
+const FNV128_OFFSET_HI_REAL : u64 = 7816580642716835341u64   -- high 64 bits
+
+struct Fnv1a128
+  lo : u64
+  hi : u64
+
+fn fnv128_init : () -> Fnv1a128
+  | () -> Fnv1a128 { lo: FNV128_OFFSET_LO_REAL, hi: FNV128_OFFSET_HI_REAL }
+
+fn fnv128_mul_prime : (*Fnv1a128) -> ()
+  | (h) ->
+    -- Multiply (h.hi, h.lo) by (FNV128_PRIME_HI, FNV128_PRIME_LO)
+    -- = 2^88 + 315 = 2^24 * 2^64 + 315
+    -- (hi,lo) * prime = (hi*prime_lo + lo*prime_hi*2^64, lo*prime_lo) mod 2^128
+    let lo_x_plo_lo = h.lo *% FNV128_PRIME_LO
+    let lo_x_plo_hi = h.lo / (0u64 -% FNV128_PRIME_LO)  -- upper bits (approx)
+    -- Proper 128-bit multiply:
+    let prod_lo_plo = u128_mul_full(h.lo, FNV128_PRIME_LO)
+    let hi_contrib  = h.hi *% FNV128_PRIME_LO +% h.lo *% FNV128_PRIME_HI
+    h.lo = prod_lo_plo.lo
+    h.hi = prod_lo_plo.hi +% hi_contrib
+
+fn fnv128_update_u8 : (*Fnv1a128, u8) -> ()
+  | (h, b) ->
+    h.lo = h.lo ^ b as u64
+    fnv128_mul_prime(h)
+
+fn fnv128_update : (*Fnv1a128, ptr, i64) -> ()
+  | (h, data, len) ->
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len then fnv128_update_u8(h, b[i]); i=i+1i64
+
+fn fnv128_update_str : (*Fnv1a128, ptr) -> ()
+  | (h, s) ->
+    let cs = s as *u8; let mut i : i64 = 0i64
+    while cs[i] != 0u8 then fnv128_update_u8(h, cs[i]); i=i+1i64
+
+fn fnv128_final_lo : *Fnv1a128 -> u64 | h -> h.lo
+fn fnv128_final_hi : *Fnv1a128 -> u64 | h -> h.hi
+
+fn fnv128_hash_str_lo : ptr -> u64
+  | s ->
+    let mut h = fnv128_init()
+    fnv128_update_str(&h, s)
+    h.lo
+
+-- Proxy for the u128_mul from common — avoids circular import by duplicating the function
+-- 128-bit multiply returning (lo, hi)
+struct U128Result
+  lo : u64
+  hi : u64
+
+fn u128_mul_full : (u64, u64) -> U128Result
+  | (a, b) ->
+    let a_lo = a & 0xFFFFFFFFu64; let a_hi = a >> 32u64
+    let b_lo = b & 0xFFFFFFFFu64; let b_hi = b >> 32u64
+    let ll = a_lo *% b_lo; let lh = a_lo *% b_hi
+    let hl = a_hi *% b_lo; let hh = a_hi *% b_hi
+    let mid = (ll >> 32u64) +% (lh & 0xFFFFFFFFu64) +% (hl & 0xFFFFFFFFu64)
+    let hi = hh +% (lh >> 32u64) +% (hl >> 32u64) +% (mid >> 32u64)
+    let lo = (ll & 0xFFFFFFFFu64) | (mid << 32u64)
+    U128Result { lo: lo, hi: hi }
+
+-- §4  FNV VARIANTS: FNV-1 (non-'a' variant, for completeness)
+-- XOR after multiply instead of before
+
+fn fnv1_64_hash : (ptr, i64) -> u64
+  | (data, len) ->
+    let mut h = FNV64_OFFSET
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      h = h *% FNV64_PRIME
+      h = h ^ b[i] as u64
+      i = i + 1i64
+    h
+
+fn fnv1_32_hash : (ptr, i64) -> u32
+  | (data, len) ->
+    let mut h = FNV32_OFFSET
+    let b = data as *u8; let mut i : i64 = 0i64
+    while i < len
+      h = h *% FNV32_PRIME
+      h = h ^ b[i] as u32
+      i = i + 1i64
+    h
+
+-- §5  XORSHIFT POST-PROCESSING (avalanche FNV output, smhasher-friendly)
+fn fnv64_with_avalanche : (ptr, i64) -> u64
+  | (data, len) ->
+    let mut h = fnv64_hash(data, len)
+    h = h ^ (h >> 33u64)
+    h = h *% 13787848793156543929u64
+    h = h ^ (h >> 29u64)
+    h = h *% 10723151780598845931u64
+    h ^ (h >> 32u64)

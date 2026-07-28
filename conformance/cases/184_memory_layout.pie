@@ -1,0 +1,24 @@
+-- EXPECT-CLEAN
+fn align_up : (i64, i64) -> i64
+  | n -> (n + 7i64) & (0i64 - 8i64)   -- align to 8 bytes
+
+fn is_aligned8 : i64 -> bool
+  | n -> (n & 7i64) == 0i64
+
+fn is_power_of_2 : i64 -> bool
+  | n -> n > 0i64 && (n & (n - 1i64)) == 0i64
+
+fn round_up_pow2 : i64 -> i64
+  | n ->
+    let mut p : i64 = 1i64
+    while p < n
+      p = p * 2i64
+    p
+
+fn page_align : i64 -> i64
+  | n ->
+    let page : i64 = 4096i64
+    (n + page - 1i64) & (0i64 - page)
+
+fn ptr_distance : (*u8, *u8) -> i64
+  | (a, b) -> (a as i64) - (b as i64)
