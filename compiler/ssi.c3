@@ -20,7 +20,7 @@
 //   - every resolved Ident *use* is mapped to the SsiVar version it reads,
 //     carrying the active refinement at that point.
 //
-// Pryde has no `goto`; control flow is tree-structured, so construction is a
+// Pride has no `goto`; control flow is tree-structured, so construction is a
 // single O(n) walk — no dominance-frontier iteration.
 // ============================================================================
 

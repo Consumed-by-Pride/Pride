@@ -3170,15 +3170,49 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
     IrVal** arm_results = (IrVal**)malloc(arm_cap * IrValPtr::size);
     int* arm_ends = (int*)malloc(arm_cap * int::size);
     bool* arm_live = (bool*)malloc(arm_cap * bool::size);
+    int* lit_pend = (int*)malloc(arm_cap * int::size);   // guarded-literal false edges awaiting a chain arm
     usz narm = 0;
-    if (arm_snaps == null || arm_results == null || arm_ends == null || arm_live == null)
+    if (arm_snaps == null || arm_results == null || arm_ends == null || arm_live == null || lit_pend == null)
     {
         if (arm_snaps != null) free(arm_snaps);
         if (arm_results != null) free(arm_results);
         if (arm_ends != null) free(arm_ends);
         if (arm_live != null) free(arm_live);
+        if (lit_pend != null) free(lit_pend);
         return m.mk_unit(n);
     }
+
+    // Guarded-arm dispatch. The SWITCH dispatches literal cases directly;
+    // everything else falls to succ[0] (default_blk), which forwards to the
+    // head of a chain of guard blocks — one per ident/wildcard arm, in source
+    // order. A guard's false edge continues to the NEXT ident/wildcard arm
+    // (literal cases are already exhausted by the switch); the chain falls
+    // into the trap block when exhausted. A guarded LITERAL arm's false edge
+    // joins the chain at the next ident/wildcard arm as well (the switch has
+    // already proved the case value, so literal arms can never re-match).
+    //
+    //   match n
+    //     | 0        -> a           [switch case 0 -> body]
+    //     | k, k > 0 -> b           [default -> guard(k>0) -> body | false -> chain]
+    //     | _        -> c           [chain catch-all]
+    int pending_false = -1;   // chain guard block awaiting its false-edge target
+    usz n_lit_pend = 0;       // lit_pend[0..n_lit_pend]: unresolved literal-guard false edges
+    ulong* pend_val = (ulong*)malloc(arm_cap * ulong::size);  // case value per pending edge
+    ulong* claim_val = (ulong*)malloc(arm_cap * ulong::size); // switch case values in use
+    bool* claim_dead = (bool*)malloc(arm_cap * bool::size);   // claim closed by an unguarded arm
+    usz n_claim = 0;
+    if (pend_val == null || claim_val == null || claim_dead == null)
+    {
+        if (pend_val != null) free(pend_val);
+        if (claim_val != null) free(claim_val);
+        if (claim_dead != null) free(claim_dead);
+        free(arm_snaps); free(arm_results); free(arm_ends); free(arm_live); free(lit_pend);
+        return m.mk_unit(n);
+    }
+    // All arms AFTER arm CUR that can still match case value CV receive the
+    // pending false edges recorded for CV (chain arms match anything).
+    // Implemented inline at each arm: literal arms flush their own value,
+    // ident/wildcard arms flush everything.
 
     for (usz i = 1; i < n.child_count; i++)
     {
@@ -3188,51 +3222,121 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
 
         Node* pat = arm.child_count >= 1 ? arm.children[0] : null;
         bool is_wild = pat != null && pat.kind == Nk.NODE_PATTERN_WILDCARD;
+        bool is_bind = pat != null && pat.kind == Nk.NODE_PATTERN_IDENT;
+        bool chain_arm = is_wild || is_bind;
+
+        // Guard extraction: the parser stores `| pat, cond -> body` as arm
+        // children [pat, NODE_PATTERN_GUARD(cond), body...].
+        Node* guard = null;
+        for (usz j = 1; j < arm.child_count; j++)
+        {
+            Node* c = arm.children[j];
+            if (c != null && c.kind == Nk.NODE_PATTERN_GUARD) { guard = c; break; }
+        }
 
         int arm_blk = m.new_block();
-        // Wildcard / ident-binding arm becomes the default; literal arms are cases.
-        if (is_wild || (pat != null && pat.kind == Nk.NODE_PATTERN_IDENT))
+        int guard_blk = (guard != null) ? m.new_block() : -1;
+        int dispatch = (guard_blk >= 0) ? guard_blk : arm_blk;
+
+        if (chain_arm)
         {
-            // route default edge here
+            // First ident/wildcard arm: the switch's default edge forwards to
+            // the head of the guard chain.
             if (db != null && !default_filled)
             {
-                db.term = TermKind.TERM_NONE;
-                // redirect: make default_blk an empty forwarder to arm_blk
                 db.term = TermKind.TERM_BR;
-                m.link(default_blk, arm_blk);
+                m.link(default_blk, dispatch);
                 default_filled = true;
             }
-            else { m.link(b0, arm_blk); }
+            else { m.link(b0, arm_blk); }   // trailing catch-all: unreachable
+            // A previous chain guard falls through to this arm on false.
+            if (pending_false >= 0) { m.link(pending_false, dispatch); pending_false = -1; }
+            // A chain arm matches anything: ALL pending literal-guard false
+            // edges resolve here regardless of their case value.
+            for (usz q = 0; q < n_lit_pend; q++) { m.link(lit_pend[q], dispatch); }
+            n_lit_pend = 0;
         }
         else
         {
-            int slot = m.link(b0, arm_blk);
-            // record case label if the pattern is an int literal
-            if (slot >= 0 && pb0 != null && pat != null && pat.kind == Nk.NODE_PATTERN_LITERAL
+            // Literal arms are switch cases, but LLVM forbids duplicate case
+            // values: only the FIRST arm to claim a value becomes a case.
+            // Same-value successors join the ordered chain instead — reached
+            // through the earlier guard's false edge — or are shadowed dead
+            // code once an unguarded arm has claimed the value.
+            bool has_cv = false; ulong cv = 0;
+            if (pat != null && pat.kind == Nk.NODE_PATTERN_LITERAL
                 && pat.child_count >= 1 && pat.children[0] != null
                 && pat.children[0].kind == Nk.NODE_LIT_INT)
+            { cv = pat.children[0].p.lit_int.int_val; has_cv = true; }
+            int prior = -1;
+            if (has_cv)
             {
-                pb0.case_has[slot] = true;
-                pb0.case_val[slot] = pat.children[0].p.lit_int.int_val;
+                for (usz q = 0; q < n_claim; q++) { if (claim_val[q] == cv) { prior = (int)q; break; } }
             }
-            // Range pattern:  lo..hi or lo..=hi
-            // Emitted as CBR chain: (scrut >= lo && scrut <= hi) ? arm : default
-            // For switch lowering we lower range patterns as fallback CBR chains.
-            if (slot >= 0 && pb0 != null && pat != null && pat.kind == Nk.NODE_PATTERN_RANGE
-                && pat.child_count >= 2)
+            bool shadowed = prior >= 0 && claim_dead[prior];
+            if (has_cv && prior < 0)
             {
-                // Range patterns use CBR not SWITCH — re-route this arm through a
-                // dedicated guard block. The switch dispatch stays for literal arms.
-                // (Full integration with SWITCH is deferred; here we use the existing
-                //  CBR infrastructure by checking the range inline before the arm.)
-                pb0.case_has[slot] = false;  // not a single-value case
+                int slot = m.link(b0, dispatch);
+                if (slot >= 0 && pb0 != null)
+                {
+                    pb0.case_has[slot] = true;
+                    pb0.case_val[slot] = cv;
+                }
+                claim_val[n_claim] = cv;
+                claim_dead[n_claim] = (guard_blk < 0);
+                n_claim++;
+            }
+            else { m.link(b0, arm_blk); }   // shadowed / non-int literal: unreachable
+            if (has_cv && prior >= 0 && !shadowed)
+            {
+                // Reachable via the ordering chain: resolve earlier guards'
+                // false edges for THIS value here, then track shadowing.
+                usz w = 0;
+                for (usz q = 0; q < n_lit_pend; q++)
+                {
+                    if (pend_val[q] == cv) { m.link(lit_pend[q], dispatch); continue; }
+                    lit_pend[w] = lit_pend[q]; pend_val[w] = pend_val[q]; w++;
+                }
+                n_lit_pend = w;
+                if (guard_blk < 0) { claim_dead[prior] = true; }
+            }
+        }
+
+        usz amark = m.env_mark();
+        // Bind pattern variables: an ident arm aliases the SCRUTINEE VALUE —
+        // the arm observes the value the match dispatched on, never a fresh
+        // unbound parameter. (Other pattern shapes keep the legacy binding
+        // until they get properly typed destructuring.)
+        if (is_bind) { m.bind_let_pattern(pat, sval); }
+        else         { m.bind_pattern(null, pat); }
+
+        // Guarded arm: evaluate the guard in its own dispatch block with the
+        // pattern bindings live; true → body, false → continue matching.
+        if (guard_blk >= 0)
+        {
+            m.cur = guard_blk;
+            IrVal* gval = m.lower_expr(guard.child_count >= 1 ? guard.children[0] : null);
+            IrBlock* gb = m.blk(guard_blk);
+            if (gb != null && gval != null) { gb.term = TermKind.TERM_CBR; gb.cond = gval; }
+            m.link(guard_blk, arm_blk);
+            if (chain_arm) { pending_false = guard_blk; }   // resolved by the next chain arm / trap
+            else if (n_lit_pend < arm_cap)
+            {
+                // Guarded literal: false edge awaits the next arm that can
+                // still match this case value (same-value literal or any
+                // ident/wildcard arm), in source order.
+                lit_pend[n_lit_pend] = guard_blk;
+                ulong pv = 0;
+                if (pat != null && pat.kind == Nk.NODE_PATTERN_LITERAL
+                    && pat.child_count >= 1 && pat.children[0] != null
+                    && pat.children[0].kind == Nk.NODE_LIT_INT)
+                { pv = pat.children[0].p.lit_int.int_val; }
+                pend_val[n_lit_pend] = pv;
+                n_lit_pend++;
             }
         }
 
         m.cur = arm_blk;
-        usz amark = m.env_mark();
-        // bind pattern idents
-        m.bind_pattern(null, pat);
         // σ-refine the scrutinee for literal arms (we learn scrut == literal).
         if (pat != null && pat.kind == Nk.NODE_PATTERN_LITERAL && scrut != null
             && scrut.kind == Nk.NODE_IDENT && scrut.resolved != null
@@ -3277,10 +3381,17 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         m.env_reset(pre_mark);
     }
 
+    // An open guard chain falls through to the trap when exhausted
+    // (non-exhaustive match on values no arm claimed).
+    if (pending_false >= 0) { m.link(pending_false, default_blk); pending_false = -1; }
+    for (usz q = 0; q < n_lit_pend; q++) { m.link(lit_pend[q], default_blk); }
+    n_lit_pend = 0;
+
     if (join < 0)
     {
         // Every arm diverged.
-        free(arm_snaps); free(arm_results); free(arm_ends); free(arm_live);
+        free(arm_snaps); free(arm_results); free(arm_ends); free(arm_live); free(lit_pend);
+        free(pend_val); free(claim_val); free(claim_dead);
         return m.mk_unit(n);
     }
     m.cur = join;
@@ -3325,10 +3436,12 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
             rphi.add_arg(arm_results[a], arm_ends[a]);
         }
         m.add_phi(join, rphi);
-        free(arm_snaps); free(arm_results); free(arm_ends); free(arm_live);
+        free(arm_snaps); free(arm_results); free(arm_ends); free(arm_live); free(lit_pend);
+        free(pend_val); free(claim_val); free(claim_dead);
         return rphi;
     }
-    free(arm_snaps); free(arm_results); free(arm_ends); free(arm_live);
+    free(arm_snaps); free(arm_results); free(arm_ends); free(arm_live); free(lit_pend);
+    free(pend_val); free(claim_val); free(claim_dead);
     return m.mk_unit(n);
 }
 

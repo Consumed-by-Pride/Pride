@@ -1,7 +1,7 @@
 /*
- Pryde lexer
+ Pride lexer
  Implementation language: C3  (NOT a compilation target, just what the compiler is written in)
- Pipeline: Pryde source -> tokens -> Parser -> AST -> ClangIR/LLVM -> native
+ Pipeline: Pride source -> tokens -> Parser -> AST -> ClangIR/LLVM -> native
 
  This file turns a raw source buffer into a flat token stream.
  The parser (parser.c3) drives this by calling Lexer.next() in a loop.
@@ -557,7 +557,7 @@ fn bool span_eq(char* s, usz len, char* lit, usz lit_len) @private
 }
 
 <*
- Pryde comments:
+ Pride comments:
    line comment:  -- text until end of line
    block comment: --[ ... ]--  (nestable, so --[ --[ ]-- ]-- works fine)
 *>
@@ -1917,7 +1917,7 @@ fn Diagnostic Lexer.get_diag(Lexer* self, int i)
 
 // ── Display helper (additive; does NOT affect lexing/tokenizing) ─────────────
 // Maps a TokenType to a short human-readable name. Used by tooling such as the
-// AST printer in pryde.c3. Pure presentation — no lexer state is touched.
+// AST printer in pride.c3. Pure presentation — no lexer state is touched.
 fn char* token_type_name(TokenType t)
 {
     switch (t)

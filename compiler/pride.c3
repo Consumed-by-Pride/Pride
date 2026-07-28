@@ -1,9 +1,14 @@
+// ============================================================================
 // pride.c3 — Pride compiler front-end driver
+// ----------------------------------------------------------------------------
 // Implementation language: C3 (host).
+//
 //   pride <file.pie>
+//
 // Reads a Pride source file, runs lexer.c3 -> parser.c3 -> AST, then prints
 // the resulting tree as an indented dump plus a summary (node count, effects
 // on the root, and any diagnostics).
+// ============================================================================
 
 module pride;
 
@@ -26,6 +31,7 @@ import irdl_msp;
 import integrity;
 import mono;
 
+// ── libc ────────────────────────────────────────────────────────────────────
 extern fn void* malloc(usz size);
 extern fn void  free(void* ptr);
 extern fn CFile fopen(char* path, char* mode);
@@ -37,7 +43,6 @@ extern fn int   printf(char* fmt, ...);
 extern fn int   snprintf(char* buf, usz size, char* fmt, ...);
 extern fn int   system(char* cmd);
 extern fn int   putchar(int c);
-extern fn long  readlink(char* path, char* buf, usz bufsz);
 
 alias CFile = void*;
 
@@ -47,42 +52,13 @@ const int SEEK_END = 2;
 alias Node = ast::AstNode;
 alias Nk = ast::NodeKind;
 
+// ── File slurp ───────────────────────────────────────────────────────────────
 // Reads the whole file into a heap buffer. Returns null on failure; sets *out_len.
 fn usz cstr_len2(char* s)
 {
     usz n = 0;
     while (s[n] != 0) n++;
     return n;
-}
-
-// Exact comparison of a NUL-terminated C string against a literal. Used by
-// the CLI argument parser below so every `--flag` is matched unambiguously
-// by its FULL text, never by a hand-picked subset of byte positions (that
-// class of bug previously made `--strip` silently dispatch as `--stage`,
-// and made `--emit-obj`/`--emit-bin` entirely unreachable — both fixed by
-// switching every flag comparison in main() to go through this helper).
-fn bool arg_is(char* s, usz slen, char* lit)
-{
-    usz i = 0;
-    while (i < slen)
-    {
-        if (lit[i] == 0) return false;   // s longer than the literal
-        if (s[i] != lit[i]) return false;
-        i++;
-    }
-    return lit[i] == 0;                  // s must consume the whole literal
-}
-
-// True if `s` starts with `prefix` (both NUL-terminated). Used for flags that
-// carry an inline value, e.g. `--target=<triple>` / `--cfg=<name>`.
-fn bool arg_starts_with(char* s, usz slen, char* prefix, usz prefix_len)
-{
-    if (slen < prefix_len) return false;
-    for (usz i = 0; i < prefix_len; i++)
-    {
-        if (s[i] != prefix[i]) return false;
-    }
-    return true;
 }
 
 fn char* read_file(char* path, usz* out_len)
@@ -115,6 +91,7 @@ fn char* read_file(char* path, usz* out_len)
     return buf;
 }
 
+// ── Printing helpers ─────────────────────────────────────────────────────────
 fn void print_indent(int depth)
 {
     for (int i = 0; i < depth; i++)
@@ -276,8 +253,10 @@ fn void print_node(Node* n, int depth)
 
 
 
+// ── #[cfg(...)] conditional compilation ──────────────────────────────────────
 // Evaluates a cfg predicate against the active cfg_flags set.
 // Returns true if the predicate holds (the declaration should be kept).
+//
 // Supported predicates:
 //   cfg(name)              — flag 'name' is active
 //   cfg(key = "val")       — flag 'key=val' is active
@@ -434,6 +413,7 @@ fn void apply_cfg_strip(Node* program, char** flags, int nflags)
     }
 }
 
+// ── Stable error code table ───────────────────────────────────────────────────
 // Every diagnostic message maps to a stable E-code. The code is derived by
 // hashing the first 32 chars of the message (deterministic across builds).
 // Range allocations:
@@ -551,6 +531,7 @@ fn void emit_json_diag(char* phase, int line, int col, int code,
     printf("}");
 }
 
+// ── Source underline with range highlight ─────────────────────────────────────// ── Diagnostics ──────────────────────────────────────────────────────────────
 fn void report_lexer_diags(lexer::Lexer* lx)
 {
     int count = lx.get_diag_count();
@@ -566,6 +547,7 @@ fn void report_lexer_diags(lexer::Lexer* lx)
 }
 
 
+// ── Source underline helper ───────────────────────────────────────────────────
 // Print the source line that contains the error, then a caret (^) under col.
 fn void print_source_line(char* src, usz src_len, int target_line, int col)
 {
@@ -785,6 +767,7 @@ fn void dump_ssi_graph(ssi::SsiGraph* sg)
     }
 }
 
+// ── Staging (CTFE) report ────────────────────────────────────────────────────
 fn void dump_stage_report(stage::Stager* st)
 {
     printf("\n=== Staging / CTFE ===\n");
@@ -793,7 +776,6 @@ fn void dump_stage_report(stage::Stager* st)
     printf("  comptime fns         : %llu\n", (ulong)st.fn_count);
     if (st.out_of_fuel) printf("  [OUT OF FUEL]\n");
     if (st.too_deep)    printf("  [EVAL TOO DEEP]\n");
-    if (st.overflow)    printf("  [CTFE ENV/FN TABLE OVERFLOW — some bindings or comptime fns were dropped]\n");
     for (int i = 0; i < st.diag_count; i++)
     {
         stage::StageDiag d = st.diags[i];
@@ -801,6 +783,7 @@ fn void dump_stage_report(stage::Stager* st)
     }
 }
 
+// ── IRDL dialect-lowering report ─────────────────────────────────────────────
 fn void dump_irdl_report(irdl_msp::DialectTable* dt)
 {
     printf("\n=== IRDL ===\n");
@@ -812,7 +795,6 @@ fn void dump_irdl_report(irdl_msp::DialectTable* dt)
     printf("  lowerings applied    : %d\n", dt.lowerings_applied);
     if (dt.out_of_fuel) printf("  [OUT OF FUEL]\n");
     if (dt.too_deep)    printf("  [LOWER CHAIN TOO DEEP]\n");
-    if (dt.overflow)    printf("  [IRDL TABLE OVERFLOW — some dialects/opcodes/regions were dropped]\n");
     // per-opcode lowering status
     for (usz i = 0; i < dt.opcode_count; i++)
     {
@@ -1032,80 +1014,18 @@ fn void report_integrity(integrity::Verifier* iv)
     }
 }
 
-fn void print_version()
-{
-    printf("pride 0.1.0 (LLVM 22.1 pipeline, x86_64-linux)\n");
-}
-
-// Single source of truth for the CLI surface. Keep in sync with the argument
-// dispatcher in main() below.
-fn void print_help()
-{
-    print_version();
-    printf("\n");
-    printf("usage: pride [options] <file.pie>\n");
-    printf("\n");
-    printf("compilation & output:\n");
-    printf("  --emit-llvm <path>   emit LLVM 22 IR text (.ll); '--emit-llvm=<path>' works too\n");
-    printf("                       (default: <source>.ll next to the source file)\n");
-    printf("  --emit-obj           emit-llvm + assemble + compile to a native object (.o)\n");
-    printf("  --emit-bin           emit-obj + link a native executable (via ld.lld)\n");
-    printf("  -o <path>            output path for --emit-bin (default: source stem)\n");
-    printf("  --opt=<0|1|2|3>      optimisation level of the LLVM pipeline (default 2)\n");
-    printf("  -g, --debug          emit DWARF debug info\n");
-    printf("  --lto                thin link-time optimisation (with --emit-bin)\n");
-    printf("  --strip              strip symbols from the linked binary\n");
-    printf("  --target=<triple>    override the LLVM target triple\n");
-    printf("  --cfg=<name[=val]>   set a cfg flag (platform cfgs are added automatically)\n");
-    printf("  --freestanding       bare-metal mode: no runtime objects, no libc declarations\n");
-    printf("\n");
-    printf("front-end behaviour:\n");
-    printf("  --strict             promote soft type/effect/lint warnings to errors\n");
-    printf("  --test               discover test_ functions / #[test] functions\n");
-    printf("  --json               emit diagnostics as a JSON array\n");
-    printf("  --verify             print frontend integrity findings (pre-lowering audit)\n");
-    printf("\n");
-    printf("inspection dumps:\n");
-    printf("  --dump-ast           print the parsed AST\n");
-    printf("  --dump-mono          print monomorphisation results\n");
-    printf("  --dump-ssi           dump SSI construction (versions/uses)\n");
-    printf("  --dump-sasi          dump SASI\n");
-    printf("  --dump-ir            dump the final IR before codegen\n");
-    printf("  --stage              print the staging (CTFE) report\n");
-    printf("  --irdl               print the IRDL dialect report\n");
-    printf("  --rewrite            run the rewrite pass and report\n");
-    printf("  --pgen               run pass-generation and report\n");
-    printf("\n");
-    printf("misc:\n");
-    printf("  -h, --help           show this text and exit\n");
-    printf("  -V, --version        print the version and exit\n");
-    printf("\n");
-    printf("notes:\n");
-    printf("  --emit-obj/--emit-bin shell out to llvm-as-22, opt-22, llc-22, ld.lld-22.\n");
-    printf("  --emit-bin links runtime/compiler_rt.o + compiler_rt_arch.o found next to\n");
-    printf("  the pride executable (build them with `make runtime`).\n");
-}
-
-fn bool file_exists(char* path)
-{
-    CFile f = fopen(path, "rb");
-    if (f == null) return false;
-    fclose(f);
-    return true;
-}
-
+// ── Entry point ──────────────────────────────────────────────────────────────
 fn int main(int argc, char** argv)
 {
     if (argc < 2)
     {
-        print_help();
+        printf("usage: pride [--strict] <file.pie>\n");
         return 1;
     }
 
     // Scan args: the first non-flag is the source path; --strict promotes soft
     // type warnings to errors (v.md §20.4).
     bool strict = false;
-    bool dump_ast  = false;  // --dump-ast: print AST (off by default for speed)
     bool dump_ssi = false;
     bool dump_ir = false;
     bool dump_mono = false;
@@ -1121,7 +1041,6 @@ fn int main(int argc, char** argv)
     bool emit_bin  = false;   // --emit-bin: compile + link to binary
     bool emit_debug= false;   // --debug: emit DWARF debug info via -g
     bool emit_lto  = false;   // --lto: enable link-time optimisation
-    bool emit_strip = false;  // --strip: strip debug info from output binary
     int  opt_level = 2;       // --opt=N (0-3, default 2)
     char* out_path = null;    // -o <path>
     bool run_rewrite = false;
@@ -1130,36 +1049,59 @@ fn int main(int argc, char** argv)
     bool dump_irdl = false;
     bool dump_sasi = false;
     bool verify_frontend = false;
-    bool freestanding = false;   // --freestanding: also affects --emit-bin linking
     char* path_arg = argv[1];
     bool found_path = false;
     for (usz ai = 1; ai < (usz)argc; ai++)
     {
         char* a_raw = argv[ai];
         usz a_len = cstr_len2(a_raw);
-
-        // Flags carrying an inline `=value` or a following argument are
-        // checked first via prefix match; everything else is an exact,
-        // full-string comparison (arg_is) — no partial byte-position
-        // sniffing anywhere in this dispatcher.
-        if (arg_starts_with(a_raw, a_len, "--emit-llvm", 11))
+        if (a_len == 8 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 's')
+        {
+            strict = true;
+        }
+        else if (a_len == 11 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'd' && a_raw[7] == 's')
+        {
+            dump_sasi = true;   // --dump-sasi
+        }
+        else if (a_len == 10 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'd')
+        {
+            dump_ssi = true;   // --dump-ssi
+        }
+        else if (a_len == 9 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'd')
+        {
+            dump_ir = true;   // --dump-ir
+        }
+        else if (a_len == 11 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'd' && a_raw[7] == 'm')
+        {
+            dump_mono = true;   // --dump-mono
+        }
+        else if (a_len == 9 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'r')
+        {
+            run_rewrite = true;   // --rewrite
+        }
+        else if (a_len == 6 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'p')
+        {
+            run_pgen = true;   // --pgen
+        }
+        else if (a_len == 7 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 's' && a_raw[3] == 't')
+        {
+            dump_stage = true;   // --stage
+        }
+        else if (a_len == 6 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'i')
+        {
+            dump_irdl = true;   // --irdl
+        }
+        else if (a_len == 8 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'v')
+        {
+            verify_frontend = true;   // --verify (print per-finding report)
+        }
+        else if (a_len >= 11 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'e'
+                 && a_raw[3] == 'm' && a_raw[4] == 'i' && a_raw[5] == 't')
         {
             // --emit-llvm [output.ll]  (default: source.ll next to source file)
             emit_llvm = true;
-            if (a_len > 12 && a_raw[11] == '=')
-            {
-                // Inline form: --emit-llvm=<path>
-                usz plen = a_len - 12;
-                char* pbuf = (char*)malloc(plen + 1);
-                if (pbuf != null)
-                {
-                    for (usz pi = 0; pi < plen; pi++) pbuf[pi] = a_raw[12 + pi];
-                    pbuf[plen] = 0;
-                    llvm_out = pbuf;
-                }
-            }
             // If the next arg is not a flag, treat it as the output path
-            else if (ai + 1 < (usz)argc && argv[ai + 1][0] != 0 && argv[ai + 1][0] != '-')
+            if (ai + 1 < (usz)argc && argv[ai + 1][0] != 0 && argv[ai + 1][0] != '-')
             {
                 ai++;
                 // Copy the output path from the next argument
@@ -1174,64 +1116,34 @@ fn int main(int argc, char** argv)
                 }
             }
         }
-        else if (arg_is(a_raw, a_len, "--opt") || arg_starts_with(a_raw, a_len, "--opt=", 6))
+        else if (a_len >= 5 && a_raw[0] == '-' && a_raw[1] == '-' && a_raw[2] == 'o' && a_raw[3] == 'p')
         {
             // --opt=N or --opt N
-            if (a_len > 5 && a_raw[5] == '=') { opt_level = (int)(a_raw[6] - '0'); }
+            if (a_raw[4] == '=') { opt_level = (int)(a_raw[5] - '0'); }
             else if (ai + 1 < (usz)argc) { ai++; opt_level = (int)(argv[ai][0] - '0'); }
         }
-        else if (arg_starts_with(a_raw, a_len, "--target=", 9))
-        {
-            target_triple = a_raw + 9;   // --target=<triple>
-        }
-        else if (arg_starts_with(a_raw, a_len, "--cfg=", 6))
-        {
-            if (cfg_count < 64) { cfg_flags[cfg_count] = a_raw + 6; cfg_count++; }   // --cfg=...
-        }
-        else if (arg_is(a_raw, a_len, "--help") || arg_is(a_raw, a_len, "-h"))
-        {
-            print_help();
-            return 0;
-        }
-        else if (arg_is(a_raw, a_len, "--version") || arg_is(a_raw, a_len, "-V"))
-        {
-            print_version();
-            return 0;
-        }
-        else if (arg_is(a_raw, a_len, "-o"))
+        else if (a_len == 7 && a_raw[2] == 'd' && a_raw[3] == 'e' && a_raw[4] == 'b')
+        { emit_debug = true; }  // --debug
+        else if (a_len == 5 && a_raw[2] == 'l' && a_raw[3] == 't' && a_raw[4] == 'o')
+        { emit_lto = true; }   // --lto
+        else if (a_len == 6 && a_raw[2]=='t'&&a_raw[3]=='e'&&a_raw[4]=='s'&&a_raw[5]=='t')
+        { run_tests = true; }  // --test
+        else if (a_len == 6 && a_raw[2]=='j'&&a_raw[3]=='s'&&a_raw[4]=='o'&&a_raw[5]=='n')
+        { json_output = true; g_json_output = true; }  // --json
+        else if (a_len >= 9 && a_raw[2]=='t'&&a_raw[3]=='a'&&a_raw[4]=='r'&&a_raw[5]=='g'&&a_raw[6]=='e'&&a_raw[7]=='t'&&a_raw[8]=='=')
+        { target_triple = a_raw + 9; }  // --target=<triple>
+        else if (a_len >= 6 && a_raw[2]=='c'&&a_raw[3]=='f'&&a_raw[4]=='g'&&a_raw[5]=='=')
+        { if (cfg_count < 64) { cfg_flags[cfg_count] = a_raw + 6; cfg_count++; } }  // --cfg=...
+        else if (a_len == 2 && a_raw[0]=='-'&&a_raw[1]=='g')
+        { emit_debug_info = true; }  // -g
+        else if (a_len == 10 && a_raw[2] == 'e' && a_raw[5] == '-' && a_raw[6] == 'o')
+        { emit_obj = true; }   // --emit-obj
+        else if (a_len == 10 && a_raw[2] == 'e' && a_raw[5] == '-' && a_raw[6] == 'b')
+        { emit_bin = true; emit_llvm = true; }  // --emit-bin
+        else if (a_len == 2 && a_raw[0] == '-' && a_raw[1] == 'o')
         {
             // -o <path>
             if (ai + 1 < (usz)argc) { ai++; out_path = argv[ai]; }
-        }
-        else if (arg_is(a_raw, a_len, "--strict"))       { strict = true; }
-        else if (arg_is(a_raw, a_len, "--dump-sasi"))    { dump_sasi = true; }
-        else if (arg_is(a_raw, a_len, "--dump-ssi"))     { dump_ssi = true; }
-        else if (arg_is(a_raw, a_len, "--dump-ir"))      { dump_ir = true; }
-        else if (arg_is(a_raw, a_len, "--dump-ast"))     { dump_ast = true; }
-        else if (arg_is(a_raw, a_len, "--dump-mono"))    { dump_mono = true; }
-        else if (arg_is(a_raw, a_len, "--rewrite"))      { run_rewrite = true; }
-        else if (arg_is(a_raw, a_len, "--pgen"))         { run_pgen = true; }
-        else if (arg_is(a_raw, a_len, "--stage"))        { dump_stage = true; }
-        else if (arg_is(a_raw, a_len, "--irdl"))         { dump_irdl = true; }
-        else if (arg_is(a_raw, a_len, "--verify"))       { verify_frontend = true; }
-        else if (arg_is(a_raw, a_len, "--debug"))        { emit_debug = true; }
-        else if (arg_is(a_raw, a_len, "--lto"))          { emit_lto = true; }
-        else if (arg_is(a_raw, a_len, "--strip"))        { emit_strip = true; }
-        // --freestanding: bare-metal/kernel mode — no runtime, no libc declarations
-        else if (arg_is(a_raw, a_len, "--freestanding")) { codegen::set_freestanding(true); freestanding = true; }
-        else if (arg_is(a_raw, a_len, "--test"))         { run_tests = true; }
-        else if (arg_is(a_raw, a_len, "--json"))         { json_output = true; g_json_output = true; }
-        else if (arg_is(a_raw, a_len, "-g"))             { emit_debug_info = true; }
-        else if (arg_is(a_raw, a_len, "--emit-obj"))     { emit_obj = true; }
-        else if (arg_is(a_raw, a_len, "--emit-bin"))     { emit_bin = true; emit_llvm = true; }
-        else if (a_len > 1 && a_raw[0] == '-')
-        {
-            // Unknown flag: fail loudly instead of silently treating it as the
-            // source path (previously `pride --help` tried to read a file
-            // literally named '--help').
-            printf("error: unknown option '%s'\n", a_raw);
-            printf("try 'pride --help' for the list of options.\n");
-            return 2;
         }
         else if (!found_path)
         {
@@ -1273,7 +1185,7 @@ fn int main(int argc, char** argv)
         return 1;
     }
 
-    if (!emit_llvm || dump_ast) { printf("=== Pride front-end ===\n"); }
+    printf("=== Pride front-end ===\n");
     printf("source: %s  (%llu bytes)\n\n", &path_buf[0], (ulong)src_len);
 
     // 1. Lexer
@@ -1325,7 +1237,7 @@ fn int main(int argc, char** argv)
     // (reported, never fatal) unless --strict; --verify prints each finding.
     integrity::Verifier* iv = (integrity::Verifier*)malloc(integrity::Verifier::size);
     iv.init();
-    if (verify_frontend) { iv.verify(program); }  // only when --verify
+    iv.verify(program);
 
     // 7a. MSP — Staging (CTFE). Runs the compile-time evaluator: folds
     // `comptime`/`eval` blocks to value nodes, grafts `splice`s inside quotes,
@@ -1342,19 +1254,7 @@ fn int main(int argc, char** argv)
     // matching rule's action template (a structural rewrite to a fixpoint).
     irdl_msp::DialectTable* dt = (irdl_msp::DialectTable*)malloc(irdl_msp::DialectTable::size);
     dt.init(&arena);
-    // Fast scan: only run IRDL pipeline if there are dialect/irdl declarations.
-    // Most programs have none — skip the full 3-pass scan entirely.
-    {
-        bool has_irdl = false;
-        for (usz qi = 0; qi < program.child_count && !has_irdl; qi++)
-        {
-            Node* qc = program.children[qi];
-            if (qc == null) continue;
-            if (qc.kind == Nk.NODE_DIALECT || qc.kind == Nk.NODE_IRDL
-                || qc.kind == Nk.NODE_PGEN) has_irdl = true;
-        }
-        if (has_irdl) { program = dt.run(program); }
-    }
+    program = dt.run(program);
     if (dump_irdl) dump_irdl_report(dt);
 
     // 7a''. Monomorphization — expand all generic call/struct-lit sites into
@@ -1390,7 +1290,7 @@ fn int main(int argc, char** argv)
     if (ir_ok)
     {
         ir.build(program);
-        if (verify_frontend) { vr = ir.verify(); }
+        vr = ir.verify();
         if (dump_ir) ir.dump();
     }
 
@@ -1428,7 +1328,7 @@ fn int main(int argc, char** argv)
             sasi_opt::Optimizer opt;
             opt.init(ir, sm);
             os = opt.run();
-            if (verify_frontend) { vr2 = ir.verify(); }
+            vr2 = ir.verify();
             if (dump_sasi)
             {
                 opt.report();
@@ -1506,28 +1406,15 @@ fn int main(int argc, char** argv)
             char[64] debug_flag;
             snprintf(&debug_flag[0], 64, "%s", (emit_debug || emit_debug_info) ? "-g" : "");
 
-            // llvm-as: .ll → .bc
+            // llvm-as
             char[2048] cmd;
             snprintf(&cmd[0], 2048, "llvm-as-22 %s -o %s.bc 2>&1", &ll_path[0], &stem[0]);
             int r2 = system(&cmd[0]);
             if (r2 != 0) { printf("llvm-as-22     : FAILED\n"); }
             else
             {
-                // opt: run LLVM optimizer passes on .bc for better execution speed
-                // -O2+: run full optimizer including function inlining, loop transforms,
-                //        vectorization, constant folding, dead code elimination.
-                // This is what makes Pride binaries rival Rust/Zig in execution speed.
-                if (opt_level >= 1)
-                {
-                    char[2048] opt_cmd;
-                    snprintf(&opt_cmd[0], 2048,
-                        "opt-22 --passes='default<%s>' %s.bc -o %s.opt.bc 2>/dev/null && mv %s.opt.bc %s.bc",
-                        opt_level >= 3 ? "O3" : opt_level >= 2 ? "O2" : "O1",
-                        &stem[0], &stem[0], &stem[0], &stem[0]);
-                    system(&opt_cmd[0]);   // failures are soft — still have original .bc
-                }
-                printf("opt            : ok\n");
-                // llc: .bc → .o  (use mcpu=native for best codegen on this machine)
+                printf("llvm-as        : ok\n");
+                // llc
                 snprintf(&cmd[0], 2048, "llc-22 %s %s -filetype=obj %s.bc -o %s.o 2>&1",
                          &opt_str[0], &debug_flag[0], &stem[0], &stem[0]);
                 r2 = system(&cmd[0]);
@@ -1552,67 +1439,17 @@ fn int main(int argc, char** argv)
                         }
                         char[64] lto_flag;
                         snprintf(&lto_flag[0], 64, "%s", emit_lto ? "--lto=thin" : "");
-                        char[64] strip_flag;
-                        snprintf(&strip_flag[0], 64, "%s", emit_strip ? "-s" : "");
-                        char[64] gc_flag;
-                        // --gc-sections eliminates unused functions/data → smaller binary
-                        // --icf=all: merge identical code sections → further size reduction
-                        snprintf(&gc_flag[0], 64, "%s",
-                            opt_level >= 1 ? "--gc-sections --icf=all" : "");
-
-                        // Resolve the directory holding this executable so the runtime
-                        // support objects can be linked no matter the CWD. The runtime
-                        // provides algebraic effects, panic, and SIMD builtins
-                        // (compiler_rt.o) plus arch ABI stubs (compiler_rt_arch.o).
-                        char[1024] exe_dir;
-                        {
-                            char[1024] exe_path;
-                            long rl = readlink((char*)"/proc/self/exe", &exe_path[0], 1023);
-                            if (rl > 0)
-                            {
-                                usz d = (usz)rl;
-                                while (d > 0 && exe_path[d-1] != '/') d--;   // strip basename
-                                for (usz ei = 0; ei < d; ei++) exe_dir[ei] = exe_path[ei];
-                                exe_dir[d] = 0;
-                            }
-                            else
-                            {
-                                exe_dir[0] = '.'; exe_dir[1] = '/'; exe_dir[2] = 0;
-                            }
-                        }
-                        char[1200] rt_obj;
-                        char[1200] rt_arch_obj;
-                        snprintf(&rt_obj[0], 1200, "%sruntime/compiler_rt.o", &exe_dir[0]);
-                        snprintf(&rt_arch_obj[0], 1200, "%sruntime/compiler_rt_arch.o", &exe_dir[0]);
-                        char[2600] rt_args;
-                        rt_args[0] = 0;   // empty when freestanding / runtime missing
-                        bool link_rt = !freestanding;
-                        if (link_rt && (!file_exists(&rt_obj[0]) || !file_exists(&rt_arch_obj[0])))
-                        {
-                            printf("warning: runtime/compiler_rt*.o not found next to %s;\n"
-                                   "         run `make runtime`. Programs using effects/panic/"
-                                   "SIMD will fail to link.\n", &exe_dir[0]);
-                            link_rt = false;
-                        }
-                        if (link_rt)
-                        {
-                            snprintf(&rt_args[0], 2600, "%s %s ", &rt_obj[0], &rt_arch_obj[0]);
-                        }
-                        // Link line mirrors the known-good Makefile recipe: crt1/crti +
-                        // crtn, runtime objects, libc/libgcc, canonical ELF interpreter.
-                        char[4608] linkcmd;
-                        snprintf(&linkcmd[0], 4608,
+                        snprintf(&cmd[0], 2048,
                             "ld.lld-22 /usr/lib/x86_64-linux-gnu/crt1.o "
                             "/usr/lib/x86_64-linux-gnu/crti.o "
-                            "%s.o %s"
-                            "/usr/lib/x86_64-linux-gnu/crtn.o -o %s "
+                            "/usr/lib/gcc/x86_64-linux-gnu/14/crtbeginS.o "
+                            "%s.o -o %s "
                             "-L/usr/lib/x86_64-linux-gnu -L/lib/x86_64-linux-gnu "
                             "-L/usr/lib/gcc/x86_64-linux-gnu/14 "
-                            "-lc -lm -lpthread -lgcc -lgcc_s %s %s %s "
-                            "--dynamic-linker /lib64/ld-linux-x86-64.so.2 2>&1",
-                            &stem[0], &rt_args[0], &bin_path[0],
-                            &lto_flag[0], &strip_flag[0], &gc_flag[0]);
-                        r2 = system(&linkcmd[0]);
+                            "-lc -lm -lpthread -lgcc -lgcc_s %s "
+                            "--dynamic-linker /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 2>&1",
+                            &stem[0], &bin_path[0], &lto_flag[0]);
+                        r2 = system(&cmd[0]);
                         if (r2 != 0) { printf("ld.lld-22      : FAILED\n"); }
                         else { printf("linked         : %s\n", &bin_path[0]); }
                     }
@@ -1664,12 +1501,9 @@ fn int main(int argc, char** argv)
         printf("  total test functions: %d\n", n_test_fns);
     }
 
-    // 8. Output (AST only with --dump-ast — off by default for performance)
-    if (dump_ast)
-    {
-        printf("=== AST ===\n");
-        print_node(program, 0);
-    }
+    // 8. Output
+    printf("=== AST ===\n");
+    print_node(program, 0);
 
     report_lexer_diags(&lx);
     report_parser_diags(&p, lx.source, lx.len);
@@ -1681,9 +1515,6 @@ fn int main(int argc, char** argv)
     if (verify_frontend) report_integrity(iv);
     if (mono_ok) mn.report();
 
-    // Summary: only print when not doing --emit-llvm or explicitly requested
-    if (!emit_llvm || dump_ast)
-    {
     printf("\n=== Summary ===\n");
     printf("nodes allocated : %llu\n", (ulong)arena.node_count);
     printf("arena used      : %llu / %llu bytes\n", (ulong)arena.cursor, (ulong)arena.cap);
@@ -1737,8 +1568,6 @@ fn int main(int argc, char** argv)
         print_effects(program.effects);
         printf("\n");
     }
-
-    } // end summary
 
     // The entire tree is released in one call.
     bool resolve_failed = r.had_error;

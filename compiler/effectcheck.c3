@@ -1,11 +1,11 @@
 // ============================================================================
-// effectcheck.c3 — Pryde algebraic-effect checker
+// effectcheck.c3 — Pride algebraic-effect checker
 // ----------------------------------------------------------------------------
 // Implementation language: C3 (host).
 //
 // Pipeline:  ... -> Resolver -> TypeChecker -> EffectChecker (this) -> ...
 //
-// Pryde's core promise (v.md §1, §15, §22): "No hidden behavior." Every effect
+// Pride's core promise (v.md §1, §15, §22): "No hidden behavior." Every effect
 // a function can perform must appear in its declared effect row `! [...]`.
 // This pass:
 //   1. Computes each fn's DECLARED effects from its `! [...]` row:
