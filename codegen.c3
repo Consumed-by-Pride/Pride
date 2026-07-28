@@ -3429,13 +3429,17 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         char[TYMAP_ENTRY] cptbuf;
                         fn_param_llvm_type(clo_decl, (int)ia2, &cptbuf[0], TYMAP_ENTRY);
                         char* cpt = &cptbuf[0];
-                        cg.out.writes(", ");
-                        bool same2b = cstr_eq(aty2, cpt);
-                        if (!same2b && (aty2[0] == '{' || cpt[0] == '{'))
-                        {
-                            cg.out.writes("i64 undef  ; closure arg ABI mismatch (hard error)");
-                            continue;
-                        }
+                    cg.out.writes(", ");
+                    bool same2b = cstr_eq(aty2, cpt);
+                    if (!same2b && (aty2[0] == '{' || cpt[0] == '{'))
+                    {
+                        // Hard-error path (printf + cg.errors++ above): still
+                        // emit a syntactically COMPLETE call so the .ll stays
+                        // parseable by llvm-as — an inline `; comment` here
+                        // used to eat the closing paren and corrupt the file.
+                        cg.out.writes("i64 undef");
+                        continue;
+                    }
                         if (!same2b && aty2[0] == 'i' && cpt[0] == 'i')
                         {
                             cg.out.writes(cpt); cg.out.writes(" %clarg.c.");

@@ -1429,9 +1429,26 @@ fn IrVal* SsiModule.union_tag(SsiModule* m, IrVal* v, Node* src)
 
 fn IrVal* SsiModule.union_payload(SsiModule* m, IrVal* v, Node* src)
 {
+    // A null scrutinee (unbindable upstream — e.g. an unannotated closure
+    // parameter matched with variant patterns: those bodies are not type
+    // checked, so the binder arrives without a value) must NOT mint a value
+    // id that never lands in a block: the binder would dangle wherever the
+    // arm uses it (φ incoming → "use of undefined value" under llvm-as,
+    // unparseable-by-semantics output). Emitting a defined i64 zero keeps
+    // the module well-formed; the site's own hard diagnostic (aggregate
+    // closure arg) already reports the real problem.
+    if (v == null)
+    {
+        int zln = src != null ? src.line : 0;
+        int zlc = src != null ? src.col  : 0;
+        Node* zsrc = ast::node_int(m.arena, 0, 64, true, zln, zlc);
+        IrVal* z = m.new_val(IrOp.IR_CONST_INT, zsrc);
+        if (z != null) { z.ival = 0; m.emit(z); }
+        return z;
+    }
     IrVal* t = m.new_val(IrOp.IR_INDEX,
                 m.typed_holder_src(Nk.NODE_EXPR_INDEX, src, (char*)"i64", 3));
-    if (t != null && v != null) { t.add_arg(v, -1); t.ival = 1; m.emit(t); }
+    if (t != null) { t.add_arg(v, -1); t.ival = 1; m.emit(t); }
     return t;
 }
 
@@ -1639,20 +1656,39 @@ fn void SsiModule.bind_pattern_values(SsiModule* m, Node* pat, IrVal** params, u
     m.bind_let_pattern(pat, arity >= 1 ? params[0] : null);
 }
 
-// Bind every binder a pattern introduces to a fresh IR_PARAM root value.
+// Bind every binder a pattern introduces to a fresh IR_PARAM root value
+// (f != null: fn-entry context — params materialize in the fn header).
+// With f == null (legacy mid-function fallback: a pattern shape the typed
+// destructuring paths don't cover, e.g. a struct-ish pattern against a
+// scrutinee typecheck never stamped) an IR_PARAM would print NO
+// instruction anywhere — any later use, especially a match-join φ operand,
+// dangles with "use of undefined value". Mid-function binders instead get
+// a defined zero placeholder: the placeholder values are inert placeholders
+// for programs the type checker already rejected (or never visited), and
+// the module stays verifiable and parseable.
 fn void SsiModule.bind_pattern(SsiModule* m, SsiFunc* f, Node* pat)
 {
     if (pat == null) return;
     switch (pat.kind)
     {
         case Nk.NODE_PATTERN_IDENT:
-            IrVal* pv = m.new_val(IrOp.IR_PARAM, pat);
-            if (pv != null) { pv.binder = pat; m.emit(pv); m.env_push(pat, pv); }
-            if (f != null && pv != null && f.param_count < MAX_EDGES)
+            IrVal* pv = null;
+            if (f != null)
             {
-                f.params[f.param_count] = pv;
-                f.param_count++;
+                pv = m.new_val(IrOp.IR_PARAM, pat);
+                if (pv != null && f.param_count < MAX_EDGES)
+                {
+                    f.params[f.param_count] = pv;
+                    f.param_count++;
+                }
             }
+            else
+            {
+                Node* zsrc = ast::node_int(m.arena, 0, 64, true, pat.line, pat.col);
+                pv = m.new_val(IrOp.IR_CONST_INT, zsrc);
+                if (pv != null) { pv.ival = 0; }
+            }
+            if (pv != null) { pv.binder = pat; m.emit(pv); m.env_push(pat, pv); }
         case Nk.NODE_PATTERN_TUPLE:
         case Nk.NODE_PATTERN_OR:
             for (usz i = 0; i < pat.child_count; i++) m.bind_pattern(f, pat.children[i]);
@@ -1664,7 +1700,17 @@ fn void SsiModule.bind_pattern(SsiModule* m, SsiFunc* f, Node* pat)
                 if (fld.child_count >= 2) { m.bind_pattern(f, fld.children[1]); }
                 else
                 {
-                    IrVal* fv = m.new_val(IrOp.IR_PARAM, fld);
+                    IrVal* fv = null;
+                    if (f != null)
+                    {
+                        fv = m.new_val(IrOp.IR_PARAM, fld);
+                    }
+                    else
+                    {
+                        Node* zsrc2 = ast::node_int(m.arena, 0, 64, true, fld.line, fld.col);
+                        fv = m.new_val(IrOp.IR_CONST_INT, zsrc2);
+                        if (fv != null) { fv.ival = 0; }
+                    }
                     if (fv != null) { fv.binder = fld; m.emit(fv); m.env_push(fld, fv); }
                 }
             }
@@ -1970,7 +2016,27 @@ fn void SsiModule.bind_let_pattern(SsiModule* m, Node* pat, IrVal* val)
             // payload type (`_` on a unit payload binds nothing).
             {
                 int ord = 0; Node* vp_ty = null; Node* vp_un = null;
-                if (!variant_pattern_info(pat, &vp_un, &ord, &vp_ty)) return;
+                if (!variant_pattern_info(pat, &vp_un, &ord, &vp_ty))
+                {
+                    // Unstamped pattern (e.g. inside an unannotated closure
+                    // body, which the type checker never visits): the binder
+                    // must still name a DEFINED value. Binding nothing turns
+                    // a use into a fabricated IR_UNKNOWN that codegen prints
+                    // as no instruction at all — a dangling `%vN` reference
+                    // ("use of undefined value" under llvm-as), exactly the
+                    // miscompile class the unit-payload path below guards
+                    // against. Same convention: bind the unit value.
+                    for (usz i = 0; i < pat.child_count; i++)
+                    {
+                        Node* pf2 = pat.children[i];
+                        if (pf2 == null || pf2.kind != Nk.NODE_PATTERN_FIELD
+                            || pf2.child_count < 2) continue;
+                        Node* bind2 = pf2.children[1];
+                        if (bind2 == null || bind2.kind != Nk.NODE_PATTERN_IDENT) continue;
+                        m.bind_let_pattern(bind2, m.mk_unit(pf2));
+                    }
+                    return;
+                }
                 for (usz i = 0; i < pat.child_count; i++)
                 {
                     Node* pf = pat.children[i];
