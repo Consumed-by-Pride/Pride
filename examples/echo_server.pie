@@ -1,0 +1,90 @@
+-- echo_server.pie — TCP echo server in pure Pride
+-- Accepts connections, echoes back what was sent.
+-- Pure syscalls, no libc networking wrappers.
+
+fn sys_socket : (i64, i64, i64) -> i64 ! [IO]
+  | (domain, typ, proto) -> syscall(41, domain, typ, proto)
+
+fn sys_setsockopt : (i64, i64, i64, *i32, i64) -> i64 ! [IO]
+  | (fd, level, optname, optval, optlen) ->
+      syscall(54, fd, level, optname, optval as i64, optlen)
+
+fn sys_bind : (i64, ptr, i64) -> i64 ! [IO]
+  | (fd, addr, addrlen) -> syscall(49, fd, addr as i64, addrlen)
+
+fn sys_listen : (i64, i64) -> i64 ! [IO]
+  | (fd, backlog) -> syscall(50, fd, backlog)
+
+fn sys_accept : (i64, ptr, *i32) -> i64 ! [IO]
+  | (fd, addr, addrlen) -> syscall(43, fd, addr as i64, addrlen as i64)
+
+fn sys_read : (i64, *u8, i64) -> i64 ! [IO]
+  | (fd, buf, len) -> syscall(0, fd, buf as i64, len)
+
+fn sys_write : (i64, *u8, i64) -> i64 ! [IO]
+  | (fd, buf, len) -> syscall(1, fd, buf as i64, len)
+
+fn sys_close : i64 -> i64 ! [IO]
+  | fd -> syscall(3, fd)
+
+fn sys_exit : i32 -> () ! [IO]
+  | code -> syscall(231, code as i64)
+
+fn htons_manual : u16 -> u16
+  | p -> ((p & 255u16) << 8) | (p >> 8)
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      -- socket(AF_INET=2, SOCK_STREAM=1, IPPROTO_TCP=6)
+      let fd = sys_socket(2, 1, 6)
+      if fd < 0 then sys_exit(1)
+
+      -- setsockopt SO_REUSEADDR
+      let opt : *i32 = alloc i32
+      *opt = 1
+      sys_setsockopt(fd, 1, 2, opt, 4)
+      free opt
+
+      -- Build sockaddr_in: family=2, port=8080, addr=0
+      let sa : *u8 = alloc [u8; 16]
+      sa[0] = 2u8    -- AF_INET low byte
+      sa[1] = 0u8    -- AF_INET high byte
+      sa[2] = 31u8   -- port 8080 high byte (8080 = 0x1F90)
+      sa[3] = 144u8  -- port 8080 low byte
+      sa[4] = 0u8    sa[5] = 0u8    sa[6] = 0u8    sa[7] = 0u8  -- INADDR_ANY
+      sa[8] = 0u8    sa[9] = 0u8    sa[10] = 0u8   sa[11] = 0u8
+      sa[12] = 0u8   sa[13] = 0u8   sa[14] = 0u8   sa[15] = 0u8
+
+      let bind_r = sys_bind(fd, sa as ptr, 16)
+      if bind_r < 0 then sys_exit(2)
+
+      sys_listen(fd, 10)
+
+      let buf : *u8 = alloc [u8; 4096]
+      let csa : *u8 = alloc [u8; 16]
+      let csalen : *i32 = alloc i32
+
+      -- Accept loop
+      let mut running = true
+      while running
+        *csalen = 16
+        let client = sys_accept(fd, csa as ptr, csalen)
+        if client < 0
+          running = false
+        else
+          -- Echo loop for this client
+          let mut go = true
+          while go
+            let n = sys_read(client, buf, 4096)
+            if n <= 0
+              go = false
+            else
+              sys_write(client, buf, n)
+          sys_close(client)
+
+      free buf
+      free csa
+      free csalen
+      free sa
+      sys_close(fd)
+      sys_exit(0)

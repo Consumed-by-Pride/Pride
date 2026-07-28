@@ -1,0 +1,3 @@
+-- EXPECT: resolve 3:10 undefined name
+fn f : i32 -> i32
+  | x -> nope

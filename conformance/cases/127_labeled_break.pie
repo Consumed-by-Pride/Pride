@@ -1,0 +1,18 @@
+-- Test: labeled break from nested loop
+fn find_pair : (i64, i64) -> (i64, i64)
+  | (n, target) ->
+    let mut result_i : i64 = -1i64
+    let mut result_j : i64 = -1i64
+    'outer: while result_i < 0i64
+      let mut i : i64 = 0i64
+      while i < n
+        let mut j : i64 = i + 1i64
+        while j < n
+          if i + j == target then
+            result_i = i
+            result_j = j
+            break 'outer
+          j = j + 1i64
+        i = i + 1i64
+      break 'outer
+    (result_i, result_j)

@@ -1,0 +1,7 @@
+-- EXPECT-CLEAN
+struct Tree<T>
+  val : T
+  left : *Tree<T>
+  right : *Tree<T>
+fn rootval<T> : Tree<T> -> T
+  | t -> t.val

@@ -1,0 +1,23 @@
+-- EXPECT-CLEAN
+fn is_digit : u8 -> bool
+  | c -> c >= 48u8 && c <= 57u8
+
+fn parse_nat : (*u8, i64) -> i64
+  | (s, len) ->
+      let mut n : i64 = 0
+      let mut i : i64 = 0
+      while i < len && is_digit(s[i])
+        n = n * 10 + (s[i] as i64 - 48)
+        i = i + 1
+      n
+
+fn count_alpha : (*u8, i64) -> i64
+  | (s, n) ->
+      let mut c : i64 = 0
+      let mut i : i64 = 0
+      while i < n
+        let b = s[i]
+        if (b >= 65u8 && b <= 90u8) || (b >= 97u8 && b <= 122u8)
+          c = c + 1
+        i = i + 1
+      c

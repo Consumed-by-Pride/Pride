@@ -1,0 +1,3 @@
+-- EXPECT: type-warn 3:12 bitwise/shift operator requires integer
+fn f : f64 -> f64
+  | x -> x << 2

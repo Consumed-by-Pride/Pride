@@ -1,0 +1,114 @@
+mod os.uefi.tables
+
+use os.uefi
+use os.uefi.status
+use os.uefi.tables.boot_services
+use os.uefi.tables.runtime_services
+
+-- UEFI System Table and related structures.
+-- Port of Zig's std/os/uefi/tables.zig.
+
+-- §1  CONFIGURATION TABLE ENTRY
+
+struct ConfigurationTable
+  vendor_guid  : os.uefi.Guid
+  vendor_table : ptr
+
+-- Known Configuration Table GUIDs
+const EFI_ACPI_TABLE_GUID : os.uefi.Guid = os.uefi.Guid {
+  data1: 0xEB9D2D30u32, data2: 0x2D88u16, data3: 0x11D3u16,
+  data4: 0x9A160090273FC14Du64
+}
+const EFI_ACPI_20_TABLE_GUID : os.uefi.Guid = os.uefi.Guid {
+  data1: 0x8868E871u32, data2: 0xE4F1u16, data3: 0x11D3u16,
+  data4: 0xBC220080C73C8811u64
+}
+const SMBIOS_TABLE_GUID : os.uefi.Guid = os.uefi.Guid {
+  data1: 0xEB9D2D31u32, data2: 0x2D88u16, data3: 0x11D3u16,
+  data4: 0x9A160090273FC14Du64
+}
+const SMBIOS3_TABLE_GUID : os.uefi.Guid = os.uefi.Guid {
+  data1: 0xF2FD1544u32, data2: 0x9794u16, data3: 0x4A2Cu16,
+  data4: 0x992E87B163640B7Bu64
+}
+const EFI_DTB_TABLE_GUID : os.uefi.Guid = os.uefi.Guid {
+  data1: 0xB1B621D5u32, data2: 0xF19Cu16, data3: 0x41A5u16,
+  data4: 0xABC0D60AD0B1270Eu64
+}
+
+-- §2  SYSTEM TABLE
+
+struct SystemTable
+  hdr                  : os.uefi.EfiTableHeader   -- signature: 0x5453595320494249 ("IBI SYST")
+  firmware_vendor      : ptr    -- *u16 (UCS-2 firmware vendor name)
+  firmware_revision    : u32
+  __pad                : u32
+  console_in_handle    : ptr    -- Handle
+  con_in               : ptr    -- *SimpleTextInput protocol
+  console_out_handle   : ptr
+  con_out              : ptr    -- *SimpleTextOutput protocol
+  standard_error_handle : ptr
+  std_err              : ptr    -- *SimpleTextOutput protocol
+  runtime_services     : ptr    -- *RuntimeServices
+  boot_services        : ptr    -- *BootServices
+  number_of_table_entries : u64
+  configuration_table  : ptr    -- *ConfigurationTable[]
+
+const EFI_SYSTEM_TABLE_SIGNATURE : u64 = 6067843223759934024u64   -- 0x5453595320494249
+const EFI_2_100_SYSTEM_TABLE_REVISION : u32 = 0x00020064u32   -- 2.100
+const EFI_2_90_SYSTEM_TABLE_REVISION  : u32 = 0x0002005Au32
+const EFI_2_80_SYSTEM_TABLE_REVISION  : u32 = 0x00020050u32
+const EFI_2_70_SYSTEM_TABLE_REVISION  : u32 = 0x00020046u32
+const EFI_2_60_SYSTEM_TABLE_REVISION  : u32 = 0x0002003Cu32
+const EFI_2_50_SYSTEM_TABLE_REVISION  : u32 = 0x00020032u32
+const EFI_2_40_SYSTEM_TABLE_REVISION  : u32 = 0x00020028u32
+const EFI_2_31_SYSTEM_TABLE_REVISION  : u32 = 0x0002001Fu32
+const EFI_2_30_SYSTEM_TABLE_REVISION  : u32 = 0x0002001Eu32
+const EFI_2_20_SYSTEM_TABLE_REVISION  : u32 = 0x00020014u32
+const EFI_2_10_SYSTEM_TABLE_REVISION  : u32 = 0x0002000Au32
+const EFI_2_00_SYSTEM_TABLE_REVISION  : u32 = 0x00020000u32
+const EFI_1_10_SYSTEM_TABLE_REVISION  : u32 = 0x0001000Au32
+const EFI_1_02_SYSTEM_TABLE_REVISION  : u32 = 0x00010002u32
+
+-- §3  SYSTEM TABLE ACCESSORS
+
+fn st_boot_services : *SystemTable -> *os.uefi.tables.boot_services.BootServices
+  | st -> st.boot_services as *os.uefi.tables.boot_services.BootServices
+
+fn st_runtime_services : *SystemTable -> *os.uefi.tables.runtime_services.RuntimeServices
+  | st -> st.runtime_services as *os.uefi.tables.runtime_services.RuntimeServices
+
+fn st_con_out : *SystemTable -> ptr
+  | st -> st.con_out
+
+fn st_firmware_vendor : *SystemTable -> *u16
+  | st -> st.firmware_vendor as *u16
+
+fn st_find_config_table : (*SystemTable, *os.uefi.Guid) -> ptr
+  | (st, guid) ->
+    let tables = st.configuration_table as *ConfigurationTable
+    let mut i : u64 = 0u64
+    while i < st.number_of_table_entries
+      let entry = (tables as i64 + i as i64 * 24i64) as *ConfigurationTable
+      if os.uefi.guid_eq(&entry.vendor_guid, guid) then entry.vendor_table
+      i = i + 1u64
+    0 as ptr
+
+-- §4  MEMORY TYPE enum names (for debugging)
+
+fn memory_type_name : u32 -> *u8
+  | t ->
+    if t == os.uefi.EFI_RESERVED_MEMORY_TYPE  then "ReservedMemoryType" as *u8
+    else if t == os.uefi.EFI_LOADER_CODE       then "LoaderCode" as *u8
+    else if t == os.uefi.EFI_LOADER_DATA       then "LoaderData" as *u8
+    else if t == os.uefi.EFI_BOOT_SERVICES_CODE then "BootServicesCode" as *u8
+    else if t == os.uefi.EFI_BOOT_SERVICES_DATA then "BootServicesData" as *u8
+    else if t == os.uefi.EFI_RUNTIME_SERVICES_CODE then "RuntimeServicesCode" as *u8
+    else if t == os.uefi.EFI_RUNTIME_SERVICES_DATA then "RuntimeServicesData" as *u8
+    else if t == os.uefi.EFI_CONVENTIONAL_MEMORY   then "ConventionalMemory" as *u8
+    else if t == os.uefi.EFI_UNUSABLE_MEMORY        then "UnusableMemory" as *u8
+    else if t == os.uefi.EFI_ACPI_RECLAIM_MEMORY    then "ACPIReclaimMemory" as *u8
+    else if t == os.uefi.EFI_ACPI_MEMORY_NVS        then "ACPIMemoryNVS" as *u8
+    else if t == os.uefi.EFI_MEMORY_MAPPED_IO       then "MemoryMappedIO" as *u8
+    else if t == os.uefi.EFI_PERSISTENT_MEMORY      then "PersistentMemory" as *u8
+    else "Unknown" as *u8

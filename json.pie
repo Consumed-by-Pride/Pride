@@ -1,0 +1,43 @@
+-- json.pie: Stress testing Pride's enum, effect, and pattern matching
+enum Json
+  Null
+  Boolean(bool)
+  Number(i64)
+
+effect Parser
+  peek : () -> u8
+  advance : () -> u8
+  fail : () -> i64
+
+fn parse_bool : () -> Json ! [Parser, UB]
+  | () ->
+      let c = Parser.peek()
+      if c == 116u8 -- 't'
+        let _1 = Parser.advance()
+        let _2 = Parser.advance()
+        let _3 = Parser.advance()
+        let _4 = Parser.advance()
+        return Json.Boolean(true)
+      else if c == 102u8 -- 'f'
+        let _1 = Parser.advance()
+        let _2 = Parser.advance()
+        let _3 = Parser.advance()
+        let _4 = Parser.advance()
+        let _5 = Parser.advance()
+        return Json.Boolean(false)
+      
+      let _e = Parser.fail()
+      ub! "unreachable"
+
+fn stringify : Json -> i64 ! [IO, UB]
+  | Json.Null -> 0
+  | Json.Boolean(b) -> 
+      if b then 1 else 2
+  | Json.Number(n) -> n
+
+fn main : () -> () ! [IO, Alloc, Parser, UB]
+  | () ->
+      let j = parse_bool()
+      let res = stringify(j)
+      if res == 1
+        syscall(1, 1, "true\n" as i64, 5)

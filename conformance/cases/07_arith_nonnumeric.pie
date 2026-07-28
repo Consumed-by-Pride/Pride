@@ -1,0 +1,3 @@
+-- EXPECT: type-warn 3:12 arithmetic on non-numeric operand
+fn f : bool -> i32
+  | b -> b + b

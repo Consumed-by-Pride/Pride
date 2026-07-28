@@ -1,0 +1,8 @@
+-- Test: chained let bindings
+fn compute : i64 -> i64
+  | x ->
+    let a : i64 = x * 2i64
+    let b : i64 = a + 1i64
+    let c : i64 = b * b
+    let d : i64 = c - a
+    d

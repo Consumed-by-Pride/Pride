@@ -1,0 +1,24 @@
+-- EXPECT-CLEAN
+fn clamp_i64 : (i64, i64, i64) -> i64
+  | (x, lo, hi) -> if x < lo then lo else if x > hi then hi else x
+
+fn min_of_three_i64 : (i64, i64, i64) -> i64
+  | (a, b, c) ->
+    if a <= b && a <= c then a
+    else if b <= c then b
+    else c
+
+fn max_of_three_i64 : (i64, i64, i64) -> i64
+  | (a, b, c) ->
+    if a >= b && a >= c then a
+    else if b >= c then b
+    else c
+
+fn between_i64 : (i64, i64, i64) -> bool
+  | (x, lo, hi) -> x >= lo && x <= hi
+
+fn min2_i64 : (i64, i64) -> i64
+  | (a, b) -> if a < b then a else b
+
+fn max2_i64 : (i64, i64) -> i64
+  | (a, b) -> if a > b then a else b

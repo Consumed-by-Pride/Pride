@@ -1,0 +1,87 @@
+mod os.uefi.status
+
+-- UEFI Status codes. Port of Zig's std/os/uefi/status.zig.
+-- Status codes returned by EFI interfaces.
+-- High bit set = error. High bit clear = success/informational.
+
+-- §1  STATUS ENCODING
+-- On 64-bit: high bit (bit 63) set = error class
+-- Bits 62..0 = code number
+
+const EFI_ERROR_BIT : u64 = 9223372036854775808u64   -- 1 << 63
+
+fn efi_error : u64 -> u64    | code -> EFI_ERROR_BIT | code
+fn efi_is_error : u64 -> bool | s -> s & EFI_ERROR_BIT != 0u64
+
+-- §2  SUCCESS AND INFORMATIONAL
+
+const EFI_SUCCESS             : u64 = 0u64
+const EFI_WARN_UNKNOWN_GLYPH  : u64 = 1u64
+const EFI_WARN_DELETE_FAILURE : u64 = 2u64
+const EFI_WARN_WRITE_FAILURE  : u64 = 3u64
+const EFI_WARN_BUFFER_TOO_SMALL : u64 = 4u64
+const EFI_WARN_STALE_DATA     : u64 = 5u64
+const EFI_WARN_FILE_SYSTEM    : u64 = 6u64
+const EFI_WARN_RESET_REQUIRED : u64 = 7u64
+
+-- §3  ERROR CODES (high bit set)
+
+const EFI_LOAD_ERROR            : u64 = 9223372036854775809u64   -- EFI_ERROR_BIT | 1
+const EFI_INVALID_PARAMETER     : u64 = 9223372036854775810u64   -- | 2
+const EFI_UNSUPPORTED           : u64 = 9223372036854775811u64   -- | 3
+const EFI_BAD_BUFFER_SIZE       : u64 = 9223372036854775812u64   -- | 4
+const EFI_BUFFER_TOO_SMALL      : u64 = 9223372036854775813u64   -- | 5
+const EFI_NOT_READY             : u64 = 9223372036854775814u64   -- | 6
+const EFI_DEVICE_ERROR          : u64 = 9223372036854775815u64   -- | 7
+const EFI_WRITE_PROTECTED       : u64 = 9223372036854775816u64   -- | 8
+const EFI_OUT_OF_RESOURCES      : u64 = 9223372036854775817u64   -- | 9
+const EFI_VOLUME_CORRUPTED      : u64 = 9223372036854775818u64   -- | 10
+const EFI_VOLUME_FULL           : u64 = 9223372036854775819u64   -- | 11
+const EFI_NO_MEDIA              : u64 = 9223372036854775820u64   -- | 12
+const EFI_MEDIA_CHANGED         : u64 = 9223372036854775821u64   -- | 13
+const EFI_NOT_FOUND             : u64 = 9223372036854775822u64   -- | 14
+const EFI_ACCESS_DENIED         : u64 = 9223372036854775823u64   -- | 15
+const EFI_NO_RESPONSE           : u64 = 9223372036854775824u64   -- | 16
+const EFI_NO_MAPPING            : u64 = 9223372036854775825u64   -- | 17
+const EFI_TIMEOUT               : u64 = 9223372036854775826u64   -- | 18
+const EFI_NOT_STARTED           : u64 = 9223372036854775827u64   -- | 19
+const EFI_ALREADY_STARTED       : u64 = 9223372036854775828u64   -- | 20
+const EFI_ABORTED               : u64 = 9223372036854775829u64   -- | 21
+const EFI_ICMP_ERROR            : u64 = 9223372036854775830u64   -- | 22
+const EFI_TFTP_ERROR            : u64 = 9223372036854775831u64   -- | 23
+const EFI_PROTOCOL_ERROR        : u64 = 9223372036854775832u64   -- | 24
+const EFI_INCOMPATIBLE_VERSION  : u64 = 9223372036854775833u64   -- | 25
+const EFI_SECURITY_VIOLATION    : u64 = 9223372036854775834u64   -- | 26
+const EFI_CRC_ERROR             : u64 = 9223372036854775835u64   -- | 27
+const EFI_END_OF_MEDIA          : u64 = 9223372036854775836u64   -- | 28
+const EFI_END_OF_FILE           : u64 = 9223372036854775839u64   -- | 31
+const EFI_INVALID_LANGUAGE      : u64 = 9223372036854775840u64   -- | 32
+const EFI_COMPROMISED_DATA      : u64 = 9223372036854775841u64   -- | 33
+const EFI_IP_ADDRESS_CONFLICT   : u64 = 9223372036854775842u64   -- | 34
+const EFI_HTTP_ERROR            : u64 = 9223372036854775843u64   -- | 35
+
+-- §4  STATUS HELPERS
+
+fn efi_status_name : u64 -> *u8
+  | s ->
+    if s == EFI_SUCCESS            then "EFI_SUCCESS"             as *u8
+    else if s == EFI_LOAD_ERROR    then "EFI_LOAD_ERROR"          as *u8
+    else if s == EFI_INVALID_PARAMETER then "EFI_INVALID_PARAMETER" as *u8
+    else if s == EFI_UNSUPPORTED   then "EFI_UNSUPPORTED"         as *u8
+    else if s == EFI_BUFFER_TOO_SMALL then "EFI_BUFFER_TOO_SMALL" as *u8
+    else if s == EFI_NOT_READY     then "EFI_NOT_READY"           as *u8
+    else if s == EFI_DEVICE_ERROR  then "EFI_DEVICE_ERROR"        as *u8
+    else if s == EFI_NOT_FOUND     then "EFI_NOT_FOUND"           as *u8
+    else if s == EFI_ACCESS_DENIED then "EFI_ACCESS_DENIED"       as *u8
+    else if s == EFI_TIMEOUT       then "EFI_TIMEOUT"             as *u8
+    else if s == EFI_ABORTED       then "EFI_ABORTED"             as *u8
+    else if s == EFI_SECURITY_VIOLATION then "EFI_SECURITY_VIOLATION" as *u8
+    else if s == EFI_OUT_OF_RESOURCES  then "EFI_OUT_OF_RESOURCES"   as *u8
+    else if s == EFI_NO_MEDIA      then "EFI_NO_MEDIA"            as *u8
+    else if s == EFI_END_OF_FILE   then "EFI_END_OF_FILE"         as *u8
+    else if !efi_is_error(s)       then "EFI_WARN_*"              as *u8
+    else "(unknown EFI status)"     as *u8
+
+fn efi_status_is_success : u64 -> bool  | s -> s == EFI_SUCCESS
+fn efi_status_is_warning : u64 -> bool  | s -> !efi_is_error(s) && s != EFI_SUCCESS
+fn efi_status_is_error   : u64 -> bool  | s -> efi_is_error(s)

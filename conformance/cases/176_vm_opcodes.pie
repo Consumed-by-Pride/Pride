@@ -1,0 +1,15 @@
+-- EXPECT-CLEAN
+fn vm_encode_simple : (u8, u8, u8, u8) -> u32
+  | (op, rd, ra, rb) ->
+    ((op as u32) << 24u32) | ((rd as u32) << 16u32) | ((ra as u32) << 8u32) | (rb as u32)
+
+fn vm_decode_op : u32 -> u8
+  | instr -> ((instr >> 24u32) & 0xFFu32) as u8
+
+fn vm_decode_rd : u32 -> u8
+  | instr -> ((instr >> 16u32) & 0xFFu32) as u8
+
+fn vm_roundtrip : (u8, u8, u8, u8) -> bool
+  | (op, rd, ra, rb) ->
+    let enc : u32 = vm_encode_simple(op, rd, ra, rb)
+    vm_decode_op(enc) == op && vm_decode_rd(enc) == rd

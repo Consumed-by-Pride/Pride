@@ -1,0 +1,27 @@
+fn branch_merge : i32 -> i32
+  | n ->
+      let mut x : i32 = 0
+      if n > 0
+        x = 1
+      else
+        x = 2
+      x
+
+fn loop_carry : i32 -> i32
+  | n ->
+      let mut sum : i32 = 0
+      for i in 0..n
+        sum = sum + i
+      sum
+
+fn nested : i32 -> i32
+  | n ->
+      let mut a : i32 = 0
+      if n > 0
+        if n > 10
+          a = 1
+        else
+          a = 2
+      else
+        a = 3
+      a

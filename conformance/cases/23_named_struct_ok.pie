@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+struct Point
+  x : i32
+  y : i32
+fn getx : Point -> i32
+  | p -> p.x

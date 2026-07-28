@@ -1,0 +1,9 @@
+-- EXPECT: effect-warn 6:1 performs IO
+effect Log
+  emit : i32 -> ()
+fn do_work : () -> () ! [Log, IO]
+  | () -> ()
+fn run : () -> ()
+  | () ->
+      handle do_work()
+        | Log.emit _x k -> k(())

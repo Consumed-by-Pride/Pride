@@ -1,0 +1,5 @@
+-- EXPECT: type-warn 5:17 comparison is not defined for aggregate
+type P = struct
+  x : i32
+fn bad : (P, P) -> bool
+  | (a, b) -> a < b

@@ -1,0 +1,19 @@
+fn complex<A, B : Ord> : (*A, u64, A -> B ! [..r]) -> *B ! [Alloc, IO, ..r]
+  where B = Pair<A, A>
+  #inline #vectorize
+  | (arr, n, f) ->
+      let mut acc : *B = alloc [B; n]
+      for i in 0..=n
+        if arr[i] ∈ valid_set
+          acc[i] = f(arr[i]) |> simplify*
+        else
+          acc[i] = ub! "out of range"
+      match acc
+        | null -> trap
+        | p    -> p
+
+let combined : Rewrite = a ++ b ++ c
+
+handle prog()
+  | IO.write byte k -> (raw(byte); k ())
+  | Mem.alloc n k   -> k bump(n)
