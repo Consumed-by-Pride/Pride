@@ -4092,17 +4092,27 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
             && pat.child_count >= 1 && pat.children[0] != null
             && pat.children[0].resolved != null
             && pat.children[0].resolved.kind == Nk.NODE_DECL_NEWTYPE;
+        // Null-literal arm (`| null -> ...`): a refutable pointer-equality
+        // test on the scrutinee. The switch has no integer case value for
+        // it — the literal arm's old fallback statically linked it as
+        // "shadowed / non-int literal: unreachable", so a null scrutinee
+        // silently fell into the NEXT arm (usually the catch-all).
+        bool is_null_arm = !is_or && pat != null
+            && pat.kind == Nk.NODE_PATTERN_LITERAL
+            && pat.child_count >= 1 && pat.children[0] != null
+            && pat.children[0].kind == Nk.NODE_LIT_NULL;
         // Enum-name arms are tested-chain arms too: the switch cannot prove
         // a discriminant (no integer case value exists for a NAME pattern),
         // so they route through the default chain exactly like union-variant
         // arms, re-testing the tag in their dispatch block.
         bool chain_arm = is_wild || is_bind || is_tuple || or_chain_irrefutable || or_tested_chain
-            || is_variant_arm || is_newtype_arm || is_enum_name_arm;
+            || is_variant_arm || is_newtype_arm || is_enum_name_arm || is_null_arm;
 
         int arm_blk = m.new_block();
         // Variant arms need the tag test evaluated in a dispatch block even
-        // without a user guard.
-        bool needs_test_blk = (guard != null) || is_variant_arm || is_enum_name_arm;
+        // without a user guard; null arms need their equality test there.
+        bool needs_test_blk = (guard != null) || is_variant_arm || is_enum_name_arm
+            || is_null_arm;
         int guard_blk = needs_test_blk ? m.new_block() : -1;
         int dispatch = (guard_blk >= 0) ? guard_blk : arm_blk;
 
@@ -4229,11 +4239,13 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
             IrVal* gval = guard != null
                 ? m.lower_expr(guard.child_count >= 1 ? guard.children[0] : null)
                 : null;
-            if (is_variant_arm || is_enum_name_arm)
+            if (is_variant_arm || is_enum_name_arm || is_null_arm)
             {
                 // The switch proved nothing: run the variant tag test here
                 // and AND any user guard into it. single_test covers both
-                // `{ name: binder }` (union) and bare name (enum) arms.
+                // `{ name: binder }` (union) and bare name (enum) arms —
+                // and the null arm's PATTERN_LITERAL falls out of its
+                // generic literal-equality arm (icmp eq scrutinee, null).
                 gval = m.and_cond(m.single_test(pat, sval), gval, pat);
             }
             if (or_tested_chain)

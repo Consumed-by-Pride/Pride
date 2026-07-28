@@ -375,6 +375,18 @@ fn bool TypeChecker.subtype_body(TypeChecker* self, Node* a, Node* b)
         return pa == pb;
     }
 
+    // Array-to-element pointer decay: *[T; N] <: *T. An allocated array's
+    // address IS the address of its first element — exactly what
+    // `let p : *i64 = alloc [i64; 10]` means (v.md §15). Applied before the
+    // invariant rule, which would otherwise reject the allocation idiom.
+    if (a.kind == Nk.NODE_TYPE_PTR && a.child_count >= 1
+        && b.kind == Nk.NODE_TYPE_PTR && b.child_count >= 1)
+    {
+        Node* aelem = self.unfold(a.children[0]);
+        if (aelem != null && aelem.kind == Nk.NODE_TYPE_ARRAY
+            && aelem.child_count >= 1)
+        { return self.subtype(aelem.children[0], b.children[0]); }
+    }
     // Pointers: *T <: *U iff T <: U and U <: T (invariant). ptr is top pointer.
     if (a.kind == Nk.NODE_TYPE_PTR && b.kind == Nk.NODE_TYPE_PTR)
     {
@@ -627,6 +639,19 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
             return self.synth_binary(e);
         case Nk.NODE_EXPR_UNARY:
             return self.synth_unary(e);
+        case Nk.NODE_EXPR_ALLOC:
+            // `alloc T` / `alloc [T; N]` is a fresh pointer to the type
+            // child (v.md §15). Without a synthesis the binder stayed
+            // untyped, and a later `*p` deref fell to the junk `ptr`
+            // fallback — loading the pointee AS a ptr (invalid IR the moment
+            // an integer consumer saw it; `q as i32`-style casts hid it).
+            if (e.child_count >= 1 && e.children[0] != null)
+            {
+                self.synth(e.children[0]);   // type errors inside the type child
+                return ast::node1(self.arena, Nk.NODE_TYPE_PTR, e.children[0],
+                                  e.line, e.col);
+            }
+            return null;
         case Nk.NODE_EXPR_ASSIGN:
             return self.synth_assign(e);
 
