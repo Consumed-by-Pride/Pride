@@ -1693,6 +1693,55 @@ fn AstNode* union_decl_of(AstNode* ty)
     return null;
 }
 
+// Return the NODE_DECL_ENUM behind a type node, or null. Mirrors
+// union_decl_of for the enum repr — same tagged { i32, i64 } shape.
+fn AstNode* enum_decl_of(AstNode* ty)
+{
+    if (ty == null) return null;
+    AstNode* r = null;
+    if (ty.kind == NodeKind.NODE_TYPEVAR && ty.resolved != null) r = ty.resolved;
+    if (r == null && ty.kind == NodeKind.NODE_DECL_ENUM) r = ty;
+    if (r != null)
+    {
+        if (r.kind == NodeKind.NODE_DECL_ENUM) return r;
+        if (r.kind == NodeKind.NODE_DECL_TYPE && r.child_count >= 1)
+        {
+            AstNode* body = r.children[r.child_count - 1];
+            if (body != null && body.kind == NodeKind.NODE_DECL_ENUM) return body;
+        }
+    }
+    return null;
+}
+
+// Find an enum's variant ordinal (0-based discriminant, declaration order of
+// the variant nodes) for `name`, or -1. Variant decls whose head ident is
+// pre-resolved to the variant node are matched by IDENT NODE — the
+// declaration-order child — so aliases can't spoof a name.
+fn int enum_variant_lookup(AstNode* edecl, char* name, usz name_len)
+{
+    if (edecl == null || edecl.kind != NodeKind.NODE_DECL_ENUM || name == null) return -1;
+    int ord = 0;
+    for (usz evi = 1; evi < edecl.child_count; evi++)
+    {
+        AstNode* ev = edecl.children[evi];
+        if (ev == null || ev.kind != NodeKind.NODE_ENUM_VARIANT) continue;
+        AstNode* vn = ev.child_count >= 1 ? ev.children[0] : null;
+        if (vn != null
+            && vn.p.ident.name_ptr != null
+            && vn.p.ident.name_len == name_len)
+        {
+            bool eq = true;
+            for (usz ci = 0; ci < name_len; ci++)
+            {
+                if (vn.p.ident.name_ptr[ci] != name[ci]) { eq = false; break; }
+            }
+            if (eq) return ord;
+        }
+        ord++;
+    }
+    return -1;
+}
+
 // Find a union's variant field-decl index + payload type for `name`.
 // Returns the 0-based variant ordinal (the discriminant), or -1.
 // `out_payload` receives the payload type node (NODE_EXPR_UNIT for none).

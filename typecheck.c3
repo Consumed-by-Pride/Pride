@@ -787,16 +787,22 @@ fn Node* TypeChecker.synth_call(TypeChecker* self, Node* e)
             && callee_n.resolved.kind == Nk.NODE_ENUM_VARIANT)
         {
             Node* variant = callee_n.resolved;
-            // Find the enum decl: scan the global scope for it
-            // The variant's parent is identified by checking whose child it is.
-            // For now: synthesize args and return the enum name ident as type.
+            // The variant is back-linked to its owning DECL_ENUM via .resolved
+            // (see decl_type's NODE_ENUM_VARIANT case for why .resolved and
+            // not .type_annotation). Synthesize the payload args, then the
+            // construction's type IS the enum's tagged repr — annotating it
+            // with the variant's name ident collapsed to an opaque ptr in
+            // codegen (tensor heap path, invalid `store double` of ints).
             for (usz ai = 1; ai < e.child_count; ai++)
             { self.synth(e.children[ai]); }
-            // Type of the expression = the enum typevar node (child 0 of variant)
+            if (variant.resolved != null && variant.resolved.kind == Nk.NODE_DECL_ENUM)
+            {
+                e.type_annotation = variant.resolved;
+                return variant.resolved;
+            }
             if (variant.child_count >= 1)
             {
                 Node* vname = variant.children[0];
-                // Return a primitive-sized placeholder; full enum type TBD in SSI
                 e.type_annotation = vname;
                 return vname;
             }
@@ -1464,6 +1470,29 @@ fn Node* TypeChecker.synth_field(TypeChecker* self, Node* e)
     Node* fields = self.struct_fields_of(bt);
     if (fields == null)
     {
+        // String/format record { ptr, i64(len), i64(cap) }: named slots by
+        // layout (v.md §10.2 uses s.len on a Str). The type is a tuple, so
+        // struct_fields_of saw nothing and this used to fall through to the
+        // generic "non-struct" soft-warning while codegen defaulted the GEP
+        // index to 0 — .len silently loaded the data POINTER. Resolve the
+        // three layout names here; anything else stays the honest warning.
+        Node* bt2 = self.unfold(bt);
+        bool str_shape = bt2 != null && bt2.kind == Nk.NODE_TYPE_TUPLE
+            && bt2.child_count >= 2 && bt2.children[0] != null
+            && type_prim(self.unfold(bt2.children[0])) == Prim.PRIM_PTR;
+        if (str_shape && name != null && name.kind == Nk.NODE_IDENT)
+        {
+            char* np = name.p.ident.name_ptr; usz nl = name.p.ident.name_len;
+            if (nl == 3 && np[0]=='p' && np[1]=='t' && np[2]=='r')
+            { return bt2.children[0]; }
+            if (nl == 3 && np[0]=='l' && np[1]=='e' && np[2]=='n')
+            { return bt2.children[1]; }
+            if (nl == 3 && np[0]=='c' && np[1]=='a' && np[2]=='p'
+                && bt2.child_count >= 3)
+            { return bt2.children[2]; }
+            self.soft("unknown field in string record (ptr, len, cap exist)", name.line, name.col);
+            return null;
+        }
         // A module-qualified type (`geom::Point`) we could not resolve to a
         // concrete struct (e.g. the module member isn't a struct, or it's an
         // unresolved cross-module reference): stay abstract-soft rather than
@@ -1827,11 +1856,20 @@ fn Node* TypeChecker.decl_type(TypeChecker* self, Node* decl)
             return null;
 
         case Nk.NODE_ENUM_VARIANT:
-            // A variant constructor — its type is the parent enum's typevar.
-            // Walk up: the variant's parent is the DECL_ENUM node.
-            // The enum name is children[0] of the DECL_ENUM.
-            // Return the variant itself as the type annotation so callers can
-            // match on it; the caller (synth_call) will synthesize the enum type.
+            // A variant constructor — its type is the OWNING enum's repr.
+            // The resolver back-links every variant to its DECL_ENUM in
+            // .resolved (never .type_annotation: mono's clone_node would
+            // chase that into a variant→enum→children→variant cycle).
+            // Returning the DECL_ENUM gives codegen the tagged
+            // { i32, i64 } repr through type_to_llvm and keeps enum
+            // machinery (enum_decl_of) happy on every value/pattern
+            // annotation. The old answer — the variant's own name ident —
+            // eroded to an opaque `ptr` downstream, sending tagged ctor
+            // values down the tensor heap path (malloc + `store double`
+            // of integer constants: invalid LLVM, and an unmarshalable
+            // argument at call sites).
+            if (decl.resolved != null && decl.resolved.kind == Nk.NODE_DECL_ENUM)
+            { return decl.resolved; }
             return decl.child_count >= 1 ? decl.children[0] : null;
 
         default:

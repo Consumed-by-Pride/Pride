@@ -503,6 +503,17 @@ fn void Resolver.hoist_decl(Resolver* self, Node* d)
                     self.bind_name_node(ev.children[0], NS_VALUE, ev, true);
                     self.bind_name_node(ev.children[0], NS_TYPE, ev, false);  // also in type NS
                     if (ev.children[0] != null) ev.children[0].resolved = ev;
+                    // The tree is parent-less: link each variant back to the
+                    // owning enum decl so a use (`Green`) or a bare
+                    // variant-name pattern can recover the discriminant by
+                    // declaration order (the { i32, i64 } repr's tag). Uses
+                    // .resolved — putting the back-link in .type_annotation
+                    // creates a cycle monomorphization's clone_node follows
+                    // recursively (variant → enum → children → variant:
+                    // exponential blowup; hung the compiler on a bare enum
+                    // declaration). .resolved is only remapped shallowly by
+                    // fixup_resolved, so no tree walk ever cycles through it.
+                    ev.resolved = d;
                 }
             }
 

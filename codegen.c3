@@ -109,6 +109,14 @@ fn bool cstr_eq(char* a, char* b)
     return a[i] == b[i];
 }
 
+// Is the first n bytes of a equal to the (exactly n bytes) literal b?
+fn bool cstr_eq_n(char* a, char* b, usz n) @private
+{
+    if (a == null || b == null) return false;
+    for (usz i = 0; i < n; i++) { if (a[i] != b[i]) return false; }
+    return true;
+}
+
 // Exact, full-byte comparison of a (ptr,len) span against a C string literal.
 // Every ad-hoc "is this identifier named X" check in this file MUST go
 // through this helper rather than hand-rolled partial byte-position checks
@@ -3331,6 +3339,92 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                 cg.emit_vref(aval_c); cg.out.writes(" to "); cg.out.writes(pt); cg.out.writes("\n");
                             }
                         }
+                        else if (aty_c[0]=='{' && pt[0]=='{')
+                        {
+                            // Aggregate → aggregate, caught by the generic
+                            // fallback because the exact-shape comparison
+                            // above rejected it first (e.g. a value whose
+                            // tymap string differs textually from the
+                            // callee's parameter struct but is elementwise
+                            // compatible: enum tagged repr, nested tuples).
+                            // Rebuild per element like the main path does —
+                            // silent bitcasts of aggregates are invalid LLVM.
+                            char[STRUCT_SPLIT_CAP * STRUCT_SPLIT_LEN] from_elems2;
+                            char[STRUCT_SPLIT_CAP * STRUCT_SPLIT_LEN] to_elems2;
+                            int nf2 = split_struct_ty(aty_c, &from_elems2[0], STRUCT_SPLIT_LEN);
+                            int nt2 = split_struct_ty(pt,    &to_elems2[0],   STRUCT_SPLIT_LEN);
+                            if (nf2 > 0 && nf2 == nt2)
+                            {
+                                for (int ei2 = 0; ei2 < nf2; ei2++)
+                                {
+                                    char* fe2 = (char*)&from_elems2[0] + (usz)ei2 * STRUCT_SPLIT_LEN;
+                                    char* te2 = (char*)&to_elems2[0]   + (usz)ei2 * STRUCT_SPLIT_LEN;
+                                    cg.out.writes("  %arg.c."); cg.out.writeu(ia);
+                                    cg.out.writes(".x"); cg.out.writei((long)ei2);
+                                    cg.out.writes(".v"); cg.out.writei(v.id);
+                                    cg.out.writes(" = extractvalue "); cg.out.writes(aty_c);
+                                    cg.out.writes(" "); cg.emit_vref(aval_c);
+                                    cg.out.writes(", "); cg.out.writei((long)ei2); cg.out.writes("\n");
+                                    char* eopc2 = coerce_op(fe2, te2);
+                                    if (eopc2 != null)
+                                    {
+                                        cg.out.writes("  %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".w"); cg.out.writei((long)ei2);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                        cg.out.writes(" = "); cg.out.writes(eopc2);
+                                        cg.out.writes(" "); cg.out.writes(fe2);
+                                        cg.out.writes(" %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".x"); cg.out.writei((long)ei2);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                        cg.out.writes(" to "); cg.out.writes(te2); cg.out.writes("\n");
+                                    }
+                                    bool last_i2 = (ei2 == nf2 - 1);
+                                    if (last_i2)
+                                    {
+                                        cg.out.writes("  %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                    }
+                                    else
+                                    {
+                                        cg.out.writes("  %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".i"); cg.out.writei((long)ei2);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                    }
+                                    cg.out.writes(" = insertvalue "); cg.out.writes(pt);
+                                    if (ei2 == 0)
+                                    {
+                                        cg.out.writes(" undef");
+                                    }
+                                    else
+                                    {
+                                        cg.out.writes(" %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".i"); cg.out.writei((long)(ei2 - 1));
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                    }
+                                    cg.out.writes(", "); cg.out.writes(te2);
+                                    if (eopc2 != null)
+                                    {
+                                        cg.out.writes(" %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".w"); cg.out.writei((long)ei2);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                    }
+                                    else
+                                    {
+                                        cg.out.writes(" %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".x"); cg.out.writei((long)ei2);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                    }
+                                    cg.out.writes(", "); cg.out.writei((long)ei2); cg.out.writes("\n");
+                                }
+                            }
+                            else
+                            {
+                                cg.out.writes(" = freeze "); cg.out.writes(pt);
+                                cg.out.writes(" undef  ; unsupported argument coercion (codegen hard error)\n");
+                                cg.errors++;
+                                printf("codegen error: unsupported argument coercion (%s -> %s)\n", aty_c, pt);
+                            }
+                        }
                         else
                         {
                             // Unhandled coercion shape (e.g. an aggregate
@@ -3849,6 +3943,29 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     field_idx = field_index_of(struct_decl,
                                                field_name_node.p.ident.name_ptr,
                                                field_name_node.p.ident.name_len);
+                }
+                else if (field_name_node != null && struct_decl == null && base != null)
+                {
+                    // String/format record { ptr, i64(len), i64(cap) }: the
+                    // type is a synthesized tuple, so field_index_of found no
+                    // struct and the index defaulted to 0 — `.len` silently
+                    // loaded the DATA POINTER. Map the three layout names by
+                    // shape+name (mirrors synth_field in typecheck.c3).
+                    char* bty_r = (tm != null) ? tm.get(base.id) : null;
+                    bool is_str_rec = bty_r != null
+                        && cstr_eq_n(bty_r, (char*)"{ ptr, i64", 10);
+                    if (is_str_rec)
+                    {
+                        char* rnp = field_name_node.p.ident.name_ptr;
+                        usz   rnl = field_name_node.p.ident.name_len;
+                        if (rnl == 3 && rnp != null)
+                        {
+                            if (rnp[0]=='l' && rnp[1]=='e' && rnp[2]=='n')
+                            { field_idx = 1; }
+                            else if (rnp[0]=='c' && rnp[1]=='a' && rnp[2]=='p')
+                            { field_idx = 2; }
+                        }
+                    }
                 }
 
                 // Emit struct type name

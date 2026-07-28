@@ -1544,6 +1544,47 @@ fn IrVal* SsiModule.tag_const(SsiModule* m, int ord, Node* src)
     return c;
 }
 
+// A bare enum-variant VALUE (`Green`) lowers to the tagged repr
+// `{ i32 ordinal, i64 payload }` with a zero payload slot — the exact shape a
+// DECL_ENUM's repr and a fn's parameter assume. The ordinal is recovered from
+// the resolver-stamped owner enum on the variant (tree is parent-less) by
+// identity scan; when the variant carries payload AST data the unit path is
+// all that exists today, so payloads beyond unit are left to typecheck's
+// diagnostics. Returns null when the use isn't a resolvable variant.
+fn IrVal* SsiModule.lower_enum_variant_use(SsiModule* m, Node* n)
+{
+    Node* ev = n != null ? n.resolved : null;
+    if (ev == null || ev.kind != Nk.NODE_ENUM_VARIANT) return null;
+    // The resolver stamps the owner link in .resolved, NOT .type_annotation:
+    // type_annotation is followed recursively by monomorphization's
+    // clone_node (variant → enum → children → variant is an exponential
+    // cycle), while .resolved is only remapped shallowly by fixup_resolved.
+    Node* edecl = ev.resolved;
+    if (edecl == null || edecl.kind != Nk.NODE_DECL_ENUM) return null;
+    int ord = -1;
+    int cnt = 0;
+    for (usz ei = 1; ei < edecl.child_count; ei++)
+    {
+        Node* c = edecl.children[ei];
+        if (c == null || c.kind != Nk.NODE_ENUM_VARIANT) continue;
+        if (c == ev) { ord = cnt; break; }
+        cnt++;
+    }
+    if (ord < 0) return null;
+    IrVal* tagv = m.tag_const(ord, n);
+    Node* zlit = ast::node_int(m.arena, 0, 64, true, n.line, n.col);
+    IrVal* pay = m.new_val(IrOp.IR_CONST_INT, zlit);
+    if (pay != null) { pay.ival = 0; m.emit(pay); }
+    IrVal* ag = m.new_val(IrOp.IR_TUPLE, n);
+    if (ag != null)
+    {
+        ag.add_arg(tagv, -1);
+        ag.add_arg(pay, -1);
+        m.emit(ag);
+    }
+    return ag;
+}
+
 // Fabricate an `expr as ToTy` cast over an ALREADY-LOWERED value — the
 // enum-payload repr coercion in both directions (i64 slot <-> payload type).
 // The fabricated EXPR_CAST node carries the destination in type_annotation,
@@ -1607,6 +1648,41 @@ fn IrVal* SsiModule.single_test(SsiModule* m, Node* pat, IrVal* v)
                 }
                 return null;
             }
+        case Nk.NODE_PATTERN_IDENT:
+            // Bare enum-variant name pattern (`| Red -> ...`): a CONSTANT
+            // pattern testing the discriminant, not a binder — the pattern
+            // carries the enum type (typecheck-stamped), the carried name
+            // gives the ordinal in declaration order. It used to fall through
+            // to "irrefutable", making the FIRST such clause swallow every
+            // value — silent wrong dispatch on enums.
+            if (pat.child_count >= 1 && pat.children[0] != null
+                && (pat.children[0].kind == Nk.NODE_TYPEVAR
+                    || pat.children[0].kind == Nk.NODE_IDENT)
+                && pat.type_annotation != null)
+            {
+                Node* nm3 = pat.children[0];
+                Node* ed3 = ast::enum_decl_of(pat.type_annotation);
+                if (ed3 != null && nm3.p.ident.name_ptr != null)
+                {
+                    int ord3 = ast::enum_variant_lookup(ed3,
+                        nm3.p.ident.name_ptr, nm3.p.ident.name_len);
+                    if (ord3 >= 0)
+                    {
+                        IrVal* tg3 = m.union_tag(v, pat);
+                        IrVal* tc3 = m.tag_const(ord3, pat);
+                        IrVal* t3 = m.new_val(IrOp.IR_BIN, m.bool_test_src(pat));
+                        if (t3 != null)
+                        {
+                            t3.bop = Tt.TOKEN_EQEQ;
+                            t3.add_arg(tg3, -1);
+                            t3.add_arg(tc3, -1);
+                            m.emit(t3);
+                        }
+                        return t3;
+                    }
+                }
+            }
+            return null;
         case Nk.NODE_PATTERN_OR:
             // | a | b | ... : test every alternative; any match suffices.
             // An irrefutable alternative (ident binder / '_') makes the whole
@@ -2608,6 +2684,15 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                     if (csv != null) return csv;
                 }
             }
+            // An enum-variant ctor use resolves to the variant node: emit the
+            // tagged { i32 ordinal, i64 0 } repr (same arm as the TypeVar
+            // variant in the default case — kept here so lowercase-spelled
+            // variants resolve identically).
+            if (n.resolved != null && n.resolved.kind == Nk.NODE_ENUM_VARIANT)
+            {
+                IrVal* evv = m.lower_enum_variant_use(n);
+                if (evv != null) return evv;
+            }
             // Unresolved (global / fn ref): an opaque named value. Emit it so it
             // is a real defined SSA value (a "global reference" instruction),
             // never a dangling operand.
@@ -3347,6 +3432,16 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
             // NODE_TYPEVAR that resolved to a DECL_CONST (e.g. TOK_KW_FN=100):
             // uppercase names are parsed as typevar nodes but used as values.
             // If resolved to a const/static, inline-evaluate the initializer.
+            // A bare enum-variant use (uppercase idents parse as TypeVar):
+            // `Green` lowers to the tagged `{ i32 ordinal, i64 0 }` repr an
+            // enum value actually carries — the opaque-global fallback made
+            // it a ptr literal that no consumer can use.
+            if (n.kind == Nk.NODE_TYPEVAR && n.resolved != null
+                && n.resolved.kind == Nk.NODE_ENUM_VARIANT)
+            {
+                IrVal* evv = m.lower_enum_variant_use(n);
+                if (evv != null) return evv;
+            }
             if (n.kind == Nk.NODE_TYPEVAR && n.resolved != null
                 && (n.resolved.kind == Nk.NODE_DECL_CONST
                     || n.resolved.kind == Nk.NODE_DECL_STATIC))
@@ -3920,6 +4015,28 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         // a tag without giving every variant value its own case routing).
         bool is_variant_arm = !is_or
             && variant_pattern_info(pat, null, null, null);
+        // Bare enum-variant name arm (`| Red -> ...`): a constant pattern on
+        // the discriminant — refutable like the union-variant arm, and the
+        // name must NOT swallow as a plain binder (its old is_bind
+        // classification skipped every test, so the first name arm matched
+        // everything).
+        bool is_enum_name_arm = false;
+        if (!is_or && pat != null && pat.kind == Nk.NODE_PATTERN_IDENT
+            && pat.child_count >= 1 && pat.children[0] != null
+            && (pat.children[0].kind == Nk.NODE_TYPEVAR
+                || pat.children[0].kind == Nk.NODE_IDENT)
+            && pat.type_annotation != null)
+        {
+            Node* enm = pat.children[0];
+            Node* edc = ast::enum_decl_of(pat.type_annotation);
+            if (edc != null && enm.p.ident.name_ptr != null
+                && ast::enum_variant_lookup(edc, enm.p.ident.name_ptr,
+                                            enm.p.ident.name_len) >= 0)
+            {
+                is_enum_name_arm = true;
+                is_bind = false;
+            }
+        }
         // Newtype struct arm `Dollars(v)`: a tagless identity wrap —
         // irrefutable (there is nothing to test), bound through the destructuring
         // layer so the binder aliases the scrutinee unchanged. It used to take
@@ -3931,13 +4048,17 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
             && pat.child_count >= 1 && pat.children[0] != null
             && pat.children[0].resolved != null
             && pat.children[0].resolved.kind == Nk.NODE_DECL_NEWTYPE;
+        // Enum-name arms are tested-chain arms too: the switch cannot prove
+        // a discriminant (no integer case value exists for a NAME pattern),
+        // so they route through the default chain exactly like union-variant
+        // arms, re-testing the tag in their dispatch block.
         bool chain_arm = is_wild || is_bind || is_tuple || or_chain_irrefutable || or_tested_chain
-            || is_variant_arm || is_newtype_arm;
+            || is_variant_arm || is_newtype_arm || is_enum_name_arm;
 
         int arm_blk = m.new_block();
         // Variant arms need the tag test evaluated in a dispatch block even
         // without a user guard.
-        bool needs_test_blk = (guard != null) || is_variant_arm;
+        bool needs_test_blk = (guard != null) || is_variant_arm || is_enum_name_arm;
         int guard_blk = needs_test_blk ? m.new_block() : -1;
         int dispatch = (guard_blk >= 0) ? guard_blk : arm_blk;
 
@@ -4064,10 +4185,11 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
             IrVal* gval = guard != null
                 ? m.lower_expr(guard.child_count >= 1 ? guard.children[0] : null)
                 : null;
-            if (is_variant_arm)
+            if (is_variant_arm || is_enum_name_arm)
             {
                 // The switch proved nothing: run the variant tag test here
-                // and AND any user guard into it.
+                // and AND any user guard into it. single_test covers both
+                // `{ name: binder }` (union) and bare name (enum) arms.
                 gval = m.and_cond(m.single_test(pat, sval), gval, pat);
             }
             if (or_tested_chain)
