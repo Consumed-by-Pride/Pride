@@ -667,6 +667,32 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
                               self.mk_prim(Prim.PRIM_I64),
                               0, 0);
 
+        case Nk.NODE_EXPR_TUPLE_LIT:
+            // `(a, b, ...)` is the tuple of its element types. The
+            // tuple-DESTRUCTURING let (`let (c, n) = (Blue, 7)`) stamps its
+            // binders componentwise from exactly this synthesis — without it
+            // the literal typed to null, the destructure stamped nothing, and
+            // a match over a destructured enum binder compiled every arm as a
+            // plain binder: no tag test existed in the lowering, so the FIRST
+            // arm always fired no matter the scrutinee's tag.
+            {
+                Node* tt = ast::node_raw(self.arena, Nk.NODE_TYPE_TUPLE,
+                                         e.line, e.col);
+                if (tt == null) return null;
+                bool complete = true;
+                for (usz i = 0; i < e.child_count; i++)
+                {
+                    Node* et = self.synth(e.children[i]);
+                    if (et == null) complete = false;
+                    ast::add_child(self.arena, tt, et);
+                }
+                // All-or-nothing: a tuple type carrying null holes would be a
+                // new hazard for every consumer walking type children; keep
+                // the previous honest "unknown" for that case instead.
+                if (!complete) return null;
+                return tt;
+            }
+
         case Nk.NODE_EXPR_CAST:
             // expr as Type — result is the target type (child 1).
             {
@@ -1470,6 +1496,35 @@ fn Node* TypeChecker.synth_field(TypeChecker* self, Node* e)
     Node* fields = self.struct_fields_of(bt);
     if (fields == null)
     {
+        // A plain string literal binds as PRIM_STR (not a tuple); the runtime
+        // repr is PrideStr { ptr, len } (runtime/compiler_rt.c). Map the two
+        // slots by that layout — without this `s.len` on a let-bound literal
+        // drew a misleading "field access on a non-struct value", and the
+        // field went untyped downstream. `.cap` is NOT in the repr (it's a
+        // property of the runtime's growable builder only): an unambiguous
+        // hard error, since continuing used to GEP field 2 of a 2-field
+        // record — invalid IR.
+        if (name != null && name.kind == Nk.NODE_IDENT)
+        {
+            Node* btf = self.unfold(bt);
+            if (btf != null && type_prim(btf) == Prim.PRIM_STR)
+            {
+                char* np = name.p.ident.name_ptr; usz nl = name.p.ident.name_len;
+                if (nl == 3 && np[0]=='p' && np[1]=='t' && np[2]=='r')
+                { return self.mk_prim(Prim.PRIM_PTR); }
+                if (nl == 3 && np[0]=='l' && np[1]=='e' && np[2]=='n')
+                { return self.mk_prim(Prim.PRIM_I64); }
+                if (nl == 3 && np[0]=='c' && np[1]=='a' && np[2]=='p')
+                {
+                    self.hard("string has no `cap` field (Str is { ptr, len })",
+                              name.line, name.col);
+                    return null;
+                }
+                self.soft("unknown field in string (ptr, len exist)",
+                          name.line, name.col);
+                return null;
+            }
+        }
         // String/format record { ptr, i64(len), i64(cap) }: named slots by
         // layout (v.md §10.2 uses s.len on a Str). The type is a tuple, so
         // struct_fields_of saw nothing and this used to fall through to the

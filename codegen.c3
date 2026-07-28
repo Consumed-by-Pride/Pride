@@ -1705,6 +1705,25 @@ fn usz str_const_decoded_len(ssi_ir::IrVal* v)
     return decoded_len;
 }
 
+// Print the CONSTANT aggregate form of a string literal:
+// `{ ptr @.str.N, i64 LEN }`. Required wherever the fat string record is
+// used as one value (stored into memory in one piece); emit_vref alone
+// renders `@.str.N`, the raw byte-global pointer, which is not a value of
+// the record type.
+fn void cgen_emit_str_const_record(CgenModule* cg, ssi_ir::IrVal* v)
+{
+    if (v == null || v.op != ssi_ir::IrOp.IR_CONST_STR)
+    {
+        cg.out.writes("undef");
+        return;
+    }
+    cg.out.writes("{ ptr @.str.");
+    cg.out.writei(v.id);
+    cg.out.writes(", i64 ");
+    cg.out.writeu((ulong)str_const_decoded_len(v));
+    cg.out.writes(" }");
+}
+
 fn void CgenModule.emit_string_globals(CgenModule* cg)
 {
     ssi_ir::SsiModule* m = cg.ir;
@@ -3713,7 +3732,15 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         if (emit_ty[0] == '%') { cg.out.writes("ptr"); }
                         else { cg.out.writes(emit_ty); }
                         cg.out.writes(" ");
-                        cg.emit_vref(v.args[i]);  // emit_vref sigma-unwraps automatically
+                        // A string literal passed as an aggregate argument is
+                        // the fat record { ptr @.str.N, i64 LEN }, not the
+                        // bare byte-global ref emit_vref renders (llvm-as:
+                        // "global variable reference must have pointer type").
+                        if (emit_ty[0] == '{'
+                            && v.args[i] != null
+                            && v.args[i].op == ssi_ir::IrOp.IR_CONST_STR)
+                        { cgen_emit_str_const_record(cg, v.args[i]); }
+                        else { cg.emit_vref(v.args[i]); }  // emit_vref sigma-unwraps automatically
                     }
                 }
                 cg.out.writes(")\n");
@@ -3997,7 +4024,16 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         cg.out.writes("  %struct.ptr.v"); cg.out.writei(v.id);
                         cg.out.writes(" = alloca "); cg.out.writes(base_ty2); cg.out.writes("\n");
                         cg.out.writes("  store "); cg.out.writes(base_ty2);
-                        cg.out.writes(" "); cg.emit_vref(base);
+                        cg.out.writes(" ");
+                        // A string literal's LLVM value is its fat record
+                        // { ptr @.str.N, i64 LEN } — emit_vref renders the
+                        // raw byte-global ref alone, which is NOT a value of
+                        // the record type (llvm-as: "global variable
+                        // reference must have pointer type"... and even when
+                        // accepted it stored bytes over the record).
+                        if (base != null && base.op == ssi_ir::IrOp.IR_CONST_STR)
+                        { cgen_emit_str_const_record(cg, base); }
+                        else { cg.emit_vref(base); }
                         cg.out.writes(", ptr %struct.ptr.v"); cg.out.writei(v.id); cg.out.writes("\n");
                     }
                     else if (base_ty2 != null && base_ty2[0] != 'p' && base_ty2[0] != '%' && base_ty2[0] != 0)
