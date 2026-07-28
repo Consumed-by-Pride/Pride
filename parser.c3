@@ -60,6 +60,14 @@ struct Parser
     // stack and crash. We cap nesting and report a diagnostic instead.
     int depth;
     bool depth_exceeded;
+
+    // True while parsing an fn signature's type (through effect row / where
+    // clause). In that context a same-line ASCII `|` is ambiguous between
+    // the type-union infix and a one-line clause head
+    // (`fn f : (i32, i32) -> i32 | (a, b) -> a + b`) — parse_type_ops uses
+    // fn_sig_pipe_is_clause to disambiguate. Outside fn signatures the
+    // historical peek heuristic applies (type aliases etc.).
+    bool in_fn_sig;
 }
 
 // Maximum recursive-descent nesting before we bail out. Each logical nesting
@@ -76,6 +84,7 @@ fn void Parser.init(Parser* self, lexer::Lexer* lx, ast::AstArena* arena)
     self.has_la2 = false;
     self.error_count = 0;
     self.had_error = false;
+    self.in_fn_sig = false;
     self.panicking = false;
     self.depth = 0;
     self.depth_exceeded = false;
@@ -910,6 +919,8 @@ fn Node* Parser.parse_fn(Parser* self)
 
     // Signature ':'  Type (! [Effects])?
     self.expect(Tt.TOKEN_COLON, "expected ':' before function type");
+    bool saved_fn_sig = self.in_fn_sig;
+    self.in_fn_sig = true;
     Node* sig = self.parse_type();
     s.push(sig);
 
@@ -967,6 +978,8 @@ fn Node* Parser.parse_fn(Parser* self)
     }
 
     // Clause bodies: `| pat -> body` lines, a single `-> body`, or asm.
+    // The fn-signature type context ends here — clause `|`s are patterns now.
+    self.in_fn_sig = saved_fn_sig;
     self.skip_newlines();
     Node* clauses = self.parse_clauses();
     if (clauses != null) s.push(clauses);
@@ -1630,6 +1643,80 @@ fn Node* Parser.parse_type_inner(Parser* self)
     return left;
 }
 
+// fn-signature context disambiguation for ASCII `|` (used only when
+// Parser.in_fn_sig is set): scans the token stream AFTER a `|` and answers
+// "does this form a clause head `pattern ->` / `pattern , guard ->`?".
+//
+// The old two-token heuristic could only see `| ident ->` — a tuple clause
+// head `| (a, b) -> body` or struct-variant head `| { some: x } -> body`
+// slipped past it, the type parser ate `| (a, b) -> a` as a TYPE UNION
+// (TyUnion with a TyTuple arm!), and the leftover `+ b` became a unary-plus
+// statement — corrupting every declaration after a one-line fn.
+//
+// Method: snapshot the lexer (a flat value struct) and walk tokens with a
+// paren/brace/bracket depth counter. A top-level ARROW or COMMA means
+// clause; a NEWLINE, INDENT, second top-level `|`, EOF, or any
+// non-pattern-continuing token at depth 0 means type union. Parser/lexer
+// state (including the la1/la2 ring) is left untouched.
+fn bool Parser.fn_sig_pipe_is_clause(Parser* self)
+{
+    self.peek1();
+    self.peek2();
+    lexer::Lexer probe = *self.lx;
+    int depth = 0;
+    int step = 0;
+    for (int guard = 0; guard < 512; guard++)
+    {
+        Tok t;
+        if (step == 0)       { t = self.has_la1 ? self.la1 : probe.next(); step = 1; }
+        else if (step == 1)  { t = self.has_la2 ? self.la2 : probe.next(); step = 2; }
+        else                 { t = probe.next(); }
+        switch (t.type)
+        {
+            case Tt.TOKEN_NEWLINE:
+            case Tt.TOKEN_INDENT:
+            case Tt.TOKEN_DEDENT:
+            case Tt.TOKEN_EOF:
+            case Tt.TOKEN_PIPE:
+                return false;
+            case Tt.TOKEN_LPAREN:
+            case Tt.TOKEN_LBRACE:
+            case Tt.TOKEN_LBRACK:
+                depth++;
+            case Tt.TOKEN_RPAREN:
+            case Tt.TOKEN_RBRACE:
+            case Tt.TOKEN_RBRACK:
+                if (depth == 0) { return false; }
+                depth--;
+            case Tt.TOKEN_ARROW:
+            case Tt.TOKEN_ARROW_ASCII:
+            case Tt.TOKEN_COMMA:
+                if (depth == 0) { return true; }
+            default:
+            {
+                if (depth == 0)
+                {
+                    // Only pattern-continuing tokens keep the clause reading alive.
+                    bool cont = (t.type == Tt.TOKEN_IDENT
+                        || t.type == Tt.TOKEN_TYPEVAR
+                        || t.type == Tt.TOKEN_WILDCARD
+                        || t.type == Tt.TOKEN_LIT_INT
+                        || t.type == Tt.TOKEN_LIT_FLOAT
+                        || t.type == Tt.TOKEN_LIT_BOOL
+                        || t.type == Tt.TOKEN_LIT_CHAR
+                        || t.type == Tt.TOKEN_LIT_STRING
+                        || t.type == Tt.TOKEN_COLON
+                        || t.type == Tt.TOKEN_MINUS
+                        || t.type == Tt.TOKEN_DOT
+                        || t.type == Tt.TOKEN_KW_IF);
+                    if (!cont) { return false; }
+                }
+            }
+        }
+    }
+    return false;
+}
+
 // type_ops ::= type_postfix ( (∩|∪) type_postfix )*    (and ¬ as prefix)
 fn Node* Parser.parse_type_ops(Parser* self)
 {
@@ -1662,18 +1749,27 @@ fn Node* Parser.parse_type_ops(Parser* self)
     while (self.check(Tt.TOKEN_PIPE))
     {
         if (self.cur.col <= 4) { break; }   // indented clause pipe
-        // Lookahead: what follows the `|`?
-        Tt p1 = self.peek1().type;
-        Tt p2 = self.peek2().type;
-        // Pattern-like after |: ident/wildcard/tuple start followed by arrow, comma, or guard keyword
-        bool after_is_clause_start =
-            (p1 == Tt.TOKEN_IDENT || p1 == Tt.TOKEN_WILDCARD || p1 == Tt.TOKEN_LPAREN
-             || p1 == Tt.TOKEN_LIT_INT || p1 == Tt.TOKEN_LIT_BOOL || p1 == Tt.TOKEN_LIT_CHAR)
-            && (p2 == Tt.TOKEN_ARROW || p2 == Tt.TOKEN_ARROW_ASCII
-                || p2 == Tt.TOKEN_COMMA || p2 == Tt.TOKEN_KW_IF);
-        if (after_is_clause_start) { break; }
         // Also stop if p1 is a NEWLINE (blank | line = clause)
+        Tt p1 = self.peek1().type;
         if (p1 == Tt.TOKEN_NEWLINE || p1 == Tt.TOKEN_INDENT) { break; }
+        if (self.in_fn_sig)
+        {
+            // fn-signature context: full balanced pattern scan (tuple and
+            // struct clause heads included) — see fn_sig_pipe_is_clause.
+            if (self.fn_sig_pipe_is_clause()) { break; }
+        }
+        else
+        {
+            // Lookahead: what follows the `|`?
+            Tt p2 = self.peek2().type;
+            // Pattern-like after |: ident/wildcard/tuple start followed by arrow, comma, or guard keyword
+            bool after_is_clause_start =
+                (p1 == Tt.TOKEN_IDENT || p1 == Tt.TOKEN_WILDCARD || p1 == Tt.TOKEN_LPAREN
+                 || p1 == Tt.TOKEN_LIT_INT || p1 == Tt.TOKEN_LIT_BOOL || p1 == Tt.TOKEN_LIT_CHAR)
+                && (p2 == Tt.TOKEN_ARROW || p2 == Tt.TOKEN_ARROW_ASCII
+                    || p2 == Tt.TOKEN_COMMA || p2 == Tt.TOKEN_KW_IF);
+            if (after_is_clause_start) { break; }
+        }
         Tok op = self.advance();
         Node* right = self.parse_type_prefix();
         left = ast::node2(self.arena, Nk.NODE_TYPE_UNION, left, right, op.line, op.col);
