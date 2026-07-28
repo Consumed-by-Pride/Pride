@@ -355,7 +355,13 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
     if (t.kind == Nk.NODE_DECL_UNION || t.kind == Nk.NODE_DECL_ENUM)
     { snprintf(buf,cap,"{ i32, i64 }"); return buf; }
     if (t.kind == Nk.NODE_TYPE_FN)
-    { snprintf(buf,cap,"ptr"); return buf; }
+    {
+        // fn VALUES are uniformly fat: { ptr code, ptr env }. A named fn gets a
+        // trampoline code pointer + null env; a closure carries its real env.
+        // (Was "ptr" — a thin code pointer, which silently dropped every
+        // closure's captures the moment it flowed through a parameter.)
+        snprintf(buf,cap,"{ ptr, ptr }"); return buf;
+    }
     if (t.kind == Nk.NODE_EXPR_UNIT
      || t.kind == Nk.NODE_TYPE_BOTTOM
      || t.kind == Nk.NODE_LIT_BOTTOM)
@@ -454,15 +460,143 @@ fn bool fn_binder_explodes_tuple(Node* fn_decl, Node* param_t)
         && param_t.child_count >= 1;
 }
 
+// Type-level fn-type decomposition for INDIRECT calls through fat fn values:
+// the callee then carries no decl, only its `(T... -> U)` type annotation.
+// Wire convention: a tuple domain marshals componentwise (the per-fn
+// trampoline adapts to the callee's real ABI, packing components when the fn
+// binds its tuple domain as one aggregate). param_idx -1 = return type.
+fn void fn_type_value_llvm_type(Node* ty, int param_idx, char* buf, usz cap)
+{
+    buf[0] = 0;
+    Node* t = ty;
+    if (t != null && t.kind == Nk.NODE_TYPEVAR && t.resolved != null
+        && t.resolved.kind == Nk.NODE_DECL_TYPE && t.resolved.child_count >= 1)
+    {
+        Node* tbody = t.resolved.children[t.resolved.child_count - 1];
+        if (tbody != null) t = tbody;
+    }
+    if (t == null || t.kind != Nk.NODE_TYPE_FN) { snprintf(buf, cap, "i64"); return; }
+    Node* lhs = t.child_count >= 1 ? t.children[0] : null;
+    Node* rhs = t.child_count >= 2 ? t.children[1] : null;
+    Node* dom = lhs; Node* cod = rhs;
+    if (rhs != null && rhs.kind == Nk.NODE_EFFECT_ROW
+        && lhs != null && lhs.kind == Nk.NODE_TYPE_FN)
+    {
+        dom = lhs.child_count >= 1 ? lhs.children[0] : null;
+        cod = lhs.child_count >= 2 ? lhs.children[1] : null;
+    }
+    if (param_idx < 0)
+    {
+        if (cod == null) { snprintf(buf, cap, "i64"); return; }
+        type_to_llvm_buf(cod, buf, cap, 0);
+        return;
+    }
+    if (dom != null && dom.kind == Nk.NODE_TYPE_TUPLE)
+    {
+        if (dom.child_count == 0) { snprintf(buf, cap, "void"); return; }
+        if ((usz)param_idx < dom.child_count)
+        {
+            type_to_llvm_buf(dom.children[param_idx], buf, cap, 0);
+            return;
+        }
+        snprintf(buf, cap, "i64"); return;
+    }
+    if (param_idx == 0)
+    {
+        if (dom == null || dom.kind == Nk.NODE_EXPR_UNIT) { snprintf(buf, cap, "void"); return; }
+        type_to_llvm_buf(dom, buf, cap, 0);
+        return;
+    }
+    snprintf(buf, cap, "i64");
+}
+
+// The fn TYPE node an indirect callee value carries (its src's type
+// annotation, sigma-stripped); null when the value has no fn-typed annotation.
+fn Node* callee_fn_type(ssi_ir::IrVal* callee_val)
+{
+    ssi_ir::IrVal* base = callee_val;
+    int sc = 0;
+    while (base != null && base.op == ssi_ir::IrOp.IR_SIGMA
+           && base.arg_count >= 1 && base.args[0] != null && sc < 16)
+    { base = base.args[0]; sc++; }
+    if (base == null || base.src == null) return null;
+    Node* ann = base.src.type_annotation;
+    if (ann == null) return null;
+    if (ann.kind == Nk.NODE_TYPE_FN) return ann;
+    if (ann.kind == Nk.NODE_TYPEVAR && ann.resolved != null
+        && ann.resolved.kind == Nk.NODE_DECL_TYPE && ann.resolved.child_count >= 1)
+    {
+        Node* tb = ann.resolved.children[ann.resolved.child_count - 1];
+        if (tb != null && tb.kind == Nk.NODE_TYPE_FN) return tb;
+    }
+    return null;
+}
+
+// Parameter/return type for a call: decl-driven when the callee is a known
+// fn, type-level otherwise (indirect fat calls), i64 as last resort.
+fn void call_param_type(Node* callee_decl, Node* callee_sig, int idx, char* buf, usz cap)
+{
+    if (callee_decl != null) { fn_param_llvm_type(callee_decl, idx, buf, cap); return; }
+    if (callee_sig != null)  { fn_type_value_llvm_type(callee_sig, idx, buf, cap); return; }
+    snprintf(buf, cap, "i64");
+}
+
+// The thunk's REAL return type. When typecheck propagated an ascription into
+// the closure (`let f : (T -> U) = ...`), the clause bodies carry honest type
+// annotations and the thunk can return U directly instead of the generic i64
+// bucket — required for the thunk's define header, its TERM_RET coercion and
+// every call site to agree byte-for-byte on the result type (LLVM rejects
+// `ret i32 %v` when %v was defined by a `call i64`). Unannotated closures
+// keep the historical i64 bucket.
+fn void closure_thunk_ret_type(Node* clo, char* buf, usz cap)
+{
+    buf[0] = 0;
+    if (clo != null)
+    {
+        for (usz ci = 0; ci < clo.child_count; ci++)
+        {
+            Node* cl = clo.children[ci];
+            if (cl == null || cl.kind != Nk.NODE_CLAUSE || cl.child_count < 2) continue;
+            Node* body = cl.children[cl.child_count - 1];
+            if (body != null && body.type_annotation != null)
+            {
+                type_to_llvm_buf(body.type_annotation, buf, cap, 0);
+                if (buf[0] != 0 && !(buf[0] == 'v' && buf[1] == 'o')) { return; }
+            }
+        }
+    }
+    snprintf(buf, cap, "i64");
+}
+
 fn void fn_param_llvm_type(Node* fn_decl, int param_idx, char* buf, usz cap)
 {
     buf[0] = 0;
     if (fn_decl == null) { snprintf(buf, cap, "i64"); return; }
-    // Closure thunk: env pointer is always param 0 → must be ptr
+    // Closure thunk: env pointer is always param 0 → must be ptr.
+    // User params read their type from the clause's pattern annotations when
+    // typecheck propagated them (e.g. a `let f : (Opt -> i32) = | u -> ...`
+    // ascription types u as Opt → the thunk takes the { i32, i64 } repr);
+    // unannotated patterns keep the generic i64 fallback.
     if (fn_decl.kind == Nk.NODE_EXPR_CLOSURE)
     {
         if (param_idx == 0) { snprintf(buf, cap, "ptr"); return; }
-        // remaining args are i64 (widened value params)
+        if (param_idx < 0)  { closure_thunk_ret_type(fn_decl, buf, cap); return; }
+        Node* cpat = null;
+        for (usz ci9 = 0; ci9 < fn_decl.child_count; ci9++)
+        {
+            Node* cl9 = fn_decl.children[ci9];
+            if (cl9 != null && cl9.kind == Nk.NODE_CLAUSE && cl9.child_count >= 1)
+            { cpat = cl9.children[0]; break; }
+        }
+        Node* elem_pat = null;
+        if (cpat != null && cpat.kind == Nk.NODE_PATTERN_TUPLE
+            && (usz)(param_idx - 1) < cpat.child_count) { elem_pat = cpat.children[param_idx - 1]; }
+        else if (cpat != null && param_idx == 1) { elem_pat = cpat; }
+        if (elem_pat != null && elem_pat.type_annotation != null)
+        {
+            type_to_llvm_buf(elem_pat.type_annotation, buf, cap, 0);
+            if (buf[0] != 0 && !(buf[0] == 'v' && buf[1] == 'o')) return;
+        }
         snprintf(buf, cap, "i64"); return;
     }
     // Find the NODE_TYPE_FN child
@@ -796,17 +930,18 @@ fn bool infer_fn_types(ssi_ir::SsiModule* ir, ssi_ir::SsiFunc* f, TypeTable* t)
                         case ssi_ir::IrOp.IR_HANDLER_ARM:  snprintf(&buf[0], TYMAP_ENTRY, "ptr");
                         case ssi_ir::IrOp.IR_RESUME:       snprintf(&buf[0], TYMAP_ENTRY, "ptr");
                         case ssi_ir::IrOp.IR_UNKNOWN:
-                            // Closure fat pointer or fn ptr
+                            // Closure / named-fn VALUE: uniformly { ptr, ptr }
+                            // (code ptr, env ptr) — zero-capture closures and
+                            // named fns carry a null env.
                             if (iv.binder != null && iv.binder.kind == Nk.NODE_EXPR_CLOSURE)
                             {
-                                // Zero-capture: bare ptr; with captures: { ptr, ptr }
-                                if (iv.arg_count == 0) { snprintf(&buf[0], TYMAP_ENTRY, "ptr"); }
-                                else { snprintf(&buf[0], TYMAP_ENTRY, "{ ptr, ptr }"); }
+                                snprintf(&buf[0], TYMAP_ENTRY, "{ ptr, ptr }");
                             }
                             else if (iv.binder != null && iv.binder.kind == Nk.NODE_DECL_FN)
                             {
-                                // Named function reference used as a value: type is ptr.
-                                snprintf(&buf[0], TYMAP_ENTRY, "ptr");
+                                // Named function reference used as a value:
+                                // fat { trampoline ptr, null env }.
+                                snprintf(&buf[0], TYMAP_ENTRY, "{ ptr, ptr }");
                             }
                             else { snprintf(&buf[0], TYMAP_ENTRY, "i64"); }
                         default:                            snprintf(&buf[0], TYMAP_ENTRY, "i64");
@@ -1006,7 +1141,18 @@ struct CgenModule
     // via generation counter instead of memset. Eliminates 57% instruction overhead.
     TypeTable tymap;
     bool      tymap_initialized;
+
+    // Fat fn-value trampolines (r9 uniform fn ABI): every fn referenced as a
+    // VALUE gets a per-fn adapter `@__pride_fptr_<name>(ptr %env, <wire
+    // params>)` that forwards to the real (thin, env-less) function, possibly
+    // packing type-level tuple-domain components into the fn's real single
+    // aggregate parameter. Collected at value materialization, emitted after
+    // the function section.
+    Node*[TRAMP_CAP] tramp_decls;
+    usz              tramp_count;
 }
+
+const usz TRAMP_CAP = 512;
 
 // Filled by infer_fn_types() before emit_function() emits any instructions.
 // Entry k holds the LLVM type string for IrVal with id k, as a null-terminated
@@ -1112,6 +1258,7 @@ fn bool CgenModule.init(CgenModule* cg, ssi_ir::SsiModule* ir, ast::AstArena* ar
     }
     cg.errors      = 0;
     cg.emitted_fn_count = 0;
+    cg.tramp_count = 0;
     cg.freestanding = g_freestanding;
     cg.tymap_initialized = false;
     return cg.out.init(file);
@@ -1672,9 +1819,15 @@ fn int field_index_of(Node* struct_decl, char* fname, usz flen)
 // Determine the LLVM return type for a function.
 fn void CgenModule.emit_fn_ret_type(CgenModule* cg, ssi_ir::SsiFunc* f)
 {
-    // Closure thunks always return i64 (generic widened type)
+    // Closure thunks return the body's honest type when an ascription
+    // propagated one, else the generic i64 bucket (see closure_thunk_ret_type).
     if (f.decl != null && f.decl.kind == Nk.NODE_EXPR_CLOSURE)
-    { cg.out.writes("i64"); return; }
+    {
+        char[TYMAP_ENTRY] cret;
+        closure_thunk_ret_type(f.decl, &cret[0], TYMAP_ENTRY);
+        cg.out.writes(&cret[0]);
+        return;
+    }
     if (f.decl == null) { cg.out.writes("void"); return; }
     // Find the TYPE_FN child of the decl
     for (usz i = 0; i < f.decl.child_count; i++)
@@ -2833,6 +2986,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 }
 
                 // Pre-emit inttoptr for non-ptr callee — MUST be before the call instruction line
+                bool callee_fat_call = false;
                 {
                     char* cty_pre = (tm != null && callee_val != null) ? tm.get(callee_val.id) : null;
                     bool known_fn_ref = (callee_val != null
@@ -2850,12 +3004,43 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         cg.out.writes(" "); cg.emit_vref(callee_val);
                         cg.out.writes(" to ptr\n");
                     }
+                    // Fat fn-typed callee: extract the code/env slots now so the
+                    // call line can reference them (uniform indirect ABI).
+                    bool known_closure_ref = (callee_val != null
+                        && callee_val.op == ssi_ir::IrOp.IR_UNKNOWN
+                        && callee_val.binder != null
+                        && callee_val.binder.kind == Nk.NODE_EXPR_CLOSURE);
+                    callee_fat_call = (cty_pre != null && cty_pre[0] == '{'
+                        && !known_fn_ref && !known_closure_ref);
+                    if (callee_fat_call)
+                    {
+                        cg.out.writes("  %fptr."); cg.out.writei(v.id);
+                        cg.out.writes(" = extractvalue { ptr, ptr } ");
+                        cg.emit_vref(callee_val);
+                        cg.out.writes(", 0\n");
+                        cg.out.writes("  %fenv."); cg.out.writei(v.id);
+                        cg.out.writes(" = extractvalue { ptr, ptr } ");
+                        cg.emit_vref(callee_val);
+                        cg.out.writes(", 1\n");
+                    }
                 }
                 // Arg coercion: emit trunc/sext/sitofp before the call line
                 Node* callee_decl2 = null;
                 if (callee_val != null && callee_val.binder != null
                     && callee_val.binder.kind == Nk.NODE_DECL_FN)
                 { callee_decl2 = callee_val.binder; }
+                // Indirect (fat) call: the callee's fn TYPE annotation drives
+                // parameter marshalling instead.
+                Node* callee_sig = (callee_decl2 == null) ? callee_fn_type(callee_val) : null;
+                // A closure REFERENCE callee goes through the closure early-exit
+                // below, which marshals args against the thunk's own parameter
+                // types — this generic coercion loop would only double (and
+                // mistype, via the i64 fallback) that work.
+                bool callee_is_closure_pre = (callee_val != null
+                    && callee_val.op == ssi_ir::IrOp.IR_UNKNOWN
+                    && callee_val.binder != null
+                    && callee_val.binder.kind == Nk.NODE_EXPR_CLOSURE);
+                if (!callee_is_closure_pre)
                 {
                     int apos = 0;
                     for (usz ia = 1; ia < v.arg_count; ia++)
@@ -2888,7 +3073,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             && aval_c.binder!=null
                             && aval_c.binder.kind==Nk.NODE_DECL_FN) { continue; }
                         char[TYMAP_ENTRY] ptbuf;
-                        fn_param_llvm_type(callee_decl2, apos, &ptbuf[0], TYMAP_ENTRY);
+                        call_param_type(callee_decl2, callee_sig, apos, &ptbuf[0], TYMAP_ENTRY);
                         apos++;
                         char* pt = &ptbuf[0];
                         if (pt[0]==0 || (pt[0]=='v'&&pt[1]=='o')) { continue; }
@@ -3090,64 +3275,97 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 }
 
 
-                // Closure call early exit: emit BEFORE outer call prefix
+                // Closure call early exit: emit BEFORE outer call prefix.
+                // The closure value is the uniform fat { ptr code, ptr env } —
+                // always extract both and pass env as the first argument
+                // (null for zero-capture closures). Args marshal against the
+                // THUNK's parameter types: pattern-annotated where typecheck
+                // propagated an ascription, generic i64 otherwise.
                 if (callee_val != null && callee_val.op == ssi_ir::IrOp.IR_UNKNOWN
                     && callee_val.binder != null
                     && callee_val.binder.kind == Nk.NODE_EXPR_CLOSURE)
                 {
                     bool is_musttail_c = ((v.ival >> 63) & 1) != 0;
-                    // Zero-capture closure: callee_val is a bare ptr (bitcast of @fn_name).
-                    // Call directly without extractvalue.
-                    bool zero_cap = (callee_val.arg_count == 0);
-                    if (!zero_cap)
-                    {
-                        cg.out.writes("  %thunk."); cg.out.writei(v.id);
-                        cg.out.writes(" = extractvalue { ptr, ptr } %v");
-                        cg.out.writei(callee_val.id); cg.out.writes(", 0\n");
-                        cg.out.writes("  %cenv2."); cg.out.writei(v.id);
-                        cg.out.writes(" = extractvalue { ptr, ptr } %v");
-                        cg.out.writei(callee_val.id); cg.out.writes(", 1\n");
-                    }
-                    if (!is_void) { cg.out.writes("  %v"); cg.out.writei(v.id); cg.out.writes(" = "); }
-                    else { cg.out.writes("  "); }
-                    if (is_musttail_c) cg.out.writes("musttail ");
-                    cg.out.writes("call i64 ");
-                    if (zero_cap)
-                    {
-                        // Direct call via the bare ptr value
-                        cg.emit_vref(callee_val);
-                        cg.out.writes("(");
-                    }
-                    else
-                    {
-                        cg.out.writes("%thunk."); cg.out.writei(v.id);
-                        cg.out.writes("(ptr %cenv2."); cg.out.writei(v.id);
-                    }
-                    bool first_carg = zero_cap;  // zero-cap: no env prefix arg
+                    Node* clo_decl = callee_val.binder;
+                    cg.out.writes("  %thunk."); cg.out.writei(v.id);
+                    cg.out.writes(" = extractvalue { ptr, ptr } ");
+                    cg.emit_vref(callee_val);
+                    cg.out.writes(", 0\n");
+                    cg.out.writes("  %cenv2."); cg.out.writei(v.id);
+                    cg.out.writes(" = extractvalue { ptr, ptr } ");
+                    cg.emit_vref(callee_val);
+                    cg.out.writes(", 1\n");
+                    // Pre-emit per-arg adaptions to the thunk param types.
                     for (usz ia2 = 1; ia2 < v.arg_count; ia2++)
                     {
                         ssi_ir::IrVal* arg2 = v.args[ia2];
                         if (arg2 == null) continue;
                         char* aty2 = (tm != null) ? tm.get(arg2.id) : null;
-                        if (aty2 == null) aty2 = (char*)"i64";
-                        if (!first_carg) { cg.out.writes(", "); }
-                        first_carg = false;
-                        if (aty2[0] == '{')
+                        if (aty2 == null || aty2[0] == 0) aty2 = (char*)"i64";
+                        char[TYMAP_ENTRY] cptbuf;
+                        fn_param_llvm_type(clo_decl, (int)ia2, &cptbuf[0], TYMAP_ENTRY);
+                        char* cpt = &cptbuf[0];
+                        bool same2 = cstr_eq(aty2, cpt);
+                        if (same2) continue;
+                        if (aty2[0] == '{' || cpt[0] == '{')
                         {
-                            // Thunk parameters are the generic i64-per-element
-                            // ABI: an aggregate argument (tuple, tagged union
-                            // { i32, i64 }) cannot be marshalled today. The old
-                            // code printed the aggregate type verbatim, which
-                            // mismatched the thunk's `i64` parameter and failed
-                            // llvm-as downstream. Refuse loudly instead (a
-                            // placeholder keeps the .ll parseable for
-                            // debugging; the emission FAILS).
-                            printf("codegen error: aggregate argument in a closure call (closure ABI is i64-per-element)\n");
+                            // Aggregate ↔ anything-else is never marshalled
+                            // (e.g. a tagged union into an unannotated i64
+                            // thunk param). Loud failure, parseable .ll.
+                            printf("codegen error: aggregate argument in a closure call (annotate the closure's parameter type)\n");
                             cg.errors++;
-                            cg.out.writes("i64 undef");
                             continue;
                         }
-                        cg.out.writes(aty2); cg.out.writes(" ");
+                        bool i2a = aty2[0] == 'i'; bool i2b = cpt[0] == 'i';
+                        if (i2a && i2b)
+                        {
+                            long w2a = 0; long w2b = 0;
+                            for (char* q2 = aty2 + 1; *q2 >= '0' && *q2 <= '9'; q2++) w2a = w2a * 10 + (long)(*q2 - '0');
+                            for (char* q2 = cpt + 1; *q2 >= '0' && *q2 <= '9'; q2++) w2b = w2b * 10 + (long)(*q2 - '0');
+                            cg.out.writes("  %clarg.c."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(ia2);
+                            if (w2a == w2b)     { cg.out.writes(" = bitcast "); }
+                            else if (w2a < w2b) { cg.out.writes(" = sext "); }
+                            else                { cg.out.writes(" = trunc "); }
+                            cg.out.writes(aty2); cg.out.writes(" ");
+                            cg.emit_vref(arg2);
+                            cg.out.writes(" to "); cg.out.writes(cpt); cg.out.writes("\n");
+                        }
+                    }
+                    if (!is_void) { cg.out.writes("  %v"); cg.out.writei(v.id); cg.out.writes(" = "); }
+                    else { cg.out.writes("  "); }
+                    if (is_musttail_c) cg.out.writes("musttail ");
+                    cg.out.writes("call ");
+                    {
+                        char[TYMAP_ENTRY] ccret;
+                        closure_thunk_ret_type(clo_decl, &ccret[0], TYMAP_ENTRY);
+                        cg.out.writes(&ccret[0]);
+                    }
+                    cg.out.writes(" %thunk."); cg.out.writei(v.id);
+                    cg.out.writes("(ptr %cenv2."); cg.out.writei(v.id);
+                    for (usz ia2 = 1; ia2 < v.arg_count; ia2++)
+                    {
+                        ssi_ir::IrVal* arg2 = v.args[ia2];
+                        if (arg2 == null) continue;
+                        char* aty2 = (tm != null) ? tm.get(arg2.id) : null;
+                        if (aty2 == null || aty2[0] == 0) aty2 = (char*)"i64";
+                        char[TYMAP_ENTRY] cptbuf;
+                        fn_param_llvm_type(clo_decl, (int)ia2, &cptbuf[0], TYMAP_ENTRY);
+                        char* cpt = &cptbuf[0];
+                        cg.out.writes(", ");
+                        bool same2b = cstr_eq(aty2, cpt);
+                        if (!same2b && (aty2[0] == '{' || cpt[0] == '{'))
+                        {
+                            cg.out.writes("i64 undef  ; closure arg ABI mismatch (hard error)");
+                            continue;
+                        }
+                        if (!same2b && aty2[0] == 'i' && cpt[0] == 'i')
+                        {
+                            cg.out.writes(cpt); cg.out.writes(" %clarg.c.");
+                            cg.out.writei(v.id); cg.out.writes("."); cg.out.writeu(ia2);
+                            continue;
+                        }
+                        cg.out.writes(cpt); cg.out.writes(" ");
                         cg.emit_vref(arg2);
                     }
                     cg.out.writes(")\n");
@@ -3216,7 +3434,13 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         && callee_val.op == ssi_ir::IrOp.IR_CONST_UNIT);
                     bool cty2_is_void = (cty2 != null
                         && cty2[0]=='v'&&cty2[1]=='o'&&cty2[2]=='i'&&cty2[3]=='d');
-                    if (cty2_is_int)
+                    if (callee_fat_call)
+                    {
+                        // Uniform indirect ABI: the code pointer was
+                        // pre-extracted from the fat { code, env } pair above.
+                        cg.out.writes("%fptr."); cg.out.writei(v.id);
+                    }
+                    else if (cty2_is_int)
                     { cg.out.writes("%callee.ptr."); cg.out.writei(v.id); }
                     else if (callee_is_unit || cty2_is_void || cty2 == null || cty2[0] == 0)
                     { cg.out.writes("undef"); }
@@ -3226,6 +3450,13 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
 
                 cg.out.writes("(");
                 bool first_arg = true;
+                // Uniform indirect ABI: env pointer is the first argument of
+                // every fat call (null for zero-capture thunks/trampolines).
+                if (callee_fat_call)
+                {
+                    cg.out.writes("ptr %fenv."); cg.out.writei(v.id);
+                    first_arg = false;
+                }
                 int arg_pos2 = 0;
                 for (usz i = 1; i < v.arg_count; i++)
                 {
@@ -3257,7 +3488,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     char* arg_ty_base = (tm != null && aarg_base != null) ? tm.get(aarg_base.id) : null;
                     if (arg_ty_base == null || arg_ty_base[0] == 0) { arg_ty_base = arg_ty; }
                     char[TYMAP_ENTRY] ptype3_buf;
-                    fn_param_llvm_type(callee_decl2, arg_pos2, &ptype3_buf[0], TYMAP_ENTRY);
+                    call_param_type(callee_decl2, callee_sig, arg_pos2, &ptype3_buf[0], TYMAP_ENTRY);
                     char* ptype3 = &ptype3_buf[0];
                     arg_pos2++;
                     bool teq3 = true;
@@ -3562,10 +3793,19 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     cg.out.writes("  %envld."); cg.out.writei(v.id);
                     cg.out.writes(" = load ptr, ptr %envgep."); cg.out.writei(v.id);
                     cg.out.writes("\n");
-                    // ptrtoint to i64 for arithmetic use
+                    // Recover the captured value from the slot's ptr.
                     char* vty3 = (tm != null) ? tm.get(v.id) : null;
                     if (vty3 == null || vty3[0] == 0) vty3 = (char*)"i64";
-                    if (vty3[0] == 'p')
+                    if (vty3[0] == '{' || vty3[0] == '%')
+                    {
+                        // Aggregate capture: the slot holds a pointer to the
+                        // heap box written at capture time — load it back.
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        cg.out.writes(" = load "); cg.out.writes(vty3);
+                        cg.out.writes(", ptr %envld."); cg.out.writei(v.id);
+                        cg.out.writes("\n");
+                    }
+                    else if (vty3[0] == 'p')
                     {
                         cg.out.writes("  %v"); cg.out.writei(v.id);
                         cg.out.writes(" = bitcast ptr %envld."); cg.out.writei(v.id);
@@ -5091,12 +5331,29 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     int cid = (int)(v.ival & 0x7FFFFFFF);
                     usz ncap = v.arg_count;
 
-                    // Alloca env: array of ncap pointers (one per capture)
+                    // Env: array of ncap pointers (one per capture).
+                    // Heap-allocated, NOT a stack alloca: a closure that
+                    // escapes its creator's frame (make_adder returning
+                    // | x -> x + n) must not read freed stack memory. The
+                    // env is intentionally never freed — every copy of the
+                    // fat value shares it, so freeing needs refcounting
+                    // (future work); a bounded leak beats a dangling use.
+                    // Freestanding builds have no libc → keep stack envs.
                     if (ncap > 0)
                     {
-                        cg.out.writes("  %cenv."); cg.out.writei(v.id);
-                        cg.out.writes(" = alloca ["); cg.out.writei((long)ncap);
-                        cg.out.writes(" x ptr]\n");
+                        if (cg.freestanding)
+                        {
+                            cg.out.writes("  %cenv."); cg.out.writei(v.id);
+                            cg.out.writes(" = alloca ["); cg.out.writei((long)ncap);
+                            cg.out.writes(" x ptr]\n");
+                        }
+                        else
+                        {
+                            cg.out.writes("  %cenv."); cg.out.writei(v.id);
+                            cg.out.writes(" = call ptr @malloc(i64 ptrtoint (ptr getelementptr ([");
+                            cg.out.writei((long)ncap);
+                            cg.out.writes(" x ptr], ptr null, i32 1) to i64))\n");
+                        }
 
                         for (usz ci = 0; ci < ncap; ci++)
                         {
@@ -5112,9 +5369,41 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             cg.out.writes(", i32 0, i32 "); cg.out.writei((long)ci);
                             cg.out.writes("\n");
 
-                            // Store: inttoptr if needed, else direct ptr store
+                            // Store: aggregates cannot inttoptr — heap-box them
+                            // (a stack box would dangle for escaped closures
+                            // just like a stack env would). This case appeared
+                            // the moment fn values became { ptr, ptr } (r9)
+                            // and a fat value was itself captured (compose).
                             bool cap_is_ptr = (cty[0] == 'p');
-                            if (!cap_is_ptr)
+                            bool cap_is_agg = (cty[0] == '{' || cty[0] == '%');
+                            if (cap_is_agg && !cg.freestanding)
+                            {
+                                cg.out.writes("  %cbox."); cg.out.writei(v.id);
+                                cg.out.writes("."); cg.out.writei((long)ci);
+                                cg.out.writes(" = call ptr @malloc(i64 ptrtoint (ptr getelementptr (");
+                                cg.out.writes(cty);
+                                cg.out.writes(", ptr null, i32 1) to i64))\n");
+                                cg.out.writes("  store "); cg.out.writes(cty);
+                                cg.out.writes(" "); cg.emit_vref(cap);
+                                cg.out.writes(", ptr %cbox."); cg.out.writei(v.id);
+                                cg.out.writes("."); cg.out.writei((long)ci); cg.out.writes("\n");
+                                cg.out.writes("  store ptr %cbox."); cg.out.writei(v.id);
+                                cg.out.writes("."); cg.out.writei((long)ci);
+                            }
+                            else if (cap_is_agg)
+                            {
+                                // Freestanding (no malloc): stack-frame box.
+                                cg.out.writes("  %cbox."); cg.out.writei(v.id);
+                                cg.out.writes("."); cg.out.writei((long)ci);
+                                cg.out.writes(" = alloca "); cg.out.writes(cty); cg.out.writes("\n");
+                                cg.out.writes("  store "); cg.out.writes(cty);
+                                cg.out.writes(" "); cg.emit_vref(cap);
+                                cg.out.writes(", ptr %cbox."); cg.out.writei(v.id);
+                                cg.out.writes("."); cg.out.writei((long)ci); cg.out.writes("\n");
+                                cg.out.writes("  store ptr %cbox."); cg.out.writei(v.id);
+                                cg.out.writes("."); cg.out.writei((long)ci);
+                            }
+                            else if (!cap_is_ptr)
                             {
                                 cg.out.writes("  %citp."); cg.out.writei(v.id);
                                 cg.out.writes("."); cg.out.writei((long)ci);
@@ -5144,47 +5433,47 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     }
                     else
                     {
-                        // Zero-capture closure: bare fn ptr (no env needed).
-                        // Emit as a pointer value so it can be passed as fn ptr arg.
+                        // Zero-capture closure: still the uniform fat pair —
+                        // { code ptr, env = null } — so every fn-typed value
+                        // has exactly one ABI shape.
+                        cg.out.writes("  %fat0."); cg.out.writei(v.id);
+                        cg.out.writes(" = insertvalue { ptr, ptr } undef, ptr @__pride_closure_");
+                        cg.out.writei((long)cid); cg.out.writes(", 0\n");
                         cg.out.writes("  %v"); cg.out.writei(v.id);
-                        cg.out.writes(" = bitcast ptr @__pride_closure_");
-                        cg.out.writei((long)cid); cg.out.writes(" to ptr\n");
+                        cg.out.writes(" = insertvalue { ptr, ptr } %fat0."); cg.out.writei(v.id);
+                        cg.out.writes(", ptr null, 1\n");
                     }
                     return;
                 }
                 else if (v.binder != null && v.binder.kind == Nk.NODE_DECL_FN)
                 {
-                    // Function value used as a first-class argument (not as a direct callee).
-                    // Emit: %vN = ptrtoint ptr @pride_name to i64
-                    // so the fn address can be passed to higher-order functions.
-                    cg.out.writes("  %v"); cg.out.writei(v.id);
+                    // Function value used first-class (an argument, a let-bound
+                    // fn, a returned fn — anything but a direct callee):
+                    // the uniform fat pair { trampoline ptr, env = null }.
+                    // The trampoline adapts the env-prefixed indirect ABI to
+                    // this fn's real (thin) signature, and is emitted once
+                    // per fn at the end of the module.
                     Node* fn_decl_ref = v.binder;
+                    cg.register_trampoline(fn_decl_ref);
                     char* fn_name_r = null; usz fn_len_r = 0;
                     if (fn_decl_ref.child_count >= 1 && fn_decl_ref.children[0] != null)
                     {
                         fn_name_r = fn_decl_ref.children[0].p.ident.name_ptr;
                         fn_len_r  = fn_decl_ref.children[0].p.ident.name_len;
                     }
-                    // Check for #extern name
                     char* ext_r = null; usz ext_rl = 0;
                     bool has_ext_r = fn_get_extern_name(fn_decl_ref, &ext_r, &ext_rl);
-                    // Emit as ptr (bitcast keeps the value as a ptr, not an int).
-                    // The type map entry for this IR_UNKNOWN should be "ptr"
-                    // (Priority 1 resolves i64->i64 fn type annotation to "ptr"),
-                    // so emitting as ptr ensures type consistency in arg lists.
-                    cg.out.writes(" = bitcast ptr @");
+                    cg.out.writes("  %fat0."); cg.out.writei(v.id);
+                    cg.out.writes(" = insertvalue { ptr, ptr } undef, ptr @__pride_fptr_");
                     if (has_ext_r && ext_r != null && ext_rl > 0)
                     {
                         for (usz ei3 = 0; ei3 < ext_rl; ei3++) { cg.out.writec(ext_r[ei3]); }
                     }
-                    else
-                    {
-                        bool is_main_r = (fn_len_r == 4 && fn_name_r != null && fn_name_r[0] == 'm'
-                                          && fn_name_r[1] == 'a' && fn_name_r[2] == 'i' && fn_name_r[3] == 'n');
-                        if (!is_main_r) { cg.out.writes("pride_"); }
-                        if (fn_name_r != null) { cg.out.write(fn_name_r, fn_len_r); }
-                    }
-                    cg.out.writes(" to ptr\n");
+                    else if (fn_name_r != null) { cg.out.write(fn_name_r, fn_len_r); }
+                    cg.out.writes(", 0\n");
+                    cg.out.writes("  %v"); cg.out.writei(v.id);
+                    cg.out.writes(" = insertvalue { ptr, ptr } %fat0."); cg.out.writei(v.id);
+                    cg.out.writes(", ptr null, 1\n");
                     return;
                 }
                 else
@@ -5789,7 +6078,7 @@ fn void CgenModule.emit_function(CgenModule* cg, ssi_ir::SsiFunc* f)
     {
         fn_ret_canonical[0] = 0;
         if (f.decl != null && f.decl.kind == Nk.NODE_EXPR_CLOSURE)
-        { snprintf(&fn_ret_canonical[0], TYMAP_ENTRY, "i64"); }
+        { closure_thunk_ret_type(f.decl, &fn_ret_canonical[0], TYMAP_ENTRY); }
         else if (f.decl == null)
         { snprintf(&fn_ret_canonical[0], TYMAP_ENTRY, "void"); }
         else
@@ -6297,6 +6586,218 @@ fn void CgenModule.emit_vtables(CgenModule* cg, ssi_ir::SsiModule* ir)
 // The codegen emits: @name = thread_local global T init
 
 
+// ── Fat fn-value trampolines (r9 uniform indirect ABI) ─────────────────────
+// Every named fn referenced AS A VALUE is materialized as the fat pair
+// { ptr @__pride_fptr_<name>, ptr null }. Each registered fn gets exactly one
+// adapter emitted here:
+//
+//     define RET @__pride_fptr_<name>(ptr %env, W0 %w0, ..., Wn %w(n-1)) {
+//         %r = call RET @<real>(<marshalled args>)
+//         ret RET %r
+//     }
+//
+// The wire convention (shared with every indirect fat call site, which
+// marshals against the callee's `(T... -> U)` TYPE) explodes a tuple domain
+// componentwise. The adapter translates to the callee's real ABI: direct
+// pass-through for an exploding binder / an extern declare, or an
+// insertvalue-pack into the single aggregate parameter when the fn binds
+// its whole tuple domain under one pattern.
+
+// Record `decl` as needing a trampoline (deduped by decl pointer).
+fn void CgenModule.register_trampoline(CgenModule* cg, Node* decl)
+{
+    if (decl == null || decl.kind != Nk.NODE_DECL_FN) return;
+    for (usz i = 0; i < cg.tramp_count; i++)
+    {
+        if (cg.tramp_decls[i] == decl) { return; }
+    }
+    if (cg.tramp_count >= TRAMP_CAP)
+    {
+        printf("codegen error: too many fn values used through the indirect ABI (TRAMP_CAP reached)\n");
+        cg.errors++;
+        return;
+    }
+    cg.tramp_decls[cg.tramp_count] = decl;
+    cg.tramp_count++;
+}
+
+// The trampoline symbol's base name: the #[extern] C symbol when present,
+// else the fn's source name. Written NUL-terminated into buf.
+fn void tramp_base_name(Node* decl, char* buf, usz cap)
+{
+    if (cap == 0) return;
+    buf[0] = 0;
+    char* src = null;
+    usz   len = 0;
+    char* ext = null; usz extl = 0;
+    if (decl != null && fn_get_extern_name(decl, &ext, &extl)
+        && ext != null && extl > 0)
+    {
+        src = ext; len = extl;
+    }
+    else if (decl != null && decl.child_count >= 1 && decl.children[0] != null)
+    {
+        src = decl.children[0].p.ident.name_ptr;
+        len = decl.children[0].p.ident.name_len;
+    }
+    if (src == null) return;
+    usz off = 0;
+    while (off < len && off + 1 < cap) { buf[off] = src[off]; off++; }
+    buf[off] = 0;
+}
+
+fn void CgenModule.emit_fn_trampolines(CgenModule* cg)
+{
+    if (cg.tramp_count == 0) return;
+    cg.out.writes("\n; ── Fat fn-value trampolines ────────────────────────────────────\n");
+    for (usz ti = 0; ti < cg.tramp_count; ti++)
+    {
+        Node* decl = cg.tramp_decls[ti];
+        if (decl == null) continue;
+
+        // Symbol base name; dedupe by NAME (two different decls sharing one
+        // source name already alias at the value materialization, which is
+        // name-based — emitting two identical symbols would be invalid IR).
+        char[NAME_BUF] tname;
+        tramp_base_name(decl, &tname[0], NAME_BUF);
+        if (tname[0] == 0) continue;
+        bool dup = false;
+        for (usz tj = 0; tj < ti && !dup; tj++)
+        {
+            char[NAME_BUF] prev;
+            tramp_base_name(cg.tramp_decls[tj], &prev[0], NAME_BUF);
+            if (cstr_eq(&tname[0], &prev[0])) { dup = true; }
+        }
+        if (dup) continue;
+
+        // Signature / domain
+        Node* sig = null;
+        for (usz si = 0; si < decl.child_count; si++)
+        {
+            Node* sc = decl.children[si];
+            if (sc != null && sc.kind == Nk.NODE_TYPE_FN) { sig = sc; break; }
+        }
+        Node* dom = null;
+        if (sig != null)
+        {
+            Node* lhs = sig.child_count >= 1 ? sig.children[0] : null;
+            Node* rhs = sig.child_count >= 2 ? sig.children[1] : null;
+            dom = lhs;
+            if (rhs != null && rhs.kind == Nk.NODE_EFFECT_ROW
+                && lhs != null && lhs.kind == Nk.NODE_TYPE_FN)
+            {
+                dom = lhs.child_count >= 1 ? lhs.children[0] : null;
+            }
+        }
+        bool unit_dom = (dom == null)
+            || (dom.kind == Nk.NODE_EXPR_UNIT)
+            || (dom.kind == Nk.NODE_TYPE_TUPLE && dom.child_count == 0)
+            || (dom.kind == Nk.NODE_TYPE_PRIMITIVE && dom.p.ident.name_len == 0);
+        bool tuple_dom = (dom != null && dom.kind == Nk.NODE_TYPE_TUPLE && !unit_dom);
+        usz nwire = unit_dom ? (usz)0 : (tuple_dom ? dom.child_count : (usz)1);
+
+        // Return type mirrors the real fn's exactly (decl-driven; both sides
+        // of the forwarder must agree, so only one string is computed).
+        char[TYMAP_ENTRY] ret_ty;
+        ret_ty[0] = 0;
+        fn_param_llvm_type(decl, -1, &ret_ty[0], TYMAP_ENTRY);
+        if (ret_ty[0] == 0) { snprintf(&ret_ty[0], TYMAP_ENTRY, "void"); }
+        bool ret_void = (ret_ty[0]=='v' && ret_ty[1]=='o')
+                     || (ret_ty[0]=='{' && ret_ty[1]==' ' && ret_ty[2]=='}');
+
+        // Real target symbol
+        char* ext2 = null; usz ext2l = 0;
+        bool has_ext2 = fn_get_extern_name(decl, &ext2, &ext2l)
+                     && ext2 != null && ext2l > 0;
+        bool is_main2 = (decl.child_count >= 1 && decl.children[0] != null)
+            && span_is(decl.children[0].p.ident.name_ptr,
+                       decl.children[0].p.ident.name_len, (char*)"main");
+
+        // Pack when the real fn binds its tuple domain as ONE aggregate
+        // parameter (non-exploding binder). Externs explode exactly like the
+        // wire (their declare is componentwise), so they pass through.
+        bool pack = tuple_dom && !has_ext2 && !is_main2
+            && !fn_binder_explodes_tuple(decl, dom);
+
+        cg.out.writes("define ");
+        cg.out.writes(&ret_ty[0]);
+        cg.out.writes(" @__pride_fptr_");
+        cg.out.writes(&tname[0]);
+        cg.out.writes("(ptr %env");
+        for (usz wi = 0; wi < nwire; wi++)
+        {
+            char[TYMAP_ENTRY] wty;
+            wty[0] = 0;
+            if (tuple_dom) { type_to_llvm_buf(dom.children[wi], &wty[0], TYMAP_ENTRY, 0); }
+            else           { type_to_llvm_buf(dom,               &wty[0], TYMAP_ENTRY, 0); }
+            if (wty[0]==0 || (wty[0]=='v'&&wty[1]=='o')) { snprintf(&wty[0], TYMAP_ENTRY, "i64"); }
+            cg.out.writes(", ");
+            cg.out.writes(&wty[0]);
+            cg.out.writes(" %w");
+            cg.out.writeu(wi);
+        }
+        cg.out.writes(") {\nentry:\n");
+
+        if (pack)
+        {
+            char[TYMAP_ENTRY] agty;
+            type_to_llvm_buf(dom, &agty[0], TYMAP_ENTRY, 0);
+            for (usz wi = 0; wi < nwire; wi++)
+            {
+                char[TYMAP_ENTRY] wty2;
+                type_to_llvm_buf(dom.children[wi], &wty2[0], TYMAP_ENTRY, 0);
+                if (wty2[0] == 0) { snprintf(&wty2[0], TYMAP_ENTRY, "i64"); }
+                cg.out.writes("  %pk."); cg.out.writeu(wi);
+                cg.out.writes(" = insertvalue ");
+                cg.out.writes(&agty[0]);
+                if (wi == 0) { cg.out.writes(" undef, "); }
+                else { cg.out.writes(" %pk."); cg.out.writeu(wi - 1); cg.out.writes(", "); }
+                cg.out.writes(&wty2[0]);
+                cg.out.writes(" %w"); cg.out.writeu(wi);
+                cg.out.writes(", "); cg.out.writeu(wi); cg.out.writes("\n");
+            }
+        }
+
+        if (!ret_void) { cg.out.writes("  %r = "); }
+        else           { cg.out.writes("  "); }
+        cg.out.writes("call ");
+        cg.out.writes(&ret_ty[0]);
+        cg.out.writes(" ");
+        if (is_main2) { cg.out.writes("@main"); }
+        else if (has_ext2)
+        {
+            cg.out.writes("@");
+            for (usz e2 = 0; e2 < ext2l; e2++) { cg.out.writec(ext2[e2]); }
+        }
+        else { cg.out.writes("@pride_"); cg.out.writes(&tname[0]); }
+        cg.out.writes("(");
+        if (pack)
+        {
+            char[TYMAP_ENTRY] agty2;
+            type_to_llvm_buf(dom, &agty2[0], TYMAP_ENTRY, 0);
+            cg.out.writes(&agty2[0]);
+            cg.out.writes(" %pk."); cg.out.writeu(nwire - 1);
+        }
+        else
+        {
+            for (usz wi = 0; wi < nwire; wi++)
+            {
+                if (wi > 0) { cg.out.writes(", "); }
+                char[TYMAP_ENTRY] wty3;
+                if (tuple_dom) { type_to_llvm_buf(dom.children[wi], &wty3[0], TYMAP_ENTRY, 0); }
+                else           { type_to_llvm_buf(dom,               &wty3[0], TYMAP_ENTRY, 0); }
+                if (wty3[0]==0 || (wty3[0]=='v'&&wty3[1]=='o')) { snprintf(&wty3[0], TYMAP_ENTRY, "i64"); }
+                cg.out.writes(&wty3[0]);
+                cg.out.writes(" %w"); cg.out.writeu(wi);
+            }
+        }
+        cg.out.writes(")\n");
+        if (ret_void) { cg.out.writes("  ret void\n"); }
+        else { cg.out.writes("  ret "); cg.out.writes(&ret_ty[0]); cg.out.writes(" %r\n"); }
+        cg.out.writes("}\n\n");
+    }
+}
+
 fn bool CgenModule.emit(CgenModule* cg, char* source_filename)
 {
     ssi_ir::SsiModule* m = cg.ir;
@@ -6342,6 +6843,9 @@ fn bool CgenModule.emit(CgenModule* cg, char* source_filename)
         cg.emit_function(&m.funcs[fi]);
     }
 
+    // Uniform indirect ABI adapters for every fn referenced as a value
+    // (registered during value materialization inside emit_function).
+    cg.emit_fn_trampolines();
 
     cg.out.flush();
     return cg.errors == 0;

@@ -2728,6 +2728,54 @@ fn Node* TypeChecker.synth_block(TypeChecker* self, Node* e)
 
 fn void TypeChecker.check(TypeChecker* self, Node* e, Node* expected)
 {
+    // Ascribing a closure literal — `let f : (T -> U) = | x -> ...` —
+    // propagates the fn type INTO the literal: every clause's binders take
+    // the domain type and every body is checked against the codomain (via
+    // check_clause, the same routine fn decls use). Without this the clause
+    // binders stayed untyped, so the closure thunk's LLVM parameters fell
+    // back to generic i64 slots and could not marshal aggregate arguments
+    // (unions, tuples, fn values) even though the user fully annotated the
+    // closure's type.
+    if (e != null && e.kind == Nk.NODE_EXPR_CLOSURE && expected != null)
+    {
+        Node* ft = self.unfold(expected);
+        if (ft != null && ft.kind == Nk.NODE_TYPE_FN)
+        {
+            Node* dom = ft.child_count >= 1 ? ft.children[0] : null;
+            Node* cod = ft.child_count >= 2 ? ft.children[1] : null;
+            // Peel effect-row form: TYPE_FN[dom->cod, EFFECT_ROW]
+            if (cod != null && cod.kind == Nk.NODE_EFFECT_ROW
+                && dom != null && dom.kind == Nk.NODE_TYPE_FN)
+            {
+                Node* icod = dom.child_count >= 2 ? dom.children[1] : null;
+                dom = dom.child_count >= 1 ? dom.children[0] : null;
+                cod = icod;
+            }
+            for (usz ci = 0; ci < e.child_count; ci++)
+            {
+                Node* cl = e.children[ci];
+                if (cl != null && cl.kind == Nk.NODE_CLAUSE)
+                {
+                    self.check_clause(cl, dom, cod);
+                    // The thunk's return type is recovered from a clause
+                    // body's type annotation downstream; synth computes but
+                    // does not always STAMP it on the body node (match
+                    // expressions notably). Stamp the checked type so the
+                    // thunk define header, its ret coercion, and every call
+                    // site agree on one result type.
+                    if (cod != null && cl.child_count >= 2)
+                    {
+                        Node* cbody = cl.children[cl.child_count - 1];
+                        if (cbody != null && cbody.type_annotation == null)
+                        {
+                            Node* bt = self.synth(cbody);
+                            cbody.type_annotation = (bt != null) ? bt : cod;
+                        }
+                    }
+                }
+            }
+        }
+    }
     Node* actual = self.synth(e);
     if (actual == null || expected == null) return;   // unknown: permit
     // Use arg_fits so untyped numeric literals adapt to the expected type
