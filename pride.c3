@@ -1034,7 +1034,7 @@ fn void report_integrity(integrity::Verifier* iv)
 
 fn void print_version()
 {
-    printf("pride 0.1.0 (LLVM 22.1 pipeline, x86_64-linux)\n");
+    printf("pride 0.1.0 (LLVM 19 pipeline, x86_64-linux)\n");
 }
 
 // Single source of truth for the CLI surface. Keep in sync with the argument
@@ -1081,7 +1081,7 @@ fn void print_help()
     printf("  -V, --version        print the version and exit\n");
     printf("\n");
     printf("notes:\n");
-    printf("  --emit-obj/--emit-bin shell out to llvm-as-22, opt-22, llc-22, ld.lld-22.\n");
+    printf("  --emit-obj/--emit-bin shell out to llvm-as, opt, llc, ld.lld.\n");
     printf("  --emit-bin links runtime/compiler_rt.o + compiler_rt_arch.o found next to\n");
     printf("  the pride executable (build them with `make runtime`).\n");
 }
@@ -1508,9 +1508,9 @@ fn int main(int argc, char** argv)
 
             // llvm-as: .ll → .bc
             char[2048] cmd;
-            snprintf(&cmd[0], 2048, "llvm-as-22 %s -o %s.bc 2>&1", &ll_path[0], &stem[0]);
+            snprintf(&cmd[0], 2048, "llvm-as %s -o %s.bc 2>&1", &ll_path[0], &stem[0]);
             int r2 = system(&cmd[0]);
-            if (r2 != 0) { printf("llvm-as-22     : FAILED\n"); }
+            if (r2 != 0) { printf("llvm-as     : FAILED\n"); }
             else
             {
                 // opt: run LLVM optimizer passes on .bc for better execution speed
@@ -1521,20 +1521,20 @@ fn int main(int argc, char** argv)
                 {
                     char[2048] opt_cmd;
                     snprintf(&opt_cmd[0], 2048,
-                        "opt-22 --passes='default<%s>' %s.bc -o %s.opt.bc 2>/dev/null && mv %s.opt.bc %s.bc",
+                        "opt --passes='default<%s>' %s.bc -o %s.opt.bc 2>/dev/null && mv %s.opt.bc %s.bc",
                         opt_level >= 3 ? "O3" : opt_level >= 2 ? "O2" : "O1",
                         &stem[0], &stem[0], &stem[0], &stem[0]);
                     system(&opt_cmd[0]);   // failures are soft — still have original .bc
                 }
                 printf("opt            : ok\n");
                 // llc: .bc → .o  (use mcpu=native for best codegen on this machine)
-                snprintf(&cmd[0], 2048, "llc-22 %s %s -filetype=obj %s.bc -o %s.o 2>&1",
+                snprintf(&cmd[0], 2048, "llc %s %s -filetype=obj %s.bc -o %s.o 2>&1",
                          &opt_str[0], &debug_flag[0], &stem[0], &stem[0]);
                 r2 = system(&cmd[0]);
-                if (r2 != 0) { printf("llc-22         : FAILED\n"); }
+                if (r2 != 0) { printf("llc         : FAILED\n"); }
                 else
                 {
-                    printf("llc-22         : ok\n");
+                    printf("llc         : ok\n");
                     if (emit_bin)
                     {
                         // Link
@@ -1602,7 +1602,7 @@ fn int main(int argc, char** argv)
                         // crtn, runtime objects, libc/libgcc, canonical ELF interpreter.
                         char[4608] linkcmd;
                         snprintf(&linkcmd[0], 4608,
-                            "ld.lld-22 /usr/lib/x86_64-linux-gnu/crt1.o "
+                            "ld.lld /usr/lib/x86_64-linux-gnu/crt1.o "
                             "/usr/lib/x86_64-linux-gnu/crti.o "
                             "%s.o %s"
                             "/usr/lib/x86_64-linux-gnu/crtn.o -o %s "
@@ -1613,7 +1613,7 @@ fn int main(int argc, char** argv)
                             &stem[0], &rt_args[0], &bin_path[0],
                             &lto_flag[0], &strip_flag[0], &gc_flag[0]);
                         r2 = system(&linkcmd[0]);
-                        if (r2 != 0) { printf("ld.lld-22      : FAILED\n"); }
+                        if (r2 != 0) { printf("ld.lld      : FAILED\n"); }
                         else { printf("linked         : %s\n", &bin_path[0]); }
                     }
                 }
