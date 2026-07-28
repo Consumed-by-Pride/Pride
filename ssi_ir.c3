@@ -3139,6 +3139,32 @@ fn IrVal* SsiModule.lower_if(SsiModule* m, Node* n)
     return m.mk_unit(n);
 }
 
+// The SWITCH case value of an int-like literal pattern, false when the
+// pattern cannot be a switch case. Covers int, bool and char literals —
+// previously only NODE_LIT_INT was honoured, so `match b | true -> | false ->`
+// dispatched through an EMPTY switch and fell into the non-exhaustive trap
+// on every input.
+fn bool match_case_value(Node* pat, ulong* out)
+{
+    if (pat == null || pat.kind != Nk.NODE_PATTERN_LITERAL
+        || pat.child_count < 1 || pat.children[0] == null) return false;
+    Node* lit = pat.children[0];
+    switch (lit.kind)
+    {
+        case Nk.NODE_LIT_INT:
+            *out = lit.p.lit_int.int_val;
+            return true;
+        case Nk.NODE_LIT_BOOL:
+            *out = lit.p.lit_bool.bool_val ? 1 : 0;
+            return true;
+        case Nk.NODE_LIT_CHAR:
+            *out = (ulong)lit.p.lit_char.char_val;
+            return true;
+        default:
+            return false;
+    }
+}
+
 fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
 {
     if (n.child_count < 1) return m.mk_unit(n);
@@ -3223,7 +3249,14 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         Node* pat = arm.child_count >= 1 ? arm.children[0] : null;
         bool is_wild = pat != null && pat.kind == Nk.NODE_PATTERN_WILDCARD;
         bool is_bind = pat != null && pat.kind == Nk.NODE_PATTERN_IDENT;
-        bool chain_arm = is_wild || is_bind;
+        bool is_tuple = pat != null && pat.kind == Nk.NODE_PATTERN_TUPLE;
+        // Wildcard, ident and tuple patterns are IRREFUTABLE (they match any
+        // scrutable value of their shape): they route through the default
+        // chain, never as switch cases. Typechecking hard-rejects shape
+        // mismatches (tuple pattern vs non-tuple/scalar domain), so by the
+        // time a tuple arm reaches here the scrutinee is an aggregate the
+        // binding layer can destructure.
+        bool chain_arm = is_wild || is_bind || is_tuple;
 
         // Guard extraction: the parser stores `| pat, cond -> body` as arm
         // children [pat, NODE_PATTERN_GUARD(cond), body...].
@@ -3264,10 +3297,7 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
             // through the earlier guard's false edge — or are shadowed dead
             // code once an unguarded arm has claimed the value.
             bool has_cv = false; ulong cv = 0;
-            if (pat != null && pat.kind == Nk.NODE_PATTERN_LITERAL
-                && pat.child_count >= 1 && pat.children[0] != null
-                && pat.children[0].kind == Nk.NODE_LIT_INT)
-            { cv = pat.children[0].p.lit_int.int_val; has_cv = true; }
+            if (match_case_value(pat, &cv)) { has_cv = true; }
             int prior = -1;
             if (has_cv)
             {
@@ -3303,12 +3333,12 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         }
 
         usz amark = m.env_mark();
-        // Bind pattern variables: an ident arm aliases the SCRUTINEE VALUE —
-        // the arm observes the value the match dispatched on, never a fresh
-        // unbound parameter. (Other pattern shapes keep the legacy binding
+        // Bind pattern variables against the SCRUTINEE VALUE, never fresh
+        // unbound parameters: an ident arm aliases it, a tuple arm destructures
+        // it via projections. (Other pattern shapes keep the legacy binding
         // until they get properly typed destructuring.)
-        if (is_bind) { m.bind_let_pattern(pat, sval); }
-        else         { m.bind_pattern(null, pat); }
+        if (is_bind || is_tuple) { m.bind_let_pattern(pat, sval); }
+        else                     { m.bind_pattern(null, pat); }
 
         // Guarded arm: evaluate the guard in its own dispatch block with the
         // pattern bindings live; true → body, false → continue matching.
@@ -3327,10 +3357,7 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
                 // ident/wildcard arm), in source order.
                 lit_pend[n_lit_pend] = guard_blk;
                 ulong pv = 0;
-                if (pat != null && pat.kind == Nk.NODE_PATTERN_LITERAL
-                    && pat.child_count >= 1 && pat.children[0] != null
-                    && pat.children[0].kind == Nk.NODE_LIT_INT)
-                { pv = pat.children[0].p.lit_int.int_val; }
+                match_case_value(pat, &pv);
                 pend_val[n_lit_pend] = pv;
                 n_lit_pend++;
             }
@@ -3386,6 +3413,19 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
     if (pending_false >= 0) { m.link(pending_false, default_blk); pending_false = -1; }
     for (usz q = 0; q < n_lit_pend; q++) { m.link(lit_pend[q], default_blk); }
     n_lit_pend = 0;
+
+    // A match whose arms recorded NO switch cases (pure irrefutable arms —
+    // wildcard/ident/tuple — possibly behind guards) has nothing to dispatch:
+    // LLVM `switch` requires an integer condition, and an aggregate scrutinee
+    // (tuple) is outright illegal there. Downgrade to a plain branch into the
+    // default chain (succ[0]): dispatch then lives entirely in guard blocks.
+    if (pb0 != null && pb0.term == TermKind.TERM_SWITCH)
+    {
+        bool any_case = false;
+        for (usz si = 0; si < pb0.succ_count; si++)
+        { if (pb0.case_has[si]) { any_case = true; break; } }
+        if (!any_case) { pb0.term = TermKind.TERM_BR; }
+    }
 
     if (join < 0)
     {

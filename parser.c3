@@ -3474,32 +3474,32 @@ fn Node* Parser.parse_primary(Parser* self)
 
         case Tt.TOKEN_IDENT:
             {
-                // Check for compile-time macro calls: include_bytes!(...), env!(...), concat!(...)
-                // Syntax: IDENT LPAREN args RPAREN (the ! is optional/skipped for simplicity)
-                // NOTE: these MUST be exact full-name comparisons (tok_text_eq checks
-                // every byte), not partial byte-position sniffing — a partial check
-                // (e.g. only testing a handful of index positions) can silently
-                // collide with ordinary identifiers of the same length and hijack
-                // real function calls (e.g. a 6-letter name starting 'co' and
-                // ending 't', like a hypothetical user function, could otherwise
-                // be mistaken for "concat").
+                // Compile-time macro calls: include_bytes!(...), env!(...),
+                // concat!(...), format!(...). The BANG IS MANDATORY:
+                // `name!(...)` is a macro invocation, a bare `name(...)` is
+                // ALWAYS an ordinary function call. Treating the bare form as
+                // a macro hijacked any user-declared function with one of these
+                // exact names — silently rewriting its call sites into
+                // format-string construction (a real observed miscompile:
+                // `fn format : i32 -> i32` + `format(41)` produced a
+                // { ptr, i64, i64 } format record instead of a call).
+                // NOTE: these MUST stay exact full-name comparisons
+                // (tok_text_eq checks every byte), never partial byte sniffing.
                 bool ib = tok_text_eq(t, "include_bytes", 13);
                 bool ev = tok_text_eq(t, "env", 3);
                 bool cc = tok_text_eq(t, "concat", 6);
                 bool fm = tok_text_eq(t, "format", 6);
-                if (ib||ev||cc||fm)
+                bool macro_head = (ib||ev||cc||fm)
+                    && self.peek1().type == Tt.TOKEN_BANG
+                    && self.peek2().type == Tt.TOKEN_LPAREN;
+                if (macro_head)
                 {
                     self.advance();  // consume IDENT
-                    // Consume optional ! (macro-style invocation: name!(...))
-                    if (self.check(Tt.TOKEN_BANG)) self.advance();
-                }
-                if ((ib||ev||cc||fm) && self.check(Tt.TOKEN_LPAREN))
-                {
-                    self.advance();  // consume LPAREN
+                    self.advance();  // consume !
+                    self.advance();  // consume (
                     if (fm)
                     {
                         // format!("template", arg0, arg1, ...) — collect all args
-                        // ( already consumed above
                         Scratch fs;
                         fs.reset();
                         while (!self.check(Tt.TOKEN_RPAREN) && !self.check(Tt.TOKEN_EOF))

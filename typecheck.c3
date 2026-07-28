@@ -2485,6 +2485,27 @@ fn Node* TypeChecker.synth_match(TypeChecker* self, Node* e)
         {
             self.bind_pattern_types(pat, scrut);
         }
+        else if (scrut != null && pat != null && pat.kind == Nk.NODE_PATTERN_TUPLE)
+        {
+            // Tuple arms destructure the scrutinee (aliasing/projection
+            // lowering). Components must be IRREFUTABLE: a literal or nested
+            // pattern inside a match tuple arm would need decision-tree
+            // component testing, which was never implemented — it previously
+            // accepted EVERY tuple silently (a miscompile). Bind the
+            // component to a name and refine with a guard instead.
+            self.bind_pattern_types(pat, scrut);
+            for (usz k = 0; k < pat.child_count; k++)
+            {
+                Node* comp = pat.children[k];
+                if (comp == null) continue;
+                if (comp.kind == Nk.NODE_PATTERN_LITERAL || comp.kind == Nk.NODE_PATTERN_STRUCT
+                    || comp.kind == Nk.NODE_PATTERN_TUPLE   || comp.kind == Nk.NODE_PATTERN_OR)
+                {
+                    self.hard("refutable component in a match tuple pattern (bind it and refine with a guard)",
+                              comp.line, comp.col);
+                }
+            }
+        }
 
         // Synthesize guard + body.
         for (usz j = 1; j < arm.child_count; j++)
@@ -3097,12 +3118,20 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
             else if (tt != null && tt.kind == Nk.NODE_TYPE_TUPLE
                      && tt.child_count > 0 && pat.child_count > 0)
             {
-                // Mismatched arity: bind as many as we can (soft).
-                usz n = pat.child_count < tt.child_count ? pat.child_count : tt.child_count;
-                for (usz i = 0; i < n; i++)
-                {
-                    self.bind_pattern_types(pat.children[i], tt.children[i]);
-                }
+                // Tuple PATTERN vs tuple DOMAIN arity mismatch. Binding a
+                // prefix silently (the old behaviour) left the trailing
+                // binders untyped, which downstream lowered into unbound SSA
+                // values — a miscompile, not an inconvenience. It is now a
+                // hard type error: destructure exactly the domain arity, or
+                // bind the whole tuple under one name instead.
+                self.hard("pattern arity does not match tuple domain arity",
+                          pat.line, pat.col);
+            }
+            else if (tt != null && tt.kind != Nk.NODE_TYPE_TUPLE && pat.child_count >= 2)
+            {
+                // Tuple pattern against a non-tuple type: equally a hard
+                // error (was silently ignored, leaving the binders untyped).
+                self.hard("tuple pattern against non-tuple type", pat.line, pat.col);
             }
 
         // Newtype destructuring:  Dollars(d)  — PatStruct[TypeVar, PatIdent]
