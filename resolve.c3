@@ -591,6 +591,12 @@ fn Node* find_mod_member(Node* moddecl, char* ptr, usz len) @private
             if (d == null || d.child_count < 1) continue;
             Node* nm = d.children[0];
             if (nm == null) continue;
+            // let/mut-style decls bind through a pattern: unwrap one level.
+            if (nm.kind == Nk.NODE_PATTERN_IDENT && nm.child_count >= 1)
+            {
+                nm = nm.children[0];
+                if (nm == null) continue;
+            }
             char* np; usz nl;
             if (!name_of(nm, &np, &nl)) continue;
             if (name_eq(np, nl, ptr, len)) return d;
@@ -918,6 +924,29 @@ fn void Resolver.resolve_node_body(Resolver* self, Node* n)
                             headname.resolved = moddecl;
                             // also stamp the Use node itself for direct access
                             n.type_annotation = moddecl;
+                            // A 2-segment member import names ONE member of a
+                            // known module: be loud when it isn't there — an
+                            // unresolved member used to bind silently and any
+                            // call became an indirect jump to null. (Heads
+                            // that don't name a local mod — `use std::mem` —
+                            // are not diagnosed here; extern namespaces stay
+                            // permissive.)
+                            if (path != null && path.kind == Nk.NODE_MODULE_PATH
+                                && path.child_count == 2)
+                            {
+                                Node* memseg = path.children[1];
+                                char* mp2; usz ml2;
+                                if (memseg != null && name_of(memseg, &mp2, &ml2))
+                                {
+                                    Node* member = find_mod_member(moddecl, mp2, ml2);
+                                    if (member == null)
+                                    {
+                                        self.error("module has no member with this name",
+                                                   memseg.line, memseg.col);
+                                    }
+                                    else { memseg.resolved = member; }
+                                }
+                            }
                         }
                     }
                 }

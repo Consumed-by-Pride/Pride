@@ -845,32 +845,56 @@ fn void SsiModule.build(SsiModule* m, Node* program)
 // literal (int/unsigned/bool/float/char/null — anything the const-inliner
 // can evaluate without a runtime). These read back like `const`: a module
 // `let x : i64 = 10` used to lower to NOTHING, so every read silently saw 0.
+// Record one module-scope literal `let` (DECL_LET whose binder is a plain
+// PATTERN_IDENT and whose initializer is a compile-time literal).
+fn void SsiModule.seed_one_top_let(SsiModule* m, Node* d) @private
+{
+    if (d == null || d.kind != Nk.NODE_DECL_LET) return;
+    if (m.top_let_count >= TOP_LET_CAP) return;
+    Node* pat = d.child_count >= 1 ? d.children[0] : null;
+    if (pat == null || pat.kind != Nk.NODE_PATTERN_IDENT) return;
+    // Find the initializer: last non-type, non-row child.
+    Node* init = null;
+    for (usz ci = 1; ci < d.child_count; ci++)
+    {
+        Node* c = d.children[ci];
+        if (c == null || ssi::is_type_or_row(c)) continue;
+        init = c;
+    }
+    if (init == null) return;
+    bool is_lit = init.kind == Nk.NODE_LIT_INT || init.kind == Nk.NODE_LIT_BOOL
+        || init.kind == Nk.NODE_LIT_FLOAT || init.kind == Nk.NODE_LIT_CHAR
+        || init.kind == Nk.NODE_LIT_NULL || init.kind == Nk.NODE_LIT_STRING;
+    if (!is_lit) return;
+    TopLet* tl = &m.top_lets[m.top_let_count];
+    tl.binder = pat;
+    tl.init = init;
+    m.top_let_count++;
+}
+
 fn void SsiModule.seed_top_lets(SsiModule* m, Node* program)
 {
     m.top_let_count = 0;
     for (usz i = 0; i < program.child_count && m.top_let_count < TOP_LET_CAP; i++)
     {
         Node* d = program.children[i];
-        if (d == null || d.kind != Nk.NODE_DECL_LET) continue;
-        Node* pat = d.child_count >= 1 ? d.children[0] : null;
-        if (pat == null || pat.kind != Nk.NODE_PATTERN_IDENT) continue;
-        // Find the initializer: last non-type, non-row child.
-        Node* init = null;
-        for (usz ci = 1; ci < d.child_count; ci++)
+        if (d == null) continue;
+        if (d.kind == Nk.NODE_DECL_LET) { m.seed_one_top_let(d); continue; }
+        // One level of module nesting: literal lets inside a `mod` block seed
+        // the same way — a use/import of the member (chased to the DECL_LET)
+        // reads back through the same binder-keyed lookup.
+        if (d.kind == Nk.NODE_DECL_MOD)
         {
-            Node* c = d.children[ci];
-            if (c == null || ssi::is_type_or_row(c)) continue;
-            init = c;
+            for (usz j = 0; j < d.child_count; j++)
+            {
+                Node* blk = d.children[j];
+                if (blk == null || blk.kind != Nk.NODE_EXPR_BLOCK) continue;
+                for (usz k = 0; k < blk.child_count; k++)
+                {
+                    m.seed_one_top_let(blk.children[k]);
+                }
+            }
         }
-        if (init == null) continue;
-        bool is_lit = init.kind == Nk.NODE_LIT_INT || init.kind == Nk.NODE_LIT_BOOL
-            || init.kind == Nk.NODE_LIT_FLOAT || init.kind == Nk.NODE_LIT_CHAR
-            || init.kind == Nk.NODE_LIT_NULL || init.kind == Nk.NODE_LIT_STRING;
-        if (!is_lit) continue;
-        TopLet* tl = &m.top_lets[m.top_let_count];
-        tl.binder = pat;
-        tl.init = init;
-        m.top_let_count++;
     }
 }
 
@@ -2456,18 +2480,27 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                 // miscompile of a program that resolved and typechecked
                 // fine. Env lookup here just seeds the value once, keyed by
                 // the binder pattern, exactly like a fn-local binding.
-                if (n.resolved.kind == Nk.NODE_PATTERN_IDENT)
+                if (n.resolved.kind == Nk.NODE_PATTERN_IDENT
+                    || n.resolved.kind == Nk.NODE_DECL_LET)
                 {
+                    // The binder whose identity keys a top-level literal let:
+                    // direct uses resolve to the PATTERN_IDENT; a use reached
+                    // through a chased member import resolves to the DECL_LET
+                    // (whose pattern is children[0]).
+                    Node* want = n.resolved;
+                    if (want.kind == Nk.NODE_DECL_LET)
+                    {
+                        want = (want.child_count >= 1) ? want.children[0] : null;
+                    }
                     Node* let_init = null;
                     bool lit_let = false;
-                    // Recover the DECL_LET/DECL_MUT wrapper: the binder's
-                    // parent isn't linked (tree is parent-less), so match by
-                    // identity against the module's top-level lets — the
-                    // module seeds those into `top_lets` up front.
-                    for (usz tli = 0; tli < m.top_let_count; tli++)
+                    // Recover the initializer: the tree is parent-less, so
+                    // match by identity against the module's seeded top-level
+                    // lets.
+                    for (usz tli = 0; tli < m.top_let_count && want != null; tli++)
                     {
                         TopLet* tl = &m.top_lets[tli];
-                        if (tl.binder == n.resolved) { let_init = tl.init; lit_let = true; break; }
+                        if (tl.binder == want) { let_init = tl.init; lit_let = true; break; }
                     }
                     if (lit_let && let_init != null)
                     {
