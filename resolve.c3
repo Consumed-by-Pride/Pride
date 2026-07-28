@@ -168,8 +168,13 @@ fn bool name_of(Node* n, char** out_ptr, usz* out_len)
 fn void Scope.rebuild_hash(Scope* s) @private
 {
     for (usz i = 0; i < SCOPE_HASH_SIZE; i++) s.hash_idx[i] = 0;
-    for (usz i = 0; i < s.count; i++)
+    // Insert NEWEST-first so a probe chain for a re-bound (shadowed) name
+    // meets the newest binding at its home slot — lookup returns the first
+    // match it finds, and that must be the freshest binding, not the stale
+    // one. (Same-scope rebinding via a second `let` is legal shadowing.)
+    for (usz ii = s.count; ii-- > 0;)
     {
+        usz i = ii;
         Binding* b = &s.bindings[i];
         ulong h = 14695981039346656037u;
         for (usz j = 0; j < b.name_len; j++) { h ^= (ulong)(uint)b.name_ptr[j]; h *= 1099511628211u; }
@@ -216,14 +221,17 @@ fn Node* Resolver.lookup_local(Resolver* self, char* ptr, usz len, int ns)
 }
 
 // Look up a name walking outward through all enclosing scopes.
+// Within one scope, walk NEWEST→oldest: a same-scope redefinition (second
+// `let x` — legal shadowing, like Rust) must win over the stale binding,
+// never silently resurrect it. `bind` appends, so newest is at the tail.
 fn Node* Resolver.lookup(Resolver* self, char* ptr, usz len, int ns)
 {
     Scope* s = self.cur();
     while (s != null)
     {
-        for (usz i = 0; i < s.count; i++)
+        for (usz ii = s.count; ii-- > 0;)
         {
-            Binding* b = &s.bindings[i];
+            Binding* b = &s.bindings[ii];
             if (b.ns == ns && name_eq(b.name_ptr, b.name_len, ptr, len)) return b.decl;
         }
         s = s.parent;

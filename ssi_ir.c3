@@ -272,7 +272,22 @@ struct SsiModule
     // a NODE_STMT_BREAK_LABEL used as a statement, which acts as a label decl).
     char*     pending_label_name;
     usz       pending_label_nlen;
+
+    // Module-scope `let`/`let mut` with literal initializers (r15): keyed by
+    // binder pattern node so a read can seed the value like `const`. Seeded
+    // once from build(); fn-local lets never enter this table.
+    TopLet[TOP_LET_CAP] top_lets;
+    usz                 top_let_count;
 }
+
+// A module-scope let with a compile-time-evaluable (literal) initializer.
+struct TopLet
+{
+    Node* binder;   // PATTERN_IDENT of the binding
+    Node* init;     // literal initializer expression
+}
+
+const usz TOP_LET_CAP = 512;
 
 // Cap on lowering recursion depth (degrade gracefully, never overflow).
 const int LOWER_MAX_DEPTH = 1200;
@@ -766,7 +781,41 @@ fn void SsiModule.build(SsiModule* m, Node* program)
 {
     if (program == null) return;
     m.program_node = program;  // store for impl lookup
+    m.seed_top_lets(program);
     m.lower_program(program);
+}
+
+// Collect module-scope `let` bindings whose initializer is a compile-time
+// literal (int/unsigned/bool/float/char/null — anything the const-inliner
+// can evaluate without a runtime). These read back like `const`: a module
+// `let x : i64 = 10` used to lower to NOTHING, so every read silently saw 0.
+fn void SsiModule.seed_top_lets(SsiModule* m, Node* program)
+{
+    m.top_let_count = 0;
+    for (usz i = 0; i < program.child_count && m.top_let_count < TOP_LET_CAP; i++)
+    {
+        Node* d = program.children[i];
+        if (d == null || d.kind != Nk.NODE_DECL_LET) continue;
+        Node* pat = d.child_count >= 1 ? d.children[0] : null;
+        if (pat == null || pat.kind != Nk.NODE_PATTERN_IDENT) continue;
+        // Find the initializer: last non-type, non-row child.
+        Node* init = null;
+        for (usz ci = 1; ci < d.child_count; ci++)
+        {
+            Node* c = d.children[ci];
+            if (c == null || ssi::is_type_or_row(c)) continue;
+            init = c;
+        }
+        if (init == null) continue;
+        bool is_lit = init.kind == Nk.NODE_LIT_INT || init.kind == Nk.NODE_LIT_BOOL
+            || init.kind == Nk.NODE_LIT_FLOAT || init.kind == Nk.NODE_LIT_CHAR
+            || init.kind == Nk.NODE_LIT_NULL || init.kind == Nk.NODE_LIT_STRING;
+        if (!is_lit) continue;
+        TopLet* tl = &m.top_lets[m.top_let_count];
+        tl.binder = pat;
+        tl.init = init;
+        m.top_let_count++;
+    }
 }
 
 fn void SsiModule.lower_program(SsiModule* m, Node* n)
@@ -2342,6 +2391,40 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                     return cur;
                 }
                 if (cur != null) return cur;
+
+                // Module-scope `let` with a literal initializer behaves like
+                // `const` (r15): v.md §5 makes plain `let` an immutable
+                // binding by default, and a module-scope immutable binding of
+                // a compile-time literal IS a constant. It used to lower to
+                // nothing at all — reading it silently produced 0, a
+                // miscompile of a program that resolved and typechecked
+                // fine. Env lookup here just seeds the value once, keyed by
+                // the binder pattern, exactly like a fn-local binding.
+                if (n.resolved.kind == Nk.NODE_PATTERN_IDENT)
+                {
+                    Node* let_init = null;
+                    bool lit_let = false;
+                    // Recover the DECL_LET/DECL_MUT wrapper: the binder's
+                    // parent isn't linked (tree is parent-less), so match by
+                    // identity against the module's top-level lets — the
+                    // module seeds those into `top_lets` up front.
+                    for (usz tli = 0; tli < m.top_let_count; tli++)
+                    {
+                        TopLet* tl = &m.top_lets[tli];
+                        if (tl.binder == n.resolved) { let_init = tl.init; lit_let = true; break; }
+                    }
+                    if (lit_let && let_init != null)
+                    {
+                        IrVal* lv = m.lower_expr(let_init);
+                        if (lv != null)
+                        {
+                            m.env_push(n.resolved, lv);
+                            return lv;
+                        }
+                    }
+                    // Fall through: a module-scope `let mutable` or
+                    // non-literal init has no constant answer here.
+                }
 
                 // DECL_CONST / DECL_STATIC with an integer/bool initializer:
                 // env_lookup uses the PatIdent as key but ident.resolved is the DECL node.

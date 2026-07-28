@@ -519,7 +519,7 @@ struct DocTest
     char* src;       // the canonical snippet, verbatim as a user writes it
 }
 
-const DocTest[13] R14_DOCTESTS =
+const DocTest[15] R14_DOCTESTS =
 {
     // §6 — functions are clause-based; both layouts.
     { "6 functions", "clause-multiline", "clean",
@@ -584,13 +584,23 @@ const DocTest[13] R14_DOCTESTS =
       "fn main : () -> i64\n  | () ->\n"
       "      let _x = PairOrInt.p(Pair { a: 1, b: 2 })\n      0\n" },
 
+    // §5 — bindings: shadowing rebinding (newest wins, like Rust), and
+    // module-scope literal lets (read back like const).
+    { "5 bindings", "shadow-rebind", "clean",
+      "fn main : () -> i64\n  | () ->\n"
+      "      let x : i64 = 10\n      let y : i64 = x\n"
+      "      let x : i64 = 32\n      x + y\n" },
+    { "5 bindings", "module-let-literal", "clean",
+      "let answer : i64 = 42\n\n"
+      "fn main : () -> i64\n  | () -> answer\n" },
+
     // Front-end honesty — unknown names are loud (E0270-class), never
     // silently zero-fabricated.
     { "diagnostics", "undefined-name-is-loud", "resolve:undefined",
       "fn main : () -> i64\n  | () -> missing_fn(1)\n" },
 };
 
-const usz R14_DOCTEST_COUNT = 13;
+const usz R14_DOCTEST_COUNT = 15;
 
 // ── runner helpers ────────────────────────────────────────────────────────
 
