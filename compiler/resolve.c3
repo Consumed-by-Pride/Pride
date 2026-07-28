@@ -1,5 +1,5 @@
 // ============================================================================
-// resolve.c3 — Pryde name resolution
+// resolve.c3 — Pride name resolution
 // ----------------------------------------------------------------------------
 // Implementation language: C3 (host).
 //
@@ -14,7 +14,7 @@
 //   - Two namespaces per binding: VALUE (let/fn/param/effect ops, etc.) and
 //     TYPE (type/struct/union/effect names, generic type vars). A name may
 //     exist in both at once (e.g. a struct's value-constructor vs its type).
-//   - Pryde allows shadowing in inner scopes; a redefinition in the *same*
+//   - Pride allows shadowing in inner scopes; a redefinition in the *same*
 //     scope and namespace is a duplicate-definition error.
 //
 // Two-pass at each scope so declarations are visible regardless of order
@@ -906,7 +906,7 @@ fn void Resolver.bind_generics(Resolver* self, Node* generics)
         // (e.g. `Num`, `Ord`, `Eq`) or a user-defined trait — not an ordinary
         // type. We resolve it SOFTLY: if it's a visible declaration, link it;
         // otherwise treat it as a built-in concept (no "undefined name" error,
-        // per Pryde's soft-typing design). Only the constraint's *head* name is
+        // per Pride's soft-typing design). Only the constraint's *head* name is
         // soft; any nested type arguments still resolve normally.
         if (param.child_count >= 2)
         {

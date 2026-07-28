@@ -1,6 +1,6 @@
-# Pryde SSI-IR — Explicit CFG + SSI Intermediate Representation
+# Pride SSI-IR — Explicit CFG + SSI Intermediate Representation
 
-`ssi_ir.c3` is the **backend-facing** form of Pryde's program. Where `ssi.c3`
+`ssi_ir.c3` is the **backend-facing** form of Pride's program. Where `ssi.c3`
 annotates the AST in place (great for the rewrite/PGL passes that work on the
 tree), `ssi_ir.c3` lowers that structured tree into an **explicit control-flow
 graph**: real basic blocks, SSA values, terminators, φ-merges that name their
@@ -17,7 +17,7 @@ and Singer's functional formulation both make the same point: SSA/SSI is
 "complete" only when the CFG edge structure is explicit (σ-functions and switch
 nodes are undecipherable without it). So we build it.
 
-Pryde has **no `goto`** — control flow is structured — so the construction is the
+Pride has **no `goto`** — control flow is structured — so the construction is the
 textbook **single-pass SSA for structured languages** (Brandis & Mössenböck),
 extended with σ-splits (Ananian). No dominance-frontier iteration, no worklist:
 one structured walk produces pruned, minimal-ish SSI directly.
@@ -37,7 +37,7 @@ IrVal      → one SSA value: const | param | bin/un | call | field | index | ca
 * **φ-nodes** live in the block's `phi_head` list and carry, per operand, the
   **predecessor block id** it arrives from (`vK@Bj`). This is the LLVM-style
   formalism (operands tagged with predecessor blocks), chosen over basic-block
-  arguments because Pryde's φ-merge logic was already operand+edge based in
+  arguments because Pride's φ-merge logic was already operand+edge based in
   `ssi.c3`, so the two forms stay consistent and inter-derivable.
 * **σ-nodes** are emitted at the *start of the successor edge's block* (the place
   where the refined fact holds), tagged with a `NODE_TYPE_REFINEMENT` — the same

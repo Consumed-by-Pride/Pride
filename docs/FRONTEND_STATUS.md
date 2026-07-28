@@ -1,9 +1,9 @@
-# Pryde Frontend — Status & Backend Handoff
+# Pride Frontend — Status & Backend Handoff
 
 **Read this first if you are continuing this project (backend / lowering / runtime / LLVM).**
 
-Pryde is "The over-engineered C": a mid-level, AOT-compiled systems language. The
-**compiler is written in C3** (the host language). Pryde does **NOT** compile to
+Pride is "The over-engineered C": a mid-level, AOT-compiled systems language. The
+**compiler is written in C3** (the host language). Pride does **NOT** compile to
 C3 — C3 is only the implementation language. The frontend (lex → parse → resolve
 → typecheck → effectcheck → lint → integrity) plus an MSP/IR pipeline (SSI, SSI-IR
 SSA-CFG, SASI, term rewriting, PGL, IRDL, staging) is **built and hardened**. The
@@ -26,9 +26,9 @@ test -x /tmp/c3/c3c || (cd /tmp && curl -sSL --max-time 300 -o c3.tar.gz \
 **Build with Make (recommended):**
 
 ```sh
-make          # fetch c3c if needed, build ./pryde
+make          # fetch c3c if needed, build ./pride
 make test     # build + run both test suites (pass=87 + pass=115)
-make asan     # AddressSanitizer build → ./pryde_asan
+make asan     # AddressSanitizer build → ./pride_asan
 make clean    # remove binaries
 ```
 
@@ -37,11 +37,11 @@ make clean    # remove binaries
 ```sh
 /tmp/c3/c3c compile lexer.c3 ast.c3 parser.c3 resolve.c3 typecheck.c3 \
   effectcheck.c3 lint.c3 integrity.c3 ssi.c3 ssi_ir.c3 sasi.c3 sasi_opt.c3 \
-  rewrite.c3 pgen.c3 stage.c3 irdl_msp.c3 mono.c3 pryde.c3 -o pryde
-chmod +x pryde
+  rewrite.c3 pgen.c3 stage.c3 irdl_msp.c3 mono.c3 pride.c3 -o pride
+chmod +x pride
 ```
 
-**Run:** `./pryde <file.pry>`. Exit code `0` = clean, `2` = diagnostics.
+**Run:** `./pride <file.pie>`. Exit code `0` = clean, `2` = diagnostics.
 
 | Flag | What it does |
 |---|---|
@@ -61,7 +61,7 @@ chmod +x pryde
 
 ---
 
-## 1. Pipeline (what runs, in order — see `pryde.c3` main)
+## 1. Pipeline (what runs, in order — see `pride.c3` main)
 
 | Step | Module | Produces |
 |------|--------|----------|
@@ -335,7 +335,7 @@ ir effect.resume: N    (IR_RESUME     resume-sites in the IR)
 
 Define custom IR dialects and lower them at compile time:
 
-```pryde
+```pride
 dialect Arith
   opcode oadd
 irdl
@@ -351,7 +351,7 @@ Features: multi-rule per opcode (first match wins), **literal-pattern dispatch**
 (`..rest`), opcode signatures, nested regions/graphs, standalone graph IR
 (`graph`/`node`/`edge`/`hyperedge` at top level), **multi-level fixpoint
 lowering** (`High → Low → primitive`), validation (unknown opcode/dialect, arity).
-See `examples/irdl_showcase.pry`. **For the backend:** IRDL lowering rewrites
+See `examples/irdl_showcase.pie`. **For the backend:** IRDL lowering rewrites
 dialect-op uses into ordinary AST before SSI-IR is built, so by the time you see
 the IR, registered dialect ops are already lowered. Unlowered ops (no matching
 rule) are diagnosed (`irdl errors`). The guard evaluator is intentionally
@@ -367,7 +367,7 @@ After ANY change: rebuild → `bash conformance/run.sh | tail -1` (expect
 `pass=115 fail=0`) → confirm summary invariant metrics are 0 → ASan-fuzz
 (structure-aware mutation over the corpus is the standard harness used here;
 6000+ runs per change, 0 crashes/leaks/invariant-violations expected) → add a
-regression conformance case (`conformance/cases/NN_*.pry` with an `-- EXPECT:`
+regression conformance case (`conformance/cases/NN_*.pie` with an `-- EXPECT:`
 header; **note the EXPECT comment shifts source line numbers by +1**).
 
 Conformance header forms: `-- EXPECT: <phase> L:C [substr]`,
@@ -377,7 +377,7 @@ Conformance header forms: `-- EXPECT: <phase> L:C [substr]`,
 
 ## 8. C3 gotchas (host language — saves you hours)
 
-- `--` is a Pryde comment; C3 uses `//`. In `.c3` files use `//`.
+- `--` is a Pride comment; C3 uses `//`. In `.c3` files use `//`.
 - Array field decl is `Type[N] name`, not `Type name[N]`.
 - `if/else` single statements REQUIRE braces. Switch cases CANNOT fall through
   with comments between them — use explicit `break`/`nextcase` or no blank rows.
@@ -387,14 +387,14 @@ Conformance header forms: `-- EXPECT: <phase> L:C [substr]`,
   imported; the per-file modules here are `lexer`, `ast`, `parser`, `resolve`,
   `typecheck`, etc. (helpers like `name_of` are module-local — re-declare or use
   the local equivalent, e.g. typecheck has `tc_name_of`).
-- `c3c` binary loses +x after some builds → `chmod +x pryde`.
+- `c3c` binary loses +x after some builds → `chmod +x pride`.
 
 ---
 
 ## 9. Where things live
 
 - Source: 17 `.c3` modules (~21.2k lines). Build order in §0.
-- Spec: `v.md` (Pryde Language Reference v0.3).
+- Spec: `v.md` (Pride Language Reference v0.3).
 - Design docs: `MSP_DESIGN.md`, `MSP_STAGE5_6_DESIGN.md`, `SSI_IR_DESIGN.md`
   (if present), `SASI_DESIGN.md`, `SASI_OPT_DESIGN.md`.
 - Bug log / round history: `CONFORMANCE.md` (every fix, in order, with rationale).
@@ -426,7 +426,7 @@ The frontend + IR pipeline is **9.97/10** ready by the maintainer's own
 - Type coercion completeness in `codegen.c3` (32 remaining llvm-as failures)
 - `sizeof`/`alignof` sentinel values (ival=0 → real target sizes via layout pass)
 - Effect-handler switch dispatch (currently uses `ptr` type; needs integer tag)
-- Standard library (`std/io.pry`, `std/str.pry`, `std/mem.pry`)
+- Standard library (`std/io.pie`, `std/str.pie`, `std/mem.pie`)
 
 The LLVM 22.1.8 toolchain is installed at `/usr/bin/{llvm-as,opt,llc,lld}-22`.
 
@@ -445,8 +445,8 @@ echo "deb [signed-by=/usr/share/keyrings/apt-llvm-org.asc] \
   | sudo tee /etc/apt/sources.list.d/llvm-22.list
 sudo apt-get update && sudo apt-get install llvm-22 llvm-22-tools lld-22
 
-# Full pipeline: Pryde → binary (no Clang at any step)
-./pryde --emit-llvm output.ll source.pry      # codegen.c3
+# Full pipeline: Pride → binary (no Clang at any step)
+./pride --emit-llvm output.ll source.pie      # codegen.c3
 llvm-as-22 output.ll -o output.bc             # text → bitcode
 opt-22 -O2 output.bc -o output.opt.bc         # optimise
 llc-22 -filetype=obj -relocation-model=pic \
@@ -462,7 +462,7 @@ ld.lld-22 \
 ./program
 ```
 
-Or via the Makefile: `make compile SRC=source.pry OUT=program`
+Or via the Makefile: `make compile SRC=source.pie OUT=program`
 
 ### Step 1 — Assert the preconditions
 

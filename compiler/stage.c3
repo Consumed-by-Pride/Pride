@@ -3,7 +3,7 @@
 // ----------------------------------------------------------------------------
 // Implementation language: C3 (host). MSP Step 6.
 //
-// IMPORTANT — this is NOT a runtime interpreter. Pryde is AOT-compiled. Staging
+// IMPORTANT — this is NOT a runtime interpreter. Pride is AOT-compiled. Staging
 // is COMPILE-TIME metaprogramming: the "interpreter" here runs *inside the
 // compiler* during the MSP stage to evaluate `comptime`/`eval` expressions and
 // fold quoted code, then BAKES the result back into the AST as ordinary literal
@@ -12,7 +12,7 @@
 // language still needs a small evaluator at *compile time*. We call it CTFE
 // (compile-time function evaluation).
 //
-// The MetaOCaml-style operator trio Pryde mirrors:
+// The MetaOCaml-style operator trio Pride mirrors:
 //
 //   bracket  ~Tree e / quote e   →  freeze e as a code value (DON'T evaluate)
 //   escape   splice e / unquote  →  run e now, graft its result into the quote

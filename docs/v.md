@@ -1,4 +1,4 @@
-# Pryde Programming Language
+# Pride Programming Language
 ## Language Reference — v0.3 (Implementation-Grounded)
 
 > **"The over-engineered C."**
@@ -12,9 +12,9 @@ crash-hardened frontend written in **C3** —
 Everything described here is either already working or directly derived from the
 implemented token set, AST node kinds, and analysis passes.
 
-> ⚠️ **C3 is the implementation language, not a compilation target.** Pryde is
-> *written in* C3 the way CPython is written in C. Pryde does **not** compile to
-> C3. C3 is a build-time tool; it never appears in Pryde's output.
+> ⚠️ **C3 is the implementation language, not a compilation target.** Pride is
+> *written in* C3 the way CPython is written in C. Pride does **not** compile to
+> C3. C3 is a build-time tool; it never appears in Pride's output.
 
 ---
 
@@ -50,7 +50,7 @@ implemented token set, AST node kinds, and analysis passes.
 
 ## 1. Philosophy
 
-Pryde is a **mid-level, AOT-compiled systems language**. It occupies the same
+Pride is a **mid-level, AOT-compiled systems language**. It occupies the same
 territory as C++ — direct hardware access, manual memory, zero-cost abstractions
 — but with a formal foundation and a metaprogramming model that treats the
 compiler's IR as a first-class, user-programmable object.
@@ -70,7 +70,7 @@ compiler's IR as a first-class, user-programmable object.
   semantics, not convention.
 - **Soft by default, strict on demand.** Type and lint problems are *warnings*;
   the compiler inserts the obvious thing and keeps going. `--strict` promotes
-  every warning to a hard error for production builds. Pryde trusts you.
+  every warning to a hard error for production builds. Pride trusts you.
 - **Metaprogramming at the IR level.** Term rewriting, PGL, and IRDL operate on
   the compile-time AST directly. Not textual macros. Not C++ templates. Real
   tree transformations, run by the MSP stage. The MSP stage is **untyped and
@@ -81,7 +81,7 @@ compiler's IR as a first-class, user-programmable object.
 
 **Influences:**
 
-| Language | What Pryde Takes                                   |
+| Language | What Pride Takes                                   |
 |----------|----------------------------------------------------|
 | C++      | Memory model, mid-level abstraction, struct layout |
 | Swift    | `fn`, `let`, generic constraint syntax, attributes |
@@ -98,7 +98,7 @@ compiler's IR as a first-class, user-programmable object.
 ## 2. Compilation Pipeline
 
 ```
-Pryde source (.pry)
+Pride source (.pie)
     ↓
 Lexer          — tokenizes to a flat Token[] stream (layout-aware)
     ↓
@@ -131,7 +131,7 @@ the whole pipeline is fuzz- and AddressSanitizer-clean.
 
 ### 3.1 Comments
 
-```pryde
+```pride
 -- single line comment
 
 --[
@@ -141,9 +141,9 @@ the whole pipeline is fuzz- and AddressSanitizer-clean.
 ]--
 ```
 
-Pryde uses `--` for line comments and `--[ ... ]--` for nestable block comments.
+Pride uses `--` for line comments and `--[ ... ]--` for nestable block comments.
 (The compiler is written in C3, which uses `//` and `/* */` — do not confuse the
-two. Pryde source always uses `--`.)
+two. Pride source always uses `--`.)
 
 ### 3.2 Identifiers
 
@@ -158,11 +158,11 @@ allowed (high bytes pass through the lexer).
 
 ### 3.3 Layout
 
-Pryde is **indentation-sensitive**. INDENT / DEDENT / NEWLINE are real tokens.
+Pride is **indentation-sensitive**. INDENT / DEDENT / NEWLINE are real tokens.
 Inside `()`, `[]`, or `{}` they are suppressed — multi-line expressions flow
 freely. Tabs in indentation are a hard lex error. Spaces only.
 
-```pryde
+```pride
 fn foo : i32 → i32
   | 0 → 1
   | n →
@@ -172,7 +172,7 @@ fn foo : i32 → i32
 
 ### 3.4 Literals
 
-```pryde
+```pride
 -- integers (suffix selects type, default i64)
 42          42u64       42i8
 0xFF        0b1010_1100  0o755
@@ -229,7 +229,7 @@ ASCII fallbacks are provided where useful: `->` for `→`, `!=` for `≠`, etc.
 
 ## 4. Primitive Types
 
-```pryde
+```pride
 -- signed integers
 i8   i16   i32   i64
 
@@ -260,7 +260,7 @@ adapts to its context: `let x : i32 = 0` and `n + 2` (with `n : i32`) are fine.
 
 ## 5. Bindings
 
-```pryde
+```pride
 -- immutable (default)
 let x : i32 = 42
 let y = 42                    -- type inferred from the initializer
@@ -297,7 +297,7 @@ flagged.
 Functions use **Prolog-style clause matching**. Each `|` is one clause, matched
 top-to-bottom. Guards follow the pattern after a comma.
 
-```pryde
+```pride
 fn name : InputType → OutputType ! [Effects]
   | pattern_1              → body_1
   | pattern_2, guard_expr  → body_2
@@ -310,7 +310,7 @@ non-exhaustive (no catch-all).
 
 ### 6.2 Examples
 
-```pryde
+```pride
 -- recursive factorial
 fn fact : i64 → i64
   | 0 → 1
@@ -347,13 +347,13 @@ Inline `if c then a else b` is supported (`then` is a contextual soft keyword).
 
 ### 6.3 Attributes
 
-```pryde
+```pride
 fn hot : i32 → i32
   #inline #vectorize
   | n → n * 2
 
 fn exported : (i32, i32) → i32
-  #export("pryde_add") #cc(c)
+  #export("pride_add") #cc(c)
   | (a, b) → a + b
 
 -- ABI / FFI declarations
@@ -367,7 +367,7 @@ as a generic attribute.
 
 ### 6.4 Inline Assembly
 
-```pryde
+```pride
 fn rdtsc : () → u64
   | () →
       asm
@@ -386,7 +386,7 @@ Inline asm always carries the `Unsafe` effect.
 
 ## 7. Control Flow
 
-```pryde
+```pride
 -- if / else if / else (an expression — returns the taken branch's value)
 if condition
   body
@@ -428,7 +428,7 @@ Both are typed `⊥`. Code after a diverging statement (`return`, `unreachable`,
 
 ## 8. Pattern Matching
 
-```pryde
+```pride
 match expr
   | pattern         → body
   | pattern, guard  → body
@@ -477,7 +477,7 @@ An arm after a catch-all is flagged unreachable.
 
 ## 9. Structs and Unions
 
-```pryde
+```pride
 -- struct definition
 type Vec3f = struct
   x : f32
@@ -529,7 +529,7 @@ computational side effect. They are **resumable** via the continuation `k`,
 
 ### 10.1 Defining Effects
 
-```pryde
+```pride
 effect IO
   read_byte  : ()  → u8
   write_byte : u8  → ()
@@ -545,7 +545,7 @@ effect Err<E>
 
 ### 10.2 Using and Declaring Effects
 
-```pryde
+```pride
 fn write_str : Str → () ! [IO]
   | s →
       for i in 0..s.len
@@ -560,7 +560,7 @@ admits any further effects. Missing declarations are soft warnings.
 
 ### 10.3 Handling Effects
 
-```pryde
+```pride
 -- k is the continuation; calling k(v) resumes the computation with value v
 handle computation
   | IO.write_byte byte k → (sys_write(byte); k ())
@@ -578,7 +578,7 @@ Continuations resume by *juxtaposition application*: `k v` calls `k` with `v`.
 
 ### 10.4 Effect Polymorphism
 
-```pryde
+```pride
 -- forwards any effects f has
 fn apply_twice<A> : (A → A ! [..r], A) → A ! [..r]
   | (f, x) → f(f(x))
@@ -605,10 +605,10 @@ are checked by name against the function body.
 
 ## 11. Tensors
 
-Pryde has **shape-checked tensors** as a first-class numeric type — the slight
+Pride has **shape-checked tensors** as a first-class numeric type — the slight
 edge for numerical and ML-adjacent code.
 
-```pryde
+```pride
 -- type:  Tensor<ElementType ; Dim0, Dim1, ...>
 let v : Tensor<f32; 3>    = [| 1.0, 2.0, 3.0 |]
 let m : Tensor<f32; 2, 2> = [| [| 1.0, 2.0 |], [| 3.0, 4.0 |] |]
@@ -634,7 +634,7 @@ Constant dimensions are checked exactly; symbolic dimensions (e.g. a generic
 
 ## 12. Generics and Where Clauses
 
-```pryde
+```pride
 -- single / multiple type parameters
 fn identity<A> : A → A
   | x → x
@@ -674,14 +674,14 @@ Generic constraints (`T : Ord`) and `where C = T` equalities are enforced.
 
 Types are **sets of values**. The algebra is a lattice:
 
-```pryde
+```pride
 A ∩ B    -- intersection: values that satisfy both A and B
 A ∪ B    -- union: values that satisfy A or B
 ¬A       -- negation: all values NOT in A
 ⊥        -- bottom: the empty set (no values; ⊥ <: everything)
 ```
 
-```pryde
+```pride
 type NonNull<T>   = T ∩ ¬null
 type Positive     = i32 ∩ (> 0)
 type NormalizedF  = f32 ∩ (>= 0.0) ∩ (<= 1.0)
@@ -696,7 +696,7 @@ disjointness relation: `i32 <: ¬bool` holds (they share no values), `bool <:
 
 ### 13.2 Effect Rows
 
-```pryde
+```pride
 A → B               -- pure function
 A → B ! [IO]        -- function with IO effect
 A → B ! [IO, UB]    -- multiple effects
@@ -710,7 +710,7 @@ At every `if`, `match`, and `while`, the parser inserts σ-nodes (type splits)
 and φ-nodes (type merges). After a branch the compiler can know more about a
 value:
 
-```pryde
+```pride
 fn safe_sqrt : f64 → f64 ! [UB]
   | x →
       if x < 0.0
@@ -721,7 +721,7 @@ fn safe_sqrt : f64 → f64 ! [UB]
 
 ### 13.4 Quantifiers
 
-```pryde
+```pride
 ∀ A . A → A           -- the identity type
 ∃ T . T ∩ Eq<T>       -- some type that implements Eq
 ```
@@ -736,7 +736,7 @@ UB is never silent. Every UB path is:
 - Typed as `⊥` (bottom — never returns),
 - Tracked with `EFFECT_UB` — visible in the function's effect row.
 
-```pryde
+```pride
 fn divide : (i32, i32) → i32 ! [UB]
   | (_, 0) → ub! "division by zero"
   | (a, b) → a / b
@@ -758,7 +758,7 @@ Division or modulo by a **literal** zero is reported as declared-UB territory
 
 Manual memory. No GC. No RC. No RAII unless you build it via effects.
 
-```pryde
+```pride
 let p   : *i32  = alloc i32          -- EFFECT_ALLOC
 let arr : *f32  = alloc [f32; 256]
 
@@ -787,7 +787,7 @@ Rewrite rules are **first-class values**. They compose with `++` and apply with
 `|>`. They fire at compile time over the AST, in the MSP stage. Zero runtime
 cost.
 
-```pryde
+```pride
 let arith : Rewrite = rewrite
   | x + 0    ↦ x
   | x * 1    ↦ x
@@ -817,12 +817,12 @@ expr |> arith*
 PGL generates pattern matchers **programmatically** at compile time — decision
 trees for instruction selection, optimization passes, and analysis.
 
-```pryde
+```pride
 pgen name<TypeConstraints> →
   [bindings : Types] where [conditions] ↦ action
 ```
 
-```pryde
+```pride
 pgen elim_add_zero<T : Numeric> →
   [x : T] where [_ + 0 | 0 + _] ↦ x
 
@@ -840,13 +840,13 @@ pgen select_add_i32 →
 Three sigils quote an expression as a different representation of the same AST.
 They are distinct first-class tokens and each produces its own node kind.
 
-```pryde
+```pride
 ~Tree  expr    -- expr as an AST node tree (inspect, rewrite, transform)
 ~Data  expr    -- expr as raw Any-typed data (addressable, serializable)
 ~Bytes expr    -- expr as a raw byte sequence (u8 slice)
 ```
 
-```pryde
+```pride
 let node = ~Tree (x + y * z)        -- an AST node; pattern-match, apply rules
 let code = ~Bytes my_function        -- the function's compiled bytes
 let raw  = ~Data  my_vec3f           -- a struct as raw data
@@ -863,7 +863,7 @@ IRDL defines **custom IR dialects** for the backend: new opcodes, regions,
 edges, and hyperedges that the MSP stage and code generator can recognise and
 lower.
 
-```pryde
+```pride
 -- declare a dialect with named opcodes
 dialect MyDialect
   opcode add_i32
@@ -886,7 +886,7 @@ The MSP (Meta-Staging / Program) stage runs the metaprogramming constructs over
 the AST at compile time. It is modelled on **MetaOCaml's** staging: brackets
 (quote), escape (splice/unquote), and run (eval).
 
-```pryde
+```pride
 comptime
   let table = build_table(256)       -- evaluated entirely at compile time
 
@@ -909,7 +909,7 @@ runtime pattern rule fixpoint meta generate lower`.
 
 ## 21. Modules
 
-```pryde
+```pride
 -- declare a module (nested modules allowed)
 mod math
   fn sin  : f64 → f64 #extern("sin")  #cc(c)
@@ -934,7 +934,7 @@ types) so a name can be both a type and a value.
 
 ## 22. The AST
 
-Pryde's compiler builds a **plain, standard Abstract Syntax Tree** — every node
+Pride's compiler builds a **plain, standard Abstract Syntax Tree** — every node
 has exactly one parent: a conventional, debuggable tree.
 
 ### 22.1 Node
@@ -984,14 +984,14 @@ free, range, pipeline, sizeof, alignof, transmute, unchecked, **matmul**, unit)
 
 ## 23. Diagnostics and Soft Typing
 
-Pryde's analysis passes are **advisory by default**. A type mismatch, an
+Pride's analysis passes are **advisory by default**. A type mismatch, an
 undeclared effect, a non-exhaustive match, an unused binding — each is a
 **warning**, and the compiler continues. This is the "trust the programmer"
 half of the philosophy.
 
 ```
-pryde <file.pry>            -- soft mode: warnings, never blocks
-pryde --strict <file.pry>   -- every warning becomes a hard error (exit 2)
+pride <file.pie>            -- soft mode: warnings, never blocks
+pride --strict <file.pie>   -- every warning becomes a hard error (exit 2)
 ```
 
 The passes and what they catch:
@@ -1073,6 +1073,6 @@ Contextual soft keyword: `then` (in inline `if … then … else`).
 
 ---
 
-*Pryde Language Reference v0.3 — derived from lexer.c3, ast.c3, parser.c3,*
+*Pride Language Reference v0.3 — derived from lexer.c3, ast.c3, parser.c3,*
 *resolve.c3, typecheck.c3, effectcheck.c3, lint.c3.*
 *"You can still shoot yourself in the foot. You will now do so with mathematical precision."*

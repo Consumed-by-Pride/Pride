@@ -1,5 +1,5 @@
 // ============================================================================
-// typecheck.c3 — Pryde type checker (semantic subtyping, soft typing)
+// typecheck.c3 — Pride type checker (semantic subtyping, soft typing)
 // ----------------------------------------------------------------------------
 // Implementation language: C3 (host).
 //
@@ -353,7 +353,7 @@ fn bool TypeChecker.subtype_body(TypeChecker* self, Node* a, Node* b)
     // by the intersect rules above; a bare ¬A on the left is permissive.
     if (a.kind == Nk.NODE_TYPE_NEGATION) return true;
 
-    // Primitives: exact identity (Pryde has NO implicit numeric promotion).
+    // Primitives: exact identity (Pride has NO implicit numeric promotion).
     Prim pa = type_prim(a);
     Prim pb = type_prim(b);
     if (pa != Prim.PRIM_NONE && pb != Prim.PRIM_NONE)
@@ -956,7 +956,7 @@ fn bool TypeChecker.arg_fits(TypeChecker* self, Node* arg, Node* actual, Node* e
     // An UNTYPED-numeric expression (a bare int/float literal, or an if/match
     // whose every branch is itself untyped-numeric) adapts to a numeric target.
     // This lets `| n -> if c then 1 else 2` satisfy an i32 return even though
-    // bare literals default to i64. Pryde has no implicit promotion between
+    // bare literals default to i64. Pride has no implicit promotion between
     // *typed* numerics, but unconstrained literals still take their context.
     if (arg != null && is_untyped_numeric_expr(arg))
     {
@@ -1366,7 +1366,7 @@ fn Node* TypeChecker.synth_field(TypeChecker* self, Node* e)
 }
 
 // Method-style call  base.name(args)  (MethodCall[base, name, args...]).
-// Pryde has no method system (functions are free and clause-based, v.md §6),
+// Pride has no method system (functions are free and clause-based, v.md §6),
 // so `v.foo(...)` means: access field `foo` on the base's struct (it must be a
 // function-typed field), then call it. The field must exist; unknown members
 // are flagged. The base type is synthesized so field lookup auto-derefs.
@@ -1385,7 +1385,7 @@ fn Node* TypeChecker.synth_method_call(TypeChecker* self, Node* e)
     Node* fields = self.struct_fields_of(bt);
     if (fields == null)
     {
-        self.soft("method-style call on a non-struct value (Pryde has no methods; use a free function)", e.line, e.col);
+        self.soft("method-style call on a non-struct value (Pride has no methods; use a free function)", e.line, e.col);
         return null;
     }
 
@@ -1947,7 +1947,7 @@ fn Node* TypeChecker.synth_binary(TypeChecker* self, Node* e)
             return self.mk_prim(Prim.PRIM_BOOL);
 
         // Bitwise & shift -> integers only (floats have no bit representation
-        // at the language level). Pryde lets you do bit-twiddling, but only on
+        // at the language level). Pride lets you do bit-twiddling, but only on
         // integer types — a float shift is almost always a mistake.
         case lexer::TokenType.TOKEN_AMP:
         case lexer::TokenType.TOKEN_PIPE:
@@ -1996,7 +1996,7 @@ fn bool TypeChecker.is_int_literal(TypeChecker* self, Node* n)
 }
 
 // Flag a division/modulo whose divisor is the integer literal 0. This is
-// declared UB in Pryde — the parser refuses to fold it, and we surface a
+// declared UB in Pride — the parser refuses to fold it, and we surface a
 // soft warning so it isn't silent. (Non-literal zeros are the programmer's
 // responsibility — "shoot yourself in the foot, with precision".)
 fn void TypeChecker.check_divisor(TypeChecker* self, Node* e)
@@ -2051,7 +2051,7 @@ fn Node* TypeChecker.synth_arith(TypeChecker* self, Node* e, Node* l, Node* r)
         }
         else if (pl != pr)
         {
-            // No implicit numeric promotion in Pryde (v.md §4) — but an
+            // No implicit numeric promotion in Pride (v.md §4) — but an
             // untyped integer literal adapts to the other operand's type, so
             // `n:i32 * 2` is fine. Flag only genuine mismatches.
             bool literal_adapts = self.lit_int_fits(e.children[0], pr)
@@ -2071,7 +2071,7 @@ fn Node* TypeChecker.synth_arith(TypeChecker* self, Node* e, Node* l, Node* r)
 }
 
 // True if `t` is an aggregate (struct / union / tuple / array / slice) type.
-// These have no built-in comparison in Pryde — there is no operator overloading
+// These have no built-in comparison in Pride — there is no operator overloading
 // and no structural equality/ordering, so `a < b` or `a == b` on whole
 // aggregates is a mistake a library author would otherwise hit silently.
 // Generic parameters are deliberately NOT treated as aggregates here (they are
