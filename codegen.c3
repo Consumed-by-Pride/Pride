@@ -3069,6 +3069,23 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                 cg.emit_vref(aval_c); cg.out.writes(" to "); cg.out.writes(pt); cg.out.writes("\n");
                             }
                         }
+                        else
+                        {
+                            // Unhandled coercion shape (e.g. an aggregate
+                            // argument against a scalar/pointer target — arises
+                            // on indirect/closure calls whose parameter types
+                            // fall back to the generic i64 guess): the
+                            // `%arg.c.N.vI` name prefix was already printed,
+                            // so complete the line with a VALID placeholder
+                            // and FAIL the emission. Previously nothing
+                            // completed the line, producing a mangled,
+                            // unparseable .ll (observed:
+                            // `%arg.c.1.v2  %v2 = call i32 %v0(i64 %arg.c.1.v2)`).
+                            cg.out.writes(" = freeze "); cg.out.writes(pt);
+                            cg.out.writes(" undef  ; unsupported argument coercion (codegen hard error)\n");
+                            cg.errors++;
+                            printf("codegen error: unsupported argument coercion (%s -> %s)\n", aty_c, pt);
+                        }
                     }
                 }
 
@@ -3115,6 +3132,21 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         if (aty2 == null) aty2 = (char*)"i64";
                         if (!first_carg) { cg.out.writes(", "); }
                         first_carg = false;
+                        if (aty2[0] == '{')
+                        {
+                            // Thunk parameters are the generic i64-per-element
+                            // ABI: an aggregate argument (tuple, tagged union
+                            // { i32, i64 }) cannot be marshalled today. The old
+                            // code printed the aggregate type verbatim, which
+                            // mismatched the thunk's `i64` parameter and failed
+                            // llvm-as downstream. Refuse loudly instead (a
+                            // placeholder keeps the .ll parseable for
+                            // debugging; the emission FAILS).
+                            printf("codegen error: aggregate argument in a closure call (closure ABI is i64-per-element)\n");
+                            cg.errors++;
+                            cg.out.writes("i64 undef");
+                            continue;
+                        }
                         cg.out.writes(aty2); cg.out.writes(" ");
                         cg.emit_vref(arg2);
                     }
@@ -3509,9 +3541,17 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 bool is_in_closure_thunk = (cg.cur_fn_decl != null
                     && cg.cur_fn_decl.kind == Nk.NODE_EXPR_CLOSURE);
                 // Emit: gep [N x ptr], ptr %env, 0, slot; load ptr; ptrtoint
+                // The base must be THE env parameter, not just any param: the
+                // thunk's env param carries the closure AST node as its src,
+                // while the thunk's user parameters carry pattern nodes. The
+                // shape-only check used to false-fire on tuple/union
+                // destructuring of a closure's own argument (a 1-arg IR_INDEX
+                // over an IR_PARAM inside a thunk), reading a union tag /
+                // payload as if it were a captured-variable slot.
                 if (index == null && v.arg_count == 1 && base != null
                     && v.src != null  // has a captured binder
                     && base.op == ssi_ir::IrOp.IR_PARAM  // env is a param
+                    && base.src != null && base.src == cg.cur_fn_decl  // THE env param
                     && is_in_closure_thunk)               // inside a closure thunk
                 {
                     long slot3 = (long)v.ival;

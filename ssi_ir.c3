@@ -948,8 +948,9 @@ fn void SsiModule.lower_closure_thunk(SsiModule* m, Node* closure_node)
             {
                 Node* cl2 = closure_node.children[cpi];
                 if (cl2 == null) continue;
-                Node* pp = cl2.child_count >= 1 ? cl2.children[0] : null;
-                mark_local_binders(pp, &locals_arr2[0], &local_count2, 128);
+                // Whole-clause marking (pattern + body), same rule as
+                // lower_closure: body-local binders are not captures.
+                mark_local_binders(cl2, &locals_arr2[0], &local_count2, 128);
             }
             for (usz cpi = 0; cpi < closure_node.child_count; cpi++)
             { collect_free_vars(closure_node.children[cpi], &locals_arr2[0], local_count2,
@@ -2121,9 +2122,14 @@ fn IrVal* SsiModule.lower_closure(SsiModule* m, Node* closure_node)
     {
         Node* clause = closure_node.children[ci];
         if (clause == null) continue;
-        // Clause child[0] = pattern
-        Node* pat = clause.child_count >= 1 ? clause.children[0] : null;
-        mark_local_binders(pat, &locals[0], &local_count, 128);
+        // Walk the WHOLE clause (pattern + guard + body), not just its
+        // parameter pattern: every binder the body introduces (lets,
+        // match-arm pattern binders) is local to the closure, never a
+        // capture. Pattern-only marking left body-local binders looking
+        // "free", so they were captured: unbound at closure-creation time,
+        // the slot froze a unit value and the thunk emitted the invalid
+        // `inttoptr void {} to ptr`.
+        mark_local_binders(clause, &locals[0], &local_count, 128);
     }
 
     Node*[64] captures;

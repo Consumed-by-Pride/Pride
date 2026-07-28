@@ -1855,5 +1855,8 @@ fn int main(int argc, char** argv)
     free((void*)r);
     arena.destroy();
     free((void*)src);
-    return (lx.had_errors() || p.had_error || resolve_failed || type_failed || effect_failed || lint_failed || irdl_failed || integrity_failed) ? 2 : 0;
+    // A failed LLVM emission (codegen hard errors, e.g. unsupported argument
+    // coercions that would previously ship a mangled .ll) is a hard failure:
+    // "llvm emit : FAILED" was printed but the process still exited 0.
+    return (lx.had_errors() || p.had_error || resolve_failed || type_failed || effect_failed || lint_failed || irdl_failed || integrity_failed || !codegen_ok) ? 2 : 0;
 }
