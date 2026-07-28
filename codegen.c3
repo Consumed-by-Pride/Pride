@@ -230,6 +230,8 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
     {
         Node* d = t.resolved;
         if (d.kind == Nk.NODE_DECL_ENUM) { snprintf(buf, cap, "{ i32, i64 }"); return buf; }
+        // Tagged union: same { tag : i32, payload : i64 } repr as enums.
+        if (d.kind == Nk.NODE_DECL_UNION) { snprintf(buf, cap, "{ i32, i64 }"); return buf; }
         if (d.kind == Nk.NODE_DECL_NEWTYPE && d.child_count >= 2)
         { return type_to_llvm_buf(d.children[1], buf, cap, depth+1); }  // transparent
         if (d.kind == Nk.NODE_DECL_STRUCT)
@@ -349,6 +351,9 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
      || t.kind == Nk.NODE_TYPE_MUT_REF
      || t.kind == Nk.NODE_TYPE_SLICE)
     { snprintf(buf,cap,"ptr"); return buf; }
+    // Bare tagged-union node used directly as a type (via DECL_TYPE recursion):
+    if (t.kind == Nk.NODE_DECL_UNION || t.kind == Nk.NODE_DECL_ENUM)
+    { snprintf(buf,cap,"{ i32, i64 }"); return buf; }
     if (t.kind == Nk.NODE_TYPE_FN)
     { snprintf(buf,cap,"ptr"); return buf; }
     if (t.kind == Nk.NODE_EXPR_UNIT

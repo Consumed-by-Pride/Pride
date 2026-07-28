@@ -1458,6 +1458,26 @@ fn Node* TypeChecker.synth_method_call(TypeChecker* self, Node* e)
     for (usz i = 2; i < e.child_count; i++) self.synth(e.children[i]);
 
     Node* bt = self.synth(base);
+    // Union variant constructor: `U.variant(args)` — the base name resolves
+    // to a union decl and the member to one of its variants. The value's
+    // type is the union's nominal type (the base TypeVar itself). Without
+    // this the constructor typechecked to nothing: `let o = Opt.some(41)`
+    // stayed untyped, so a later `match o` never learned its scrutinee was a
+    // union and variant arms fell through to the irrefutable legacy path.
+    if (bt == null && base != null && name != null && name.p.ident.name_ptr != null)
+    {
+        Node* udecl = ast::union_decl_of(base);
+        if (udecl != null)
+        {
+            int vord = ast::union_variant_lookup(udecl,
+                name.p.ident.name_ptr, name.p.ident.name_len, null);
+            if (vord >= 0)
+            {
+                e.type_annotation = base;
+                return base;
+            }
+        }
+    }
     if (bt == null || name == null) return null;
 
     Node* fields = self.struct_fields_of(bt);
@@ -2534,6 +2554,13 @@ fn Node* TypeChecker.synth_match(TypeChecker* self, Node* e)
         if (scrut_is_union && pat != null && pat.kind == Nk.NODE_PATTERN_STRUCT)
         {
             pat.flags |= ast::FLAG_REFUTABLE;
+            // Resolve variant names against the union's variant list, type the
+            // payload binders, and stamp the pattern with the union type —
+            // the lowering recovers the discriminant from that annotation.
+            // Previously only fn-CLAUSE patterns were bound; match arms fell
+            // through to the legacy irrefutable path and miscompiled (the
+            // result φ referenced unbound payload parameters).
+            self.bind_pattern_types(pat, scrut);
         }
         if (scrut != null && pat != null && pat.kind == Nk.NODE_PATTERN_IDENT)
         {
@@ -3219,8 +3246,60 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
         // child[0] = the newtype name (TypeVar), child[1..] = field binders.
         // The single binder gets the newtype's underlying type.
         case Nk.NODE_PATTERN_STRUCT:
-            if (ty != null && pat.child_count >= 2)
             {
+                bool field_form = pat.child_count >= 1 && pat.children[0] != null
+                              && pat.children[0].kind == Nk.NODE_PATTERN_FIELD;
+                if (field_form)
+                {
+                    // Union-variant pattern `{ name: binder }`: resolve every
+                    // field against the union's variant list, type the binder
+                    // with the variant payload, and stamp the pattern with
+                    // the union type (lowering recovers the union decl from
+                    // that annotation to compute the discriminant).
+                    Node* udecl = ast::union_decl_of(ty);
+                    pat.type_annotation = ty;
+                    pat.flags |= ast::FLAG_REFUTABLE;
+                    for (usz vi2 = 0; vi2 < pat.child_count; vi2++)
+                    {
+                        Node* pf = pat.children[vi2];
+                        if (pf == null || pf.kind != Nk.NODE_PATTERN_FIELD || pf.child_count < 2) continue;
+                        Node* vn = pf.children[0];
+                        Node* bind = pf.children[1];
+                        if (vn == null) continue;
+                        Node* payload_ty = null;
+                        int ord = ast::union_variant_lookup(
+                            udecl, vn.p.ident.name_ptr, vn.p.ident.name_len, &payload_ty);
+                        if (ord < 0)
+                        {
+                            self.hard("unknown variant in union pattern (check the union's variant list)",
+                                      vn.line, vn.col);
+                            continue;
+                        }
+                        if (bind != null && bind.kind == Nk.NODE_PATTERN_IDENT)
+                        {
+                            // Unit payload: a `marker` binder is tolerated (the
+                            // lowering binds it to the variant's unit value) but
+                            // it carries NO type — stamping `()` would make a
+                            // returned marker (`{ none: n } -> n`, conformance
+                            // 63) trip the clause-body/return-type consistency
+                            // check. There is nothing to prove about a
+                            // zero-width value; soft typing leaves it alone.
+                            if (payload_ty != null && payload_ty.kind == Nk.NODE_EXPR_UNIT)
+                            {
+                                continue;
+                            }
+                            if (!ast::union_payload_is_scalar(payload_ty))
+                            {
+                                self.hard("variant payload is not lowered yet (only scalar payloads fit the { i32, i64 } repr)",
+                                          bind.line, bind.col);
+                            }
+                            self.bind_pattern_types(bind, payload_ty);
+                            pf.type_annotation = payload_ty;
+                        }
+                    }
+                }
+                else if (ty != null && pat.child_count >= 2)
+                {
                 // Resolve underlying type from the newtype decl.
                 Node* nt_name = pat.children[0];
                 Node* underlying = ty;   // default: same type
@@ -3236,6 +3315,7 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
                 {
                     Node* fp = pat.children[i];
                     if (fp != null) self.bind_pattern_types(fp, underlying);
+                }
                 }
             }
 

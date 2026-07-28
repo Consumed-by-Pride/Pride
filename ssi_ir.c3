@@ -1217,6 +1217,122 @@ fn void SsiModule.lower_clause_body(SsiModule* m, Node* clause)
 
 // Build a boolean test that a clause's pattern matches the parameter values, or
 // null if the pattern is irrefutable (always matches).
+// ── Union variant (tagged-sum) lowering ────────────────────────────────────
+// Tagged repr: `{ i32 tag, i64 payload }` — the same layout the `?` desugar
+// and DECL_ENUM printing assume. A `{ name: binder }` pattern tests the tag
+// against the variant ordinal and binds `extractvalue payload` coerced back
+// to the payload type.
+
+// Recover (union type, variant ordinal, payload type) from a union-variant
+// `{ name: binder }` pattern. Typecheck stamped the pattern with the union
+// type; the first PATTERN_FIELD carries the variant name.
+fn bool variant_pattern_info(Node* pat, Node** out_union_ty, int* out_ord, Node** out_payload)
+{
+    if (pat == null || pat.kind != Nk.NODE_PATTERN_STRUCT || pat.child_count < 1) return false;
+    Node* pf0 = pat.children[0];
+    if (pf0 == null || pf0.kind != Nk.NODE_PATTERN_FIELD || pf0.child_count < 1) return false;
+    Node* ty = pat.type_annotation != null ? pat.type_annotation : pf0.type_annotation;
+    if (ast::union_decl_of(ty) == null) return false;
+    Node* vn = pf0.children[0];
+    if (vn == null || vn.p.ident.name_ptr == null) return false;
+    Node* payload = null;
+    int ord = ast::union_variant_lookup(ast::union_decl_of(ty),
+                vn.p.ident.name_ptr, vn.p.ident.name_len, &payload);
+    if (ord < 0) return false;
+    if (out_union_ty != null) *out_union_ty = ty;
+    if (out_ord != null) *out_ord = ord;
+    if (out_payload != null) *out_payload = payload;
+    return true;
+}
+
+// The repr-extraction values (tag/payload extractvalue) and the fabricated
+// dispatch booleans (tag == ordinal tests, guard-folding and/or) need LLVM
+// types of their OWN — the extracted slot type (i32 tag / i64 payload) or i1
+// — while their natural src nodes (the variant pattern / field) carry the
+// UNION type annotation. tymap Priority 1 copies iv.src.type_annotation
+// verbatim, which would type an `extractvalue { i32, i64 }, 0` as the whole
+// aggregate: every downstream consumer (icmp operands, cast sources, ret/call
+// printers) then emitted aggregate-typed references to an i32/i64 definition
+// (observed as "aggregate cmp (type error, soft)" constants and as
+// `bitcast i32 %v to i32` where %v was defined i64). Fabricate a fresh
+// annotation-carrying holder node as the src instead.
+fn Node* SsiModule.typed_holder_src(SsiModule* m, Nk kind, Node* like, char* tyname, usz tylen)
+{
+    int ln = like != null ? like.line : 0;
+    int lc = like != null ? like.col : 0;
+    Node* h = ast::node_raw(m.arena, kind, ln, lc);
+    if (h != null)
+    {
+        h.type_annotation = ast::node_name(m.arena, Nk.NODE_TYPE_PRIMITIVE, tyname, tylen, ln, lc);
+    }
+    return h;
+}
+
+// i1 holder for a fabricated dispatch boolean.
+fn Node* SsiModule.bool_test_src(SsiModule* m, Node* like)
+{
+    return m.typed_holder_src(Nk.NODE_EXPR_BINARY, like, (char*)"i1", 2);
+}
+
+// and_cond/or_cond receive pattern nodes as src whose type annotation may be
+// a union decl (variant arms): substitute a boolean holder for exactly those
+// (scalar / unannotated srcs flow through unchanged).
+fn Node* SsiModule.cond_src(SsiModule* m, Node* src)
+{
+    if (src != null && src.type_annotation != null
+        && ast::union_decl_of(src.type_annotation) != null)
+    {
+        return m.bool_test_src(src);
+    }
+    return src;
+}
+
+// tag(v) / payload(v): extractvalue on the { i32, i64 } repr. The src carries
+// the SLOT type (i32 / i64), not the pattern's union annotation.
+fn IrVal* SsiModule.union_tag(SsiModule* m, IrVal* v, Node* src)
+{
+    IrVal* t = m.new_val(IrOp.IR_INDEX,
+                m.typed_holder_src(Nk.NODE_EXPR_INDEX, src, (char*)"i32", 3));
+    if (t != null && v != null) { t.add_arg(v, -1); t.ival = 0; m.emit(t); }
+    return t;
+}
+
+fn IrVal* SsiModule.union_payload(SsiModule* m, IrVal* v, Node* src)
+{
+    IrVal* t = m.new_val(IrOp.IR_INDEX,
+                m.typed_holder_src(Nk.NODE_EXPR_INDEX, src, (char*)"i64", 3));
+    if (t != null && v != null) { t.add_arg(v, -1); t.ival = 1; m.emit(t); }
+    return t;
+}
+
+// i32 constant carrying a variant ordinal (typed so the aggregate repr
+// prints { i32, ... } rather than { i64, ... }).
+fn IrVal* SsiModule.tag_const(SsiModule* m, int ord, Node* src)
+{
+    int ln = src != null ? src.line : 0;
+    int lc = src != null ? src.col  : 0;
+    Node* lit = ast::node_int(m.arena, (ulong)ord, 32, true, ln, lc);
+    IrVal* c = m.new_val(IrOp.IR_CONST_INT, lit);
+    if (c != null) { c.ival = (ulong)ord; m.emit(c); }
+    return c;
+}
+
+// Fabricate an `expr as ToTy` cast over an ALREADY-LOWERED value — the
+// enum-payload repr coercion in both directions (i64 slot <-> payload type).
+// The fabricated EXPR_CAST node carries the destination in type_annotation,
+// which is exactly where tymap inference and IR_CAST codegen look for it.
+fn IrVal* SsiModule.cast_to(SsiModule* m, IrVal* v, Node* to_ty, Node* src)
+{
+    if (v == null || to_ty == null) return v;
+    int ln = src != null ? src.line : 0;
+    int lc = src != null ? src.col  : 0;
+    Node* cd = ast::node2(m.arena, Nk.NODE_EXPR_CAST, src != null ? src : to_ty, to_ty, ln, lc);
+    cd.type_annotation = to_ty;
+    IrVal* c = m.new_val(IrOp.IR_CAST, cd);
+    if (c != null) { c.add_arg(v, -1); m.emit(c); return c; }
+    return v;
+}
+
 fn IrVal* SsiModule.clause_test(SsiModule* m, Node* pat, IrVal** params, usz arity)
 {
     if (pat == null) return null;
@@ -1248,6 +1364,22 @@ fn IrVal* SsiModule.single_test(SsiModule* m, Node* pat, IrVal* v)
                 return t;
             }
             return null;
+        case Nk.NODE_PATTERN_STRUCT:
+            // Union-variant pattern: test the tag against the ordinal.
+            {
+                int ord = 0; Node* vp_ty = null; Node* vp_un = null;
+                if (variant_pattern_info(pat, &vp_un, &ord, &vp_ty))
+                {
+                    IrVal* tg = m.union_tag(v, pat);
+                    IrVal* tc = m.tag_const(ord, pat);
+                    // bool holder src: `pat` carries the union annotation; the
+                    // icmp result must stay i1 in the tymap.
+                    IrVal* t = m.new_val(IrOp.IR_BIN, m.bool_test_src(pat));
+                    if (t != null) { t.bop = Tt.TOKEN_EQEQ; t.add_arg(tg, -1); t.add_arg(tc, -1); m.emit(t); }
+                    return t;
+                }
+                return null;
+            }
         case Nk.NODE_PATTERN_OR:
             // | a | b | ... : test every alternative; any match suffices.
             // An irrefutable alternative (ident binder / '_') makes the whole
@@ -1271,7 +1403,7 @@ fn IrVal* SsiModule.and_cond(SsiModule* m, IrVal* a, IrVal* b, Node* src)
 {
     if (a == null) return b;
     if (b == null) return a;
-    IrVal* t = m.new_val(IrOp.IR_BIN, src);
+    IrVal* t = m.new_val(IrOp.IR_BIN, m.cond_src(src));
     if (t != null) { t.bop = Tt.TOKEN_AMPAMP; t.add_arg(a, -1); t.add_arg(b, -1); m.emit(t); }
     return t;
 }
@@ -1280,7 +1412,7 @@ fn IrVal* SsiModule.or_cond(SsiModule* m, IrVal* a, IrVal* b, Node* src)
 {
     if (a == null) return b;
     if (b == null) return a;
-    IrVal* t = m.new_val(IrOp.IR_BIN, src);
+    IrVal* t = m.new_val(IrOp.IR_BIN, m.cond_src(src));
     if (t != null) { t.bop = Tt.TOKEN_PIPEPIPE; t.add_arg(a, -1); t.add_arg(b, -1); m.emit(t); }
     return t;
 }
@@ -1621,6 +1753,34 @@ fn void SsiModule.bind_let_pattern(SsiModule* m, Node* pat, IrVal* val)
                 }
                 if (proj != null) m.emit(proj);
                 m.bind_let_pattern(pat.children[i], proj);
+            }
+        case Nk.NODE_PATTERN_STRUCT:
+            // Union-variant pattern: each field binder receives the payload
+            // extracted from the { i32, i64 } repr and coerced back to the
+            // payload type (`_` on a unit payload binds nothing).
+            {
+                int ord = 0; Node* vp_ty = null; Node* vp_un = null;
+                if (!variant_pattern_info(pat, &vp_un, &ord, &vp_ty)) return;
+                for (usz i = 0; i < pat.child_count; i++)
+                {
+                    Node* pf = pat.children[i];
+                    if (pf == null || pf.kind != Nk.NODE_PATTERN_FIELD || pf.child_count < 2) continue;
+                    Node* bind = pf.children[1];
+                    if (bind == null || bind.kind != Nk.NODE_PATTERN_IDENT) continue;
+                    Node* pty = pf.type_annotation != null ? pf.type_annotation : vp_ty;
+                    if (pty != null && pty.kind == Nk.NODE_EXPR_UNIT)
+                    {
+                        // Unit payload: no slot to extract, but the binder must
+                        // still name a DEFINED value (the variant's unit) —
+                        // leaving it unbound would turn every use into an
+                        // opaque global reference.
+                        m.bind_let_pattern(bind, m.mk_unit(pf));
+                        continue;
+                    }
+                    IrVal* pv = m.union_payload(val, pf);
+                    IrVal* cv = m.cast_to(pv, pty, pf);
+                    m.bind_let_pattern(bind, cv);
+                }
             }
         default:
             for (usz i = 0; i < pat.child_count; i++) m.bind_let_pattern(pat.children[i], val);
@@ -2279,6 +2439,53 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
         case Nk.NODE_EXPR_METHOD_CALL:
             // Effect operation perform: `Effect.op(args)` → IR_EFFECT_OP.
             if (is_effect_method_call(n)) { return m.lower_effect_perform(n); }
+            // Union variant constructor: `U.variant(args)` → tagged repr
+            // `{ i32 ordinal, i64 payload }`. Resolved by shape, not by name:
+            // the base must resolve to a union decl and the member must be a
+            // variant of it (previously this fell through to a generic call
+            // and produced an inttoptr call through a NULL callee).
+            {
+                Node* vbase = n.child_count >= 1 ? n.children[0] : null;
+                Node* vmem  = n.child_count >= 2 ? n.children[1] : null;
+                Node* vdecl = vbase != null ? ast::union_decl_of(vbase) : null;
+                bool mem_named = vmem != null
+                    && (vmem.kind == Nk.NODE_IDENT || vmem.kind == Nk.NODE_TYPEVAR)
+                    && vmem.p.ident.name_ptr != null;
+                if (vdecl != null && mem_named)
+                {
+                    Node* payload_ty = null;
+                    int ord = ast::union_variant_lookup(vdecl,
+                        vmem.p.ident.name_ptr, vmem.p.ident.name_len, &payload_ty);
+                    if (ord >= 0)
+                    {
+                        bool unit_payload = payload_ty == null || payload_ty.kind == Nk.NODE_EXPR_UNIT;
+                        IrVal* tagv = m.tag_const(ord, n);
+                        IrVal* pay64 = null;
+                        if (unit_payload)
+                        {
+                            Node* zlit = ast::node_int(m.arena, 0, 64, true, n.line, n.col);
+                            pay64 = m.new_val(IrOp.IR_CONST_INT, zlit);
+                            if (pay64 != null) { pay64.ival = 0; m.emit(pay64); }
+                        }
+                        else
+                        {
+                            Node* varg = n.child_count >= 3 ? n.children[2] : null;
+                            IrVal* argv64 = m.lower_expr(varg);
+                            Node* i64ty = ast::node_name(m.arena, Nk.NODE_TYPE_PRIMITIVE,
+                                                         (char*)"i64", 3, n.line, n.col);
+                            pay64 = m.cast_to(argv64, i64ty, n);
+                        }
+                        IrVal* ag = m.new_val(IrOp.IR_TUPLE, n);
+                        if (ag != null)
+                        {
+                            ag.add_arg(tagv, -1);
+                            ag.add_arg(pay64, -1);
+                            m.emit(ag);
+                            return ag;
+                        }
+                    }
+                }
+            }
             {
                 IrVal* v = m.new_val(IrOp.IR_CALL, n);
                 for (usz i = 0; i < n.child_count; i++)
@@ -3220,6 +3427,11 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
     IrBlock* db = m.blk(default_blk);
     if (db != null) db.term = TermKind.TERM_UNREACHABLE;
     bool default_filled = false;
+    // When the default block is repurposed as the guard-chain forwarder, its
+    // TRAP role moves to a fresh block: chain-exhausted (and guarded-literal)
+    // false edges must trap on a failed match, not loop back into the chain
+    // head (an infinite loop — a hang where the language promises UB/trap).
+    int trap_blk = default_blk;
 
     usz pre_mark = m.env_mark();
 
@@ -3339,10 +3551,20 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         // cannot route per case value — the chain re-tests instead).
         bool or_chain_irrefutable = is_or && or_has_irrefutable;
         bool or_tested_chain = is_or && !or_has_irrefutable && or_all_case_lits && guard != null;
-        bool chain_arm = is_wild || is_bind || is_tuple || or_chain_irrefutable || or_tested_chain;
+        // Union-variant struct arm `{ name: binder }`: refutable, goes through
+        // the default chain with its tag test folded into the dispatch block
+        // (same tested-chain shape as guarded OR arms — a switch cannot prove
+        // a tag without giving every variant value its own case routing).
+        bool is_variant_arm = !is_or
+            && variant_pattern_info(pat, null, null, null);
+        bool chain_arm = is_wild || is_bind || is_tuple || or_chain_irrefutable || or_tested_chain
+            || is_variant_arm;
 
         int arm_blk = m.new_block();
-        int guard_blk = (guard != null) ? m.new_block() : -1;
+        // Variant arms need the tag test evaluated in a dispatch block even
+        // without a user guard.
+        bool needs_test_blk = (guard != null) || is_variant_arm;
+        int guard_blk = needs_test_blk ? m.new_block() : -1;
         int dispatch = (guard_blk >= 0) ? guard_blk : arm_blk;
 
         if (chain_arm)
@@ -3354,6 +3576,9 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
                 db.term = TermKind.TERM_BR;
                 m.link(default_blk, dispatch);
                 default_filled = true;
+                trap_blk = m.new_block();
+                IrBlock* ttb = m.blk(trap_blk);
+                if (ttb != null) ttb.term = TermKind.TERM_UNREACHABLE;
             }
             else { m.link(b0, arm_blk); }   // trailing catch-all: unreachable
             // A previous chain guard falls through to this arm on false.
@@ -3450,18 +3675,27 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         usz amark = m.env_mark();
         // Bind pattern variables against the SCRUTINEE VALUE, never fresh
         // unbound parameters: an ident arm aliases it, a tuple arm destructures
-        // it via projections. (Other pattern shapes keep the legacy binding
-        // until they get properly typed destructuring.)
-        if (is_bind || is_tuple)   { m.bind_let_pattern(pat, sval); }
-        else if (or_ident != null) { m.bind_let_pattern(or_ident, sval); }
-        else                       { m.bind_pattern(null, pat); }
+        // it via projections, a union-variant arm extracts its payload slot.
+        // (Other pattern shapes keep the legacy binding until they get
+        // properly typed destructuring.)
+        if (is_bind || is_tuple || is_variant_arm) { m.bind_let_pattern(pat, sval); }
+        else if (or_ident != null)               { m.bind_let_pattern(or_ident, sval); }
+        else                                     { m.bind_pattern(null, pat); }
 
         // Guarded arm: evaluate the guard in its own dispatch block with the
         // pattern bindings live; true → body, false → continue matching.
         if (guard_blk >= 0)
         {
             m.cur = guard_blk;
-            IrVal* gval = m.lower_expr(guard.child_count >= 1 ? guard.children[0] : null);
+            IrVal* gval = guard != null
+                ? m.lower_expr(guard.child_count >= 1 ? guard.children[0] : null)
+                : null;
+            if (is_variant_arm)
+            {
+                // The switch proved nothing: run the variant tag test here
+                // and AND any user guard into it.
+                gval = m.and_cond(m.single_test(pat, sval), gval, pat);
+            }
             if (or_tested_chain)
             {
                 // Reached via the default chain: the switch proved nothing
@@ -3533,8 +3767,8 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
 
     // An open guard chain falls through to the trap when exhausted
     // (non-exhaustive match on values no arm claimed).
-    if (pending_false >= 0) { m.link(pending_false, default_blk); pending_false = -1; }
-    for (usz q = 0; q < n_lit_pend; q++) { m.link(lit_pend[q], default_blk); }
+    if (pending_false >= 0) { m.link(pending_false, trap_blk); pending_false = -1; }
+    for (usz q = 0; q < n_lit_pend; q++) { m.link(lit_pend[q], trap_blk); }
     n_lit_pend = 0;
 
     // A match whose arms recorded NO switch cases (pure irrefutable arms —

@@ -1667,3 +1667,96 @@ fn char* node_kind_name(NodeKind k)
         default:                        return "?";
     }
 }
+
+// ── Union variant helpers (tagged-sum support) ─────────────────────────────
+// A union type node resolves (through TypeVar/TypeDecl) to a NODE_DECL_UNION
+// whose EXPR_BLOCK child lists variant NODE_FIELD_DECLs: [name, payloadType].
+// The tagged repr is `{ i32, i64 }` (variant ordinal + 64-bit payload slot),
+// the same shape the `?` desugar and DECL_ENUM printing already assume.
+
+// Return the NODE_DECL_UNION behind a type node, or null.
+fn AstNode* union_decl_of(AstNode* ty)
+{
+    if (ty == null) return null;
+    AstNode* r = null;
+    if (ty.kind == NodeKind.NODE_TYPEVAR && ty.resolved != null) r = ty.resolved;
+    if (r == null && ty.kind == NodeKind.NODE_DECL_UNION) r = ty;
+    if (r != null)
+    {
+        if (r.kind == NodeKind.NODE_DECL_UNION) return r;
+        if (r.kind == NodeKind.NODE_DECL_TYPE && r.child_count >= 1)
+        {
+            AstNode* body = r.children[r.child_count - 1];
+            if (body != null && body.kind == NodeKind.NODE_DECL_UNION) return body;
+        }
+    }
+    return null;
+}
+
+// Find a union's variant field-decl index + payload type for `name`.
+// Returns the 0-based variant ordinal (the discriminant), or -1.
+// `out_payload` receives the payload type node (NODE_EXPR_UNIT for none).
+fn int union_variant_lookup(AstNode* udecl, char* name, usz name_len, AstNode** out_payload)
+{
+    if (out_payload != null) *out_payload = null;
+    if (udecl == null || udecl.kind != NodeKind.NODE_DECL_UNION || name == null) return -1;
+    AstNode* blk = null;
+    for (usz i = 0; i < udecl.child_count; i++)
+    {
+        AstNode* c = udecl.children[i];
+        if (c != null && c.kind == NodeKind.NODE_EXPR_BLOCK) { blk = c; break; }
+    }
+    if (blk == null) return -1;
+    int ord = 0;
+    for (usz i = 0; i < blk.child_count; i++)
+    {
+        AstNode* fd = blk.children[i];
+        if (fd == null || fd.kind != NodeKind.NODE_FIELD_DECL || fd.child_count < 1) continue;
+        AstNode* fn_node = fd.children[0];
+        if (fn_node != null && fn_node.p.ident.name_len == name_len)
+        {
+            bool eq = true;
+            for (usz k = 0; k < name_len; k++)
+            {
+                if (fn_node.p.ident.name_ptr[k] != name[k]) { eq = false; break; }
+            }
+            if (eq)
+            {
+                if (out_payload != null && fd.child_count >= 2) *out_payload = fd.children[1];
+                return ord;
+            }
+        }
+        ord++;
+    }
+    return -1;
+}
+
+// True when a payload type fits the 64-bit repr slot: iN/uN, bool, ptr,
+// float/double, or unit (no payload). Everything else (tuples, structs,
+// unions, arrays, slices) is not lowered yet.
+fn bool union_payload_is_scalar(AstNode* ty)
+{
+    if (ty == null) return true;
+    if (ty.kind == NodeKind.NODE_EXPR_UNIT) return true;
+    if (ty.kind == NodeKind.NODE_TYPE_PTR) return true;
+    if (ty.kind != NodeKind.NODE_TYPE_PRIMITIVE) return false;
+    char* n = ty.p.ident.name_ptr;
+    usz   l = ty.p.ident.name_len;
+    if (l == 0) return false;
+    if (n[0] == 'i' || n[0] == 'u')
+    {
+        // iN/uN with digits, width must be ≤ 64
+        long w = 0;
+        for (usz k = 1; k < l; k++)
+        {
+            if (n[k] < '0' || n[k] > '9') return false;
+            w = w * 10 + (long)(n[k] - '0');
+        }
+        return w >= 1 && w <= 64;
+    }
+    if (l == 4 && n[0]=='b' && n[1]=='o' && n[2]=='o' && n[3]=='l') return true;
+    if (l == 3 && n[0]=='p' && n[1]=='t' && n[2]=='r')             return true;
+    if (l == 3 && n[0]=='f' && n[1]=='3' && n[2]=='2')             return true;
+    if (l == 3 && n[0]=='f' && n[1]=='6' && n[2]=='4')             return true;
+    return false;
+}
