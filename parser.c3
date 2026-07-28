@@ -3405,80 +3405,32 @@ fn Node* Parser.parse_primary(Parser* self)
                 // as sub-expressions.  Otherwise it's a plain string literal.
                 char* src    = t.start;
                 usz   src_len = t.len;
-                // Quick check: any '{' in the string body?
+                // Quick check: any NON-EMPTY '{' hole in the string body?
+                // `{name}` is (unimplemented) interpolation; `{}` is a
+                // positional format! template hole (fine inside format!) and
+                // `{{` is an escaped literal brace — neither is an error.
                 bool has_holes = false;
-                for (usz si = 0; si < src_len; si++)
+                for (usz si = 0; si + 1 < src_len; si++)
                 {
-                    if (src[si] == '{' && si + 1 < src_len && src[si+1] != '{')
+                    if (src[si] == '{')
                     {
-                        has_holes = true;
-                        break;
+                        if (src[si+1] == '{') { si++; continue; }   // escaped '{'
+                        if (src[si+1] != '}') { has_holes = true; break; }
                     }
                 }
                 if (!has_holes)
                 {
                     return ast::node_str(self.arena, Nk.NODE_LIT_STRING, t.start, t.len, t.line, t.col);
                 }
-                // Build interpolated string: split on {expr} holes.
-                // We re-parse hole content from the lexer's raw source.
-                // For now: collect segment and hole child nodes.
-                Scratch iparts;
-                iparts.reset();
-                uint seg_count = 0;
-                usz  seg_start  = 0;  // start of current literal segment inside src
-                usz  si         = 0;
-                while (si < src_len)
-                {
-                    if (src[si] == '{' && si + 1 < src_len && src[si+1] != '{')
-                    {
-                        // Emit the literal segment before this hole.
-                        Node* seg = ast::node_str(self.arena, Nk.NODE_LIT_STRING,
-                                                   src + seg_start, si - seg_start,
-                                                   t.line, t.col);
-                        iparts.push(seg);
-                        seg_count++;
-                        // Find closing '}'.
-                        usz hole_start = si + 1;
-                        usz hole_end   = hole_start;
-                        int depth = 1;
-                        while (hole_end < src_len && depth > 0)
-                        {
-                            if (src[hole_end] == '{')      { depth++; }
-                            else if (src[hole_end] == '}') { depth--; }
-                            if (depth > 0) { hole_end++; }
-                        }
-                        // The hole expression is src[hole_start..hole_end].
-                        // We emit an IDENT placeholder node pointing into the source.
-                        // Full re-lexing of holes requires a sub-lexer; for now emit
-                        // a raw-bytes node carrying the expression source text so that
-                        // the semantic analyser can re-parse it with a nested lexer.
-                        Node* hole_expr = ast::node_str(self.arena, Nk.NODE_LIT_RAW_BYTES,
-                                                         src + hole_start, hole_end - hole_start,
-                                                         t.line, t.col);
-                        iparts.push(hole_expr);
-                        si = hole_end + 1;   // skip past '}'
-                        seg_start = si;
-                    }
-                    else if (src[si] == '{' && si + 1 < src_len && src[si+1] == '{'
-                             ||  src[si] == '}' && si + 1 < src_len && src[si+1] == '}')
-                    {
-                        si += 2;   // escaped {{ or }} — skip both, keep in segment
-                    }
-                    else
-                    {
-                        si++;
-                    }
-                }
-                // Trailing segment after the last hole.
-                Node* tail_seg = ast::node_str(self.arena, Nk.NODE_LIT_STRING,
-                                               src + seg_start, src_len - seg_start,
-                                               t.line, t.col);
-                iparts.push(tail_seg);
-                seg_count++;
-                return ast::node_interp_string(self.arena,
-                                               iparts.items(), iparts.count,
-                                               seg_count, false,
-                                               t.line, t.col);
+                // Interpolation holes in a plain string literal have NO working
+                // lowering: holes were collected as raw source bytes for a
+                // nested-lexer re-parse that was never implemented, so the
+                // program compiled cleanly and then printed nothing/garbage —
+                // a silent miscompile. Fail loudly instead and point at the
+                // supported path. Recovery: degrade to the plain literal text
+                // (a single diagnostic, downstream still sees a normal string).
+                self.error("named interpolation holes `{name}` are not supported; use format! with positional holes: format!(\"value: {}\", x)");
+                return ast::node_str(self.arena, Nk.NODE_LIT_STRING, t.start, t.len, t.line, t.col);
             }
         case Tt.TOKEN_LIT_RAW_BYTES:
             self.advance();

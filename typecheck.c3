@@ -267,6 +267,29 @@ fn Node* TypeChecker.unfold(TypeChecker* self, Node* t)
     return t;
 }
 
+// True when `t` denotes a non-scalar VALUE layout: a tuple type or a
+// struct/union declaration (seen directly or through a nominal type name).
+// Scalars (int/float/bool/ptr) return false. Used to gate meaningless
+// aggregate → scalar `as` casts.
+fn bool TypeChecker.is_aggregate_ty(TypeChecker* self, Node* t)
+{
+    if (t == null) return false;
+    if (t.kind == Nk.NODE_TYPE_TUPLE) return true;
+    if (t.kind == Nk.NODE_DECL_STRUCT || t.kind == Nk.NODE_DECL_UNION) return true;
+    if (t.kind == Nk.NODE_TYPEVAR && t.resolved != null)
+    {
+        Node* d = t.resolved;
+        if (d.kind == Nk.NODE_DECL_STRUCT || d.kind == Nk.NODE_DECL_UNION) return true;
+        if (d.kind == Nk.NODE_DECL_TYPE && d.child_count >= 1)
+        {
+            Node* body = d.children[d.child_count - 1];
+            return body != null
+               && (body.kind == Nk.NODE_DECL_STRUCT || body.kind == Nk.NODE_DECL_UNION);
+        }
+    }
+    return false;
+}
+
 fn bool TypeChecker.subtype(TypeChecker* self, Node* a, Node* b)
 {
     // Depth-guarded wrapper: a 1000-deep ∩/∪ type chain would otherwise recurse
@@ -622,10 +645,41 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
         case Nk.NODE_EXPR_STRUCT_LIT:
             return self.synth_struct_lit(e);
 
+        case Nk.NODE_EXPR_FORMAT:
+            // format!(...) produces the runtime format record { ptr, i64, i64 }.
+            // Synthesize the template + argument expressions, and give the
+            // result its TRUE aggregate type: it used to be untyped, so
+            // consumers checked against nothing and `s as i64` compiled to
+            // the invalid `bitcast i64 <struct>` (llvm-as rejects).
+            for (usz ffi = 0; ffi < e.child_count; ffi++)
+            {
+                if (e.children[ffi] != null) self.synth(e.children[ffi]);
+            }
+            return ast::node3(self.arena, Nk.NODE_TYPE_TUPLE,
+                              self.mk_prim(Prim.PRIM_PTR),
+                              self.mk_prim(Prim.PRIM_I64),
+                              self.mk_prim(Prim.PRIM_I64),
+                              0, 0);
+
         case Nk.NODE_EXPR_CAST:
             // expr as Type — result is the target type (child 1).
-            if (e.child_count >= 1) self.synth(e.children[0]);
-            return e.child_count >= 2 ? e.children[1] : null;
+            {
+                Node* st = e.child_count >= 1 ? self.synth(e.children[0]) : null;
+                Node* dt = e.child_count >= 2 ? e.children[1] : null;
+                if (st != null && dt != null
+                    && self.is_aggregate_ty(st) && !self.is_aggregate_ty(dt))
+                {
+                    // Aggregate → non-aggregate casts have no meaningful
+                    // lowering: codegen used to emit the invalid
+                    // `bitcast { ptr, i64, i64 } %x to i64` (which llvm-as
+                    // rejects, or worse, silently truncates). Destructure the
+                    // struct/tuple first; scalar↔scalar, ptr↔int and
+                    // same-shape aggregate casts are unaffected.
+                    self.hard("cannot cast a struct/tuple value to a scalar or pointer type (extract a field or component first)",
+                              e.line, e.col);
+                }
+                return dt;
+            }
 
         case Nk.NODE_EXPR_IF:
             return self.synth_if(e);
