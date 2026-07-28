@@ -2619,30 +2619,50 @@ fn Node* Parser.parse_stmt(Parser* self)
         case Tt.TOKEN_KW_BREAK:
             {
                 self.advance();
-                self.skip_newlines();  // label may be on next line: break\n  'label
-                // Accept LABEL_REF, LIT_CHAR ('x), or check raw source for ' followed by ident
-                // (guards against tokenizer edge cases in indented block context)
-                bool is_label_tok = self.check(Tt.TOKEN_LABEL_REF) || self.check(Tt.TOKEN_LIT_CHAR);
-                // Raw source fallback: if cur points to a ' char followed by [a-zA-Z_]
-                if (!is_label_tok && self.cur.start != null && self.cur.len >= 2)
+                // A label may sit on the next line (break\n  'label), but a
+                // break VALUE must be on the SAME line as `break` — otherwise
+                // the following statement is silently swallowed as break's
+                // result expression (that was the root of the 'unreachable
+                // code after break' lint gap: the dead statement became a
+                // child of the Break node, so it never appeared as a block
+                // statement and no warning could fire).
+                bool at_line_end = self.check(Tt.TOKEN_NEWLINE) || self.check(Tt.TOKEN_DEDENT)
+                                || self.check(Tt.TOKEN_EOF) || self.at_end();
+                if (!at_line_end)
+                {
+                    // Same line: label reference, or break-with-value.
+                    bool is_label_tok = self.check(Tt.TOKEN_LABEL_REF) || self.check(Tt.TOKEN_LIT_CHAR);
+                    if (!is_label_tok && self.cur.start != null && self.cur.len >= 2)
+                    {
+                        char c0 = self.cur.start[0];
+                        char c1 = self.cur.start[1];
+                        if (c0 == '\'' && ((c1 >= 'a' && c1 <= 'z') || (c1 >= 'A' && c1 <= 'Z') || c1 == '_')) { is_label_tok = true; }
+                    }
+                    if (is_label_tok)
+                    {
+                        Tok lbl = self.advance();
+                        Node* lbl_node = self.name_from(lbl, Nk.NODE_IDENT);
+                        return ast::node1(self.arena, Nk.NODE_STMT_BREAK_LABEL, lbl_node, t.line, t.col);
+                    }
+                    Node* bval = self.parse_expr();
+                    if (bval != null)
+                    { return ast::node1(self.arena, Nk.NODE_STMT_BREAK, bval, t.line, t.col); }
+                    return ast::node0(self.arena, Nk.NODE_STMT_BREAK, t.line, t.col);
+                }
+                // End of line: only a label may still follow (next line).
+                self.skip_newlines();
+                bool is_label_nl = self.check(Tt.TOKEN_LABEL_REF) || self.check(Tt.TOKEN_LIT_CHAR);
+                if (!is_label_nl && self.cur.start != null && self.cur.len >= 2)
                 {
                     char c0 = self.cur.start[0];
                     char c1 = self.cur.start[1];
-                    if (c0 == '\'' && ((c1 >= 'a' && c1 <= 'z') || (c1 >= 'A' && c1 <= 'Z') || c1 == '_')) { is_label_tok = true; }
+                    if (c0 == '\'' && ((c1 >= 'a' && c1 <= 'z') || (c1 >= 'A' && c1 <= 'Z') || c1 == '_')) { is_label_nl = true; }
                 }
-                if (is_label_tok)
+                if (is_label_nl)
                 {
                     Tok lbl = self.advance();
                     Node* lbl_node = self.name_from(lbl, Nk.NODE_IDENT);
                     return ast::node1(self.arena, Nk.NODE_STMT_BREAK_LABEL, lbl_node, t.line, t.col);
-                }
-                // break VAL — break with a result value from the loop
-                if (!self.check(Tt.TOKEN_NEWLINE) && !self.check(Tt.TOKEN_DEDENT)
-                    && !self.check(Tt.TOKEN_EOF) && !self.at_end())
-                {
-                    Node* bval = self.parse_expr();
-                    if (bval != null)
-                    { return ast::node1(self.arena, Nk.NODE_STMT_BREAK, bval, t.line, t.col); }
                 }
                 return ast::node0(self.arena, Nk.NODE_STMT_BREAK, t.line, t.col);
             }
