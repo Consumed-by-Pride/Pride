@@ -5,7 +5,7 @@
 //
 // PURPOSE. Before any lowering / LLVM / runtime work consumes the AST, this
 // pass AUDITS the invariants that lowering silently assumes. The frontend's
-// diagnostics are intentionally SOFT (warnings, not hard errors, per Pryde's
+// diagnostics are intentionally SOFT (warnings, not hard errors, per Pride's
 // "trust the programmer" design) — but lowering needs a HARD guarantee that the
 // tree it walks is well-formed: every value-position name resolved, every
 // expression typed, no structurally-broken nodes. A silent gap here is exactly
