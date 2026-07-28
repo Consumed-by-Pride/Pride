@@ -3127,6 +3127,20 @@ fn void TypeChecker.check_fn(TypeChecker* self, Node* fn_node)
 fn Node* TypeChecker.apply_where(TypeChecker* self, Node* fn_node, Node* ty)
 {
     if (ty == null) return ty;
+    // The equality applies under a pointer constructor as well: with
+    // `where C = A`, the return type `*C` must compare equal to the body's
+    // `*A` (the clause-body check is syntactic). One constructor level is
+    // enough in practice (v.md §18 examples are all `*C`-shaped).
+    if (ty.kind == Nk.NODE_TYPE_PTR && ty.child_count >= 1
+        && ty.children[0] != null && ty.children[0].kind == Nk.NODE_TYPEVAR)
+    {
+        Node* inner = self.apply_where(fn_node, ty.children[0]);
+        if (inner != ty.children[0])
+        {
+            return ast::node1(self.arena, Nk.NODE_TYPE_PTR, inner, ty.line, ty.col);
+        }
+        return ty;
+    }
     if (ty.kind != Nk.NODE_TYPEVAR) return ty;
     if (ty.resolved == null) return ty;
 
