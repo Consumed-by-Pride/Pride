@@ -699,6 +699,29 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
         case Nk.NODE_EXPR_BLOCK:
             return self.synth_block(e);
 
+        case Nk.NODE_EXPR_FOR:
+            // for binder in iterable — the lowering supports integer RANGES
+            // (`lo..hi`, `lo..=hi`, `lo..hi by step`) only. Any other iterable
+            // (array literal, tuple, an arbitrary expr) used to walk into a
+            // lowering that fabricated an undefined loop variable and a
+            // constant-zero guard: a silently broken module that even
+            // llvm-as rejects. Loud here, so emission is skipped instead.
+            {
+                Node* iter = e.child_count >= 2 ? e.children[1] : null;
+                if (iter != null
+                    && iter.kind != Nk.NODE_EXPR_RANGE
+                    && iter.kind != Nk.NODE_EXPR_RANGE_STEP)
+                {
+                    self.hard("for-loops iterate integer ranges (for i in lo..hi, lo..=hi, lo..hi by step)",
+                              iter.line, iter.col);
+                }
+                for (usz fci = 0; fci < e.child_count; fci++)
+                {
+                    if (e.children[fci] != null) self.synth(e.children[fci]);
+                }
+                return null;
+            }
+
         case Nk.NODE_EXPR_RANGE:
             if (e.child_count >= 1) return self.synth(e.children[0]);
             return null;

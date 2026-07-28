@@ -385,6 +385,27 @@ fn void Resolver.bind_pattern(Resolver* self, Node* pat)
             }
 
         case Nk.NODE_PATTERN_STRUCT:
+            // The name heading the pattern (`Dollars(v)`, `Point{x, y}`) is a
+            // USE of a type, not a binder: resolve it QUIETLY (a miss is left
+            // unresolved, never an error — heads may be generic params or
+            // names bound later), so the type checker and both lowerings can
+            // recognize a newtype destructure (identity unwrap) from
+            // .resolved. It went unresolved before — emit-side pipelines
+            // compensated from the fn signature, but the lowering saw nothing
+            // and fabricated unit/undefined binders for what is really an
+            // identity operation.
+            if (pat.child_count >= 1 && pat.children[0] != null
+                && (pat.children[0].kind == Nk.NODE_TYPEVAR
+                    || pat.children[0].kind == Nk.NODE_IDENT)
+                && pat.children[0].resolved == null)
+            {
+                char* hp; usz hl;
+                if (name_of(pat.children[0], &hp, &hl))
+                {
+                    Node* pd = self.lookup(hp, hl, NS_TYPE);
+                    if (pd != null) pat.children[0].resolved = self.chase_member_use(pd);
+                }
+            }
             for (usz i = 0; i < pat.child_count; i++)
             {
                 self.bind_pattern_field(pat.children[i]);

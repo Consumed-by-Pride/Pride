@@ -2015,6 +2015,24 @@ fn void SsiModule.bind_let_pattern(SsiModule* m, Node* pat, IrVal* val)
             // extracted from the { i32, i64 } repr and coerced back to the
             // payload type (`_` on a unit payload binds nothing).
             {
+                // Newtype destructuring (`let Dollars(v) = d`, or the
+                // `| Dollars(d) -> ...` clause pattern): a newtype carries NO
+                // runtime tag — the value IS the underlying value, so the
+                // binder aliases the incoming value unchanged. Falling into
+                // the variant path here fabricated a unit/undefined binder
+                // for an identity operation.
+                Node* nt_head = pat.child_count >= 1 ? pat.children[0] : null;
+                if (nt_head != null && nt_head.resolved != null
+                    && nt_head.resolved.kind == Nk.NODE_DECL_NEWTYPE)
+                {
+                    for (usz nti = 1; nti < pat.child_count; nti++)
+                    {
+                        Node* ntb = pat.children[nti];
+                        if (ntb == null) continue;
+                        m.bind_let_pattern(ntb, val);
+                    }
+                    return;
+                }
                 int ord = 0; Node* vp_ty = null; Node* vp_un = null;
                 if (!variant_pattern_info(pat, &vp_un, &ord, &vp_ty))
                 {
@@ -2664,6 +2682,20 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
         case Nk.NODE_EXPR_CALL:
             // `resume(v)` inside a handler arm → IR_RESUME.
             if (is_resume_call(n)) { return m.lower_resume(n); }
+            // Newtype constructor: `Dollars(x)` is a transparent wrap — the
+            // runtime representation IS the underlying value, so the "call"
+            // is the identity on its single argument. It used to fall through
+            // to the generic callee path with the newtype NAME as an opaque
+            // global, becoming a call through inttoptr(0) — immediate UB.
+            {
+                Node* callee_n = (n.child_count >= 1) ? n.children[0] : null;
+                if (callee_n != null && callee_n.resolved != null
+                    && callee_n.resolved.kind == Nk.NODE_DECL_NEWTYPE)
+                {
+                    if (n.child_count >= 2) return m.lower_expr(n.children[1]);
+                    return m.mk_unit(n);
+                }
+            }
             // `k(val)` where k is the continuation binder (IR_UNKNOWN with arm binder)
             // → also emit IR_RESUME(val).
             {
@@ -3888,8 +3920,19 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         // a tag without giving every variant value its own case routing).
         bool is_variant_arm = !is_or
             && variant_pattern_info(pat, null, null, null);
+        // Newtype struct arm `Dollars(v)`: a tagless identity wrap —
+        // irrefutable (there is nothing to test), bound through the destructuring
+        // layer so the binder aliases the scrutinee unchanged. It used to take
+        // the legacy bind_pattern fallback, which BINDS NOTHING for a
+        // TypeVar-headed pattern — a use of the binder fabricated a dangling
+        // reference or zero.
+        bool is_newtype_arm = !is_or
+            && pat != null && pat.kind == Nk.NODE_PATTERN_STRUCT
+            && pat.child_count >= 1 && pat.children[0] != null
+            && pat.children[0].resolved != null
+            && pat.children[0].resolved.kind == Nk.NODE_DECL_NEWTYPE;
         bool chain_arm = is_wild || is_bind || is_tuple || or_chain_irrefutable || or_tested_chain
-            || is_variant_arm;
+            || is_variant_arm || is_newtype_arm;
 
         int arm_blk = m.new_block();
         // Variant arms need the tag test evaluated in a dispatch block even
@@ -4009,7 +4052,7 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         // it via projections, a union-variant arm extracts its payload slot.
         // (Other pattern shapes keep the legacy binding until they get
         // properly typed destructuring.)
-        if (is_bind || is_tuple || is_variant_arm) { m.bind_let_pattern(pat, sval); }
+        if (is_bind || is_tuple || is_variant_arm || is_newtype_arm) { m.bind_let_pattern(pat, sval); }
         else if (or_ident != null)               { m.bind_let_pattern(or_ident, sval); }
         else                                     { m.bind_pattern(null, pat); }
 
