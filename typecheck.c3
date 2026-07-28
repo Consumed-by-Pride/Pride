@@ -2485,6 +2485,10 @@ fn Node* TypeChecker.synth_match(TypeChecker* self, Node* e)
         {
             self.bind_pattern_types(pat, scrut);
         }
+        else if (scrut != null && pat != null && pat.kind == Nk.NODE_PATTERN_OR)
+        {
+            self.bind_pattern_types(pat, scrut);
+        }
         else if (scrut != null && pat != null && pat.kind == Nk.NODE_PATTERN_TUPLE)
         {
             // Tuple arms destructure the scrutinee (aliasing/projection
@@ -3093,6 +3097,29 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
                 pat.type_annotation = ty;
             }
 
+        case Nk.NODE_PATTERN_OR:
+            // Bind every alternative to the scrutinee type (ident binders get
+            // stamped; literals are checked by the caller's body walk). Only
+            // literals, binders and '_' are lowered — a struct/tuple/union
+            // alternative would need decision-tree dispatch that does not
+            // exist, and previously compiled to a DEAD arm silently.
+            // NOTE: do NOT stamp the OR node itself — the lowering's test
+            // IR_BINs carry it as src and would wrongly inherit the
+            // scrutinee type instead of i1.
+            for (usz oi = 0; oi < pat.child_count; oi++)
+            {
+                Node* alt = pat.children[oi];
+                if (alt == null) continue;
+                if (alt.kind != Nk.NODE_PATTERN_LITERAL
+                    && alt.kind != Nk.NODE_PATTERN_IDENT
+                    && alt.kind != Nk.NODE_PATTERN_WILDCARD)
+                {
+                    self.hard("unsupported alternative in an or-pattern (only literals, binders and '_' are lowered; use separate arms)",
+                              alt.line, alt.col);
+                    continue;
+                }
+                self.bind_pattern_types(alt, ty);
+            }
         case Nk.NODE_PATTERN_TUPLE:
             // Always stamp the tuple pattern itself with the given type.
             // This lets IR_PARAM codegen find the type via pv.src.type_annotation

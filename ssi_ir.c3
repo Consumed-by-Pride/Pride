@@ -1248,6 +1248,20 @@ fn IrVal* SsiModule.single_test(SsiModule* m, Node* pat, IrVal* v)
                 return t;
             }
             return null;
+        case Nk.NODE_PATTERN_OR:
+            // | a | b | ... : test every alternative; any match suffices.
+            // An irrefutable alternative (ident binder / '_') makes the whole
+            // OR irrefutable -> no test (null), same rule as single patterns.
+            {
+                IrVal* acc = null;
+                for (usz oi = 0; oi < pat.child_count; oi++)
+                {
+                    IrVal* t = m.single_test(pat.children[oi], v);
+                    if (t == null) return null;
+                    acc = m.or_cond(acc, t, pat);
+                }
+                return acc;
+            }
         default:
             return null;   // ident / wildcard / binding patterns: irrefutable
     }
@@ -1259,6 +1273,15 @@ fn IrVal* SsiModule.and_cond(SsiModule* m, IrVal* a, IrVal* b, Node* src)
     if (b == null) return a;
     IrVal* t = m.new_val(IrOp.IR_BIN, src);
     if (t != null) { t.bop = Tt.TOKEN_AMPAMP; t.add_arg(a, -1); t.add_arg(b, -1); m.emit(t); }
+    return t;
+}
+
+fn IrVal* SsiModule.or_cond(SsiModule* m, IrVal* a, IrVal* b, Node* src)
+{
+    if (a == null) return b;
+    if (b == null) return a;
+    IrVal* t = m.new_val(IrOp.IR_BIN, src);
+    if (t != null) { t.bop = Tt.TOKEN_PIPEPIPE; t.add_arg(a, -1); t.add_arg(b, -1); m.emit(t); }
     return t;
 }
 
@@ -1579,6 +1602,13 @@ fn void SsiModule.bind_let_pattern(SsiModule* m, Node* pat, IrVal* val)
                 // fall through to plain binding if home creation failed
             }
             m.env_push(pat, v);
+        case Nk.NODE_PATTERN_OR:
+            // Every ident alternative names the same scrutinee value.
+            for (usz oi = 0; oi < pat.child_count; oi++)
+            {
+                Node* alt = pat.children[oi];
+                if (alt != null && alt.kind == Nk.NODE_PATTERN_IDENT) m.bind_let_pattern(alt, val);
+            }
         case Nk.NODE_PATTERN_TUPLE:
             // destructure: each element reads a projection of `val`
             for (usz i = 0; i < pat.child_count; i++)
@@ -3144,6 +3174,13 @@ fn IrVal* SsiModule.lower_if(SsiModule* m, Node* n)
 // previously only NODE_LIT_INT was honoured, so `match b | true -> | false ->`
 // dispatched through an EMPTY switch and fell into the non-exhaustive trap
 // on every input.
+// Equality pretest for an all-literal or-pattern used in match lowering:
+// (sval == alt0) || (sval == alt1) || ...  Null result means irrefutable.
+fn IrVal* SsiModule.or_pattern_test(SsiModule* m, Node* pat, IrVal* sval)
+{
+    return m.single_test(pat, sval);
+}
+
 fn bool match_case_value(Node* pat, ulong* out)
 {
     if (pat == null || pat.kind != Nk.NODE_PATTERN_LITERAL
@@ -3250,22 +3287,59 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         bool is_wild = pat != null && pat.kind == Nk.NODE_PATTERN_WILDCARD;
         bool is_bind = pat != null && pat.kind == Nk.NODE_PATTERN_IDENT;
         bool is_tuple = pat != null && pat.kind == Nk.NODE_PATTERN_TUPLE;
-        // Wildcard, ident and tuple patterns are IRREFUTABLE (they match any
-        // scrutable value of their shape): they route through the default
-        // chain, never as switch cases. Typechecking hard-rejects shape
-        // mismatches (tuple pattern vs non-tuple/scalar domain), so by the
-        // time a tuple arm reaches here the scrutinee is an aggregate the
-        // binding layer can destructure.
-        bool chain_arm = is_wild || is_bind || is_tuple;
+        bool is_or   = pat != null && pat.kind == Nk.NODE_PATTERN_OR;
 
         // Guard extraction: the parser stores `| pat, cond -> body` as arm
-        // children [pat, NODE_PATTERN_GUARD(cond), body...].
+        // children [pat, NODE_PATTERN_GUARD(cond), body...]. Must precede the
+        // classification below: an all-literal OR arm WITH a guard lowers as
+        // a tested chain arm, not as switch cases.
         Node* guard = null;
         for (usz j = 1; j < arm.child_count; j++)
         {
             Node* c = arm.children[j];
             if (c != null && c.kind == Nk.NODE_PATTERN_GUARD) { guard = c; break; }
         }
+
+        // OR-arm classification. Typecheck restricts alternatives to
+        // literals / ident binders / '_'; anything else never reaches here.
+        bool or_has_irrefutable = false;   // an ident binder or '_' alternative
+        bool or_all_case_lits   = is_or;   // every alternative has a case value
+        Node* or_ident = null;             // first ident alternative (binds scrutinee)
+        if (is_or)
+        {
+            for (usz oi = 0; oi < pat.child_count; oi++)
+            {
+                Node* alt = pat.children[oi];
+                if (alt == null) { or_all_case_lits = false; continue; }
+                if (alt.kind == Nk.NODE_PATTERN_IDENT)
+                {
+                    or_has_irrefutable = true;
+                    if (or_ident == null) or_ident = alt;
+                }
+                else if (alt.kind == Nk.NODE_PATTERN_WILDCARD)
+                {
+                    or_has_irrefutable = true;
+                }
+                else
+                {
+                    ulong tmp_cv = 0;
+                    if (!match_case_value(alt, &tmp_cv)) or_all_case_lits = false;
+                }
+            }
+        }
+        // Wildcard, ident and tuple patterns are IRREFUTABLE (they match any
+        // scrutable value of their shape): they route through the default
+        // chain, never as switch cases. Typechecking hard-rejects shape
+        // mismatches (tuple pattern vs non-tuple/scalar domain), so by the
+        // time a tuple arm reaches here the scrutinee is an aggregate the
+        // binding layer can destructure. An OR with an irrefutable
+        // alternative matches everything (chain arm; the ident binds the
+        // scrutinee); an all-literal OR WITH a guard is a chain arm with an
+        // equality pretest folded into its guard (one static false edge
+        // cannot route per case value — the chain re-tests instead).
+        bool or_chain_irrefutable = is_or && or_has_irrefutable;
+        bool or_tested_chain = is_or && !or_has_irrefutable && or_all_case_lits && guard != null;
+        bool chain_arm = is_wild || is_bind || is_tuple || or_chain_irrefutable || or_tested_chain;
 
         int arm_blk = m.new_block();
         int guard_blk = (guard != null) ? m.new_block() : -1;
@@ -3288,6 +3362,47 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
             // edges resolve here regardless of their case value.
             for (usz q = 0; q < n_lit_pend; q++) { m.link(lit_pend[q], dispatch); }
             n_lit_pend = 0;
+        }
+        else if (is_or)
+        {
+            // Unguarded all-literal OR: ONE switch case per alternative
+            // value (LLVM cases may share a destination). The first-claim /
+            // pending / shadow bookkeeping is the single-literal rule
+            // applied independently per alternative value.
+            for (usz oi = 0; oi < pat.child_count; oi++)
+            {
+                ulong ocv = 0;
+                if (pat.children[oi] == null || !match_case_value(pat.children[oi], &ocv)) continue;
+                int prior_o = -1;
+                for (usz q = 0; q < n_claim; q++) { if (claim_val[q] == ocv) { prior_o = (int)q; break; } }
+                bool shadowed_o = prior_o >= 0 && claim_dead[prior_o];
+                if (prior_o < 0)
+                {
+                    int slot = m.link(b0, dispatch);
+                    if (slot >= 0 && pb0 != null)
+                    {
+                        pb0.case_has[slot] = true;
+                        pb0.case_val[slot] = ocv;
+                    }
+                    claim_val[n_claim] = ocv;
+                    claim_dead[n_claim] = true;   // these arms are unguarded
+                    n_claim++;
+                }
+                else if (!shadowed_o)
+                {
+                    // Reachable via the ordering chain for THIS value.
+                    usz w = 0;
+                    for (usz q = 0; q < n_lit_pend; q++)
+                    {
+                        if (pend_val[q] == ocv) { m.link(lit_pend[q], dispatch); continue; }
+                        lit_pend[w] = lit_pend[q]; pend_val[w] = pend_val[q]; w++;
+                    }
+                    n_lit_pend = w;
+                    claim_dead[prior_o] = true;
+                }
+                // shadowed alternative: contributes nothing; the arm may
+                // still be reached through its other values.
+            }
         }
         else
         {
@@ -3337,8 +3452,9 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         // unbound parameters: an ident arm aliases it, a tuple arm destructures
         // it via projections. (Other pattern shapes keep the legacy binding
         // until they get properly typed destructuring.)
-        if (is_bind || is_tuple) { m.bind_let_pattern(pat, sval); }
-        else                     { m.bind_pattern(null, pat); }
+        if (is_bind || is_tuple)   { m.bind_let_pattern(pat, sval); }
+        else if (or_ident != null) { m.bind_let_pattern(or_ident, sval); }
+        else                       { m.bind_pattern(null, pat); }
 
         // Guarded arm: evaluate the guard in its own dispatch block with the
         // pattern bindings live; true → body, false → continue matching.
@@ -3346,6 +3462,13 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         {
             m.cur = guard_blk;
             IrVal* gval = m.lower_expr(guard.child_count >= 1 ? guard.children[0] : null);
+            if (or_tested_chain)
+            {
+                // Reached via the default chain: the switch proved nothing
+                // about the scrutinee, so AND the alternative-equality
+                // pretest into the guard condition.
+                gval = m.and_cond(m.or_pattern_test(pat, sval), gval, pat);
+            }
             IrBlock* gb = m.blk(guard_blk);
             if (gb != null && gval != null) { gb.term = TermKind.TERM_CBR; gb.cond = gval; }
             m.link(guard_blk, arm_blk);
