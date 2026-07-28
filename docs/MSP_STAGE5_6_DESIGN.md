@@ -9,7 +9,7 @@ evaluation). Both are real, compiling, tested, red-teamed and ASan-fuzzed.
 
 ## A note on "staging interpreter" in a compiled language
 
-Pryde is AOT-compiled. The staging module does **not** interpret your program at
+Pride is AOT-compiled. The staging module does **not** interpret your program at
 runtime. It is **CTFE — compile-time function evaluation**: a small evaluator
 that runs *inside the compiler* during the MSP stage, reduces `comptime`/`eval`
 expressions to values, and **bakes the result back into the AST as literal
@@ -22,7 +22,7 @@ This is exactly what every modern compiled language does:
 | C++      | `constexpr` / `consteval` | yes (the constant evaluator) |
 | Zig      | `comptime` | yes |
 | Rust     | `const fn` / `const` | yes (Miri-style const-eval) |
-| **Pryde**| `comptime` / `eval` / `quote` / `splice` | yes (`stage.c3`) |
+| **Pride**| `comptime` / `eval` / `quote` / `splice` | yes (`stage.c3`) |
 
 So "a tiny interpreter in the compiler" is not a contradiction with "compiled
 language" — it is the standard way compile-time metaprogramming is implemented.
@@ -81,7 +81,7 @@ head is a `NODE_TYPEVAR` (dialect names are TypeVars). So ordinary method calls
 ## 2. Staging / CTFE — `stage.c3`
 
 ### 2.1 The operator trio (MetaOCaml model)
-| role | Pryde surface | AST node |
+| role | Pride surface | AST node |
 |------|---------------|----------|
 | bracket (freeze code) | `~Tree e` / `quote e` / `~Data` / `~Bytes` | `NODE_SIGIL_*` / `NODE_QUOTE` |
 | escape (inject value) | `splice e` / `unquote e` | `NODE_SPLICE` / `NODE_UNQUOTE` |
@@ -148,7 +148,7 @@ parameter) still folds to `55`.
 
 ## 3. Driver integration & ordering
 
-In `pryde.c3`, after the frontend (lint), the MSP stage runs in this order:
+In `pride.c3`, after the frontend (lint), the MSP stage runs in this order:
 
 ```
 7a.  Staging (CTFE)      — fold comptime/eval, graft splices, level-check

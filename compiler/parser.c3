@@ -1,12 +1,12 @@
 // ============================================================================
-// parser.c3 — Pryde recursive-descent parser
+// parser.c3 — Pride recursive-descent parser
 // ----------------------------------------------------------------------------
 // Implementation language: C3 (host).
 //
 // Drives lexer.c3's Lexer.next() and produces an ast.c3 AST.
 // Layout-aware: INDENT / DEDENT / NEWLINE tokens delimit blocks Python-style.
 //
-// Pipeline:  Pryde source -> Lexer (tokens) -> Parser (this) -> AST
+// Pipeline:  Pride source -> Lexer (tokens) -> Parser (this) -> AST
 //
 // Coverage (v.md): modules/use, fn clause syntax + attributes + asm + effect
 // rows + generics + where, type/struct/union/effect decls, let/const/static,
@@ -313,7 +313,7 @@ fn Node* Parser.name_from(Parser* self, Tok t, Nk kind)
 
 // True if the current token can serve as a *member name* after '.' or '::',
 // or as an effect-operation name. This is any identifier, type variable, OR
-// any keyword — Pryde lets keywords be member/operation names (e.g.
+// any keyword — Pride lets keywords be member/operation names (e.g.
 // `Mem.alloc`, `IO.read`, `obj.match`). The lexer reports keywords as their
 // own token kinds, so we accept the whole keyword range here.
 fn bool Parser.at_member_name(Parser* self)
@@ -410,15 +410,15 @@ fn Node* Parser.parse_top_decl(Parser* self)
         case Tt.TOKEN_KW_RULE:    return self.parse_named_rule();
         case Tt.TOKEN_KW_REWRITE: return self.parse_rewrite();
         default:
-            // Friendly guidance for constructs Pryde deliberately lacks: a bare
+            // Friendly guidance for constructs Pride deliberately lacks: a bare
             // `enum`/`class`/`interface`/`trait` at the top level is almost
             // certainly someone reaching for a feature from another language.
-            // Point them at the Pryde idiom instead of emitting cryptic cascades.
+            // Point them at the Pride idiom instead of emitting cryptic cascades.
             if (self.cur.type == Tt.TOKEN_IDENT)
             {
                 if (tok_text_eq(self.cur, "class", 5) || tok_text_eq(self.cur, "interface", 9))
                 {
-                    self.error("Pryde has no `class`/`interface`; use `struct` for data and free functions for behavior");
+                    self.error("Pride has no `class`/`interface`; use `struct` for data and free functions for behavior");
                     return self.recover_decl();
                 }
                 if (tok_text_eq(self.cur, "trait", 5))
@@ -1294,7 +1294,7 @@ fn Node* Parser.parse_type_ops(Parser* self)
     }
 
     // Friendly guidance: a bare ASCII `|` in type position is almost certainly
-    // someone reaching for a union type. Pryde uses `∪` (U+222A) for unions;
+    // someone reaching for a union type. Pride uses `∪` (U+222A) for unions;
     // ASCII `|` is bitwise-or / pattern-alternation, never a type operator.
     if (self.check(Tt.TOKEN_PIPE))
     {

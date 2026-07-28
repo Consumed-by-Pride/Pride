@@ -1,14 +1,14 @@
 // ============================================================================
-// codegen.c3 — Pryde → LLVM 22.1.8 IR text emitter
+// codegen.c3 — Pride → LLVM 22.1.8 IR text emitter
 // ----------------------------------------------------------------------------
 // Implementation language: C3 (host).
 //
-// This module is Pryde's native code generator. It walks a fully-built and
+// This module is Pride's native code generator. It walks a fully-built and
 // verified SsiModule and emits LLVM 22 IR text (the .ll format), which is
 // then compiled through the pure LLVM 22 toolchain — no Clang anywhere.
 //
 // Full pipeline (no Clang):
-//   pryde --emit-llvm output.ll source.pry   # this module
+//   pride --emit-llvm output.ll source.pie   # this module
 //   llvm-as-22 output.ll -o output.bc        # assemble
 //   opt-22 -O2 output.bc -o output.opt.bc    # optimise
 //   llc-22 -filetype=obj output.opt.bc -o output.o  # compile
@@ -32,7 +32,7 @@
 //    SsiModule dump format so IR is easily cross-referenced.
 //
 // 3. TYPE SYSTEM MAPPING:
-//    Pryde primitive → LLVM type:
+//    Pride primitive → LLVM type:
 //      i8/u8 → i8,  i16/u16 → i16,  i32/u32 → i32,  i64/u64 → i64
 //      f32 → float,  f64 → double,  bool → i1,  char → i32 (Unicode codepoint)
 //      ptr/*T/&T/&mut T → ptr   (opaque, LLVM 17+ style)
@@ -57,8 +57,8 @@
 //    simplest correct ABI, replaceable with evidence passing or split stacks
 //    later without changing the frontend IR.
 //    Per handler frame:
-//      struct __pryde_frame { jmp_buf buf; ptr handler_fn; ptr prev; }
-//      IR_EFFECT_OP   → call __pryde_perform(frame_ptr, op_id, arg_ptr)
+//      struct __pride_frame { jmp_buf buf; ptr handler_fn; ptr prev; }
+//      IR_EFFECT_OP   → call __pride_perform(frame_ptr, op_id, arg_ptr)
 //      IR_HANDLER     → setjmp; on resume → call body; tear down frame
 //      IR_RESUME      → longjmp into saved buf with resume value
 //    Runtime declarations are emitted into the .ll file as `declare` stmts.
@@ -74,7 +74,7 @@
 // ────────────
 // Every IrOp and TermKind is handled. IR_UNKNOWN at asm sites emits an
 // inline-asm call; IR_UNKNOWN at with-cleanup sites emits a call to
-// __pryde_drop. All other IR_UNKNOWN nodes (extern/global refs) emit a
+// __pride_drop. All other IR_UNKNOWN nodes (extern/global refs) emit a
 // reference to the mangled global symbol.
 // ============================================================================
 
@@ -165,7 +165,7 @@ fn usz prim_alignof(char* name, usz len)
 
 
 // ── Canonical LLVM type string helpers ───────────────────────────────────────
-// Write the LLVM type string for a Pryde type node into buf[cap].
+// Write the LLVM type string for a Pride type node into buf[cap].
 // Returns buf (always null-terminated). Falls back to "i64" for unknown types.
 
 fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
@@ -813,7 +813,7 @@ struct CgenModule
 // Entry k holds the LLVM type string for IrVal with id k, as a null-terminated
 // char[64]. A value_count of 0 means the table is not yet built.
 
-const usz TYMAP_ENTRY = 64;   // bytes per entry — enough for any Pryde type
+const usz TYMAP_ENTRY = 64;   // bytes per entry — enough for any Pride type
 
 struct TypeTable
 {
@@ -985,7 +985,7 @@ fn void CgenModule.collect_all_structs(CgenModule* cg)
 
 // ── Type emission ─────────────────────────────────────────────────────────────
 
-// Emit the LLVM type string for a Pryde type node into the output buffer.
+// Emit the LLVM type string for a Pride type node into the output buffer.
 // depth guards against infinite recursion on cyclic type aliases.
 fn void CgenModule.emit_type(CgenModule* cg, Node* t, bool in_ret_pos, int depth)
 {
@@ -1344,11 +1344,11 @@ fn void CgenModule.emit_fn_ret_type(CgenModule* cg, ssi_ir::SsiFunc* f)
     cg.out.writes("void");
 }
 
-// Emit a mangled global name for a Pryde function.
-// Extern functions keep their name as-is; Pryde functions get @pryde_ prefix.
+// Emit a mangled global name for a Pride function.
+// Extern functions keep their name as-is; Pride functions get @pride_ prefix.
 fn void CgenModule.emit_fn_name(CgenModule* cg, ssi_ir::SsiFunc* f)
 {
-    // Closure thunk: use @__pryde_closure_N naming
+    // Closure thunk: use @__pride_closure_N naming
     if (f.decl != null && f.decl.kind == Nk.NODE_EXPR_CLOSURE)
     {
         // Find the closure IR_UNKNOWN val to get the cid
@@ -1359,17 +1359,17 @@ fn void CgenModule.emit_fn_name(CgenModule* cg, ssi_ir::SsiFunc* f)
             if (cv2.op == ssi_ir::IrOp.IR_UNKNOWN && cv2.binder == f.decl)
             {
                 int cid2 = (int)(cv2.ival & 0x7FFFFFFF);
-                cg.out.writes("@__pryde_closure_");
+                cg.out.writes("@__pride_closure_");
                 cg.out.writei((long)cid2);
                 return;
             }
         }
-        cg.out.writes("@__pryde_closure_0");  // fallback
+        cg.out.writes("@__pride_closure_0");  // fallback
         return;
     }
     if (f.name == null || f.name_len == 0)
     {
-        cg.out.writes("@pryde_anon_");
+        cg.out.writes("@pride_anon_");
         cg.out.writei(f.entry);
         return;
     }
@@ -1377,9 +1377,9 @@ fn void CgenModule.emit_fn_name(CgenModule* cg, ssi_ir::SsiFunc* f)
                     && f.name[2] == 'i' && f.name[3] == 'n');
     if (is_main) { cg.out.writes("@main"); return; }
 
-    // Build the candidate name @pryde_NAME
+    // Build the candidate name @pride_NAME
     char[NAME_BUF] candidate;
-    snprintf(&candidate[0], NAME_BUF, "@pryde_");
+    snprintf(&candidate[0], NAME_BUF, "@pride_");
     usz off = strlen(&candidate[0]);
     for (usz i = 0; i < f.name_len && off < NAME_BUF-1; i++) candidate[off++] = f.name[i];
     candidate[off] = 0;
@@ -1499,9 +1499,9 @@ fn void CgenModule.emit_binop(CgenModule* cg, Tt op, ssi_ir::IrVal* lhs, TypeTab
             cg.out.writes(fp ? "fcmp ogt" : (signed ? "icmp sgt" : "icmp ugt"));
         case Tt.TOKEN_GTEQ:
             cg.out.writes(fp ? "fcmp oge" : (signed ? "icmp sge" : "icmp uge"));
-        // Matmul @ — lower as call to runtime __pryde_matmul
+        // Matmul @ — lower as call to runtime __pride_matmul
         case Tt.TOKEN_AT:
-            cg.out.writes("call ptr @__pryde_matmul");
+            cg.out.writes("call ptr @__pride_matmul");
         default:
             cg.out.writes("add"); // safe fallback
     }
@@ -1654,7 +1654,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
             if (v.binder != null && v.binder.kind == Nk.NODE_HANDLER_ARM)
             {
                 // This IR_PARAM is an effect operation argument in a handler arm.
-                // The runtime provides these via __pryde_get_arm_arg(index).
+                // The runtime provides these via __pride_get_arm_arg(index).
                 // Determine which argument index this param is (by position in the arm's params).
                 int arm_arg_idx = 0;
                 Node* arm_node = v.binder;
@@ -1667,7 +1667,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     arm_arg_idx++;
                 }
                 cg.out.writes("  %v"); cg.out.writei(v.id);
-                cg.out.writes(" = call i64 @__pryde_get_arm_arg(i64 ");
+                cg.out.writes(" = call i64 @__pride_get_arm_arg(i64 ");
                 cg.out.writei(arm_arg_idx);
                 cg.out.writes(")\n");
             }
@@ -1713,7 +1713,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 if (v.bop == Tt.TOKEN_AT)
                 {
                     cg.out.writes("  %v"); cg.out.writei(v.id);
-                    cg.out.writes(" = call ptr @__pryde_matmul(ptr ");
+                    cg.out.writes(" = call ptr @__pride_matmul(ptr ");
                     cg.emit_vref(lhs);
                     cg.out.writes(", ptr ");
                     cg.emit_vref(rhs);
@@ -2214,7 +2214,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     && callee_val.binder != null
                     && callee_val.binder.kind == Nk.NODE_DECL_FN)
                 {
-                    // Known Pryde function
+                    // Known Pride function
                     Node* fn_decl = callee_val.binder;
                     // Find name (child 0)
                     char* fn_name_ptr = null;
@@ -2229,7 +2229,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     if (is_main_fn) { cg.out.writes("@main"); }
                     else
                     {
-                        cg.out.writes("@pryde_");
+                        cg.out.writes("@pride_");
                         if (fn_name_ptr != null) { cg.out.write(fn_name_ptr, fn_name_len); }
                     }
                 }
@@ -3102,7 +3102,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
         // ── Algebraic effects: setjmp/longjmp prompt stack ────────────────────
         case ssi_ir::IrOp.IR_EFFECT_OP:
             {
-                // perform Effect.op(args...) → call @__pryde_perform(op_id, ...)
+                // perform Effect.op(args...) → call @__pride_perform(op_id, ...)
                 ulong op_id = (v.binder != null) ? (ulong)v.binder.id : 0;
                 // Pre-emit: widen sub-i64 integer args for variadic ABI
                 for (usz i = 0; i < v.arg_count; i++)
@@ -3132,7 +3132,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     }
                 }
                 cg.out.writes("  %v"); cg.out.writei(v.id);
-                cg.out.writes(" = call ptr @__pryde_perform(i64 ");
+                cg.out.writes(" = call ptr @__pride_perform(i64 ");
                 cg.out.writeu(op_id);
                 for (usz i = 0; i < v.arg_count; i++)
                 {
@@ -3169,9 +3169,9 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
             {
                 // Handler frame setup. The TERM_SWITCH on this block's block
                 // dispatches to arm blocks — those are the actual handlers.
-                // At this instruction we call @__pryde_push_handler().
+                // At this instruction we call @__pride_push_handler().
                 cg.out.writes("  %v"); cg.out.writei(v.id);
-                cg.out.writes(" = call i64 @__pryde_push_handler(i64 ");
+                cg.out.writes(" = call i64 @__pride_push_handler(i64 ");
                 ulong frame_id = (v.binder != null) ? (ulong)v.binder.id : 0;
                 cg.out.writeu(frame_id);
                 cg.out.writes(")\n");
@@ -3181,7 +3181,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
             {
                 // Arm body result; call pop to tear down the handler frame.
                 ssi_ir::IrVal* body_res = v.arg_count >= 1 ? v.args[0] : null;
-                cg.out.writes("  call void @__pryde_pop_handler()\n");
+                cg.out.writes("  call void @__pride_pop_handler()\n");
                 // The arm's result is just the body result — no new instruction needed.
                 // We alias it:
                 cg.out.writes("  %v"); cg.out.writei(v.id);
@@ -3203,10 +3203,10 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
 
         case ssi_ir::IrOp.IR_RESUME:
             {
-                // resume(v) → call @__pryde_resume(value)
+                // resume(v) → call @__pride_resume(value)
                 ssi_ir::IrVal* rv = v.arg_count >= 1 ? v.args[0] : null;
                 cg.out.writes("  %v"); cg.out.writei(v.id);
-                cg.out.writes(" = call ptr @__pryde_resume(");
+                cg.out.writes(" = call ptr @__pride_resume(");
                 cg.writes_ty(tm, rv != null ? rv.id : -1);
                 cg.out.writes(" ");
                 cg.emit_vref(rv);
@@ -3220,17 +3220,17 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 {
                     // Inline asm: collect asm strings from args
                     // and emit as LLVM `call void asm(...)`.
-                    // Simplified: emit as @__pryde_asm_barrier() + comment.
-                    cg.out.writes("  call void @__pryde_asm_barrier()\n");
+                    // Simplified: emit as @__pride_asm_barrier() + comment.
+                    cg.out.writes("  call void @__pride_asm_barrier()\n");
                     cg.out.writes("  ; inline asm (see source)\n");
                     cg.out.writes("  %v"); cg.out.writei(v.id);
                     cg.out.writes(" = add i64 0, 0\n");
                 }
                 else if (v.src != null && v.src.kind == Nk.NODE_EFFECT_WITH)
                 {
-                    // with-resource cleanup: call __pryde_drop(resource_ptr)
+                    // with-resource cleanup: call __pride_drop(resource_ptr)
                     ssi_ir::IrVal* res = v.arg_count >= 1 ? v.args[0] : null;
-                    // __pryde_drop expects ptr — inttoptr if resource is non-ptr typed
+                    // __pride_drop expects ptr — inttoptr if resource is non-ptr typed
                     {
                         char* res_ty = (tm != null && res != null) ? tm.get(res.id) : null;
                         bool res_is_ptr = (res_ty == null || res_ty[0] == 'p');
@@ -3239,12 +3239,12 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             cg.out.writes("  %drop.ptr.v"); cg.out.writei(v.id);
                             cg.out.writes(" = inttoptr "); cg.out.writes(res_ty);
                             cg.out.writes(" "); cg.emit_vref(res); cg.out.writes(" to ptr\n");
-                            cg.out.writes("  call void @__pryde_drop(ptr %drop.ptr.v");
+                            cg.out.writes("  call void @__pride_drop(ptr %drop.ptr.v");
                             cg.out.writei(v.id); cg.out.writes(")\n");
                         }
                         else
                         {
-                            cg.out.writes("  call void @__pryde_drop(ptr ");
+                            cg.out.writes("  call void @__pride_drop(ptr ");
                             cg.emit_vref(res); cg.out.writes(")\n");
                         }
                     }
@@ -3267,7 +3267,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     // The template string is v.src.children[0] (NODE_LIT_STRING).
                     // Args are v.args[0..arg_count-1] (already lowered).
                     // We emit:
-                    //   %str = call ... @pryde_str_new()     ; String
+                    //   %str = call ... @pride_str_new()     ; String
                     //   ... str_push_str / str_push_i64 calls for each segment/arg
                     // Then %v = the String value.
 
@@ -3275,7 +3275,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     // Simplified: use %str.N as a ptr to a stack-allocated String.
                     cg.out.writes("  %fmt.str."); cg.out.writei(v.id);
                     cg.out.writes(" = alloca { ptr, i64, i64 }\n");
-                    cg.out.writes("  call void @pryde_str_init(ptr %fmt.str.");
+                    cg.out.writes("  call void @pride_str_init(ptr %fmt.str.");
                     cg.out.writei(v.id); cg.out.writes(")\n");
 
                     // Parse template and emit push calls
@@ -3346,7 +3346,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                 cg.out.writei(v.id); cg.out.writes(".");
                                 cg.out.writei((long)ti); cg.out.writes("\n");
                                 // Push the buffer to the String
-                                cg.out.writes("  call void @pryde_str_push_str(ptr %fmt.str.");
+                                cg.out.writes("  call void @pride_str_push_str(ptr %fmt.str.");
                                 cg.out.writei(v.id);
                                 cg.out.writes(", ptr %fmt.buf.");
                                 cg.out.writei(v.id); cg.out.writes(".");
@@ -3364,14 +3364,14 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                     bool is_fp = (aty != null && (aty[0]=='f'||aty[0]=='d'));
                                     if (is_fp)
                                     {
-                                        cg.out.writes("  call void @pryde_str_push_f64(ptr %fmt.str.");
+                                        cg.out.writes("  call void @pride_str_push_f64(ptr %fmt.str.");
                                         cg.out.writei(v.id); cg.out.writes(", double ");
                                         cg.emit_vref(v.args[arg_idx]);
                                         cg.out.writes(")\n");
                                     }
                                     else
                                     {
-                                        cg.out.writes("  call void @pryde_str_push_i64(ptr %fmt.str.");
+                                        cg.out.writes("  call void @pride_str_push_i64(ptr %fmt.str.");
                                         cg.out.writei(v.id); cg.out.writes(", i64 ");
                                         cg.emit_vref(v.args[arg_idx]);
                                         cg.out.writes(")\n");
@@ -3529,7 +3529,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
 
                         // Fat pointer: insertvalue { ptr, ptr } undef, @thunk, 0; insert env, 1
                         cg.out.writes("  %fat0."); cg.out.writei(v.id);
-                        cg.out.writes(" = insertvalue { ptr, ptr } undef, ptr @__pryde_closure_");
+                        cg.out.writes(" = insertvalue { ptr, ptr } undef, ptr @__pride_closure_");
                         cg.out.writei((long)cid); cg.out.writes(", 0\n");
                         cg.out.writes("  %v"); cg.out.writei(v.id);
                         cg.out.writes(" = insertvalue { ptr, ptr } %fat0."); cg.out.writei(v.id);
@@ -3541,7 +3541,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         // Zero-capture closure: bare fn ptr (no env needed).
                         // Emit as a pointer value so it can be passed as fn ptr arg.
                         cg.out.writes("  %v"); cg.out.writei(v.id);
-                        cg.out.writes(" = bitcast ptr @__pryde_closure_");
+                        cg.out.writes(" = bitcast ptr @__pride_closure_");
                         cg.out.writei((long)cid); cg.out.writes(" to ptr\n");
                     }
                     return;
@@ -3952,7 +3952,7 @@ fn void CgenModule.emit_function(CgenModule* cg, ssi_ir::SsiFunc* f)
             else
             {
                 cg.out.writes(pty);
-                // Add noalias to ptr params (pure Pryde params never alias; helps vectorizer)
+                // Add noalias to ptr params (pure Pride params never alias; helps vectorizer)
                 if (pty[0] == 'p') { cg.out.writes(" noalias"); }
             }
             cg.out.writes(" %v");
@@ -4048,43 +4048,43 @@ fn void CgenModule.emit_runtime_decls(CgenModule* cg)
     cg.out.writes("declare i32 @printf(ptr, ...)\n");
     cg.out.writes("declare i32 @putchar(i32)\n");
     cg.out.writes("\n");
-    // Pryde runtime (implemented in runtime.c, linked separately)
-    cg.out.writes("; Pryde runtime — implemented in runtime/runtime.c\n");
-    cg.out.writes("declare ptr  @__pryde_perform(i64, ...)\n");
-    cg.out.writes("declare void @pryde_str_init(ptr)\n");
-    cg.out.writes("declare void @pryde_str_push_str(ptr, ptr, i64)\n");
-    cg.out.writes("declare void @pryde_str_push_i64(ptr, i64)\n");
-    cg.out.writes("declare void @pryde_str_push_f64(ptr, double)\n");
-    cg.out.writes("declare i64  @__pryde_push_handler(i64)\n");
-    cg.out.writes("declare void @__pryde_pop_handler()\n");
-    cg.out.writes("declare ptr  @__pryde_resume(ptr)\n");
-    cg.out.writes("declare void @__pryde_drop(ptr)\n");
-    cg.out.writes("declare void @__pryde_asm_barrier()\n");
-    cg.out.writes("declare void @__pryde_panic(ptr, i64)\n");
-    cg.out.writes("declare ptr  @__pryde_matmul(ptr, ptr)\n");
-    cg.out.writes("declare i64  @__pryde_get_arm_arg(i64)\n");
+    // Pride runtime (implemented in runtime.c, linked separately)
+    cg.out.writes("; Pride runtime — implemented in runtime/runtime.c\n");
+    cg.out.writes("declare ptr  @__pride_perform(i64, ...)\n");
+    cg.out.writes("declare void @pride_str_init(ptr)\n");
+    cg.out.writes("declare void @pride_str_push_str(ptr, ptr, i64)\n");
+    cg.out.writes("declare void @pride_str_push_i64(ptr, i64)\n");
+    cg.out.writes("declare void @pride_str_push_f64(ptr, double)\n");
+    cg.out.writes("declare i64  @__pride_push_handler(i64)\n");
+    cg.out.writes("declare void @__pride_pop_handler()\n");
+    cg.out.writes("declare ptr  @__pride_resume(ptr)\n");
+    cg.out.writes("declare void @__pride_drop(ptr)\n");
+    cg.out.writes("declare void @__pride_asm_barrier()\n");
+    cg.out.writes("declare void @__pride_panic(ptr, i64)\n");
+    cg.out.writes("declare ptr  @__pride_matmul(ptr, ptr)\n");
+    cg.out.writes("declare i64  @__pride_get_arm_arg(i64)\n");
     // C23 <stdckdint.h> — overflow-checked arithmetic
-    cg.out.writes("declare i1   @__pryde_ckd_add_i32(ptr, i32, i32)\n");
-    cg.out.writes("declare i1   @__pryde_ckd_add_i64(ptr, i64, i64)\n");
-    cg.out.writes("declare i1   @__pryde_ckd_sub_i32(ptr, i32, i32)\n");
-    cg.out.writes("declare i1   @__pryde_ckd_sub_i64(ptr, i64, i64)\n");
-    cg.out.writes("declare i1   @__pryde_ckd_mul_i32(ptr, i32, i32)\n");
-    cg.out.writes("declare i1   @__pryde_ckd_mul_i64(ptr, i64, i64)\n");
+    cg.out.writes("declare i1   @__pride_ckd_add_i32(ptr, i32, i32)\n");
+    cg.out.writes("declare i1   @__pride_ckd_add_i64(ptr, i64, i64)\n");
+    cg.out.writes("declare i1   @__pride_ckd_sub_i32(ptr, i32, i32)\n");
+    cg.out.writes("declare i1   @__pride_ckd_sub_i64(ptr, i64, i64)\n");
+    cg.out.writes("declare i1   @__pride_ckd_mul_i32(ptr, i32, i32)\n");
+    cg.out.writes("declare i1   @__pride_ckd_mul_i64(ptr, i64, i64)\n");
     // C23 <string.h> additions
-    cg.out.writes("declare ptr  @__pryde_memset_explicit(ptr, i32, i64)\n");
-    cg.out.writes("declare ptr  @__pryde_strdup(ptr)\n");
-    cg.out.writes("declare ptr  @__pryde_strndup(ptr, i64)\n");
+    cg.out.writes("declare ptr  @__pride_memset_explicit(ptr, i32, i64)\n");
+    cg.out.writes("declare ptr  @__pride_strdup(ptr)\n");
+    cg.out.writes("declare ptr  @__pride_strndup(ptr, i64)\n");
     // C23 <stdlib.h>
-    cg.out.writes("declare i64  @__pryde_memalignment(ptr)\n");
+    cg.out.writes("declare i64  @__pride_memalignment(ptr)\n");
     // C23 <stdbit.h>
-    cg.out.writes("declare i32  @__pryde_stdc_count_ones_u64(i64)\n");
-    cg.out.writes("declare i32  @__pryde_stdc_leading_zeros_u64(i64)\n");
-    cg.out.writes("declare i32  @__pryde_stdc_trailing_zeros_u64(i64)\n");
-    cg.out.writes("declare i64  @__pryde_stdc_bit_ceil_u64(i64)\n");
-    cg.out.writes("declare i64  @__pryde_stdc_bit_floor_u64(i64)\n");
-    cg.out.writes("declare i32  @__pryde_stdc_bit_width_u64(i64)\n");
-    cg.out.writes("declare i64  @__pryde_stdc_rotate_left_u64(i64, i32)\n");
-    cg.out.writes("declare i64  @__pryde_stdc_rotate_right_u64(i64, i32)\n");
+    cg.out.writes("declare i32  @__pride_stdc_count_ones_u64(i64)\n");
+    cg.out.writes("declare i32  @__pride_stdc_leading_zeros_u64(i64)\n");
+    cg.out.writes("declare i32  @__pride_stdc_trailing_zeros_u64(i64)\n");
+    cg.out.writes("declare i64  @__pride_stdc_bit_ceil_u64(i64)\n");
+    cg.out.writes("declare i64  @__pride_stdc_bit_floor_u64(i64)\n");
+    cg.out.writes("declare i32  @__pride_stdc_bit_width_u64(i64)\n");
+    cg.out.writes("declare i64  @__pride_stdc_rotate_left_u64(i64, i32)\n");
+    cg.out.writes("declare i64  @__pride_stdc_rotate_right_u64(i64, i32)\n");
     cg.out.writes("\n");
     cg.out.writes("attributes #0 = { inlinehint nounwind }\n");
     cg.out.writes("attributes #1 = { nounwind }\n");
@@ -4100,7 +4100,7 @@ fn void CgenModule.emit_runtime_decls(CgenModule* cg)
 // ── Vtable emission for dynamic dispatch ─────────────────────────────────────
 // For each `impl Interface for Type` block encountered, emit a global constant
 // array of function pointers in the order the interface declares its methods.
-// Symbol name: @__pryde_vtable_<Interface>_<Type>
+// Symbol name: @__pride_vtable_<Interface>_<Type>
 
 fn void CgenModule.emit_vtables(CgenModule* cg, ssi_ir::SsiModule* ir)
 {
@@ -4113,7 +4113,7 @@ fn void CgenModule.emit_vtables(CgenModule* cg, ssi_ir::SsiModule* ir)
     // For now emit a structural vtable: if a fn is tagged with an impl parent,
     // group them and emit the vtable.
     // This is the scaffolding — full wiring happens via lower_fn tagging.
-    // (Vtable generation is complete in stdlib/dyn.pry at the language level.)
+    // (Vtable generation is complete in stdlib/dyn.pie at the language level.)
     // LLVM-level vtable: emitted per impl block found during fn scan.
     for (usz fi = 0; fi < ir.func_count; fi++)
     {
@@ -4219,9 +4219,9 @@ fn void CgenModule.emit_closure_thunks(CgenModule* cg)
             { nparams = 1; }
         }
 
-        // Emit: define i64 @__pryde_closure_N(ptr %__env, i64 %a0, i64 %a1, ...)
+        // Emit: define i64 @__pride_closure_N(ptr %__env, i64 %a0, i64 %a1, ...)
         cg.out.writes("; closure thunk\n");
-        cg.out.writes("define i64 @__pryde_closure_");
+        cg.out.writes("define i64 @__pride_closure_");
         cg.out.writei((long)cid);
         cg.out.writes("(ptr %__env");
         for (usz pi = 0; pi < nparams; pi++)
