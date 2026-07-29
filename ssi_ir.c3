@@ -3088,6 +3088,36 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                         if (csv != null) return csv;
                     }
                 }
+                // Enum-variant selection `Color.Red` (r39): the base is the
+                // enum TYPE (not a value) — the generic projection below
+                // lowers it to a junk global and GEP-loads a record out of
+                // inttoptr(0).  Construct the tagged { ordinal, 0 } repr by
+                // declaration ordinal, exactly like the bare-ident variant
+                // arm in the default case; the member ident gets resolved to
+                // the variant node (the resolver does not link it).
+                Node* fbase2 = n.child_count >= 1 ? n.children[0] : null;
+                Node* fmem2  = n.child_count >= 2 ? n.children[1] : null;
+                Node* edecl2 = ast::enum_decl_of(fbase2);
+                if (edecl2 != null && fmem2 != null
+                    && fmem2.p.ident.name_ptr != null)
+                {
+                    for (usz evi = 1; evi < edecl2.child_count; evi++)
+                    {
+                        Node* ev2 = edecl2.children[evi];
+                        if (ev2 == null || ev2.kind != Nk.NODE_ENUM_VARIANT) continue;
+                        Node* vn2 = ev2.child_count >= 1 ? ev2.children[0] : null;
+                        if (vn2 == null || vn2.p.ident.name_ptr == null
+                            || vn2.p.ident.name_len != fmem2.p.ident.name_len) continue;
+                        bool veq = true;
+                        for (usz vci = 0; vci < fmem2.p.ident.name_len; vci++)
+                        { if (vn2.p.ident.name_ptr[vci] != fmem2.p.ident.name_ptr[vci]) { veq = false; break; } }
+                        if (!veq) continue;
+                        fmem2.resolved = ev2;
+                        IrVal* evv = m.lower_enum_variant_use(fmem2);
+                        if (evv != null) return evv;
+                        break;
+                    }
+                }
             }
             IrVal* base = m.lower_expr(n.child_count >= 1 ? n.children[0] : null);
             IrVal* v = m.new_val(IrOp.IR_FIELD, n);

@@ -1569,7 +1569,21 @@ fn Node* TypeChecker.synth_field(TypeChecker* self, Node* e)
 
     // If the base is a module/effect path or its type is unknown, don't warn
     // (could be qualified access like math::sin, handled elsewhere).
-    if (bt == null) return null;
+    if (bt == null)
+    {
+        // Enum-variant selection without construction args (`Color.Red`):
+        // the base is the enum TYPE used as a value — synth yields nothing
+        // for it, but the variant value's type IS the enum type.  Leaving
+        // the field node unstamped made call-site coercions see the tymap
+        // default i64 against the enum's { i32, i64 } tagged repr
+        // ("unsupported argument coercion").
+        Node* edecl = ast::enum_decl_of(base);
+        if (edecl != null && name != null && name.p.ident.name_ptr != null
+            && ast::enum_variant_lookup(edecl, name.p.ident.name_ptr,
+                                        name.p.ident.name_len) >= 0)
+        { return base; }
+        return null;
+    }
 
     // The base has an abstract generic-parameter type (e.g. `b.val` where val:T
     // inside a generic body). We can't know its fields until monomorphization,
