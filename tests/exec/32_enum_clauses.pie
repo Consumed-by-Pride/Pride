@@ -1,0 +1,45 @@
+-- EXPECT: 110\n7\n42\n
+
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+
+enum E
+  A(i64)
+  B
+
+-- variant patterns on enum parameters in fn clauses (r54)
+fn f : E -> i64
+  | { A: a } -> a + 100
+  | { B } -> 7
+
+fn g : E -> i64
+  | x -> 42
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      print_i64_nl(f(E.A(10)))
+      print_i64_nl(f(E.B))
+      print_i64_nl(g(E.A(1)))
+      syscall(231, 0)

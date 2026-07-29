@@ -1,0 +1,17 @@
+-- EXPECT-CLEAN
+-- Enum variant patterns in fn clauses + sealed match in the same file (r54).
+
+enum E
+  A(i64)
+  B
+
+fn f : E -> i64
+  | { A: a } -> a + 1
+  | { B } -> 0
+
+fn main : () -> () ! [IO]
+  | () ->
+      let e = f(E.A(41))
+      match E.B
+        | A(a) -> syscall(231, a)
+        | B -> syscall(231, e)

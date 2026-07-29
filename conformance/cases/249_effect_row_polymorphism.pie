@@ -1,0 +1,26 @@
+-- EXPECT-CLEAN
+-- Open effect row [..r] forwards the argument function's effects (r53).
+
+effect Log
+  log : i64 -> ()
+
+fn inc_log : i64 -> i64 ! [Log]
+  | n -> (Log.log(n); n + 1)
+
+fn twice<A> : (A -> A ! [..r], A) -> A ! [..r]
+  | (f, x) -> f(f(x))
+
+fn id_i64 : i64 -> i64
+  | n -> n
+
+fn main : () -> () ! [IO]
+  | () ->
+      -- effectful callee fits the open row...
+      let r : i64 = handle twice(inc_log, 10)
+        | Log.log _v k -> k ()
+      -- ...and a pure callee fits it too.
+      let s : i64 = twice(id_i64, 41)
+      -- r + s = 12 + 41 = 53 > 0: syscall exit code 0 either way; the
+      -- assertions are the absence of any checker diagnostic above.
+      let _sum : i64 = r + s
+      syscall(231, 0)

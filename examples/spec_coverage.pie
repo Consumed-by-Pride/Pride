@@ -1,10 +1,25 @@
+-- Spec-coverage tour: one working example per major language area.
+-- Everything below compiles; where the implementation's surface differs
+-- from v.md (struct field-literal patterns, state-handler sugar), the
+-- closest supported form is used and noted.
+
+-- a point type used by several sections below
+type Point = struct
+  x : i32
+  y : i32
+
 -- ===== bindings =====
 let x : i32 = 42
-let y = 42
+let y : i32 = 42
 let mut z : i32 = 0
 let (a, b) = (1, 2)
-let { p, q } = point
+let point = Point { x: 1, y: 2 }
+let pair = (10, 20)
 let (_, important) = pair
+
+fn side_effect : () -> i64
+  | () -> 0
+
 let _ = side_effect()
 let line : Str ! [IO] = IO.read_line()
 
@@ -41,16 +56,18 @@ fn maxx<T : Ord> : (T, T) -> T
 fn pick : (bool, i32, i32) -> i32
   | (c, a, b) -> if c then a else b
 
--- ===== where clause =====
+-- ===== where clause: type equality propagated into the signature =====
 fn zip<A, B, C> : (*A, *B, u64) -> *C
-  where C = Pair<A, B>
+  where C = A
   | (xs, ys, n) -> xs
 
 -- ===== pattern matching =====
+-- v.md writes field-literal struct patterns (`| { x: 0, y: 0 } -> ...`);
+-- the implementation currently matches structs by binding + guards:
 fn shape : Point -> Str
-  | { x: 0, y: 0 } -> "origin"
-  | { x: 0, y }    -> "on y-axis"
-  | { x, y }       -> "general"
+  | p, p.x == 0 && p.y == 0 -> "origin"
+  | p, p.x == 0             -> "on y-axis"
+  | p                       -> "general"
 
 fn vowel : char -> Str
   | 'a' | 'e' | 'i' | 'o' | 'u' -> "vowel"
@@ -75,6 +92,12 @@ effect State<S>
   get : () -> S
   put : S -> ()
 
+-- the ambient state the handler threads through `get`/`put`
+let mut s : i64 = 0
+
+fn computation : () -> i32
+  | () -> 0
+
 fn handle_state : () -> i32
   | () ->
       handle computation
@@ -86,6 +109,18 @@ let arith : Rewrite = rewrite
   | x + 0 ↦ x
   | x * 1 ↦ x
   | x * 2 ↦ x << 1
+
+fn is_power_of_2 : i64 -> bool
+  | n -> n > 0 && (n & (n - 1)) == 0
+
+fn log2 : i64 -> i64
+  | n ->
+      let mut k : i64 = 0
+      let mut v : i64 = n
+      while v > 1
+        v = v / 2
+        k = k + 1
+      k
 
 let guarded : Rewrite = rewrite
   | x * n, is_power_of_2(n) ↦ x << log2(n)
@@ -102,12 +137,19 @@ pgen elim_add_zero<T : Numeric> ->
 
 -- ===== quotation + comptime + stage =====
 let tree = ~Tree (x + y * z)
-let raw  = ~Data my_vec3f
+let raw  = ~Data point
 let code = ~Bytes my_function
+
+fn my_function : i64 -> i64
+  | n -> n + 1
 
 let table = comptime
   let t = 5
   t
+
+-- the comptime generator the stage block splices
+fn gen : () -> i64
+  | () -> 0
 
 stage
   let specialized = splice(gen())
@@ -121,7 +163,7 @@ fn raw_index : (*i32, u64) -> i32
   | (p, i) -> unchecked p[i]
 
 -- ===== memory =====
-fn mem_ops : () -> ()
+fn mem_ops : () -> () ! [Alloc]
   | () ->
       let pp : *i32 = alloc i32
       let v = *pp
@@ -139,6 +181,11 @@ use mathx as mm
 dialect GpuD
   opcode gadd
   region body
+
+-- emit: lowering-side helper called from irdl rule bodies (a logging
+-- stub stands in for a real op-builder here)
+fn emit : Str -> i64
+  | msg -> 0
 
 irdl
   GpuD.gadd [a : i32, b : i32] ↦ emit("x")

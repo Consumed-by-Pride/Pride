@@ -83,36 +83,84 @@ backtrace before re-raising with the default handler.
 
 ---
 
-### §4 — Algebraic effects: ucontext prompt stack
+### §4 — Algebraic effects: snapshot-based delimited continuations
 
-**Not setjmp/longjmp.** We use `ucontext_t` for genuine coroutine-style
-suspension and resumption — the computation literally yields to the handler
-and resumes where it left off.
+**Not setjmp/longjmp — and not pure swapcontext either.** We use `ucontext_t`
+trampolines *plus stack snapshots*: the classic snapshot implementation of
+delimited control ("shift/reset for C"), adapted to Pride's inline handle
+blocks. Everything runs on **one linear C stack**; the suspended region is
+memcpy'd to the heap at each `perform` and restored at `resume`.
+
+Why snapshots? Codegen emits `handle` **inline**: the dispatch block, the
+computation block, and every arm block are basic blocks of one LLVM function
+sharing one stack. When the computation performs an op, the arm must run at
+the handle's dispatch point — its frames would overwrite the suspended
+computation's frames below it on the same stack. So `__pride_perform`
+copies every byte of the suspended region (from its own SP up to the
+high-water mark captured at push, clamped against the live stack VMA read
+from `/proc/self/maps`) into a heap buffer before yielding, and
+`__pride_resume` memcpies it back through a restore trampoline before
+re-entering the computation.
+
+**Semantics — TAIL-RESUMPTIVE, ONE-SHOT (Koka-style):** `resume()` never
+returns; the resumed computation runs to completion and the arm does not
+continue after it. A computation may perform any number of ops in sequence
+(each perform re-snapshots). An arm that finishes *without* resuming unwinds
+to the dispatched frame (`__pride_pop_handler`).
 
 ```
-handle computation { | Op(arg) k → body }
+handle computation { | Op(arg) → resume(v) }
   ↓
-__pride_push_handler(frame_id)
-  → allocates a 256 KB coroutine stack via pride_alloc
-  → saves frame on per-thread __thread stack (max 64 deep)
-  → returns the frame pointer as the IR_HANDLER discriminant
+__pride_push_handler(frame_id, nops, op_id+1, ...)
+  → pushes a frame on the per-thread __thread stack (depth 16)
+  → records the op list (for correct multi-handler dispatch)
+  → takes a mini frame-repair snapshot of the return path
+  → allocates a 256 KB scratch stack for the dispatch/restore trampolines
+  → returns the DISPATCH TOKEN: 0 = run the computation
 
 Inside the computation:
-__pride_perform(op_id, ...)
-  → finds matching handler frame (by frame_id)
-  → swapcontext(perform_ctx → handler_ctx)  [saves computation, resumes handler]
-  → returns the value set by __pride_resume()
+__pride_perform(op_id, nargs, args...)
+  → finds the NEWEST frame listing op_id (inner handlers that don't
+    handle the op are transparently bypassed, like multi-prompt bypass)
+  → snapshots [SP, frame_top) to the heap
+  → dispatch trampoline (on the scratch stack) repairs the push frame and
+    setcontext()s to push's continuation ⇒ push_handler "returns again",
+    this time yielding token op_id+1 ⇒ the switch selects the op's arm
 
 Inside the handler arm:
 __pride_resume(val)
-  → stores val in frame->resume_val
-  → swapcontext(handler_ctx → perform_ctx)  [resumes computation]
-  → returns val
+  → stores val; the restore trampoline writes the big snapshot back over
+    the live stack and setcontext()s into the computation, which then sees
+    __pride_perform RETURN val  (never returns to the arm)
 
-__pride_pop_handler()
-  → frees the 256 KB coroutine stack
-  → pops the frame from the per-thread stack
+__pride_complete()   ← computation finished normally: pop the frame
+__pride_pop_handler()← arm finished WITHOUT resuming: unwind to the prompt
+__pride_get_arm_arg(i) → arm_args[i] of the currently dispatched frame
 ```
+
+**Dispatch is a stack, not a slot.** An arm body may itself `perform` an
+operation — routed to some (typically outer) frame. `__pride_perform`
+saves the current dispatch identity in the handler frame struct
+(`prev_dispatched`, TLS — never on the machine stack, because perform's
+own activation lives inside the snapshotted region and a local copy would
+be clobbered by the restore memcpy) and reinstates it when the nested
+perform is resumed. Performs therefore strictly nest (LIFO), and an inner
+arm's own `resume()` always targets its own frame.
+
+**Deep-handler re-perform rule.** While a handler's arm is in flight, that
+handler's prompt is dissolved: the dispatch search skips every frame in the
+in-flight arm chain (`effect_dispatched` + its `prev_dispatched` links).
+An arm that re-performs one of its own ops escapes to a strictly outer
+handler — or, with none, panics as *unhandled effect operation* — instead
+of re-entering its own dispatch context (which would free the still-needed
+snapshot and loop forever).
+
+**Dispatch-token ABI (with `ssi_ir.c3 lower_handle` / `codegen.c3`):**
+the token returned by push_handler drives the LLVM `switch`: default (0) is
+the computation edge, a case `op_id+1` is that op's arm edge. The handle
+expression's value is the join-block φ over the computation edge and each
+arm edge, typed by the *computation's* type (or the arm's type if the arm
+never resumes).
 
 **Thread-safety:** the handler stack is `__thread` — one per OS thread.
 No locking needed.
@@ -123,7 +171,7 @@ Replace just the four `__pride_{push_handler,pop_handler,perform,resume}` functi
 
 | ABI | Speed | Allocation | Notes |
 |---|---|---|---|
-| **ucontext (current)** | Good | 256 KB/frame | Correct, portable |
+| **ucontext + snapshots (current)** | Good | 256 KB/frame + live-region snapshot per perform | Correct, portable; one-shot tail resumption |
 | **Evidence passing (Koka)** | Excellent | Zero | Hidden arg per call; no stack switch |
 | **Multicore (OCaml 5)** | Excellent | Per-perform | Heap-allocate continuation on perform |
 | **setjmp/longjmp** | Good | ~200 B/frame | Cannot resume after longjmp |

@@ -1,0 +1,77 @@
+-- EXPECT: 1075838976\n11\n33\n1065353216\n9151314442816847872\n7\n9151314442816847879\n1099511627776\n0\n7\n9\n11\n1069547520\n1075838976\n1075838976\n33\n1069547521\n
+
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+
+type FloatBits = union
+  f : f32
+  i : u32
+
+type Wide = union
+  w : i64
+  lo : u32
+
+fn bump : *FloatBits -> () ! [Union]
+  | p ->
+      p.i = 1069547520u32
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      -- local cell: field write via the by-value rebuild (r53)
+      let mut fb : FloatBits = FloatBits { f: 2.5f32 }
+      print_i64_nl(fb.i as i64)
+      print_i64_nl(if fb.f == 2.5f32 then 11 else 22)
+      fb.i = 1077936128u32
+      print_i64_nl(if fb.f == 3.0f32 then 33 else 44)
+      fb.f = 1.0f32
+      print_i64_nl(fb.i as i64)
+      -- 64-bit cell merge: a 32-bit write must preserve the high bytes (r53)
+      let mut wd : Wide = Wide { w: 9151314442816847872i64 }
+      print_i64_nl(wd.w)
+      wd.lo = 7u32
+      print_i64_nl(wd.lo as i64)
+      print_i64_nl(wd.w)
+      wd.w = 1099511627776i64
+      print_i64_nl(wd.w)
+      print_i64_nl(wd.lo as i64)
+      -- array elements: write through GEP addressing (r53b)
+      let mut arr : [FloatBits; 2] = [FloatBits { i: 7u32 }, FloatBits { i: 9u32 }]
+      print_i64_nl(arr[0].i as i64)
+      print_i64_nl(arr[1].i as i64)
+      arr[0].i = 1075838976u32
+      print_i64_nl(if arr[0].f == 2.5f32 then 11 else 22)
+      arr[1].f = 1.5f32
+      print_i64_nl(arr[1].i as i64)
+      print_i64_nl(arr[0].i as i64)
+      -- address-taken local + cross-function pointer write + compound assign (r53b)
+      let mut hb : FloatBits = FloatBits { f: 0.5f32 }
+      let p : *FloatBits = &hb
+      p.f = 2.5f32
+      print_i64_nl(hb.i as i64)
+      bump(p)
+      print_i64_nl(if hb.f == 1.5f32 then 33 else 44)
+      hb.i += 1u32
+      print_i64_nl(hb.i as i64)
+      syscall(231, 0)

@@ -1667,3 +1667,432 @@ fn char* node_kind_name(NodeKind k)
         default:                        return "?";
     }
 }
+
+// ── Union variant helpers (tagged-sum support) ─────────────────────────────
+// A union type node resolves (through TypeVar/TypeDecl) to a NODE_DECL_UNION
+// whose EXPR_BLOCK child lists variant NODE_FIELD_DECLs: [name, payloadType].
+// The tagged repr is `{ i32, i64 }` (variant ordinal + 64-bit payload slot),
+// the same shape the `?` desugar and DECL_ENUM printing already assume.
+
+// Return the NODE_DECL_UNION behind a type node, or null.
+fn AstNode* union_decl_of(AstNode* ty)
+{
+    if (ty == null) return null;
+    // Generic instantiation (`Maybe<i64>`): the union decl lives behind the
+    // application's head TypeVar — look through it before the shape tests
+    // (an uninstantiated GENERIC_APP used to fall straight through, so
+    // every variant pattern on a generic union failed "unknown variant").
+    if (ty.kind == NodeKind.NODE_TYPE_GENERIC_APP && ty.child_count >= 1)
+    {
+        AstNode* hd = ty.children[0];
+        if (hd != null && hd.resolved != null) return union_decl_of(hd.resolved);
+        if (ty.resolved != null) return union_decl_of(ty.resolved);
+        return null;
+    }
+    // A DECL_TYPE reached directly (e.g. via the generic head above): the
+    // union is its final child — unwrap without requiring the TypeVar path.
+    if (ty.kind == NodeKind.NODE_DECL_TYPE && ty.child_count >= 1)
+    {
+        AstNode* dbody = ty.children[ty.child_count - 1];
+        if (dbody != null && dbody.kind == NodeKind.NODE_DECL_UNION) return dbody;
+        return null;
+    }
+    AstNode* r = null;
+    if (ty.kind == NodeKind.NODE_TYPEVAR && ty.resolved != null) r = ty.resolved;
+    if (r == null && ty.kind == NodeKind.NODE_DECL_UNION) r = ty;
+    if (r != null)
+    {
+        if (r.kind == NodeKind.NODE_DECL_UNION) return r;
+        if (r.kind == NodeKind.NODE_DECL_TYPE && r.child_count >= 1)
+        {
+            AstNode* body = r.children[r.child_count - 1];
+            if (body != null && body.kind == NodeKind.NODE_DECL_UNION) return body;
+        }
+    }
+    return null;
+}
+
+// Substitute a generic-union payload type through the instantiation site:
+// given `Maybe<i64>` (a NODE_TYPE_GENERIC_APP) and a payload type naming one
+// of the union decl's type parameters, return the corresponding type
+// argument (`i64`).  Matching is by resolved Param-node identity — never by
+// name — so shadowed parameters cannot mis-substitute.  Anything else
+// (non-generic app, composite payload) is returned unchanged; composite
+// payloads remain the repr's loud rejection elsewhere.
+fn AstNode* generic_payload_subst(AstNode* app, AstNode* payload)
+{
+    if (app == null || payload == null) return payload;
+    if (app.kind != NodeKind.NODE_TYPE_GENERIC_APP || app.child_count < 2) return payload;
+    if (payload.kind != NodeKind.NODE_TYPEVAR) return payload;
+    AstNode* hd = app.children[0];
+    AstNode* decl = null;
+    if (hd != null && hd.resolved != null) decl = hd.resolved;
+    if (decl == null) decl = app.resolved;
+    // The generic parameters live as GENERIC_PARAM children of the decl —
+    // `type Pair<A, B> = struct …` (DECL_TYPE) or the direct form
+    // `struct Box<T> …` (DECL_STRUCT).
+    if (decl == null
+        || (decl.kind != NodeKind.NODE_DECL_TYPE
+            && decl.kind != NodeKind.NODE_DECL_STRUCT)) return payload;
+    for (usz i = 0; i < decl.child_count; i++)
+    {
+        AstNode* gp = decl.children[i];
+        if (gp == null || gp.kind != NodeKind.NODE_GENERIC_PARAM) continue;
+        for (usz pi = 0; pi < gp.child_count && pi + 1 < app.child_count; pi++)
+        {
+            if (gp.children[pi] != null && gp.children[pi] == payload.resolved)
+            {
+                return app.children[pi + 1];
+            }
+        }
+    }
+    return payload;
+}
+
+// Return the NODE_DECL_ENUM behind a type node, or null. Mirrors
+// union_decl_of for the enum repr — same tagged { i32, i64 } shape.
+fn AstNode* enum_decl_of(AstNode* ty)
+{
+    if (ty == null) return null;
+    AstNode* r = null;
+    if (ty.kind == NodeKind.NODE_TYPEVAR && ty.resolved != null) r = ty.resolved;
+    if (r == null && ty.kind == NodeKind.NODE_DECL_ENUM) r = ty;
+    if (r != null)
+    {
+        if (r.kind == NodeKind.NODE_DECL_ENUM) return r;
+        if (r.kind == NodeKind.NODE_DECL_TYPE && r.child_count >= 1)
+        {
+            AstNode* body = r.children[r.child_count - 1];
+            if (body != null && body.kind == NodeKind.NODE_DECL_ENUM) return body;
+        }
+    }
+    return null;
+}
+
+// Find an enum's variant ordinal (0-based discriminant, declaration order of
+// the variant nodes) for `name`, or -1. Variant decls whose head ident is
+// pre-resolved to the variant node are matched by IDENT NODE — the
+// declaration-order child — so aliases can't spoof a name.
+fn int enum_variant_lookup(AstNode* edecl, char* name, usz name_len)
+{
+    if (edecl == null || edecl.kind != NodeKind.NODE_DECL_ENUM || name == null) return -1;
+    int ord = 0;
+    for (usz evi = 1; evi < edecl.child_count; evi++)
+    {
+        AstNode* ev = edecl.children[evi];
+        if (ev == null || ev.kind != NodeKind.NODE_ENUM_VARIANT) continue;
+        AstNode* vn = ev.child_count >= 1 ? ev.children[0] : null;
+        if (vn != null
+            && vn.p.ident.name_ptr != null
+            && vn.p.ident.name_len == name_len)
+        {
+            bool eq = true;
+            for (usz ci = 0; ci < name_len; ci++)
+            {
+                if (vn.p.ident.name_ptr[ci] != name[ci]) { eq = false; break; }
+            }
+            if (eq) return ord;
+        }
+        ord++;
+    }
+    return -1;
+}
+
+// Find a union's variant field-decl index + payload type for `name`.
+// Returns the 0-based variant ordinal (the discriminant), or -1.
+// `out_payload` receives the payload type node (NODE_EXPR_UNIT for none).
+fn int union_variant_lookup(AstNode* udecl, char* name, usz name_len, AstNode** out_payload)
+{
+    if (out_payload != null) *out_payload = null;
+    if (udecl == null || udecl.kind != NodeKind.NODE_DECL_UNION || name == null) return -1;
+    AstNode* blk = null;
+    for (usz i = 0; i < udecl.child_count; i++)
+    {
+        AstNode* c = udecl.children[i];
+        if (c != null && c.kind == NodeKind.NODE_EXPR_BLOCK) { blk = c; break; }
+    }
+    if (blk == null) return -1;
+    int ord = 0;
+    for (usz i = 0; i < blk.child_count; i++)
+    {
+        AstNode* fd = blk.children[i];
+        if (fd == null || fd.kind != NodeKind.NODE_FIELD_DECL || fd.child_count < 1) continue;
+        AstNode* fn_node = fd.children[0];
+        if (fn_node != null && fn_node.p.ident.name_len == name_len)
+        {
+            bool eq = true;
+            for (usz k = 0; k < name_len; k++)
+            {
+                if (fn_node.p.ident.name_ptr[k] != name[k]) { eq = false; break; }
+            }
+            if (eq)
+            {
+                if (out_payload != null && fd.child_count >= 2) *out_payload = fd.children[1];
+                return ord;
+            }
+        }
+        ord++;
+    }
+    return -1;
+}
+
+// ── Struct field helpers ───────────────────────────────────────────────────
+// A struct type node resolves (through TypeVar/TypeDecl/generic head) to a
+// NODE_DECL_STRUCT whose EXPR_BLOCK child lists field NODE_FIELD_DECLs:
+// [name, type].  Mirrors the union helpers above; used by the struct-pattern
+// destructuring paths (`let { x, y } = p`, fn-clause patterns, v.md §5).
+
+// Return the NODE_DECL_STRUCT behind a type node, or null.
+fn AstNode* struct_decl_of(AstNode* ty)
+{
+    if (ty == null) return null;
+    // Generic instantiation (`Pair<i64, bool>`): the struct decl lives behind
+    // the application's head TypeVar — same look-through as union_decl_of.
+    if (ty.kind == NodeKind.NODE_TYPE_GENERIC_APP && ty.child_count >= 1)
+    {
+        AstNode* hd = ty.children[0];
+        if (hd != null && hd.resolved != null) return struct_decl_of(hd.resolved);
+        if (ty.resolved != null) return struct_decl_of(ty.resolved);
+        return null;
+    }
+    // A DECL_TYPE reached directly: the struct is its final child.
+    if (ty.kind == NodeKind.NODE_DECL_TYPE && ty.child_count >= 1)
+    {
+        AstNode* dbody = ty.children[ty.child_count - 1];
+        if (dbody != null && dbody.kind == NodeKind.NODE_DECL_STRUCT) return dbody;
+        return null;
+    }
+    AstNode* r = null;
+    if (ty.kind == NodeKind.NODE_TYPEVAR && ty.resolved != null) r = ty.resolved;
+    if (r == null && ty.kind == NodeKind.NODE_DECL_STRUCT) r = ty;
+    if (r != null)
+    {
+        if (r.kind == NodeKind.NODE_DECL_STRUCT) return r;
+        if (r.kind == NodeKind.NODE_DECL_TYPE && r.child_count >= 1)
+        {
+            AstNode* body = r.children[r.child_count - 1];
+            if (body != null && body.kind == NodeKind.NODE_DECL_STRUCT) return body;
+        }
+    }
+    return null;
+}
+
+// Look up a field by name in a struct decl; returns the DECLARATION ordinal
+// (extractvalue index) or -1.  The field's declared type goes to out_ty.
+fn int struct_field_lookup(AstNode* sdecl, char* name, usz name_len, AstNode** out_ty)
+{
+    if (out_ty != null) *out_ty = null;
+    if (sdecl == null || sdecl.kind != NodeKind.NODE_DECL_STRUCT || name == null) return -1;
+    AstNode* blk = null;
+    for (usz i = 0; i < sdecl.child_count; i++)
+    {
+        AstNode* c = sdecl.children[i];
+        if (c != null && c.kind == NodeKind.NODE_EXPR_BLOCK) { blk = c; break; }
+    }
+    if (blk == null) return -1;
+    int ord = 0;
+    for (usz i = 0; i < blk.child_count; i++)
+    {
+        AstNode* fd = blk.children[i];
+        if (fd == null || fd.kind != NodeKind.NODE_FIELD_DECL || fd.child_count < 1) continue;
+        AstNode* fn_node = fd.children[0];
+        if (fn_node != null && fn_node.p.ident.name_len == name_len)
+        {
+            bool eq = true;
+            for (usz k = 0; k < name_len; k++)
+            {
+                if (fn_node.p.ident.name_ptr[k] != name[k]) { eq = false; break; }
+            }
+            if (eq)
+            {
+                if (out_ty != null && fd.child_count >= 2) *out_ty = fd.children[1];
+                return ord;
+            }
+        }
+        ord++;
+    }
+    return -1;
+}
+
+// True when a payload type fits the 64-bit repr slot: iN/uN, bool, ptr,
+// float/double, or unit (no payload). Everything else (tuples, structs,
+// unions, arrays, slices) is not lowered yet.
+fn bool union_payload_is_scalar(AstNode* ty)
+{
+    if (ty == null) return true;
+    if (ty.kind == NodeKind.NODE_EXPR_UNIT) return true;
+    if (ty.kind == NodeKind.NODE_TYPE_PTR) return true;
+    if (ty.kind != NodeKind.NODE_TYPE_PRIMITIVE) return false;
+    char* n = ty.p.ident.name_ptr;
+    usz   l = ty.p.ident.name_len;
+    if (l == 0) return false;
+    if (n[0] == 'i' || n[0] == 'u')
+    {
+        // iN/uN with digits, width must be ≤ 64
+        long w = 0;
+        for (usz k = 1; k < l; k++)
+        {
+            if (n[k] < '0' || n[k] > '9') return false;
+            w = w * 10 + (long)(n[k] - '0');
+        }
+        return w >= 1 && w <= 64;
+    }
+    if (l == 4 && n[0]=='b' && n[1]=='o' && n[2]=='o' && n[3]=='l') return true;
+    if (l == 3 && n[0]=='p' && n[1]=='t' && n[2]=='r')             return true;
+    if (l == 3 && n[0]=='f' && n[1]=='3' && n[2]=='2')             return true;
+    if (l == 3 && n[0]=='f' && n[1]=='6' && n[2]=='4')             return true;
+    return false;
+}
+
+// Representation rule for union declarations (r13) — v.md §9 ordains the
+// untagged C-union ("same bytes, different interpretation", accessed by
+// field name) and the implementation also has the r7 discriminated union
+// ({ i32 tag, i64 payload }, dispatched by `{ variant: binder }` patterns /
+// `Make.v(...)` constructors). Both use the surface keyword `union`; the
+// shapes are distinguished by payload kinds:
+//
+//   * ANY unit-payload variant (`none : ()`)  → tagged discriminated union.
+//     the unit variant only has meaning as a discriminant marker.
+//   * ALL variants carry data payloads        → untagged C-union: every
+//     field overlaps one 64-bit bitbox. `union Res ok : i32 / err : i32`
+//     therefore picks the C-union (it has no meaningful discriminant), and
+//     matching such a value by variant pattern is a hard type error — the
+//     repr holds no tag to test.
+fn bool union_is_c_union(AstNode* udecl)
+{
+    if (udecl == null || udecl.kind != NodeKind.NODE_DECL_UNION) return false;
+    AstNode* blk = null;
+    for (usz i = 0; i < udecl.child_count; i++)
+    {
+        AstNode* c = udecl.children[i];
+        if (c != null && c.kind == NodeKind.NODE_EXPR_BLOCK) { blk = c; break; }
+    }
+    if (blk == null) return false;
+    int nfields = 0;
+    for (usz i = 0; i < blk.child_count; i++)
+    {
+        AstNode* fd = blk.children[i];
+        if (fd == null || fd.kind != NodeKind.NODE_FIELD_DECL) continue;
+        nfields++;
+        AstNode* pt = fd.child_count >= 2 ? fd.children[1] : null;
+        if (pt == null || pt.kind == NodeKind.NODE_EXPR_UNIT) return false;
+        // A generic type-parameter payload: an untagged reinterpretation
+        // cell cannot exist at an unknown size — a union mentioning type
+        // parameters is a tagged SUM type (Either<L, R> etc.), so matching
+        // and construction take the discriminant path.
+        if (pt.kind == NodeKind.NODE_TYPEVAR && pt.resolved != null
+            && (pt.resolved.kind == NodeKind.NODE_PARAM
+                || pt.resolved.kind == NodeKind.NODE_GENERIC_PARAM))
+        {
+            return false;
+        }
+    }
+    return nfields >= 1;
+}
+
+// ── Algebraic-effect operation queries ───────────────────────────────────────
+// Pure AST queries over effect declarations (resolver .resolved links), shared
+// by typecheck, ssi lowering and codegen. Previously lived in ssi_ir.c3 where
+// the typechecker could not reach them — arm binder typing needs exactly the
+// same ground truth (op arity, param types) as the runtime lowering.
+
+// Find the EffectOpDecl for an effect method call/nodepair.
+// child[0] = effect typevar, child[1] = op ident
+fn AstNode* effect_op_decl_of(AstNode* method_call)
+{
+    if (method_call == null || method_call.child_count < 2) return null;
+    AstNode* op_ident = method_call.children[1];
+    if (op_ident == null) return null;
+    // Fast path: resolver already linked the op ident to its EffectOpDecl.
+    if (op_ident.resolved != null && op_ident.resolved.kind == NodeKind.NODE_EFFECT_OP_DECL)
+    {
+        return op_ident.resolved;
+    }
+    // Slow path: search the effect declaration manually (resolver did not link it).
+    AstNode* effect_tyvar = method_call.children[0];
+    AstNode* effect_decl = (effect_tyvar != null) ? effect_tyvar.resolved : null;
+    if (effect_decl == null || effect_decl.kind != NodeKind.NODE_DECL_EFFECT) { return null; }
+    // Effect decl: children[0]=TypeVar(name), children[1]=Block(op decls)
+    AstNode* body = null;
+    for (usz bi = 0; bi < effect_decl.child_count; bi++)
+    {
+        AstNode* bc = effect_decl.children[bi];
+        if (bc != null && bc.kind == NodeKind.NODE_EXPR_BLOCK) { body = bc; break; }
+    }
+    if (body == null) { return null; }
+    char* want_name = op_ident.p.ident.name_ptr;
+    usz   want_len  = op_ident.p.ident.name_len;
+    for (usz oi = 0; oi < body.child_count; oi++)
+    {
+        AstNode* op = body.children[oi];
+        if (op == null || op.kind != NodeKind.NODE_EFFECT_OP_DECL || op.child_count < 1) { continue; }
+        AstNode* op_name = op.children[0];
+        if (op_name == null) { continue; }
+        char* nm = op_name.p.ident.name_ptr;
+        usz   nl = op_name.p.ident.name_len;
+        if (nl == want_len && nm != null)
+        {
+            bool match = true;
+            for (usz k = 0; k < nl; k++) { if (nm[k] != want_name[k]) { match = false; break; } }
+            if (match) { return op; }
+        }
+    }
+    return null;
+}
+
+// The op head of a handler arm (children[0]) has the same
+// [EffectTypeVar, op_ident] shape as an effect method call's first two
+// children, so it resolves through effect_op_decl_of directly.
+fn AstNode* effect_op_decl_of_arm(AstNode* arm)
+{
+    if (arm == null || arm.kind != NodeKind.NODE_HANDLER_ARM || arm.child_count < 1)
+    {
+        return null;
+    }
+    AstNode* head = arm.children[0];
+    if (head == null || head.child_count < 2) { return null; }
+    return effect_op_decl_of(head);
+}
+
+// Declared parameter count of the op a handler arm dispatches, or -1 when the
+// op declaration can't be found (the resolver has already errored; the caller
+// then falls back to a positional guess so lowering can still finish).
+fn long effect_op_arity_of_arm(AstNode* arm)
+{
+    AstNode* op_decl = effect_op_decl_of_arm(arm);
+    if (op_decl == null || op_decl.child_count < 2) return -1;
+    AstNode* tyfn = op_decl.children[1];   // EffectOpDecl[name, TyFn]
+    if (tyfn == null || tyfn.kind != NodeKind.NODE_TYPE_FN || tyfn.child_count < 2) return -1;
+    AstNode* params = tyfn.children[0];    // TyFn[params, ret]
+    if (params == null) return -1;
+    if (params.kind == NodeKind.NODE_EXPR_UNIT || params.kind == NodeKind.NODE_LIT_BOTTOM) return 0;
+    if (params.kind == NodeKind.NODE_TYPE_TUPLE) return (long)params.child_count;
+    return 1;
+}
+
+// Declared parameter type at flat index `idx` for an EffectOpDecl's TyFn, or
+// null when unknown/out of range. Mirrors the flattening view of the runtime
+// arg-slot ABI exactly.
+fn AstNode* effect_op_param_type(AstNode* op_decl, int idx)
+{
+    if (op_decl == null || idx < 0 || op_decl.child_count < 2) return null;
+    AstNode* tyfn = op_decl.children[1];
+    if (tyfn == null || tyfn.kind != NodeKind.NODE_TYPE_FN || tyfn.child_count < 2) return null;
+    AstNode* params = tyfn.children[0];
+    if (params == null) return null;
+    if (params.kind == NodeKind.NODE_EXPR_UNIT || params.kind == NodeKind.NODE_LIT_BOTTOM) return null;
+    if (params.kind == NodeKind.NODE_TYPE_TUPLE)
+    {
+        return idx < (int)params.child_count ? params.children[idx] : null;
+    }
+    return idx == 0 ? params : null;
+}
+
+// `()` in handler-arm binder position: the zero-arg placeholder pattern
+// (`State.get () k -> ...`). It names NO op argument and consumes no slot.
+fn bool is_arm_unit_binder(AstNode* b)
+{
+    if (b == null) return false;
+    if (b.kind == NodeKind.NODE_EXPR_UNIT) return true;
+    return b.kind == NodeKind.NODE_PATTERN_TUPLE && b.child_count == 0;
+}

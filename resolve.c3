@@ -168,8 +168,13 @@ fn bool name_of(Node* n, char** out_ptr, usz* out_len)
 fn void Scope.rebuild_hash(Scope* s) @private
 {
     for (usz i = 0; i < SCOPE_HASH_SIZE; i++) s.hash_idx[i] = 0;
-    for (usz i = 0; i < s.count; i++)
+    // Insert NEWEST-first so a probe chain for a re-bound (shadowed) name
+    // meets the newest binding at its home slot — lookup returns the first
+    // match it finds, and that must be the freshest binding, not the stale
+    // one. (Same-scope rebinding via a second `let` is legal shadowing.)
+    for (usz ii = s.count; ii-- > 0;)
     {
+        usz i = ii;
         Binding* b = &s.bindings[i];
         ulong h = 14695981039346656037u;
         for (usz j = 0; j < b.name_len; j++) { h ^= (ulong)(uint)b.name_ptr[j]; h *= 1099511628211u; }
@@ -216,14 +221,17 @@ fn Node* Resolver.lookup_local(Resolver* self, char* ptr, usz len, int ns)
 }
 
 // Look up a name walking outward through all enclosing scopes.
+// Within one scope, walk NEWEST→oldest: a same-scope redefinition (second
+// `let x` — legal shadowing, like Rust) must win over the stale binding,
+// never silently resurrect it. `bind` appends, so newest is at the tail.
 fn Node* Resolver.lookup(Resolver* self, char* ptr, usz len, int ns)
 {
     Scope* s = self.cur();
     while (s != null)
     {
-        for (usz i = 0; i < s.count; i++)
+        for (usz ii = s.count; ii-- > 0;)
         {
-            Binding* b = &s.bindings[i];
+            Binding* b = &s.bindings[ii];
             if (b.ns == ns && name_eq(b.name_ptr, b.name_len, ptr, len)) return b.decl;
         }
         s = s.parent;
@@ -377,6 +385,27 @@ fn void Resolver.bind_pattern(Resolver* self, Node* pat)
             }
 
         case Nk.NODE_PATTERN_STRUCT:
+            // The name heading the pattern (`Dollars(v)`, `Point{x, y}`) is a
+            // USE of a type, not a binder: resolve it QUIETLY (a miss is left
+            // unresolved, never an error — heads may be generic params or
+            // names bound later), so the type checker and both lowerings can
+            // recognize a newtype destructure (identity unwrap) from
+            // .resolved. It went unresolved before — emit-side pipelines
+            // compensated from the fn signature, but the lowering saw nothing
+            // and fabricated unit/undefined binders for what is really an
+            // identity operation.
+            if (pat.child_count >= 1 && pat.children[0] != null
+                && (pat.children[0].kind == Nk.NODE_TYPEVAR
+                    || pat.children[0].kind == Nk.NODE_IDENT)
+                && pat.children[0].resolved == null)
+            {
+                char* hp; usz hl;
+                if (name_of(pat.children[0], &hp, &hl))
+                {
+                    Node* pd = self.lookup(hp, hl, NS_TYPE);
+                    if (pd != null) pat.children[0].resolved = self.chase_member_use(pd);
+                }
+            }
             for (usz i = 0; i < pat.child_count; i++)
             {
                 self.bind_pattern_field(pat.children[i]);
@@ -474,6 +503,17 @@ fn void Resolver.hoist_decl(Resolver* self, Node* d)
                     self.bind_name_node(ev.children[0], NS_VALUE, ev, true);
                     self.bind_name_node(ev.children[0], NS_TYPE, ev, false);  // also in type NS
                     if (ev.children[0] != null) ev.children[0].resolved = ev;
+                    // The tree is parent-less: link each variant back to the
+                    // owning enum decl so a use (`Green`) or a bare
+                    // variant-name pattern can recover the discriminant by
+                    // declaration order (the { i32, i64 } repr's tag). Uses
+                    // .resolved — putting the back-link in .type_annotation
+                    // creates a cycle monomorphization's clone_node follows
+                    // recursively (variant → enum → children → variant:
+                    // exponential blowup; hung the compiler on a bare enum
+                    // declaration). .resolved is only remapped shallowly by
+                    // fixup_resolved, so no tree walk ever cycles through it.
+                    ev.resolved = d;
                 }
             }
 
@@ -567,6 +607,99 @@ fn void Resolver.resolve_program(Resolver* self, Node* program)
     }
 }
 
+// Find a named member declaration inside a module's body block (resolver-local
+// mirror of typecheck's mod_member_decl): any top-level decl whose first child
+// is an identifier/typevar naming it.
+fn Node* find_mod_member(Node* moddecl, char* ptr, usz len) @private
+{
+    if (moddecl == null || moddecl.kind != Nk.NODE_DECL_MOD) return null;
+    for (usz i = 0; i < moddecl.child_count; i++)
+    {
+        Node* blk = moddecl.children[i];
+        if (blk == null || blk.kind != Nk.NODE_EXPR_BLOCK) continue;
+        for (usz j = 0; j < blk.child_count; j++)
+        {
+            Node* d = blk.children[j];
+            if (d == null || d.child_count < 1) continue;
+            Node* nm = d.children[0];
+            if (nm == null) continue;
+            // let/mut-style decls bind through a pattern: unwrap one level.
+            if (nm.kind == Nk.NODE_PATTERN_IDENT && nm.child_count >= 1)
+            {
+                nm = nm.children[0];
+                if (nm == null) continue;
+            }
+            char* np; usz nl;
+            if (!name_of(nm, &np, &nl)) continue;
+            if (name_eq(np, nl, ptr, len)) return d;
+        }
+    }
+    return null;
+}
+
+// Chase a `use path::member (as alias)` binding to the member's actual
+// declaration inside the target module, so a use of the imported name behaves
+// EXACTLY like a use of the member declared at top level (the type checker
+// and both lowerings key off .resolved being the real declaration: a bare
+// `square(40)` after `use math::square` used to resolve to the import node
+// itself, fell through every consumer's fallback, and codegen emitted a call
+// through inttoptr(0) — an instant SIGTRAP).
+//
+// A single-segment import (`use math`, `use math as m`) names the MODULE and
+// is deliberately NOT chased: those bindings must keep pointing at the import
+// node so field-path machinery (`m::f`) keeps working. Only a 2-segment path
+// names one concrete member (sub-modules are not a feature). Resolution order
+// is irrelevant: the chase runs lazily at the use site, after pass-1 hoisting
+// made every top-level module findable. Import chains (`use other::math`)
+// are followed with a hop cap; on any failure the original binding stands.
+fn Node* Resolver.chase_member_use(Resolver* self, Node* decl)
+{
+    Node* cur = decl;
+    for (int hops = 0; hops < 8; hops++)
+    {
+        if (cur == null) return decl;
+        if (cur.kind != Nk.NODE_DECL_USE && cur.kind != Nk.NODE_DECL_IMPORT) return cur;
+        if (cur.child_count < 1) return decl;
+        Node* path = cur.children[0];
+        if (path == null || path.kind != Nk.NODE_MODULE_PATH || path.child_count != 2)
+        {
+            return decl;   // module import (1 segment) or unsupported depth
+        }
+        Node* head = path.children[0];
+        Node* last = path.children[1];
+        Node* moddecl = null;
+        if (head != null && head.resolved != null && head.resolved.kind == Nk.NODE_DECL_MOD)
+        {
+            moddecl = head.resolved;
+        }
+        else
+        {
+            char* hp; usz hl;
+            if (head == null || !name_of(head, &hp, &hl)) return decl;
+            Node* md = self.lookup(hp, hl, NS_TYPE);
+            if (md != null && md.kind == Nk.NODE_DECL_MOD)
+            {
+                moddecl = md;
+                head.resolved = md;
+            }
+            else if (md != null
+                && (md.kind == Nk.NODE_DECL_USE || md.kind == Nk.NODE_DECL_IMPORT))
+            {
+                cur = md;   // the head itself names another import: follow it
+                continue;
+            }
+            else { return decl; }
+        }
+        if (moddecl == null) return decl;
+        char* mp; usz ml;
+        if (!name_of(last, &mp, &ml)) return decl;
+        Node* member = find_mod_member(moddecl, mp, ml);
+        if (member == null) return decl;
+        return member;
+    }
+    return decl;
+}
+
 // Resolve a use of a name in a given namespace, recording the link.
 fn void Resolver.resolve_use_name(Resolver* self, Node* name, int ns)
 {
@@ -580,21 +713,32 @@ fn void Resolver.resolve_use_name(Resolver* self, Node* name, int ns)
     // If already resolved (e.g. pre-resolved at definition site), skip lookup.
     if (name.resolved != null) return;
 
-    Node* decl = self.lookup(ptr, len, ns);
-    if (decl != null)
-    {
-        name.resolved = decl;
-        return;
-    }
-
-    // Fall back to the other namespace before giving up (handles cases where a
-    // name was bound as a type but used in value position, e.g. constructors).
+    // Walk scopes innermost→outermost; WITHIN each scope the requested
+    // namespace wins over the cross-namespace fallback. A local value binder
+    // must shadow a global TYPE-namespace name of the same spelling —
+    // `let Red = 7` shadows the enum variant `Red`, exactly like a lowercase
+    // local shadows a global fn. The old order (whole NS chain, then the
+    // whole other-NS chain) let global enum variants snipe value uses past a
+    // local binder, because uppercase uses lex as TYPEVARs and NS_TYPE never
+    // contains value binders: the two lowerings then disagreed about what the
+    // name meant and emitted invalid LLVM (i64 local used as { i32, i64 }).
     int other = ns == NS_VALUE ? NS_TYPE : NS_VALUE;
-    Node* alt = self.lookup(ptr, len, other);
-    if (alt != null)
+    for (Scope* s = self.cur(); s != null; s = s.parent)
     {
-        name.resolved = alt;
-        return;
+        for (int pass = 0; pass < 2; pass++)
+        {
+            int want = pass == 0 ? ns : other;
+            // Newest→oldest within the scope: same-scope redefinition wins.
+            for (usz ii = s.count; ii-- > 0;)
+            {
+                Binding* b = &s.bindings[ii];
+                if (b.ns == want && name_eq(b.name_ptr, b.name_len, ptr, len))
+                {
+                    name.resolved = self.chase_member_use(b.decl);
+                    return;
+                }
+            }
+        }
     }
 
     // Suppress "undefined name" for uppercase-initial idents that are likely
@@ -823,6 +967,29 @@ fn void Resolver.resolve_node_body(Resolver* self, Node* n)
                             headname.resolved = moddecl;
                             // also stamp the Use node itself for direct access
                             n.type_annotation = moddecl;
+                            // A 2-segment member import names ONE member of a
+                            // known module: be loud when it isn't there — an
+                            // unresolved member used to bind silently and any
+                            // call became an indirect jump to null. (Heads
+                            // that don't name a local mod — `use std::mem` —
+                            // are not diagnosed here; extern namespaces stay
+                            // permissive.)
+                            if (path != null && path.kind == Nk.NODE_MODULE_PATH
+                                && path.child_count == 2)
+                            {
+                                Node* memseg = path.children[1];
+                                char* mp2; usz ml2;
+                                if (memseg != null && name_of(memseg, &mp2, &ml2))
+                                {
+                                    Node* member = find_mod_member(moddecl, mp2, ml2);
+                                    if (member == null)
+                                    {
+                                        self.error("module has no member with this name",
+                                                   memseg.line, memseg.col);
+                                    }
+                                    else { memseg.resolved = member; }
+                                }
+                            }
                         }
                     }
                 }

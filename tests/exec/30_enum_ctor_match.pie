@@ -1,0 +1,68 @@
+-- EXPECT: 41\n42\n99\n41\n99\n77\n15\n
+
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+
+enum E
+  A(i64)
+  B
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      -- enum construction + payload extraction (r54)
+      let e = E.A(41)
+      match e
+        | A(a) -> print_i64_nl(a)
+        | B -> print_i64_nl(0)
+      -- enum match as a VALUE (arm results join in a phi)
+      let v : i64 = match e
+        | A(a2) -> a2 + 1
+        | B -> 0
+      print_i64_nl(v)
+      -- payload-less variant through the FIELD form (E.B)
+      let b = E.B
+      let w : i64 = match b
+        | A(c) -> c + 1
+        | B -> 99
+      print_i64_nl(w)
+      -- arm ORDER must not matter: discriminant tests, not fall-through
+      match e
+        | B -> print_i64_nl(0)
+        | A(a3) -> print_i64_nl(a3)
+      match b
+        | A(c2) -> print_i64_nl(c2)
+        | B -> print_i64_nl(99)
+      match b
+        | B -> print_i64_nl(77)
+        | A(d) -> print_i64_nl(d)
+      -- tuple match with literal components
+      let pair : (i64, i64) = (7, 8)
+      let z : i64 = match pair
+        | (0, 0) -> 1
+        | (x, 0) -> x * 10
+        | (0, y) -> y * 100
+        | (x, y) -> x + y
+      print_i64_nl(z)
+      syscall(231, 0)

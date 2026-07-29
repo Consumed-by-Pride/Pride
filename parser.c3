@@ -60,6 +60,14 @@ struct Parser
     // stack and crash. We cap nesting and report a diagnostic instead.
     int depth;
     bool depth_exceeded;
+
+    // True while parsing an fn signature's type (through effect row / where
+    // clause). In that context a same-line ASCII `|` is ambiguous between
+    // the type-union infix and a one-line clause head
+    // (`fn f : (i32, i32) -> i32 | (a, b) -> a + b`) — parse_type_ops uses
+    // fn_sig_pipe_is_clause to disambiguate. Outside fn signatures the
+    // historical peek heuristic applies (type aliases etc.).
+    bool in_fn_sig;
 }
 
 // Maximum recursive-descent nesting before we bail out. Each logical nesting
@@ -76,6 +84,7 @@ fn void Parser.init(Parser* self, lexer::Lexer* lx, ast::AstArena* arena)
     self.has_la2 = false;
     self.error_count = 0;
     self.had_error = false;
+    self.in_fn_sig = false;
     self.panicking = false;
     self.depth = 0;
     self.depth_exceeded = false;
@@ -160,6 +169,34 @@ fn Tok Parser.advance(Parser* self)
 fn bool Parser.check(Parser* self, Tt t)
 {
     return self.cur.type == t;
+}
+
+// Consume ONE generic closing `>`.  The lexer greedily reads `>>`, `>=` and
+// `>>=` as single tokens, so a nested generic application closing with
+// adjacent `>`s (`Pair<i64, Box<i64>>`) otherwise fails with "expected
+// '>'".  Splitting the current token in place is the standard fix: the
+// remainder (still pointing into the source buffer) stays as the new
+// current token (r50).
+fn bool Parser.accept_gt_close(Parser* self)
+{
+    if (self.cur.type == Tt.TOKEN_GT) { self.advance(); return true; }
+    switch (self.cur.type)
+    {
+        case Tt.TOKEN_RSHIFT:      // `>>`  leaves `>`
+            self.cur.type  = Tt.TOKEN_GT;
+            self.cur.start += 1; self.cur.len = 1; self.cur.col += 1;
+            return true;
+        case Tt.TOKEN_GTEQ:        // `>=`  leaves `=`
+            self.cur.type  = Tt.TOKEN_EQ;
+            self.cur.start += 1; self.cur.len = 1; self.cur.col += 1;
+            return true;
+        case Tt.TOKEN_RSHIFTEQ:    // `>>=` leaves `>=`
+            self.cur.type  = Tt.TOKEN_GTEQ;
+            self.cur.start += 1; self.cur.len = 2; self.cur.col += 1;
+            return true;
+        default:
+            return false;
+    }
 }
 
 fn bool Parser.accept(Parser* self, Tt t)
@@ -910,6 +947,8 @@ fn Node* Parser.parse_fn(Parser* self)
 
     // Signature ':'  Type (! [Effects])?
     self.expect(Tt.TOKEN_COLON, "expected ':' before function type");
+    bool saved_fn_sig = self.in_fn_sig;
+    self.in_fn_sig = true;
     Node* sig = self.parse_type();
     s.push(sig);
 
@@ -917,6 +956,18 @@ fn Node* Parser.parse_fn(Parser* self)
     if (self.check(Tt.TOKEN_BANG))
     {
         s.push(self.parse_effect_row());
+    }
+
+    // Common user error: `fn f : T -> U = | p -> body`. Pride has NO `=`
+    // between the signature and the clauses (v.md §6.1) — be loud about it
+    // instead of letting the `=` cascade into top-level Invalid-node garbage
+    // that previously compiled through with only soft warnings and emitted
+    // `ret <ty> undef`. Consume the `=` and parse the clauses as usual so
+    // this stays a single, precise diagnostic.
+    if (self.check(Tt.TOKEN_EQ))
+    {
+        self.error("unexpected '=' after function signature (clauses follow the signature directly: `| pattern -> body`)");
+        self.advance();   // consume '='; clauses still parse → single clean diagnostic
     }
 
     // The function body region (where clause, attributes, and clauses) usually
@@ -955,6 +1006,8 @@ fn Node* Parser.parse_fn(Parser* self)
     }
 
     // Clause bodies: `| pat -> body` lines, a single `-> body`, or asm.
+    // The fn-signature type context ends here — clause `|`s are patterns now.
+    self.in_fn_sig = saved_fn_sig;
     self.skip_newlines();
     Node* clauses = self.parse_clauses();
     if (clauses != null) s.push(clauses);
@@ -1030,7 +1083,8 @@ fn Node* Parser.parse_generics(Parser* self)
             s.push(self.parse_generic_param());
         }
     }
-    self.expect(Tt.TOKEN_GT, "expected '>' to close generic parameters");
+    if (!self.accept_gt_close())
+    { self.error("expected '>' to close generic parameters"); }
     return self.finish(Nk.NODE_GENERIC_PARAM, &s, lt.line, lt.col);
 }
 
@@ -1423,11 +1477,29 @@ fn Node* Parser.parse_clause_body(Parser* self)
         Tok t2 = self.cur;
         Scratch sc2;
         sc2.reset();
+        int sc_indents = 0;
         while (self.check(Tt.TOKEN_PIPE))
         {
             Node* cl = self.parse_clause();
             if (cl != null) sc2.push(cl);
             self.skip_newlines();
+            // Continuation arms of the closure may sit behind an INDENT of
+            // their own (aligned under the opening `|`): swallow the indent
+            // so the next `|` is seen — the lexer emits INDENT immediately
+            // followed by PIPE there, so the peek is exact — and balance it
+            // with the matching DEDENT on the way out. A multi-arm closure
+            // used to orphan every arm after the first (spurious E0182s).
+            while (self.check(Tt.TOKEN_INDENT) && self.peek1().type == Tt.TOKEN_PIPE)
+            {
+                self.advance();
+                sc_indents++;
+                self.skip_newlines();
+            }
+        }
+        while (sc_indents > 0 && self.check(Tt.TOKEN_DEDENT))
+        {
+            self.advance();
+            sc_indents--;
         }
         return self.finish(Nk.NODE_EXPR_CLOSURE, &sc2, t2.line, t2.col);
     }
@@ -1618,6 +1690,80 @@ fn Node* Parser.parse_type_inner(Parser* self)
     return left;
 }
 
+// fn-signature context disambiguation for ASCII `|` (used only when
+// Parser.in_fn_sig is set): scans the token stream AFTER a `|` and answers
+// "does this form a clause head `pattern ->` / `pattern , guard ->`?".
+//
+// The old two-token heuristic could only see `| ident ->` — a tuple clause
+// head `| (a, b) -> body` or struct-variant head `| { some: x } -> body`
+// slipped past it, the type parser ate `| (a, b) -> a` as a TYPE UNION
+// (TyUnion with a TyTuple arm!), and the leftover `+ b` became a unary-plus
+// statement — corrupting every declaration after a one-line fn.
+//
+// Method: snapshot the lexer (a flat value struct) and walk tokens with a
+// paren/brace/bracket depth counter. A top-level ARROW or COMMA means
+// clause; a NEWLINE, INDENT, second top-level `|`, EOF, or any
+// non-pattern-continuing token at depth 0 means type union. Parser/lexer
+// state (including the la1/la2 ring) is left untouched.
+fn bool Parser.fn_sig_pipe_is_clause(Parser* self)
+{
+    self.peek1();
+    self.peek2();
+    lexer::Lexer probe = *self.lx;
+    int depth = 0;
+    int step = 0;
+    for (int guard = 0; guard < 512; guard++)
+    {
+        Tok t;
+        if (step == 0)       { t = self.has_la1 ? self.la1 : probe.next(); step = 1; }
+        else if (step == 1)  { t = self.has_la2 ? self.la2 : probe.next(); step = 2; }
+        else                 { t = probe.next(); }
+        switch (t.type)
+        {
+            case Tt.TOKEN_NEWLINE:
+            case Tt.TOKEN_INDENT:
+            case Tt.TOKEN_DEDENT:
+            case Tt.TOKEN_EOF:
+            case Tt.TOKEN_PIPE:
+                return false;
+            case Tt.TOKEN_LPAREN:
+            case Tt.TOKEN_LBRACE:
+            case Tt.TOKEN_LBRACK:
+                depth++;
+            case Tt.TOKEN_RPAREN:
+            case Tt.TOKEN_RBRACE:
+            case Tt.TOKEN_RBRACK:
+                if (depth == 0) { return false; }
+                depth--;
+            case Tt.TOKEN_ARROW:
+            case Tt.TOKEN_ARROW_ASCII:
+            case Tt.TOKEN_COMMA:
+                if (depth == 0) { return true; }
+            default:
+            {
+                if (depth == 0)
+                {
+                    // Only pattern-continuing tokens keep the clause reading alive.
+                    bool cont = (t.type == Tt.TOKEN_IDENT
+                        || t.type == Tt.TOKEN_TYPEVAR
+                        || t.type == Tt.TOKEN_WILDCARD
+                        || t.type == Tt.TOKEN_LIT_INT
+                        || t.type == Tt.TOKEN_LIT_FLOAT
+                        || t.type == Tt.TOKEN_LIT_BOOL
+                        || t.type == Tt.TOKEN_LIT_CHAR
+                        || t.type == Tt.TOKEN_LIT_STRING
+                        || t.type == Tt.TOKEN_COLON
+                        || t.type == Tt.TOKEN_MINUS
+                        || t.type == Tt.TOKEN_DOT
+                        || t.type == Tt.TOKEN_KW_IF);
+                    if (!cont) { return false; }
+                }
+            }
+        }
+    }
+    return false;
+}
+
 // type_ops ::= type_postfix ( (∩|∪) type_postfix )*    (and ¬ as prefix)
 fn Node* Parser.parse_type_ops(Parser* self)
 {
@@ -1650,18 +1796,27 @@ fn Node* Parser.parse_type_ops(Parser* self)
     while (self.check(Tt.TOKEN_PIPE))
     {
         if (self.cur.col <= 4) { break; }   // indented clause pipe
-        // Lookahead: what follows the `|`?
-        Tt p1 = self.peek1().type;
-        Tt p2 = self.peek2().type;
-        // Pattern-like after |: ident/wildcard/tuple start followed by arrow, comma, or guard keyword
-        bool after_is_clause_start =
-            (p1 == Tt.TOKEN_IDENT || p1 == Tt.TOKEN_WILDCARD || p1 == Tt.TOKEN_LPAREN
-             || p1 == Tt.TOKEN_LIT_INT || p1 == Tt.TOKEN_LIT_BOOL || p1 == Tt.TOKEN_LIT_CHAR)
-            && (p2 == Tt.TOKEN_ARROW || p2 == Tt.TOKEN_ARROW_ASCII
-                || p2 == Tt.TOKEN_COMMA || p2 == Tt.TOKEN_KW_IF);
-        if (after_is_clause_start) { break; }
         // Also stop if p1 is a NEWLINE (blank | line = clause)
+        Tt p1 = self.peek1().type;
         if (p1 == Tt.TOKEN_NEWLINE || p1 == Tt.TOKEN_INDENT) { break; }
+        if (self.in_fn_sig)
+        {
+            // fn-signature context: full balanced pattern scan (tuple and
+            // struct clause heads included) — see fn_sig_pipe_is_clause.
+            if (self.fn_sig_pipe_is_clause()) { break; }
+        }
+        else
+        {
+            // Lookahead: what follows the `|`?
+            Tt p2 = self.peek2().type;
+            // Pattern-like after |: ident/wildcard/tuple start followed by arrow, comma, or guard keyword
+            bool after_is_clause_start =
+                (p1 == Tt.TOKEN_IDENT || p1 == Tt.TOKEN_WILDCARD || p1 == Tt.TOKEN_LPAREN
+                 || p1 == Tt.TOKEN_LIT_INT || p1 == Tt.TOKEN_LIT_BOOL || p1 == Tt.TOKEN_LIT_CHAR)
+                && (p2 == Tt.TOKEN_ARROW || p2 == Tt.TOKEN_ARROW_ASCII
+                    || p2 == Tt.TOKEN_COMMA || p2 == Tt.TOKEN_KW_IF);
+            if (after_is_clause_start) { break; }
+        }
         Tok op = self.advance();
         Node* right = self.parse_type_prefix();
         left = ast::node2(self.arena, Nk.NODE_TYPE_UNION, left, right, op.line, op.col);
@@ -1756,7 +1911,8 @@ fn Node* Parser.parse_type_postfix(Parser* self)
                 s.push(self.parse_type());
             }
         }
-        self.expect(Tt.TOKEN_GT, "expected '>' to close generic application");
+        if (!self.accept_gt_close())
+        { self.error("expected '>' to close generic application"); }
         return self.finish(Nk.NODE_TYPE_GENERIC_APP, &s, lt.line, lt.col);
     }
 
@@ -1859,7 +2015,8 @@ fn Node* Parser.parse_tensor_type(Parser* self)
         }
     }
 
-    self.expect(Tt.TOKEN_GT, "expected '>' to close Tensor type");
+    if (!self.accept_gt_close())
+    { self.error("expected '>' to close Tensor type"); }
     return self.finish(Nk.NODE_TYPE_TENSOR, &s, kw.line, kw.col);
 }
 
@@ -2607,30 +2764,50 @@ fn Node* Parser.parse_stmt(Parser* self)
         case Tt.TOKEN_KW_BREAK:
             {
                 self.advance();
-                self.skip_newlines();  // label may be on next line: break\n  'label
-                // Accept LABEL_REF, LIT_CHAR ('x), or check raw source for ' followed by ident
-                // (guards against tokenizer edge cases in indented block context)
-                bool is_label_tok = self.check(Tt.TOKEN_LABEL_REF) || self.check(Tt.TOKEN_LIT_CHAR);
-                // Raw source fallback: if cur points to a ' char followed by [a-zA-Z_]
-                if (!is_label_tok && self.cur.start != null && self.cur.len >= 2)
+                // A label may sit on the next line (break\n  'label), but a
+                // break VALUE must be on the SAME line as `break` — otherwise
+                // the following statement is silently swallowed as break's
+                // result expression (that was the root of the 'unreachable
+                // code after break' lint gap: the dead statement became a
+                // child of the Break node, so it never appeared as a block
+                // statement and no warning could fire).
+                bool at_line_end = self.check(Tt.TOKEN_NEWLINE) || self.check(Tt.TOKEN_DEDENT)
+                                || self.check(Tt.TOKEN_EOF) || self.at_end();
+                if (!at_line_end)
+                {
+                    // Same line: label reference, or break-with-value.
+                    bool is_label_tok = self.check(Tt.TOKEN_LABEL_REF) || self.check(Tt.TOKEN_LIT_CHAR);
+                    if (!is_label_tok && self.cur.start != null && self.cur.len >= 2)
+                    {
+                        char c0 = self.cur.start[0];
+                        char c1 = self.cur.start[1];
+                        if (c0 == '\'' && ((c1 >= 'a' && c1 <= 'z') || (c1 >= 'A' && c1 <= 'Z') || c1 == '_')) { is_label_tok = true; }
+                    }
+                    if (is_label_tok)
+                    {
+                        Tok lbl = self.advance();
+                        Node* lbl_node = self.name_from(lbl, Nk.NODE_IDENT);
+                        return ast::node1(self.arena, Nk.NODE_STMT_BREAK_LABEL, lbl_node, t.line, t.col);
+                    }
+                    Node* bval = self.parse_expr();
+                    if (bval != null)
+                    { return ast::node1(self.arena, Nk.NODE_STMT_BREAK, bval, t.line, t.col); }
+                    return ast::node0(self.arena, Nk.NODE_STMT_BREAK, t.line, t.col);
+                }
+                // End of line: only a label may still follow (next line).
+                self.skip_newlines();
+                bool is_label_nl = self.check(Tt.TOKEN_LABEL_REF) || self.check(Tt.TOKEN_LIT_CHAR);
+                if (!is_label_nl && self.cur.start != null && self.cur.len >= 2)
                 {
                     char c0 = self.cur.start[0];
                     char c1 = self.cur.start[1];
-                    if (c0 == '\'' && ((c1 >= 'a' && c1 <= 'z') || (c1 >= 'A' && c1 <= 'Z') || c1 == '_')) { is_label_tok = true; }
+                    if (c0 == '\'' && ((c1 >= 'a' && c1 <= 'z') || (c1 >= 'A' && c1 <= 'Z') || c1 == '_')) { is_label_nl = true; }
                 }
-                if (is_label_tok)
+                if (is_label_nl)
                 {
                     Tok lbl = self.advance();
                     Node* lbl_node = self.name_from(lbl, Nk.NODE_IDENT);
                     return ast::node1(self.arena, Nk.NODE_STMT_BREAK_LABEL, lbl_node, t.line, t.col);
-                }
-                // break VAL — break with a result value from the loop
-                if (!self.check(Tt.TOKEN_NEWLINE) && !self.check(Tt.TOKEN_DEDENT)
-                    && !self.check(Tt.TOKEN_EOF) && !self.at_end())
-                {
-                    Node* bval = self.parse_expr();
-                    if (bval != null)
-                    { return ast::node1(self.arena, Nk.NODE_STMT_BREAK, bval, t.line, t.col); }
                 }
                 return ast::node0(self.arena, Nk.NODE_STMT_BREAK, t.line, t.col);
             }
@@ -3373,80 +3550,32 @@ fn Node* Parser.parse_primary(Parser* self)
                 // as sub-expressions.  Otherwise it's a plain string literal.
                 char* src    = t.start;
                 usz   src_len = t.len;
-                // Quick check: any '{' in the string body?
+                // Quick check: any NON-EMPTY '{' hole in the string body?
+                // `{name}` is (unimplemented) interpolation; `{}` is a
+                // positional format! template hole (fine inside format!) and
+                // `{{` is an escaped literal brace — neither is an error.
                 bool has_holes = false;
-                for (usz si = 0; si < src_len; si++)
+                for (usz si = 0; si + 1 < src_len; si++)
                 {
-                    if (src[si] == '{' && si + 1 < src_len && src[si+1] != '{')
+                    if (src[si] == '{')
                     {
-                        has_holes = true;
-                        break;
+                        if (src[si+1] == '{') { si++; continue; }   // escaped '{'
+                        if (src[si+1] != '}') { has_holes = true; break; }
                     }
                 }
                 if (!has_holes)
                 {
                     return ast::node_str(self.arena, Nk.NODE_LIT_STRING, t.start, t.len, t.line, t.col);
                 }
-                // Build interpolated string: split on {expr} holes.
-                // We re-parse hole content from the lexer's raw source.
-                // For now: collect segment and hole child nodes.
-                Scratch iparts;
-                iparts.reset();
-                uint seg_count = 0;
-                usz  seg_start  = 0;  // start of current literal segment inside src
-                usz  si         = 0;
-                while (si < src_len)
-                {
-                    if (src[si] == '{' && si + 1 < src_len && src[si+1] != '{')
-                    {
-                        // Emit the literal segment before this hole.
-                        Node* seg = ast::node_str(self.arena, Nk.NODE_LIT_STRING,
-                                                   src + seg_start, si - seg_start,
-                                                   t.line, t.col);
-                        iparts.push(seg);
-                        seg_count++;
-                        // Find closing '}'.
-                        usz hole_start = si + 1;
-                        usz hole_end   = hole_start;
-                        int depth = 1;
-                        while (hole_end < src_len && depth > 0)
-                        {
-                            if (src[hole_end] == '{')      { depth++; }
-                            else if (src[hole_end] == '}') { depth--; }
-                            if (depth > 0) { hole_end++; }
-                        }
-                        // The hole expression is src[hole_start..hole_end].
-                        // We emit an IDENT placeholder node pointing into the source.
-                        // Full re-lexing of holes requires a sub-lexer; for now emit
-                        // a raw-bytes node carrying the expression source text so that
-                        // the semantic analyser can re-parse it with a nested lexer.
-                        Node* hole_expr = ast::node_str(self.arena, Nk.NODE_LIT_RAW_BYTES,
-                                                         src + hole_start, hole_end - hole_start,
-                                                         t.line, t.col);
-                        iparts.push(hole_expr);
-                        si = hole_end + 1;   // skip past '}'
-                        seg_start = si;
-                    }
-                    else if (src[si] == '{' && si + 1 < src_len && src[si+1] == '{'
-                             ||  src[si] == '}' && si + 1 < src_len && src[si+1] == '}')
-                    {
-                        si += 2;   // escaped {{ or }} — skip both, keep in segment
-                    }
-                    else
-                    {
-                        si++;
-                    }
-                }
-                // Trailing segment after the last hole.
-                Node* tail_seg = ast::node_str(self.arena, Nk.NODE_LIT_STRING,
-                                               src + seg_start, src_len - seg_start,
-                                               t.line, t.col);
-                iparts.push(tail_seg);
-                seg_count++;
-                return ast::node_interp_string(self.arena,
-                                               iparts.items(), iparts.count,
-                                               seg_count, false,
-                                               t.line, t.col);
+                // Interpolation holes in a plain string literal have NO working
+                // lowering: holes were collected as raw source bytes for a
+                // nested-lexer re-parse that was never implemented, so the
+                // program compiled cleanly and then printed nothing/garbage —
+                // a silent miscompile. Fail loudly instead and point at the
+                // supported path. Recovery: degrade to the plain literal text
+                // (a single diagnostic, downstream still sees a normal string).
+                self.error("named interpolation holes `{name}` are not supported; use format! with positional holes: format!(\"value: {}\", x)");
+                return ast::node_str(self.arena, Nk.NODE_LIT_STRING, t.start, t.len, t.line, t.col);
             }
         case Tt.TOKEN_LIT_RAW_BYTES:
             self.advance();
@@ -3474,32 +3603,32 @@ fn Node* Parser.parse_primary(Parser* self)
 
         case Tt.TOKEN_IDENT:
             {
-                // Check for compile-time macro calls: include_bytes!(...), env!(...), concat!(...)
-                // Syntax: IDENT LPAREN args RPAREN (the ! is optional/skipped for simplicity)
-                // NOTE: these MUST be exact full-name comparisons (tok_text_eq checks
-                // every byte), not partial byte-position sniffing — a partial check
-                // (e.g. only testing a handful of index positions) can silently
-                // collide with ordinary identifiers of the same length and hijack
-                // real function calls (e.g. a 6-letter name starting 'co' and
-                // ending 't', like a hypothetical user function, could otherwise
-                // be mistaken for "concat").
+                // Compile-time macro calls: include_bytes!(...), env!(...),
+                // concat!(...), format!(...). The BANG IS MANDATORY:
+                // `name!(...)` is a macro invocation, a bare `name(...)` is
+                // ALWAYS an ordinary function call. Treating the bare form as
+                // a macro hijacked any user-declared function with one of these
+                // exact names — silently rewriting its call sites into
+                // format-string construction (a real observed miscompile:
+                // `fn format : i32 -> i32` + `format(41)` produced a
+                // { ptr, i64, i64 } format record instead of a call).
+                // NOTE: these MUST stay exact full-name comparisons
+                // (tok_text_eq checks every byte), never partial byte sniffing.
                 bool ib = tok_text_eq(t, "include_bytes", 13);
                 bool ev = tok_text_eq(t, "env", 3);
                 bool cc = tok_text_eq(t, "concat", 6);
                 bool fm = tok_text_eq(t, "format", 6);
-                if (ib||ev||cc||fm)
+                bool macro_head = (ib||ev||cc||fm)
+                    && self.peek1().type == Tt.TOKEN_BANG
+                    && self.peek2().type == Tt.TOKEN_LPAREN;
+                if (macro_head)
                 {
                     self.advance();  // consume IDENT
-                    // Consume optional ! (macro-style invocation: name!(...))
-                    if (self.check(Tt.TOKEN_BANG)) self.advance();
-                }
-                if ((ib||ev||cc||fm) && self.check(Tt.TOKEN_LPAREN))
-                {
-                    self.advance();  // consume LPAREN
+                    self.advance();  // consume !
+                    self.advance();  // consume (
                     if (fm)
                     {
                         // format!("template", arg0, arg1, ...) — collect all args
-                        // ( already consumed above
                         Scratch fs;
                         fs.reset();
                         while (!self.check(Tt.TOKEN_RPAREN) && !self.check(Tt.TOKEN_EOF))
@@ -4554,6 +4683,25 @@ fn Node* Parser.parse_handle(Parser* self)
     if (self.check(Tt.TOKEN_KW_HANDLE))
     {
         s.push(self.parse_handle());
+
+        // The nested handle consumed its own arm-block DEDENT, but the DEDENT
+        // that closes THIS handler's computation indent is typically still
+        // pending (the lexer emits all pops of the deeper levels first).
+        // Our arms then appear after that DEDENT — possibly behind a fresh
+        // INDENT of their own (when they dedent to a column that is not on
+        // the indent stack). Reconcile both so the arm loop below actually
+        // sees this handler's arms instead of orphaning them.
+        if (indented && self.check(Tt.TOKEN_DEDENT))
+        {
+            self.advance();
+            indented = false;
+        }
+        self.skip_newlines();
+        if (!indented && self.check(Tt.TOKEN_INDENT))
+        {
+            self.advance();
+            indented = true;
+        }
         self.skip_newlines();
     }
 

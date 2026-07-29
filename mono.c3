@@ -54,6 +54,12 @@ const usz MONO_MAX_TYPE_ARGS = 32;
 const usz MONO_DEPTH_CAP     = 64;
 const usz MONO_MAX_WARNINGS  = 256;
 const usz MANGLE_BUF_CAP     = 256;
+// Type-tree traversal cap (naming, equality, cloning of substituted type
+// args). Type trees are finite and acyclic (parser-built, arena-allocated,
+// substitution only ever grafts existing trees), so this is a defensive
+// fuel limit, not a semantic one — 8 was small enough that two real source
+// types differing below depth 8 collided (see type_struct_eq).
+const int  MONO_TYPE_DEPTH_CAP = 256;
 const usz PATCH_MAP_CAP      = 2048;
 
 
@@ -204,7 +210,7 @@ fn bool decl_name_of(Node* decl, char** out_ptr, usz* out_len)
 
 fn usz type_to_str(Node* t, char* buf, usz cap, usz off, int depth)
 {
-    if (t == null || off >= cap || depth > 8) { return off; }
+    if (t == null || off >= cap || depth > MONO_TYPE_DEPTH_CAP) { return off; }
     switch (t.kind)
     {
         case Nk.NODE_TYPE_PRIMITIVE:
@@ -341,7 +347,12 @@ fn bool type_struct_eq(Node* a, Node* b, int depth)
 {
     if (a == b) { return true; }
     if (a == null || b == null) { return false; }
-    if (depth > 8) { return true; }   // matches type_to_str's depth cap
+    // Past the (large, defensive) cap, answer FALSE — the safe direction for
+    // find_instance: two deep types create separate instances, and mangle's
+    // collision-suffix loop keeps their LLVM names unique. Answering true
+    // here was the depth-8 silent-merge bug: genuinely different types were
+    // deduped onto one wrong clone (invalid IR at the call boundary).
+    if (depth > MONO_TYPE_DEPTH_CAP) { return false; }
     if (a.kind != b.kind) { return false; }
 
     switch (a.kind)

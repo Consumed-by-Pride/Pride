@@ -1093,7 +1093,8 @@ fn void print_help()
     printf("  --emit-obj           emit-llvm + assemble + compile to a native object (.o)\n");
     printf("  --emit-bin           emit-obj + link a native executable (via ld.lld)\n");
     printf("  -o <path>            output path for --emit-bin (default: source stem)\n");
-    printf("  --opt=<0|1|2|3>      optimisation level of the LLVM pipeline (default 2)\n");
+    printf("  --opt=<0|1|2|3>      optimisation level of the LLVM pipeline (default 2);\n");
+    printf("  -O, -O0..-O3         shorthand (bare -O = level 2)\n");
     printf("  -g, --debug          emit DWARF debug info\n");
     printf("  --lto                thin link-time optimisation (with --emit-bin)\n");
     printf("  --strip              strip symbols from the linked binary\n");
@@ -1106,6 +1107,8 @@ fn void print_help()
     printf("  --test               discover test_ functions / #[test] functions\n");
     printf("  --json               emit diagnostics as a JSON array\n");
     printf("  --verify             print frontend integrity findings (pre-lowering audit)\n");
+    printf("  --self-test          run the spec-lock doctests (canonical doc snippets\n");
+    printf("                       through the real frontend with asserted outcomes)\n");
     printf("\n");
     printf("inspection dumps:\n");
     printf("  --dump-ast           print the parsed AST\n");
@@ -1218,11 +1221,44 @@ fn int main(int argc, char** argv)
                 }
             }
         }
+        else if (a_len >= 2 && a_raw[0] == '-' && a_raw[1] == 'O')
+        {
+            // -O / -O<0-3>: optimisation level shorthand (same as --opt).
+            // Bare -O means the default level 2.
+            if (a_len == 2) { opt_level = 2; }
+            else if (a_len == 3 && a_raw[2] >= '0' && a_raw[2] <= '3')
+            { opt_level = (int)(a_raw[2] - '0'); }
+            else { printf("error: -O accepts a single digit 0-3\n"); return 2; }
+        }
         else if (arg_is(a_raw, a_len, "--opt") || arg_starts_with(a_raw, a_len, "--opt=", 6))
         {
-            // --opt=N or --opt N
-            if (a_len > 5 && a_raw[5] == '=') { opt_level = (int)(a_raw[6] - '0'); }
-            else if (ai + 1 < (usz)argc) { ai++; opt_level = (int)(argv[ai][0] - '0'); }
+            // --opt=N or --opt N. The space form ONLY consumes the next arg
+            // when it is genuinely a single-digit level: otherwise that arg is
+            // almost certainly the source path, and eating it both corrupts
+            // the level ('f'-'0') and makes the source file "missing"
+            // (previously `pride --opt foo.pie` did exactly that, quietly).
+            if (a_len == 7 && a_raw[5] == '=' && a_raw[6] >= '0' && a_raw[6] <= '3')
+            {
+                opt_level = (int)(a_raw[6] - '0');
+            }
+            else if (arg_starts_with(a_raw, a_len, "--opt=", 6))
+            {
+                // Malformed inline value — fail loudly rather than accept garbage.
+                printf("error: --opt=<N> requires a single digit 0-3\n");
+                return 2;
+            }
+            else if (ai + 1 < (usz)argc
+                     && argv[ai + 1][0] >= '0' && argv[ai + 1][0] <= '3'
+                     && cstr_len2(argv[ai + 1]) == 1)
+            {
+                ai++;
+                opt_level = (int)(argv[ai][0] - '0');
+            }
+            else
+            {
+                printf("error: --opt requires a level 0-3 (e.g. --opt=2 or --opt 2)\n");
+                return 2;
+            }
         }
         else if (arg_starts_with(a_raw, a_len, "--target=", 9))
         {
@@ -1258,6 +1294,14 @@ fn int main(int argc, char** argv)
         else if (arg_is(a_raw, a_len, "--stage"))        { dump_stage = true; }
         else if (arg_is(a_raw, a_len, "--irdl"))         { dump_irdl = true; }
         else if (arg_is(a_raw, a_len, "--verify"))       { verify_frontend = true; }
+        else if (arg_is(a_raw, a_len, "--self-test"))
+        {
+            // The spec-lock doctests (r14) run entirely in-process: no source
+            // file is read, the pipeline runs on the embedded canonical
+            // snippets. Exit code mirrors the failure count, like --test.
+            int dt_fail_count = integrity::run_doctests();
+            return dt_fail_count > 0 ? 1 : 0;
+        }
         else if (arg_is(a_raw, a_len, "--debug"))        { emit_debug = true; }
         else if (arg_is(a_raw, a_len, "--lto"))          { emit_lto = true; }
         else if (arg_is(a_raw, a_len, "--strip"))        { emit_strip = true; }
@@ -1497,8 +1541,22 @@ fn int main(int argc, char** argv)
 
     // 7e. LLVM IR emission (--emit-llvm).  Runs after all pipeline stages so
     // the IR has been through SASI optimisation before codegen sees it.
+    // Never emit when the structural front end (lex/parse/resolve) already
+    // reported hard errors: the tree may contain INVALID sentinels that lower
+    // to `undef`/garbage, and shipping that IR as a .ll/.o/binary is a
+    // silent-miscompilation path (previously `fn f : T -> U = | p -> 0`
+    // mis-parsed this way and produced a runnable but wrong executable).
+    // r52: typecheck HARD errors gate too — an over-sized enum payload
+    // (E0308) or a handler-arm outer assign (E0365) used to EMIT runnable
+    // binaries whose runtime behavior silently differed from the source.
+    bool frontend_hard_error = lx.had_errors() || p.had_error || r.had_error
+                               || tc.error_count > 0;
     bool codegen_ok = true;
-    if (emit_llvm && ir_ok && vr.errors == 0)
+    if (emit_llvm && frontend_hard_error)
+    {
+        printf("llvm emit      : skipped (front-end errors — fix them first)\n");
+    }
+    if (emit_llvm && !frontend_hard_error && ir_ok && vr.errors == 0)
     {
         // Derive output path: replace .pie with .ll, or use llvm_out if given.
         char[1024] ll_path;
@@ -1811,5 +1869,8 @@ fn int main(int argc, char** argv)
     free((void*)r);
     arena.destroy();
     free((void*)src);
-    return (lx.had_errors() || p.had_error || resolve_failed || type_failed || effect_failed || lint_failed || irdl_failed || integrity_failed) ? 2 : 0;
+    // A failed LLVM emission (codegen hard errors, e.g. unsupported argument
+    // coercions that would previously ship a mangled .ll) is a hard failure:
+    // "llvm emit : FAILED" was printed but the process still exited 0.
+    return (lx.had_errors() || p.had_error || resolve_failed || type_failed || effect_failed || lint_failed || irdl_failed || integrity_failed || !codegen_ok) ? 2 : 0;
 }

@@ -1,0 +1,15 @@
+-- EXPECT-CLEAN
+-- Sealed enum match: name + positional arms cover every variant — no false
+-- "non-exhaustive" warning (r54 exhaustiveness across arm shapes) and the
+-- constructor call carries the enum type.
+
+enum E
+  A(i64)
+  B
+
+fn main : () -> () ! [IO]
+  | () ->
+      let e = E.A(41)
+      match e
+        | A(a) -> syscall(231, a)
+        | B -> syscall(231, 1)

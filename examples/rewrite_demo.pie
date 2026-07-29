@@ -1,14 +1,24 @@
-let opt : Rewrite = rewrite
-  | x + 0 ↦ x
-  | 0 + x ↦ x
-  | x * 1 ↦ x
-  | x * 0 ↦ 0
-  | x - x ↦ 0
-  | x * 2 ↦ x << 1
-  | x * 8 ↦ x << 3
+-- First-class term rewriting: a `rewrite` block builds a Rewrite value
+-- from pattern ↦ replacement rules, and `expr |> rules` applies them.
+-- (Rules here are the classic Peephole/strength-reduction identities.)
 
-let a = (n + 0) |> opt
-let b = (n * 8) |> opt
-let c = (m - m) |> opt
-let d = ((n + 0) * 1) |> opt
-let e = (n * 0 + k * 1) |> opt
+fn demo : (i64, i64, i64) -> i64
+  | (n, m, k) ->
+      let opt : Rewrite = rewrite
+        | x + 0 ↦ x
+        | 0 + x ↦ x
+        | x * 1 ↦ x
+        | x * 0 ↦ 0
+        | x - x ↦ 0
+        | x * 2 ↦ x << 1
+        | x * 8 ↦ x << 3
+
+      let a = (n + 0) |> opt
+      let b = (n * 8) |> opt
+      let c = (m - m) |> opt
+      let d = ((n + 0) * 1) |> opt
+      let e = (n * 0 + k * 1) |> opt
+      a + b + c + d + e
+
+fn main : () -> i64
+  | () -> demo(40, 1, 0)

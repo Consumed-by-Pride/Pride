@@ -85,7 +85,16 @@ let arith : Rewrite = rewrite
   | x * 1 ↦ x
   | x * 2 ↦ x << 1
 
--- pattern generation language
+-- pattern generation language (log2 = integer floor-log2 for shift rules)
+fn log2 : i64 -> i64
+  | n ->
+      let mut k : i64 = 0
+      let mut v : i64 = n
+      while v > 1
+        v = v / 2
+        k = k + 1
+      k
+
 pgen mul_to_shift<T : Int> ->
   [x : T, n : T]
   where [x * n]
@@ -102,7 +111,10 @@ dialect MyDialect
   opcode mul_f32
   region entry
 
--- handler
+-- handler (program = the computation whose IO ops are intercepted here)
+fn program : () -> () ! [IO]
+  | () -> ()
+
 fn run : () -> () ! [IO]
   | () ->
       handle program()
