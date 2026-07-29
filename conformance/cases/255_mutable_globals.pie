@@ -1,0 +1,21 @@
+-- EXPECT-CLEAN
+-- Mutable module-globals (r56d): let mut at module scope is real storage,
+-- not a per-fn copy — reads observe stores across functions.
+
+let mut counter : i64 = 0
+let mut ratio : f64 = 1.5
+let mut flag : bool = false
+
+fn bump : () -> i64
+  | () ->
+      counter = counter + 1
+      counter
+
+fn main : () -> () ! [IO]
+  | () ->
+      let _a : i64 = bump()
+      let _b : i64 = bump()
+      flag = !flag
+      if flag
+        ratio = ratio + 0.5
+      syscall(231, 0)

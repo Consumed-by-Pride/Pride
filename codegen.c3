@@ -1340,6 +1340,272 @@ struct CgenModule
     // the function section.
     Node*[TRAMP_CAP] tramp_decls;
     usz              tramp_count;
+
+    // Mutable module-globals (r56d): DECL_MUT nodes whose IR_GLOAD/IR_GSTORE
+    // ops reference `@pride.gmut.<k>`. The global definitions are flushed with
+    // the string globals at the end of the module.
+    Node*[GMUT_CAP] gmut_decls;
+    usz             gmut_count;
+}
+
+const usz GMUT_CAP = 256;
+
+// r56d: register a mutable module-global, returning its stable index.
+fn usz CgenModule.gmut_id(CgenModule* cg, Node* decl)
+{
+    for (usz i = 0; i < cg.gmut_count; i++)
+    { if (cg.gmut_decls[i] == decl) { return i; } }
+    if (cg.gmut_count < GMUT_CAP)
+    {
+        cg.gmut_decls[cg.gmut_count] = decl;
+        return cg.gmut_count++;
+    }
+    return 0;
+}
+
+// r56d: the LLVM type of a mutable global, written into buf.  Resolution
+// order: the use-site annotation (mono clones keep these on idents), the
+// binder pattern's stamp, a direct type child of the decl, the literal
+// init's bit width, finally i64.
+fn char* CgenModule.gmut_type(CgenModule* cg, Node* decl, Node* use_node,
+                              char* buf, usz cap)
+{
+    buf[0] = 0;
+    Node* ua = (use_node != null) ? use_node.type_annotation : null;
+    if (ua != null && ua.kind == Nk.NODE_TYPE_PTR && ua.child_count >= 1)
+    { ua = ua.children[0]; }
+    if (ua != null && (ua.kind == Nk.NODE_TYPE_PRIMITIVE || ua.kind == Nk.NODE_TYPEVAR))
+    {
+        char* s = type_to_llvm_buf(ua, buf, cap, 0);
+        if (s != null && buf[0] != 0) { return s; }
+    }
+    if (decl != null)
+    {
+        if (decl.child_count >= 1 && decl.children[0] != null
+            && decl.children[0].type_annotation != null)
+        {
+            Node* pa = decl.children[0].type_annotation;
+            if (pa.kind == Nk.NODE_TYPE_PTR && pa.child_count >= 1)
+            { pa = pa.children[0]; }
+            char* s = type_to_llvm_buf(pa, buf, cap, 0);
+            if (s != null && buf[0] != 0) { return s; }
+        }
+        for (usz i = 0; i < decl.child_count; i++)
+        {
+            Node* c = decl.children[i];
+            if (c == null) continue;
+            if (c.kind == Nk.NODE_TYPE_PRIMITIVE || c.kind == Nk.NODE_TYPE_PTR
+                || c.kind == Nk.NODE_TYPE_ARRAY || c.kind == Nk.NODE_TYPE_TUPLE
+                || c.kind == Nk.NODE_TYPE_SLICE || c.kind == Nk.NODE_TYPE_FN
+                || c.kind == Nk.NODE_TYPEVAR)
+            { return type_to_llvm_buf(c, buf, cap, 0); }
+            if (c.kind == Nk.NODE_LIT_INT)
+            {
+                char b2 = c.p.lit_int.bits;
+                if (b2 == 8 || b2 == 16 || b2 == 32)
+                { snprintf(buf, cap, "i%d", (int)b2); return buf; }
+            }
+            if (c.kind == Nk.NODE_LIT_FLOAT)
+            {
+                char b3 = c.p.lit_float.bits;
+                if (b3 == 32) { snprintf(buf, cap, "float"); return buf; }
+                snprintf(buf, cap, "double"); return buf;
+            }
+        }
+    }
+    if (buf[0] == 0) { snprintf(buf, cap, "i64"); }
+    return buf;
+}
+
+// r56d: coerce an SSA value to the mutable global's storage type.  Emits any
+// needed conversion instruction(s) and returns true with the final SSA name
+// in nbuf; returns false when no conversion is needed (caller emit_vrefs).
+fn bool CgenModule.gmut_coerce(CgenModule* cg, TypeTable* tm, ssi_ir::IrVal* val,
+                               char* dst_ty, long vid, char* nbuf, usz ncap)
+{
+    nbuf[0] = 0;
+    char* vty = (tm != null && val != null) ? tm.get(val.id) : null;
+    if (vty == null || vty[0] == 0) vty = (char*)"i64";
+    bool same = true;
+    { char* a = vty; char* b = dst_ty; while (*a != 0 && *a == *b) { a++; b++; }
+      if (*a != 0 || *b != 0) same = false; }
+    if (same) { return false; }
+    int step = 0;
+    char[64] cur;
+    snprintf(&cur[0], 64, "%s", vty);
+    char[64] curname;
+    snprintf(&curname[0], 64, "%%v%ld", (long)(val != null ? val.id : 0));
+    // ptr <-> int
+    if (cur[0] == 'p' && dst_ty[0] != 'p')
+    {
+        cg.out.writes("  %gc."); cg.out.writei(vid); cg.out.writes(".");
+        cg.out.writei(step); cg.out.writes(" = ptrtoint ptr ");
+        { if (step == 0) { cg.emit_vref(val); } else { cg.out.writes(&curname[0]); } } cg.out.writes(" to i64\n");
+        snprintf(&cur[0], 64, "i64");
+        snprintf(&curname[0], 64, "%%gc.%ld.%d", vid, step);
+        step++;
+    }
+    else if (cur[0] != 'p' && cur[0] != 'd' && cur[0] != 'f' && dst_ty[0] == 'p')
+    {
+        if (!(cur[0] == 'i' && cur[1] == '6' && cur[2] == '4'))
+        {
+            cg.out.writes("  %gc."); cg.out.writei(vid); cg.out.writes(".");
+            cg.out.writei(step); cg.out.writes(" = zext ");
+            cg.out.writes(&cur[0]); cg.out.writes(" ");
+            { if (step == 0) { cg.emit_vref(val); } else { cg.out.writes(&curname[0]); } } cg.out.writes(" to i64\n");
+            snprintf(&curname[0], 64, "%%gc.%ld.%d", vid, step);
+            step++;
+        }
+        cg.out.writes("  %gc."); cg.out.writei(vid); cg.out.writes(".");
+        cg.out.writei(step); cg.out.writes(" = inttoptr i64 ");
+        { if (step == 0) { cg.emit_vref(val); } else { cg.out.writes(&curname[0]); } } cg.out.writes(" to ptr\n");
+        snprintf(&cur[0], 64, "ptr");
+        snprintf(&curname[0], 64, "%%gc.%ld.%d", vid, step);
+        step++;
+    }
+    // int width
+    if (cur[0] == 'i' && dst_ty[0] == 'i')
+    {
+        long cn = 0; long dn = 0;
+        { char* p = &cur[0] + 1; while (*p >= '0' && *p <= '9') { cn = cn * 10 + (long)(*p - '0'); p++; } }
+        { char* p = dst_ty + 1;   while (*p >= '0' && *p <= '9') { dn = dn * 10 + (long)(*p - '0'); p++; } }
+        if (cn > 0 && dn > 0 && cn != dn)
+        {
+            cg.out.writes("  %gc."); cg.out.writei(vid); cg.out.writes(".");
+            cg.out.writei(step);
+            cg.out.writes(cn > dn ? " = trunc " : " = zext ");
+            cg.out.writes(&cur[0]); cg.out.writes(" ");
+            { if (step == 0) { cg.emit_vref(val); } else { cg.out.writes(&curname[0]); } } cg.out.writes(" to ");
+            cg.out.writes(dst_ty); cg.out.writes("\n");
+            snprintf(&cur[0], 64, "%s", dst_ty);
+            snprintf(&curname[0], 64, "%%gc.%ld.%d", vid, step);
+            step++;
+        }
+    }
+    // float width / int<->float
+    if (cur[0] == 'f' && dst_ty[0] == 'd')
+    {
+        cg.out.writes("  %gc."); cg.out.writei(vid); cg.out.writes(".");
+        cg.out.writei(step); cg.out.writes(" = fpext float ");
+        { if (step == 0) { cg.emit_vref(val); } else { cg.out.writes(&curname[0]); } } cg.out.writes(" to double\n");
+        snprintf(&cur[0], 64, "double");
+        snprintf(&curname[0], 64, "%%gc.%ld.%d", vid, step);
+        step++;
+    }
+    else if (cur[0] == 'd' && dst_ty[0] == 'f')
+    {
+        cg.out.writes("  %gc."); cg.out.writei(vid); cg.out.writes(".");
+        cg.out.writei(step); cg.out.writes(" = fptrunc double ");
+        { if (step == 0) { cg.emit_vref(val); } else { cg.out.writes(&curname[0]); } } cg.out.writes(" to float\n");
+        snprintf(&cur[0], 64, "float");
+        snprintf(&curname[0], 64, "%%gc.%ld.%d", vid, step);
+        step++;
+    }
+    else if (cur[0] == 'i' && (dst_ty[0] == 'd' || dst_ty[0] == 'f'))
+    {
+        cg.out.writes("  %gc."); cg.out.writei(vid); cg.out.writes(".");
+        cg.out.writei(step); cg.out.writes(" = sitofp ");
+        cg.out.writes(&cur[0]); cg.out.writes(" ");
+        { if (step == 0) { cg.emit_vref(val); } else { cg.out.writes(&curname[0]); } } cg.out.writes(" to ");
+        cg.out.writes(dst_ty); cg.out.writes("\n");
+        snprintf(&cur[0], 64, "%s", dst_ty);
+        snprintf(&curname[0], 64, "%%gc.%ld.%d", vid, step);
+        step++;
+    }
+    else if ((cur[0] == 'd' || cur[0] == 'f') && dst_ty[0] == 'i')
+    {
+        cg.out.writes("  %gc."); cg.out.writei(vid); cg.out.writes(".");
+        cg.out.writei(step); cg.out.writes(" = fptosi ");
+        cg.out.writes(&cur[0]); cg.out.writes(" ");
+        { if (step == 0) { cg.emit_vref(val); } else { cg.out.writes(&curname[0]); } } cg.out.writes(" to ");
+        cg.out.writes(dst_ty); cg.out.writes("\n");
+        snprintf(&cur[0], 64, "%s", dst_ty);
+        snprintf(&curname[0], 64, "%%gc.%ld.%d", vid, step);
+        step++;
+    }
+    snprintf(nbuf, ncap, "%s", &curname[0]);
+    return step > 0;
+}
+
+// r56d: the constant initializer text of a mutable global (literal child).
+fn void CgenModule.gmut_init_text(CgenModule* cg, Node* decl, char* buf, usz cap)
+{
+    buf[0] = 0;
+    Node* init = null;
+    if (decl != null)
+    {
+        for (usz i = 0; i < decl.child_count; i++)
+        {
+            Node* c = decl.children[i];
+            if (c == null) continue;
+            if (c.kind == Nk.NODE_LIT_INT || c.kind == Nk.NODE_LIT_BOOL
+                || c.kind == Nk.NODE_LIT_FLOAT || c.kind == Nk.NODE_LIT_CHAR
+                || c.kind == Nk.NODE_LIT_NULL)
+            { init = c; }
+        }
+    }
+    if (init != null)
+    {
+        if (init.kind == Nk.NODE_LIT_INT)
+        { snprintf(buf, cap, "%lld", (long)init.p.lit_int.int_val); return; }
+        if (init.kind == Nk.NODE_LIT_FLOAT)
+        {
+            // Exact bit-pattern hex — LLVM takes 0xHHHH for double/float.
+            double dv = init.p.lit_float.f64_val;
+            ulong bits = *(ulong*)(&dv);
+            snprintf(buf, cap, "0x%llx", bits);
+            return;
+        }
+        if (init.kind == Nk.NODE_LIT_BOOL)
+        { snprintf(buf, cap, "%d", init.p.lit_bool.bool_val ? 1 : 0); return; }
+        if (init.kind == Nk.NODE_LIT_CHAR)
+        { snprintf(buf, cap, "%u", (uint)init.p.lit_char.char_val); return; }
+    }
+    snprintf(buf, cap, "0");
+}
+
+// r56d: flush @pride.gmut.<k> definitions (called with string globals, BEFORE
+// the function bodies — LLVM globals must be defined before their uses, so the
+// IR is pre-scanned here rather than lazily registered at instruction time).
+fn void CgenModule.emit_gmut_globals(CgenModule* cg)
+{
+    ssi_ir::SsiModule* m = cg.ir;
+    if (m != null)
+    {
+        for (usz i = 0; i < m.val_count; i++)
+        {
+            ssi_ir::IrVal* v = &m.vals[i];
+            if (v.op == ssi_ir::IrOp.IR_GLOAD || v.op == ssi_ir::IrOp.IR_GSTORE)
+            { cg.gmut_id(v.src); }
+        }
+    }
+    for (usz i = 0; i < cg.gmut_count; i++)
+    {
+        Node* decl = cg.gmut_decls[i];
+        // Find a use-site binder (GLOAD/GSTORE) for the tightest annotation.
+        Node* useb = null;
+        if (m != null)
+        {
+            for (usz vi = 0; vi < m.val_count; vi++)
+            {
+                ssi_ir::IrVal* v2 = &m.vals[vi];
+                if ((v2.op == ssi_ir::IrOp.IR_GLOAD || v2.op == ssi_ir::IrOp.IR_GSTORE)
+                    && v2.src == decl && v2.binder != null)
+                { useb = v2.binder; break; }
+            }
+        }
+        char[TYMAP_ENTRY] tyb;
+        char* ty = cg.gmut_type(decl, useb, &tyb[0], TYMAP_ENTRY);
+        char[64] initb;
+        cg.gmut_init_text(decl, &initb[0], 64);
+        cg.out.writes("@pride.gmut.");
+        cg.out.writeu(i);
+        cg.out.writes(" = internal global ");
+        cg.out.writes(ty);
+        cg.out.writes(" ");
+        cg.out.writes(&initb[0]);
+        cg.out.writes("\n");
+    }
 }
 
 const usz TRAMP_CAP = 512;
@@ -6810,6 +7076,49 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 cg.out.writes(" = add i64 0, 0\n");
             }
 
+        case ssi_ir::IrOp.IR_GLOAD:
+            {
+                // r56d: load a mutable module-global from its real storage.
+                Node* gdecl = v.src;
+                usz gk = cg.gmut_id(gdecl);
+                char[TYMAP_ENTRY] gty;
+                char* gty2 = cg.gmut_type(gdecl, v.binder, &gty[0], TYMAP_ENTRY);
+                cg.out.writes("  %v"); cg.out.writei(v.id);
+                cg.out.writes(" = load "); cg.out.writes(gty2);
+                cg.out.writes(", ptr @pride.gmut."); cg.out.writeu(gk);
+                cg.out.writes("\n");
+                if (tm != null) { tm.set(v.id, gty2); }
+                return;
+            }
+
+        case ssi_ir::IrOp.IR_GSTORE:
+            {
+                // r56d: store a mutable module-global into its real storage.
+                Node* gdecl = v.src;
+                usz gk = cg.gmut_id(gdecl);
+                char[TYMAP_ENTRY] gty3;
+                char* gty4 = cg.gmut_type(gdecl, v.binder, &gty3[0], TYMAP_ENTRY);
+                ssi_ir::IrVal* gval = v.arg_count >= 1 ? v.args[0] : null;
+                char[64] gnm; gnm[0] = 0;
+                bool gconv = false;
+                if (gval != null)
+                {
+                    gconv = cg.gmut_coerce(tm, gval, gty4, (long)v.id, &gnm[0], 64);
+                    cg.out.writes("  store "); cg.out.writes(gty4);
+                    cg.out.writes(" ");
+                    if (gconv) { cg.out.writes(&gnm[0]); }
+                    else { cg.emit_vref(gval); }
+                }
+                else
+                {
+                    cg.out.writes("  store "); cg.out.writes(gty4);
+                    cg.out.writes(" zeroinitializer");
+                }
+                cg.out.writes(", ptr @pride.gmut."); cg.out.writeu(gk);
+                cg.out.writes("\n");
+                return;
+            }
+
         case ssi_ir::IrOp.IR_ATOMIC_RMW:
             {
                 // atomicrmw <op> ptr %ptr, T %val seq_cst
@@ -9071,6 +9380,7 @@ fn void CgenModule.emit_fn_trampolines(CgenModule* cg)
 fn bool CgenModule.emit(CgenModule* cg, char* source_filename)
 {
     ssi_ir::SsiModule* m = cg.ir;
+    cg.gmut_count = 0;   // r56d: fresh registry per module
 
     cg.out.writes("; ModuleID = '");
     if (source_filename != null) { cg.out.writes(source_filename); }
@@ -9100,6 +9410,7 @@ fn bool CgenModule.emit(CgenModule* cg, char* source_filename)
 
     cg.out.writes("; ── String constants ────────────────────────────────────────\n");
     cg.emit_string_globals();
+    cg.emit_gmut_globals();   // r56d mutable module-globals
     cg.out.writes("\n");
 
     if (!cg.freestanding)

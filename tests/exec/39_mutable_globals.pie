@@ -1,0 +1,75 @@
+-- EXPECT: 1\n2\n2\n7\n107\n0\n1\n300\n325\n99\n100\n107\n
+
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+fn print_f64_i64 : f64 -> () ! [IO, Alloc]
+  | x -> print_i64_nl((x * 100.0) as i64)
+let mut counter : i64 = 0
+let mut ratio : f64 = 1.5
+let mut flag : bool = false
+fn bump : () -> i64
+  | () ->
+      counter = counter + 1
+      counter
+fn readg : () -> i64
+  | () -> counter
+fn flip : () -> ()
+  | () -> flag = !flag
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      print_i64_nl(bump())
+      print_i64_nl(bump())
+      print_i64_nl(readg())
+      counter = 10
+      while counter > 7
+        counter -= 1
+      print_i64_nl(counter)
+      if counter == 7
+        counter += 100
+      else
+        counter = 0
+      print_i64_nl(counter)
+      flip()
+      flip()
+      if flag
+        print_i64_nl(1)
+      else
+        print_i64_nl(0)
+      flip()
+      if flag
+        print_i64_nl(1)
+      else
+        print_i64_nl(0)
+      ratio = ratio * 2.0
+      print_f64_i64(ratio)
+      ratio = ratio + 0.25
+      print_f64_i64(ratio)
+      let counter2 : i64 = 99
+      print_i64_nl(counter2)
+      let mut counter3 : i64 = 99
+      counter3 = 100
+      print_i64_nl(counter3)
+      print_i64_nl(readg())
+      syscall(231, 0)

@@ -110,6 +110,8 @@ enum IrOp : int
     IR_ATOMIC_RMW,   // atomicrmw op ptr val ordering  → args[0]=ptr args[1]=val  .ival=op+order
     IR_CMPXCHG,      // cmpxchg ptr expected desired → args[0]=ptr args[1]=exp args[2]=new
     IR_FENCE,        // fence ordering → .ival = memory order (SeqCst=5, AcqRel=4, Acquire=2, Release=3)
+    IR_GLOAD,        // r56d: load a mutable module-global (.src = DECL_MUT)
+    IR_GSTORE,       // r56d: store a mutable module-global (.src = DECL_MUT, args[0]=value)
     IR_UNKNOWN       // opaque expression (kept so lowering is always total)
 }
 
@@ -305,6 +307,8 @@ struct TopLet
 {
     Node* binder;   // PATTERN_IDENT of the binding
     Node* init;     // literal initializer expression
+    Node* decl;     // r56d: the DECL_LET / DECL_MUT node (global key for muts)
+    bool  is_mut;   // r56d: mutable module-global (real storage, not const)
 }
 
 const usz TOP_LET_CAP = 512;
@@ -893,7 +897,13 @@ fn void SsiModule.build(SsiModule* m, Node* program)
 // PATTERN_IDENT and whose initializer is a compile-time literal).
 fn void SsiModule.seed_one_top_let(SsiModule* m, Node* d) @private
 {
-    if (d == null || d.kind != Nk.NODE_DECL_LET) return;
+    // r56d: DECL_MUT seeds too — a module-scope mutable with a literal scalar
+    // initializer becomes a real LLVM global (IR_GLOAD / IR_GSTORE).  Arrays
+    // and strings are NOT seeded as mutables: they need storage semantics
+    // the const-inliner can't fake (reads re-materialize the initialiser).
+    if (d == null) return;
+    bool is_mut = (d.kind == Nk.NODE_DECL_MUT);
+    if (d.kind != Nk.NODE_DECL_LET && !is_mut) return;
     if (m.top_let_count >= TOP_LET_CAP) return;
     Node* pat = d.child_count >= 1 ? d.children[0] : null;
     if (pat == null || pat.kind != Nk.NODE_PATTERN_IDENT) return;
@@ -908,12 +918,50 @@ fn void SsiModule.seed_one_top_let(SsiModule* m, Node* d) @private
     if (init == null) return;
     bool is_lit = init.kind == Nk.NODE_LIT_INT || init.kind == Nk.NODE_LIT_BOOL
         || init.kind == Nk.NODE_LIT_FLOAT || init.kind == Nk.NODE_LIT_CHAR
-        || init.kind == Nk.NODE_LIT_NULL || init.kind == Nk.NODE_LIT_STRING;
+        || init.kind == Nk.NODE_LIT_NULL
+        || (!is_mut && init.kind == Nk.NODE_LIT_STRING);
+    // r56d: an array literal of compile-time literals is also a constant —
+    // re-materializing it at each use site is sound for an immutable module
+    // binding (value semantics), exactly like the scalar constants above.
+    // Without this, `let table : [i64; 3] = [..]` at module scope lowered to
+    // NOTHING and every read hit the IR_UNKNOWN placeholder (add [3 x i64]
+    // 0, 0 — invalid IR).  Mutable array globals are not seedable here.
+    if (!is_lit && init.kind == Nk.NODE_EXPR_ARRAY_LIT && !is_mut)
+    {
+        bool all_lit = init.child_count > 0;
+        for (usz ali = 0; ali < init.child_count; ali++)
+        {
+            Node* ac = init.children[ali];
+            if (ac == null) continue;
+            if (ac.kind != Nk.NODE_LIT_INT && ac.kind != Nk.NODE_LIT_BOOL
+                && ac.kind != Nk.NODE_LIT_FLOAT && ac.kind != Nk.NODE_LIT_CHAR)
+            { all_lit = false; break; }
+        }
+        is_lit = all_lit;
+    }
     if (!is_lit) return;
     TopLet* tl = &m.top_lets[m.top_let_count];
     tl.binder = pat;
     tl.init = init;
+    tl.decl = d;
+    tl.is_mut = is_mut;
     m.top_let_count++;
+}
+
+// r56d: find the seeded module-scope binding for a resolved name (either the
+// PATTERN_IDENT itself, or its DECL_LET/DECL_MUT wrapper).
+fn TopLet* SsiModule.top_let_of(SsiModule* m, Node* resolved)
+{
+    if (resolved == null) return null;
+    Node* want = resolved;
+    if (want.kind == Nk.NODE_DECL_LET || want.kind == Nk.NODE_DECL_MUT)
+    { want = (want.child_count >= 1) ? want.children[0] : null; }
+    if (want == null) return null;
+    for (usz tli = 0; tli < m.top_let_count; tli++)
+    {
+        if (m.top_lets[tli].binder == want) { return &m.top_lets[tli]; }
+    }
+    return null;
 }
 
 fn void SsiModule.seed_top_lets(SsiModule* m, Node* program)
@@ -923,7 +971,8 @@ fn void SsiModule.seed_top_lets(SsiModule* m, Node* program)
     {
         Node* d = program.children[i];
         if (d == null) continue;
-        if (d.kind == Nk.NODE_DECL_LET) { m.seed_one_top_let(d); continue; }
+        if (d.kind == Nk.NODE_DECL_LET || d.kind == Nk.NODE_DECL_MUT)
+        { m.seed_one_top_let(d); continue; }
         // One level of module nesting: literal lets inside a `mod` block seed
         // the same way — a use/import of the member (chased to the DECL_LET)
         // reads back through the same binder-keyed lookup.
@@ -3082,7 +3131,8 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                     for (usz tli = 0; tli < m.top_let_count && want != null; tli++)
                     {
                         TopLet* tl = &m.top_lets[tli];
-                        if (tl.binder == want) { let_init = tl.init; lit_let = true; break; }
+                        if (tl.binder == want && !tl.is_mut)
+                        { let_init = tl.init; lit_let = true; break; }
                     }
                     if (lit_let && let_init != null)
                     {
@@ -3093,8 +3143,20 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                             return lv;
                         }
                     }
-                    // Fall through: a module-scope `let mutable` or
-                    // non-literal init has no constant answer here.
+                    // Fall through: a non-literal init has no constant answer
+                    // here.
+                }
+                // r56d: mutable module-global — read through real storage.
+                // No env_push: every read re-loads, so stores made anywhere
+                // (this fn or another) are always observed.
+                {
+                    TopLet* gm = m.top_let_of(n.resolved);
+                    if (gm != null && gm.is_mut)
+                    {
+                        IrVal* gl = m.new_val(IrOp.IR_GLOAD, gm.decl);
+                        if (gl != null) { gl.binder = n; m.emit(gl); }
+                        return gl;
+                    }
                 }
 
                 // DECL_CONST / DECL_STATIC with an inline-evaluable
@@ -4017,13 +4079,24 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                 for (usz tli = 0; tli < m.top_let_count && twant != null; tli++)
                 {
                     TopLet* tl = &m.top_lets[tli];
-                    if (tl.binder != twant || tl.init == null) continue;
+                    if (tl.binder != twant || tl.init == null || tl.is_mut) continue;
                     IrVal* lv = m.lower_expr(tl.init);
                     if (lv != null)
                     {
                         m.env_push(n.resolved, lv);
                         return lv;
                     }
+                }
+            }
+            // r56d: mutable module-global read through real storage.
+            if (n.resolved != null && m.env_lookup(n.resolved) == null)
+            {
+                TopLet* gmv = m.top_let_of(n.resolved);
+                if (gmv != null && gmv.is_mut)
+                {
+                    IrVal* gl2 = m.new_val(IrOp.IR_GLOAD, gmv.decl);
+                    if (gl2 != null) { gl2.binder = n; m.emit(gl2); }
+                    return gl2;
                 }
             }
             if (n.kind == Nk.NODE_TYPEVAR && n.resolved != null
@@ -4326,6 +4399,22 @@ fn IrVal* SsiModule.lower_assign(SsiModule* m, Node* n)
 
     if (lhs != null && lhs.kind == Nk.NODE_IDENT && lhs.resolved != null)
     {
+        // r56d: mutable module-global — store through real storage.  Only
+        // when no LOCAL binding shadows it in this fn: a local `let` /
+        // earlier in-fn rebind (env entry) means the name is lexically local.
+        TopLet* gtl = m.top_let_of(lhs.resolved);
+        if (gtl != null && gtl.is_mut && m.env_lookup(lhs.resolved) == null)
+        {
+            if (rv == null) { rv = m.new_val(IrOp.IR_UNKNOWN, n); if (rv != null) m.emit(rv); }
+            IrVal* gst = m.new_val(IrOp.IR_GSTORE, gtl.decl);
+            if (gst != null)
+            {
+                gst.binder = lhs;
+                gst.add_arg(rv, -1);
+                m.emit(gst);
+            }
+            return rv;
+        }
         // Address-taken binding: write through to the persistent home so every
         // `&x` observer (and every later load) sees the store. The env keeps
         // the home — no fresh SSA version is created.
