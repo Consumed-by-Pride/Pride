@@ -1678,6 +1678,25 @@ fn char* node_kind_name(NodeKind k)
 fn AstNode* union_decl_of(AstNode* ty)
 {
     if (ty == null) return null;
+    // Generic instantiation (`Maybe<i64>`): the union decl lives behind the
+    // application's head TypeVar — look through it before the shape tests
+    // (an uninstantiated GENERIC_APP used to fall straight through, so
+    // every variant pattern on a generic union failed "unknown variant").
+    if (ty.kind == NodeKind.NODE_TYPE_GENERIC_APP && ty.child_count >= 1)
+    {
+        AstNode* hd = ty.children[0];
+        if (hd != null && hd.resolved != null) return union_decl_of(hd.resolved);
+        if (ty.resolved != null) return union_decl_of(ty.resolved);
+        return null;
+    }
+    // A DECL_TYPE reached directly (e.g. via the generic head above): the
+    // union is its final child — unwrap without requiring the TypeVar path.
+    if (ty.kind == NodeKind.NODE_DECL_TYPE && ty.child_count >= 1)
+    {
+        AstNode* dbody = ty.children[ty.child_count - 1];
+        if (dbody != null && dbody.kind == NodeKind.NODE_DECL_UNION) return dbody;
+        return null;
+    }
     AstNode* r = null;
     if (ty.kind == NodeKind.NODE_TYPEVAR && ty.resolved != null) r = ty.resolved;
     if (r == null && ty.kind == NodeKind.NODE_DECL_UNION) r = ty;
@@ -1691,6 +1710,38 @@ fn AstNode* union_decl_of(AstNode* ty)
         }
     }
     return null;
+}
+
+// Substitute a generic-union payload type through the instantiation site:
+// given `Maybe<i64>` (a NODE_TYPE_GENERIC_APP) and a payload type naming one
+// of the union decl's type parameters, return the corresponding type
+// argument (`i64`).  Matching is by resolved Param-node identity — never by
+// name — so shadowed parameters cannot mis-substitute.  Anything else
+// (non-generic app, composite payload) is returned unchanged; composite
+// payloads remain the repr's loud rejection elsewhere.
+fn AstNode* generic_payload_subst(AstNode* app, AstNode* payload)
+{
+    if (app == null || payload == null) return payload;
+    if (app.kind != NodeKind.NODE_TYPE_GENERIC_APP || app.child_count < 2) return payload;
+    if (payload.kind != NodeKind.NODE_TYPEVAR) return payload;
+    AstNode* hd = app.children[0];
+    AstNode* decl = null;
+    if (hd != null && hd.resolved != null) decl = hd.resolved;
+    if (decl == null) decl = app.resolved;
+    if (decl == null || decl.kind != NodeKind.NODE_DECL_TYPE) return payload;
+    for (usz i = 0; i < decl.child_count; i++)
+    {
+        AstNode* gp = decl.children[i];
+        if (gp == null || gp.kind != NodeKind.NODE_GENERIC_PARAM) continue;
+        for (usz pi = 0; pi < gp.child_count && pi + 1 < app.child_count; pi++)
+        {
+            if (gp.children[pi] != null && gp.children[pi] == payload.resolved)
+            {
+                return app.children[pi + 1];
+            }
+        }
+    }
+    return payload;
 }
 
 // Return the NODE_DECL_ENUM behind a type node, or null. Mirrors
@@ -1842,6 +1893,16 @@ fn bool union_is_c_union(AstNode* udecl)
         nfields++;
         AstNode* pt = fd.child_count >= 2 ? fd.children[1] : null;
         if (pt == null || pt.kind == NodeKind.NODE_EXPR_UNIT) return false;
+        // A generic type-parameter payload: an untagged reinterpretation
+        // cell cannot exist at an unknown size — a union mentioning type
+        // parameters is a tagged SUM type (Either<L, R> etc.), so matching
+        // and construction take the discriminant path.
+        if (pt.kind == NodeKind.NODE_TYPEVAR && pt.resolved != null
+            && (pt.resolved.kind == NodeKind.NODE_PARAM
+                || pt.resolved.kind == NodeKind.NODE_GENERIC_PARAM))
+        {
+            return false;
+        }
     }
     return nfields >= 1;
 }

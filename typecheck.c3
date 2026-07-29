@@ -3662,6 +3662,10 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
                                       vn.line, vn.col);
                             continue;
                         }
+                        // Generic union (`Maybe<i64>`): the decl's payload
+                        // names the type parameter — substitute it with the
+                        // instantiation's argument before scalar typing.
+                        payload_ty = ast::generic_payload_subst(ty, payload_ty);
                         if (bind != null && bind.kind == Nk.NODE_PATTERN_IDENT)
                         {
                             // Unit payload: a `marker` binder is tolerated (the
