@@ -22,3 +22,6 @@ fn main : () -> () ! [IO]
       let _n : i64 = s.len
       let _p : *i64 = first_ptr(s)
       syscall(231, 0)
+
+fn set_head : [i64] -> ()
+  | s -> s[0] = 7

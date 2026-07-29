@@ -5338,6 +5338,73 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         elem_ty_st = &elem_ty_buf[0];
                     }
 
+                    // r56: fat-slice base — s[i] = v writes through the
+                    // record's data pointer, not through the record value.
+                    {
+                        char* btm_ss = (tm != null && base_arg != null)
+                                     ? tm.get(base_arg.id) : null;
+                        if (btm_ss == null && base_arg != null)
+                        { btm_ss = resolve_ty(tm, base_arg); }
+                        // The assign's lhs is an Index node (annotated with
+                        // the ELEMENT type) — reach through it to the base.
+                        Node* ss_lhs = (v.src != null && v.src.child_count >= 1)
+                                     ? v.src.children[0] : null;
+                        Node* ss_ann = null;
+                        if (ss_lhs != null && ss_lhs.kind == Nk.NODE_EXPR_INDEX
+                            && ss_lhs.child_count >= 1 && ss_lhs.children[0] != null)
+                        { ss_ann = ss_lhs.children[0].type_annotation; }
+                        else if (ss_lhs != null)
+                        { ss_ann = ss_lhs.type_annotation; }
+                        if (ss_ann != null && ss_ann.kind == Nk.NODE_TYPE_PTR
+                            && ss_ann.child_count >= 1 && ss_ann.children[0] != null)
+                        { ss_ann = ss_ann.children[0]; }
+                        if (btm_ss != null && btm_ss[0] == '{'
+                            && ss_ann != null && ss_ann.kind == Nk.NODE_TYPE_SLICE)
+                        {
+                            cg.out.writes("  %ss.ptr.v"); cg.out.writei(v.id);
+                            cg.out.writes(" = extractvalue "); cg.out.writes(btm_ss);
+                            cg.out.writes(" "); cg.emit_vref(base_arg);
+                            cg.out.writes(", 0\n");
+                            cg.out.writes("  %st.gep.v"); cg.out.writei(v.id);
+                            cg.out.writes(" = getelementptr inbounds ");
+                            cg.out.writes(elem_ty_st);
+                            cg.out.writes(", ptr %ss.ptr.v"); cg.out.writei(v.id);
+                            cg.out.writes(", i64 ");
+                            cg.emit_vref(idx_arg);
+                            cg.out.writes("\n");
+                            // Coerce the value to the element type (int/float).
+                            if (val_ty_st[0] == 'i' && elem_ty_st[0] == 'i')
+                            {
+                                long en4 = 0; long vn4 = 0;
+                                char* ep4 = elem_ty_st + 1;
+                                while (*ep4 >= '0' && *ep4 <= '9')
+                                { en4 = en4 * 10 + (long)(*ep4 - '0'); ep4++; }
+                                char* vp4 = val_ty_st + 1;
+                                while (*vp4 >= '0' && *vp4 <= '9')
+                                { vn4 = vn4 * 10 + (long)(*vp4 - '0'); vp4++; }
+                                if (vn4 > 0 && en4 > 0 && vn4 != en4)
+                                {
+                                    cg.out.writes("  %st.cvt.v"); cg.out.writei(v.id);
+                                    cg.out.writes(vn4 > en4 ? " = trunc " : " = zext ");
+                                    cg.out.writes(val_ty_st); cg.out.writes(" ");
+                                    cg.emit_vref(val_arg);
+                                    cg.out.writes(" to "); cg.out.writes(elem_ty_st);
+                                    cg.out.writes("\n");
+                                    cg.out.writes("  store "); cg.out.writes(elem_ty_st);
+                                    cg.out.writes(" %st.cvt.v"); cg.out.writei(v.id);
+                                    cg.out.writes(", ptr %st.gep.v"); cg.out.writei(v.id);
+                                    cg.out.writes("\n");
+                                    return;
+                                }
+                            }
+                            cg.out.writes("  store "); cg.out.writes(elem_ty_st);
+                            cg.out.writes(" ");
+                            cg.emit_vref(val_arg);
+                            cg.out.writes(", ptr %st.gep.v"); cg.out.writei(v.id);
+                            cg.out.writes("\n");
+                            return;
+                        }
+                    }
                     // Inline array held in a register (struct field, loaded
                     // value): give it a memory home before GEP (r46).
                     char* arrbase_ty = (tm != null && base_arg != null) ? tm.get(base_arg.id) : null;
