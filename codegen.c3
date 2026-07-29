@@ -3256,7 +3256,12 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     cg.out.writes("\n");
                     return;
                 }
-                // Pointer arithmetic: ptr +/- int → GEP (byte offset)
+                // Pointer arithmetic: ptr +/- int → GEP.  The index scales by
+                // the POINTEE size (v.md §15: pointer arithmetic "advances by
+                // element size") — `arr + 1` on a *i64 steps 8 bytes, on a
+                // *u8 one byte.  When the pointee type is unknown (untyped
+                // closure paths) keep the historical byte-scale (1) rather
+                // than invent a size.
                 if ((v.bop == Tt.TOKEN_PLUS || v.bop == Tt.TOKEN_MINUS)
                     && lhs != null && rhs != null)
                 {
@@ -3265,6 +3270,17 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     {
                         char* rty_pa = (tm != null) ? tm.get(rhs.id) : null;
                         if (rty_pa == null || rty_pa[0] == 0) rty_pa = (char*)"i64";
+                        // Element scale from the lhs child annotation (*T → T).
+                        long pa_scale = 1;
+                        Node* pa_lnode = (v.src != null && v.src.child_count >= 1)
+                                         ? v.src.children[0] : null;
+                        Node* pa_lann = pa_lnode != null ? pa_lnode.type_annotation : null;
+                        if (pa_lann != null && pa_lann.kind == Nk.NODE_TYPE_PTR
+                            && pa_lann.child_count >= 1 && pa_lann.children[0] != null)
+                        {
+                            pa_scale = sizeof_type_x86(pa_lann.children[0]);
+                            if (pa_scale < 1) { pa_scale = 1; }
+                        }
                         // GEP index MUST be an integer — ptrtoint if rhs is ptr type
                         bool rhs_is_ptr_gep = (rty_pa[0] == 'p');
                         if (rhs_is_ptr_gep)
@@ -3274,12 +3290,23 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             cg.out.writes(" to i64\n");
                             rty_pa = (char*)"i64";
                         }
+                        // Scale the (integer) index by the pointee size.
+                        bool pa_scaled = (pa_scale != 1);
+                        if (pa_scaled)
+                        {
+                            cg.out.writes("  %ptra.sc.v"); cg.out.writei(v.id);
+                            cg.out.writes(" = mul "); cg.out.writes(rty_pa); cg.out.writes(" ");
+                            if (rhs_is_ptr_gep) { cg.out.writes("%gep.idx.v"); cg.out.writei(v.id); }
+                            else { cg.emit_vref(rhs); }
+                            cg.out.writes(", "); cg.out.writei(pa_scale); cg.out.writes("\n");
+                        }
                         if (v.bop == Tt.TOKEN_MINUS)
                         {
                             cg.out.writes("  %ptra.neg.v"); cg.out.writei(v.id);
                             cg.out.writes(" = sub "); cg.out.writes(rty_pa);
                             cg.out.writes(" 0, ");
-                            if (rhs_is_ptr_gep) { cg.out.writes("%gep.idx.v"); cg.out.writei(v.id); }
+                            if (pa_scaled) { cg.out.writes("%ptra.sc.v"); cg.out.writei(v.id); }
+                            else if (rhs_is_ptr_gep) { cg.out.writes("%gep.idx.v"); cg.out.writei(v.id); }
                             else { cg.emit_vref(rhs); }
                             cg.out.writes("\n");
                             cg.out.writes("  %v"); cg.out.writei(v.id);
@@ -3293,7 +3320,8 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             cg.out.writes(" = getelementptr inbounds i8, ptr ");
                             cg.emit_vref(lhs); cg.out.writes(", ");
                             cg.out.writes(rty_pa); cg.out.writes(" ");
-                            if (rhs_is_ptr_gep) { cg.out.writes("%gep.idx.v"); cg.out.writei(v.id); }
+                            if (pa_scaled) { cg.out.writes("%ptra.sc.v"); cg.out.writei(v.id); }
+                            else if (rhs_is_ptr_gep) { cg.out.writes("%gep.idx.v"); cg.out.writei(v.id); }
                             else { cg.emit_vref(rhs); }
                         }
                         cg.out.writes("\n");
