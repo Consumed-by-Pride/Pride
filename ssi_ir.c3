@@ -2080,10 +2080,41 @@ fn IrVal* SsiModule.lower_stmt(SsiModule* m, Node* n)
 fn void SsiModule.lower_let(SsiModule* m, Node* d)
 {
     IrVal* init = null;
+    // Track the declared type (if any) and the initializer expression — both
+    // are needed by the bind-site widening below.
+    Node* decl_ty = null;
+    Node* init_expr = null;
     for (usz i = 1; i < d.child_count; i++)
     {
         Node* c = d.children[i];
-        if (c != null && !ssi::is_type_or_row(c)) { init = m.lower_expr(c); }
+        if (c == null) continue;
+        if (ssi::is_type_or_row(c)) { decl_ty = c; }
+        else { init_expr = c; init = m.lower_expr(c); }
+    }
+    // Explicit scalar annotation on a plain ident binding: the language's
+    // value semantics give the BINDING the declared type, so a differing
+    // initializer type must be converted HERE, at the bind site — not
+    // re-derived (and re-signed) per use.  Without this, `let w : i64 =
+    // <u8 expr>` left the binder at the initializer's natural narrow type:
+    // plain reads happened to work via per-use zero-extension, but chained
+    // arithmetic (`w + 1`) silently recomputed in i8 and picked the wrong
+    // extension by annotation (w + 1 == -50 for u8 200 + 5).  Only widen
+    // when BOTH sides are scalar primitives with different names — provided
+    // types (struct/ptr/fn/generic) keep the initializer's value as-is.
+    if (init != null && init_expr != null && decl_ty != null
+        && d.child_count >= 1 && d.children[0] != null
+        && d.children[0].kind == Nk.NODE_PATTERN_IDENT
+        && decl_ty.kind == Nk.NODE_TYPE_PRIMITIVE
+        && init_expr.type_annotation != null
+        && init_expr.type_annotation.kind == Nk.NODE_TYPE_PRIMITIVE)
+    {
+        Node* ea = init_expr.type_annotation;
+        char* an = ea.p.ident.name_ptr; usz al = ea.p.ident.name_len;
+        char* dn = decl_ty.p.ident.name_ptr; usz dl = decl_ty.p.ident.name_len;
+        bool same = (al == dl);
+        if (same && an != null && dn != null)
+        { for (usz ci = 0; ci < al; ci++) { if (an[ci] != dn[ci]) { same = false; break; } } }
+        if (!same) { init = m.cast_to(init, decl_ty, init_expr); }
     }
     // Bind the pattern's identifier(s) to the initializer value.
     if (d.child_count >= 1) m.bind_let_pattern(d.children[0], init);
