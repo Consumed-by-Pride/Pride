@@ -1,7 +1,7 @@
 // ============================================================================
-// ast.c3 — Abstract Syntax Tree for the Pryde compiler
+// ast.c3 — Abstract Syntax Tree for the Pride compiler
 // ----------------------------------------------------------------------------
-// Implementation language: C3 (host). Pryde is written in C3; it does NOT
+// Implementation language: C3 (host). Pride is written in C3; it does NOT
 // compile to C3.
 //
 // A plain, standard AST: every node has exactly one parent (a tree). This
@@ -13,7 +13,7 @@
 //   - folding    : LitInt op LitInt etc. fold immediately at build time
 //
 // The parser (parser.c3) calls the node_* constructors here. The driver
-// (pryde.c3) walks the resulting tree and prints it.
+// (pride.c3) walks the resulting tree and prints it.
 // ============================================================================
 
 module ast;

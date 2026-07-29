@@ -1,12 +1,12 @@
 // ============================================================================
-// lint.c3 — Pryde lint pass (style / soundness warnings)
+// lint.c3 — Pride lint pass (style / soundness warnings)
 // ----------------------------------------------------------------------------
 // Implementation language: C3 (host).
 //
 // Pipeline:  ... -> Resolver -> TypeChecker -> EffectChecker -> Lint (this)
 //
 // A light, post-resolution pass that surfaces *advisory* problems. Per v.md
-// (line 429: "Non-exhaustive matches emit a soft warning ... Pryde trusts
+// (line 429: "Non-exhaustive matches emit a soft warning ... Pride trusts
 // you"), every lint is a WARNING by default; `--strict` promotes to an error.
 //
 // Lints implemented:

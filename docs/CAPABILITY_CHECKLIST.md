@@ -1,10 +1,10 @@
-# Pryde Capability Checklist
+# Pride Capability Checklist
 
 Generated: 2026-06-29
 
 ```
 ====================================================================
-PRYDE CAPABILITY CHECKLIST — 2026-06-29
+PRIDE CAPABILITY CHECKLIST — 2026-06-29
   ✅     = parse+resolve+ir+llvm-as-22 green
   🔶noL  = IR ok, llvm-as-22 fails (codegen bug)
   🔷ir   = parse+resolve ok, IR verify fails

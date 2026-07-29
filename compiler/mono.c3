@@ -1,5 +1,5 @@
 // ============================================================================
-// mono.c3 — Production monomorphization for Pryde
+// mono.c3 — Production monomorphization for Pride
 // ----------------------------------------------------------------------------
 // Implementation language: C3 (host).
 //
