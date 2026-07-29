@@ -3090,13 +3090,23 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         }
                         return;
                     }
-                    // Emit placeholder matching result type (i1 for comparison, i64 otherwise)
+                    // Emit placeholder matching result type: i1 for
+                    // comparisons, a frozen undef RECORD when the stamped
+                    // result type is an aggregate (a scalar `add i64` where a
+                    // `{ ptr, i64 }` is stored downstream is invalid IR —
+                    // e.g. an unsupported `Str + Str` warned E0448 must still
+                    // assemble), i64 otherwise.
                     char* res_ty2 = (tm != null) ? tm.get(v.id) : null;
                     bool is_cmp_op = (v.bop == Tt.TOKEN_LT || v.bop == Tt.TOKEN_GT
                         || v.bop == Tt.TOKEN_LTEQ || v.bop == Tt.TOKEN_GTEQ
                         || v.bop == Tt.TOKEN_EQEQ || v.bop == Tt.TOKEN_NEQ);
                     cg.out.writes("  %v"); cg.out.writei(v.id);
                     if (is_cmp_op) { cg.out.writes(" = add i1 0, 0  ; aggregate cmp (type error, soft)\n"); }
+                    else if (res_ty2 != null && (res_ty2[0] == '{' || res_ty2[0] == '%'))
+                    {
+                        cg.out.writes(" = freeze "); cg.out.writes(res_ty2);
+                        cg.out.writes(" undef  ; aggregate op (type error, soft)\n");
+                    }
                     else { cg.out.writes(" = add i64 0, 0  ; aggregate op (type error, soft)\n"); }
                     return;
                 }
