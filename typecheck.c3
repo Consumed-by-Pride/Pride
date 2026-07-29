@@ -1860,10 +1860,41 @@ fn Node* TypeChecker.synth_struct_lit(TypeChecker* self, Node* e)
         // Set type_annotation on e so codegen can see the struct type.
         if (base_ty != null)
         {
+            // Struct-UPDATE on an untagged C-union (`u { f: ... }`): the
+            // repr is one 64-bit cell — updating one field while "keeping"
+            // the others has no meaning on overlapping storage, and the
+            // lowering cannot express it.  Loud rejection beats invalid IR.
+            Node* upd_udecl = ast::union_decl_of(base_ty);
+            if (ast::union_is_c_union(upd_udecl))
+            {
+                self.hard("update syntax on an untagged C-union is unsupported — construct the value from a single field instead",
+                          e.line, e.col);
+            }
             e.type_annotation = base_ty;
             return base_ty;
         }
         return tyname;
+    }
+
+    // Untagged C-union literal (one shared 64-bit cell — v.md §9): a
+    // construction writes a SINGLE interpretation into the cell; listing
+    // several fields would make later initialisers overlap earlier ones.
+    // Require exactly one provided field (the value check below still runs
+    // against the field's payload type).
+    Node* lit_udecl = ast::union_decl_of(tyname);
+    if (ast::union_is_c_union(lit_udecl))
+    {
+        int provided = 0;
+        for (usz i = 1; i < e.child_count; i++)
+        {
+            Node* fi = e.children[i];
+            if (fi != null && fi.kind == Nk.NODE_FIELD_INIT) provided++;
+        }
+        if (provided != 1)
+        {
+            self.hard("untagged C-union construction takes exactly one field — its fields overlap one 64-bit cell",
+                      e.line, e.col);
+        }
     }
 
     // Check each provided field initializer.
@@ -1892,16 +1923,21 @@ fn Node* TypeChecker.synth_struct_lit(TypeChecker* self, Node* e)
         }
     }
 
-    // Warn about required fields that were not provided.
-    for (usz i = 0; i < fields.child_count; i++)
+    // Warn about required fields that were not provided.  (A C-union literal
+    // provides exactly one interpretation by construction — the cell never
+    // "contains all fields", so the missing-field warning is meaningless.)
+    if (!ast::union_is_c_union(lit_udecl))
     {
-        Node* fd = fields.children[i];
-        if (fd == null || fd.kind != Nk.NODE_FIELD_DECL) continue;
-        Node* fn_name = fd.child_count >= 1 ? fd.children[0] : null;
-        if (fn_name == null) continue;
-        if (!struct_lit_has_field(e, fn_name.p.ident.name_ptr, fn_name.p.ident.name_len))
+        for (usz i = 0; i < fields.child_count; i++)
         {
-            self.soft("missing field in struct literal", e.line, e.col);
+            Node* fd = fields.children[i];
+            if (fd == null || fd.kind != Nk.NODE_FIELD_DECL) continue;
+            Node* fn_name = fd.child_count >= 1 ? fd.children[0] : null;
+            if (fn_name == null) continue;
+            if (!struct_lit_has_field(e, fn_name.p.ident.name_ptr, fn_name.p.ident.name_len))
+            {
+                self.soft("missing field in struct literal", e.line, e.col);
+            }
         }
     }
 

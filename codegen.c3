@@ -5598,6 +5598,150 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     if (tm != null) { tm.set(v.id, (char*)"ptr"); }
                     return;
                 }
+                // Untagged C-union literal (r34): the repr is ONE 64-bit
+                // reinterpretation cell (union_is_c_union; v.md §9), not a
+                // record — insertvalue on i64 is invalid IR.  Convert the
+                // single field value to the FIELD's declared payload type
+                // (fptrunc f64 literals into f32 members, trunc/zext ints,
+                // sitofp int literals into float members), then bit-pack it
+                // into the cell.  Typecheck enforces exactly one provided
+                // field; a defensive extra arg just overwrites (last wins).
+                {
+                    Node* ulit_ann = v.src != null ? v.src.type_annotation : null;
+                    Node* ulit_ud = ast::union_decl_of(ulit_ann);
+                    if (is_struct_lit && v.ival != 1 && ast::union_is_c_union(ulit_ud))
+                    {
+                        IrVal* cell = null;
+                        Node* cinit = null;
+                        for (usz cai = 0; cai < v.arg_count; cai++)
+                        { if (v.args[cai] != null) { cell = v.args[cai]; } }
+                        for (usz cii = 1; v.src != null && cii < v.src.child_count; cii++)
+                        { if (v.src.children[cii] != null
+                              && v.src.children[cii].kind == Nk.NODE_FIELD_INIT)
+                          { cinit = v.src.children[cii]; } }
+                        // Payload type from the union decl, by field name.
+                        char[TYMAP_ENTRY] pty_buf; pty_buf[0] = 0;
+                        if (ulit_ud != null && cinit != null && cinit.child_count >= 1
+                            && cinit.children[0] != null)
+                        {
+                            Node* payload_ty = null;
+                            int uord = ast::union_variant_lookup(ulit_ud,
+                                cinit.children[0].p.ident.name_ptr,
+                                cinit.children[0].p.ident.name_len, &payload_ty);
+                            if (uord >= 0 && payload_ty != null)
+                            { type_to_llvm_buf(payload_ty, &pty_buf[0], TYMAP_ENTRY, 0); }
+                        }
+                        char* cty = (cell != null && tm != null) ? tm.get(cell.id) : null;
+                        if (cell == null || cty == null || cty[0] == 0)
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = add i64 0, 0\n");
+                            return;
+                        }
+                        // Step 1: convert the value to the payload type.
+                        bool pay_conv = false;
+                        if (pty_buf[0] != 0 && !cstr_eq(cty, &pty_buf[0]))
+                        {
+                            char* py2 = &pty_buf[0];
+                            if (py2[0] == 'f' && cty[0] == 'd')
+                            {
+                                cg.out.writes("  %upay.v"); cg.out.writei(v.id);
+                                cg.out.writes(" = fptrunc double "); cg.emit_vref(cell);
+                                cg.out.writes(" to float\n");
+                                pay_conv = true;
+                            }
+                            else if (py2[0] == 'd' && cty[0] == 'f')
+                            {
+                                cg.out.writes("  %upay.v"); cg.out.writei(v.id);
+                                cg.out.writes(" = fpext float "); cg.emit_vref(cell);
+                                cg.out.writes(" to double\n");
+                                pay_conv = true;
+                            }
+                            else if (py2[0] == 'f' && cty[0] == 'i')
+                            {
+                                cg.out.writes("  %upay.v"); cg.out.writei(v.id);
+                                cg.out.writes(" = sitofp "); cg.out.writes(cty); cg.out.writes(" ");
+                                cg.emit_vref(cell); cg.out.writes(" to float\n");
+                                pay_conv = true;
+                            }
+                            else if (py2[0] == 'd' && cty[0] == 'i')
+                            {
+                                cg.out.writes("  %upay.v"); cg.out.writei(v.id);
+                                cg.out.writes(" = sitofp "); cg.out.writes(cty); cg.out.writes(" ");
+                                cg.emit_vref(cell); cg.out.writes(" to double\n");
+                                pay_conv = true;
+                            }
+                            else if (py2[0] == 'i' && (cty[0] == 'f' || cty[0] == 'd'))
+                            {
+                                cg.out.writes("  %upay.v"); cg.out.writei(v.id);
+                                cg.out.writes(" = fptosi "); cg.out.writes(cty); cg.out.writes(" ");
+                                cg.emit_vref(cell); cg.out.writes(" to "); cg.out.writes(py2);
+                                cg.out.writes("\n");
+                                pay_conv = true;
+                            }
+                            else if (py2[0] == 'i' && cty[0] == 'i')
+                            {
+                                long cw = 0; long pw = 0;
+                                for (usz wci = 1; cty[wci] >= '0' && cty[wci] <= '9'; wci++) cw = cw * 10 + (long)(cty[wci] - '0');
+                                for (usz wpi = 1; py2[wpi] >= '0' && py2[wpi] <= '9'; wpi++) pw = pw * 10 + (long)(py2[wpi] - '0');
+                                if (cw != pw)
+                                {
+                                    cg.out.writes("  %upay.v"); cg.out.writei(v.id);
+                                    cg.out.writes(cw > pw ? " = trunc " : " = zext ");
+                                    cg.out.writes(cty); cg.out.writes(" ");
+                                    cg.emit_vref(cell); cg.out.writes(" to "); cg.out.writes(py2);
+                                    cg.out.writes("\n");
+                                    pay_conv = true;
+                                }
+                            }
+                            if (pay_conv) { cty = &pty_buf[0]; }
+                        }
+                        // Reference to the (possibly converted) payload value.
+                        // Step 2: bit-pack the payload-typed value into i64.
+                        if (cty[0] == 'f')
+                        {
+                            cg.out.writes("  %ubit.v"); cg.out.writei(v.id);
+                            cg.out.writes(" = bitcast float "); if (pay_conv) { cg.out.writes("%upay.v"); cg.out.writei(v.id); } else { cg.emit_vref(cell); }
+                            cg.out.writes(" to i32\n");
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = zext i32 %ubit.v"); cg.out.writei(v.id);
+                            cg.out.writes(" to i64\n");
+                        }
+                        else if (cty[0] == 'd')
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = bitcast double "); if (pay_conv) { cg.out.writes("%upay.v"); cg.out.writei(v.id); } else { cg.emit_vref(cell); }
+                            cg.out.writes(" to i64\n");
+                        }
+                        else if (cty[0] == 'p')
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = ptrtoint ptr "); if (pay_conv) { cg.out.writes("%upay.v"); cg.out.writei(v.id); } else { cg.emit_vref(cell); }
+                            cg.out.writes(" to i64\n");
+                        }
+                        else if (cty[0] == 'i' && cty[1] == '6' && cty[2] == '4' && cty[3] == 0)
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = add i64 "); if (pay_conv) { cg.out.writes("%upay.v"); cg.out.writei(v.id); } else { cg.emit_vref(cell); }
+                            cg.out.writes(", 0\n");
+                        }
+                        else if (cty[0] == 'i')
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = zext "); cg.out.writes(cty); cg.out.writes(" ");
+                            if (pay_conv) { cg.out.writes("%upay.v"); cg.out.writei(v.id); } else { cg.emit_vref(cell); } cg.out.writes(" to i64\n");
+                        }
+                        else
+                        {
+                            // Aggregate payloads cannot fit the cell — the
+                            // typechecker rejects them (union_payload_is_scalar
+                            // discipline); keep the value DEFINED regardless.
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = add i64 0, 0\n");
+                        }
+                        return;
+                    }
+                }
                 // Build aggregate with insertvalue chain from undef
                 // %agg.0 = insertvalue { T0, T1 } undef, T0 %v0, 0
                 // %agg.1 = insertvalue { T0, T1 } %agg.0, T1 %v1, 1

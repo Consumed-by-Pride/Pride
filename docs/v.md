@@ -520,7 +520,14 @@ A union whose variants all carry concrete payloads is an **untagged C-union**:
 one shared 64-bit cell, fields reinterpret it. A union that mentions a **type
 parameter** is a **tagged sum type** instead — an untagged cell cannot exist at
 an unknown payload size — represented as `{ tag, payload }` and used with
-variant construction and pattern matching:
+variant construction and pattern matching.
+
+Constructing an untagged C-union writes **exactly one** field's bit pattern
+into the shared cell — `FloatBits { i: 0x3FC00000u32 }` — after converting the
+value to the field's declared payload type (so `FloatBits { f: 1.5 }` stores
+the f32 bits of `1.5`). Listing several fields is a compile error (later
+initialisers would overlap earlier ones), and so is update syntax on a
+C-union. Reads reinterpret the cell at the field's type.
 
 ```pride
 type Maybe<T>  = union
