@@ -802,6 +802,30 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
             if (e.child_count >= 1) return self.synth(e.children[0]);
             return null;
 
+        case Nk.NODE_EFFECT_HANDLE:
+            // handle computation | arm... — the expression's type is the
+            // computation's type: a handler discharges effects, it does not
+            // change the value type (each arm ends in resume(...) or yields
+            // a fallback value coercion-compatible with the computation).
+            // Without this case the generic default below walked the children
+            // but stamped NOTHING on the handle node itself, so the join φ
+            // in the ssi lowering (and any consumer of the handle's value —
+            // a surrounding `+`, a binding ascription, a return) had no type
+            // to bind to: inference then fell to the arm operand, which is
+            // ABI-shaped (`ptr`, by resume's declared return) — producing
+            // `phi ptr [ 42, ... ]` (llvm-as rejects) or GEPs on ptrs.
+            {
+                Node* comp_t = null;
+                for (usz hi = 0; hi < e.child_count; hi++)
+                {
+                    Node* ec = e.children[hi];
+                    if (ec == null) continue;
+                    Node* t = self.synth(ec);
+                    if (hi == 0 && ec.kind != Nk.NODE_HANDLER_ARM) comp_t = t;
+                }
+                return comp_t;
+            }
+
         default:
             // Recurse so nested expressions still get checked, but report no type.
             for (usz i = 0; i < e.child_count; i++) self.synth(e.children[i]);

@@ -45,7 +45,12 @@
 //    Per handler frame:
 //      struct __pride_frame { jmp_buf buf; ptr handler_fn; ptr prev; }
 //      IR_EFFECT_OP   → call __pride_perform(frame_ptr, op_id, arg_ptr)
-//      IR_HANDLER     → setjmp; on resume → call body; tear down frame
+//      IR_HANDLER     → __pride_push_handler double-returns a dispatch token:
+//                       0 = run computation (default edge); op_id+1 = arm edge
+//      IR_HANDLER_ARM → arm body; pop frame (only reached when not resumed)
+//      IR_HANDLER_COMPLETE → __pride_complete() pops the frame on the normal
+//                       computation-exit path (the only pop a resumed
+//                       computation ever performs — resume is tail-only)
 //      IR_RESUME      → longjmp into saved buf with resume value
 //    Runtime declarations are emitted into the .ll file as `declare` stmts.
 // 8. SIZEOF/ALIGNOF sentinels: IR_CONST_INT with ival=0 and src.kind ==
@@ -714,59 +719,12 @@ fn bool infer_fn_types(ssi_ir::SsiModule* ir, ssi_ir::SsiFunc* f, TypeTable* t)
                 pbuf[0] = 0;
                 bool resolved = false;
 
-                // Priority 1a: binder node type_annotation (e.g. PatIdent for `let mut i : i32`)
-                // The phi binder may be a DECL_MUT/DECL_LET node (resolved via bind_name_node).
-                // In that case, the type annotation lives on children[0] (the PAT_IDENT), not on
-                // the decl node itself.  Also check explicit type children of the decl (child 1+).
-                if (!resolved && ph.binder != null)
-                {
-                    Node* binder_ty_node = ph.binder.type_annotation;
-                    // If binder is DECL_LET/DECL_MUT, look for type annotation on children
-                    if (binder_ty_node == null
-                        && (ph.binder.kind == Nk.NODE_DECL_MUT || ph.binder.kind == Nk.NODE_DECL_LET))
-                    {
-                        // children[0] is the pattern, check its type_annotation
-                        if (ph.binder.child_count >= 1 && ph.binder.children[0] != null)
-                        { binder_ty_node = ph.binder.children[0].type_annotation; }
-                        // Also check explicit type children (index 1+): type nodes
-                        for (usz bci = 1; bci < ph.binder.child_count && binder_ty_node == null; bci++)
-                        {
-                            Node* bc = ph.binder.children[bci];
-                            if (bc == null) continue;
-                            // Inline is_type_node: check for NODE_TYPE_* kinds
-                            bool bc_is_type = (bc.kind == Nk.NODE_TYPE_PRIMITIVE
-                                || bc.kind == Nk.NODE_TYPE_PTR
-                                || bc.kind == Nk.NODE_TYPE_FN
-                                || bc.kind == Nk.NODE_TYPE_TUPLE
-                                || bc.kind == Nk.NODE_TYPE_ARRAY
-                                || bc.kind == Nk.NODE_TYPEVAR
-                                || bc.kind == Nk.NODE_EXPR_UNIT);
-                            if (bc_is_type) { binder_ty_node = bc; break; }
-                        }
-                    }
-                    if (binder_ty_node != null)
-                    {
-                        type_to_llvm_buf(binder_ty_node, &pbuf[0], TYMAP_ENTRY, 0);
-                        // Reject "ptr" from union/complex types (fallback type) as phi type.
-                        // It will be overridden by arm type inference below.
-                        bool binder_ty_ok = (pbuf[0] != 0 && pbuf[0] != 'v' && pbuf[0] != 'p');
-                        // Allow ptr if binder annotation IS a real pointer type
-                        if (pbuf[0] == 'p' && binder_ty_node.kind == Nk.NODE_TYPE_PTR)
-                        { binder_ty_ok = true; }
-                        if (binder_ty_ok) { t.set(ph.id, &pbuf[0]); resolved = true; }
-                    }
-                }
-                // Priority 1b: src.type_annotation (the AST node that spawned the phi)
-                // Same rejection as 1a: skip ptr/union-fallback types.
-                if (!resolved && ph.src != null && ph.src.type_annotation != null)
-                {
-                    type_to_llvm_buf(ph.src.type_annotation, &pbuf[0], TYMAP_ENTRY, 0);
-                    bool src_ty_ok = (pbuf[0] != 0 && pbuf[0] != 'v' && pbuf[0] != 'p');
-                    // Allow ptr if src annotation IS a real pointer type
-                    if (pbuf[0] == 'p' && ph.src.type_annotation.kind == Nk.NODE_TYPE_PTR)
-                    { src_ty_ok = true; }
-                    if (src_ty_ok) { t.set(ph.id, &pbuf[0]); resolved = true; }
-                }
+                // Priority 1: front-end annotations are authoritative — binder
+                // node type_annotation (1a: with DECL_LET/DECL_MUT child walk),
+                // then the type stamped on the AST node that spawned the φ
+                // (1b). Shared with Step 3 via phi_annotation_type().
+                if (!resolved && phi_annotation_type(ph, &pbuf[0], TYMAP_ENTRY))
+                { t.set(ph.id, &pbuf[0]); resolved = true; }
                 // Priority 2: propagate from first non-i64 arg (so we don't widen to i64)
                 if (!resolved)
                 {
@@ -817,7 +775,19 @@ fn bool infer_fn_types(ssi_ir::SsiModule* ir, ssi_ir::SsiFunc* f, TypeTable* t)
                 buf[0] = 0;
 
                 // Priority 1: src.type_annotation
-                if (iv.src != null && iv.src.type_annotation != null)
+                // — EXCEPT the effect ABI values: the IR_HANDLER dispatch token,
+                // its arm markers, op performs and resume calls are shaped by the
+                // runtime ABI (i64 token, ptr payloads), not by whatever the
+                // front-end stamped on the handle expression. The handle's
+                // semantic VALUE type is carried by the join φ, not the token —
+                // typing the token `{ ptr, ptr }` (a fn-valued computation)
+                // corrupts the dispatch switch into `switch { ptr, ptr }`.
+                bool effect_abi_op = (iv.op == ssi_ir::IrOp.IR_HANDLER
+                    || iv.op == ssi_ir::IrOp.IR_HANDLER_ARM
+                    || iv.op == ssi_ir::IrOp.IR_HANDLER_COMPLETE
+                    || iv.op == ssi_ir::IrOp.IR_EFFECT_OP
+                    || iv.op == ssi_ir::IrOp.IR_RESUME);
+                if (!effect_abi_op && iv.src != null && iv.src.type_annotation != null)
                 {
                     type_to_llvm_buf(iv.src.type_annotation, &buf[0], TYMAP_ENTRY, 0);
                     // Filter out "void" in non-return position (void can't be a value)
@@ -1011,6 +981,7 @@ fn bool infer_fn_types(ssi_ir::SsiModule* ir, ssi_ir::SsiFunc* f, TypeTable* t)
                         case ssi_ir::IrOp.IR_EFFECT_OP:    snprintf(&buf[0], TYMAP_ENTRY, "ptr");
                         case ssi_ir::IrOp.IR_HANDLER:      snprintf(&buf[0], TYMAP_ENTRY, "i64");
                         case ssi_ir::IrOp.IR_HANDLER_ARM:  snprintf(&buf[0], TYMAP_ENTRY, "ptr");
+                        case ssi_ir::IrOp.IR_HANDLER_COMPLETE: snprintf(&buf[0], TYMAP_ENTRY, "void");
                         case ssi_ir::IrOp.IR_RESUME:       snprintf(&buf[0], TYMAP_ENTRY, "ptr");
                         case ssi_ir::IrOp.IR_UNKNOWN:
                             // Closure / named-fn VALUE: uniformly { ptr, ptr }
@@ -1056,6 +1027,19 @@ fn bool infer_fn_types(ssi_ir::SsiModule* ir, ssi_ir::SsiFunc* f, TypeTable* t)
             char* cur = t.get(ph.id);
             if (cur == null || (cur[0] == 'i' && cur[1] == '6'))
             {
+                // Annotation-derived types are authoritative: "i64" here may be
+                // the fallback sentinel (upgradeable) OR the type the front-end
+                // actually stamped (final). Never let the operand scan clobber
+                // the latter — e.g. an effect-handle join stamped i64 whose
+                // resume-edge operand is ABI-typed ptr would otherwise rot to
+                // `phi ptr [ 42, ... ]`.
+                char[TYMAP_ENTRY] abuf3;
+                if (phi_annotation_type(ph, &abuf3[0], TYMAP_ENTRY))
+                {
+                    t.set(ph.id, &abuf3[0]);
+                    ph = ph.next;
+                    continue;
+                }
                 // Try each arg — strip sigma chains before type lookup
                 for (usz k = 0; k < ph.arg_count; k++)
                 {
@@ -1237,9 +1221,71 @@ struct CgenModule
 
 const usz TRAMP_CAP = 512;
 
-// Filled by infer_fn_types() before emit_function() emits any instructions.
-// Entry k holds the LLVM type string for IrVal with id k, as a null-terminated
-// char[64]. A value_count of 0 means the table is not yet built.
+// Priority-1 φ typing, shared by infer_fn_types' pre-pass AND the Step-3
+// forward-value re-resolution: a type the front-end actually ANNOTATED (on the
+// φ's binder or on its originating AST node) is authoritative and must win
+// over every operand-scan heuristic. "i64" is both a real type AND the
+// fallback sentinel — without this guard, Step 3 clobbers honestly-i64 phis
+// (e.g. an effect-handle join whose computation is unannotated but whose
+// HANDLE node was stamped i64 by the checker) with whatever operand type it
+// finds first — the resume ABI's ptr — producing `phi ptr [ 42, ... ]`.
+fn bool phi_annotation_type(ssi_ir::IrVal* ph, char* pbuf, usz cap)
+{
+    if (ph == null) return false;
+    // 1a: binder type annotation (with DECL_LET/DECL_MUT child walk)
+    if (ph.binder != null)
+    {
+        Node* binder_ty_node = ph.binder.type_annotation;
+        // If binder is DECL_LET/DECL_MUT, look for type annotation on children
+        if (binder_ty_node == null
+            && (ph.binder.kind == Nk.NODE_DECL_MUT || ph.binder.kind == Nk.NODE_DECL_LET))
+        {
+            // children[0] is the pattern, check its type_annotation
+            if (ph.binder.child_count >= 1 && ph.binder.children[0] != null)
+            { binder_ty_node = ph.binder.children[0].type_annotation; }
+            // Also check explicit type children (index 1+): type nodes
+            for (usz bci = 1; bci < ph.binder.child_count && binder_ty_node == null; bci++)
+            {
+                Node* bc = ph.binder.children[bci];
+                if (bc == null) continue;
+                // Inline is_type_node: check for NODE_TYPE_* kinds
+                bool bc_is_type = (bc.kind == Nk.NODE_TYPE_PRIMITIVE
+                    || bc.kind == Nk.NODE_TYPE_PTR
+                    || bc.kind == Nk.NODE_TYPE_FN
+                    || bc.kind == Nk.NODE_TYPE_TUPLE
+                    || bc.kind == Nk.NODE_TYPE_ARRAY
+                    || bc.kind == Nk.NODE_TYPEVAR
+                    || bc.kind == Nk.NODE_EXPR_UNIT);
+                if (bc_is_type) { binder_ty_node = bc; break; }
+            }
+        }
+        if (binder_ty_node != null)
+        {
+            type_to_llvm_buf(binder_ty_node, pbuf, cap, 0);
+            // Reject "ptr" from union/complex types (fallback type) as phi type.
+            // It will be overridden by arm type inference below.
+            bool binder_ty_ok = (pbuf[0] != 0 && pbuf[0] != 'v' && pbuf[0] != 'p');
+            // Allow ptr if binder annotation IS a real pointer type
+            if (pbuf[0] == 'p' && binder_ty_node.kind == Nk.NODE_TYPE_PTR)
+            { binder_ty_ok = true; }
+            if (binder_ty_ok) { return true; }
+        }
+    }
+    // 1b: src.type_annotation (the AST node that spawned the phi)
+    // Same rejection as 1a: skip ptr/union-fallback types.
+    if (ph.src != null && ph.src.type_annotation != null)
+    {
+        type_to_llvm_buf(ph.src.type_annotation, pbuf, cap, 0);
+        bool src_ty_ok = (pbuf[0] != 0 && pbuf[0] != 'v' && pbuf[0] != 'p');
+        // Allow ptr if src annotation IS a real pointer type
+        if (pbuf[0] == 'p' && ph.src.type_annotation.kind == Nk.NODE_TYPE_PTR)
+        { src_ty_ok = true; }
+        if (src_ty_ok) { return true; }
+    }
+    return false;
+}
+
+
 
 const usz TYMAP_ENTRY = 256;  // bytes per entry — must hold fully-expanded
                               // nested aggregate types ({ i64, { i64, ... } })
@@ -2351,15 +2397,41 @@ fn bool phi_edge_coercion(TypeTable* tm, ssi_ir::IrVal* ph, usz ai,
     char* phi_ty = (tm != null) ? tm.get(ph.id) : null;
     if (phi_ty == null || phi_ty[0] == 0) return false;   // untyped φ: legacy i64 fallback
     if (phi_ty[0] == 'v' && phi_ty[1] == 'o') return false;   // void φ: not emitted at all
-    if (phi_ty[0] == '{') return false;   // aggregate φ: args match by construction
     ssi_ir::IrVal* arg = sigma_unwrap(ph.args[ai]);
     if (arg == null || arg.op == ssi_ir::IrOp.IR_CONST_UNIT) return false;  // prints undef
     // Constants are folded inline by emit_phi / emit_vref — no anchor.
     if (arg.op == ssi_ir::IrOp.IR_CONST_INT  || arg.op == ssi_ir::IrOp.IR_CONST_BOOL
      || arg.op == ssi_ir::IrOp.IR_CONST_FLOAT || arg.op == ssi_ir::IrOp.IR_CONST_NULL)
     { return false; }
+    // A value that EMITS as bare `void` (e.g. a unit-typed call) defines no
+    // SSA register at all — emit_phi renders its incoming edge as `undef`.
+    // resolve_ty deliberately upgrades void to its i64 fallback (its callers
+    // want a materialisable type), but HERE that drift would anchor a
+    // conversion on a name that never exists: the phi-edge pass must agree
+    // with emit_phi's raw-tymap classification, exactly (lockstep).
+    char* raw_ty = (tm != null) ? tm.get(arg.id) : null;
+    if (raw_ty != null && raw_ty[0] == 'v' && raw_ty[1] == 'o') return false;  // prints undef
     char* apty = resolve_ty(tm, arg);
     if (apty == null || apty[0] == 0) return false;
+    if (phi_ty[0] == '{')
+    {
+        // Aggregate φ: incoming aggregates match by construction; a SCALAR
+        // incoming (effect-handler arms feed the join φ their resume ABI's raw
+        // ptr/i64 while the φ itself is typed by the computation — e.g. a
+        // fn-VALUE) can only be widened honestly by filling slot 0.
+        if (apty[0] == '{' || (apty[0] == 'v' && apty[1] == 'o')) return false;
+        bool same = true;
+        for (usz ci = 0; phi_ty[ci] != 0 && apty[ci] != 0; ci++)
+        {
+            if (phi_ty[ci] != apty[ci]) { same = false; break; }
+        }
+        if (same && strlen(phi_ty) == strlen(apty)) return false;
+        // Only ptr/int scalars are fillable into slot 0 materialisably.
+        bool scalar = (apty[0] == 'p') || (apty[0] == 'i' && apty[1] >= '0' && apty[1] <= '9');
+        if (!scalar) return false;
+        *op = (char*)"insv0"; *src = apty; *dst = phi_ty;
+        return true;
+    }
     if (apty[0] == '{' || (apty[0] == 'v' && apty[1] == 'o')) return false;   // prints undef
     char* opc = coerce_op(apty, phi_ty);
     if (opc == null) return false;
@@ -2555,22 +2627,13 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
             {
                 // This IR_PARAM is an effect operation argument in a handler arm.
                 // The runtime provides these via __pride_get_arm_arg(index).
-                // Determine which argument index this param is (by position in the arm's params).
-                int arm_arg_idx = 0;
-                Node* arm_node = v.binder;
-                // Count which param position this is (skip op_head child[0] and body (last child))
-                // v.src is the PatIdent node for this param (set by new_val(IR_PARAM, binder)).
-                // Compare arm children against v.src to find the correct 0-based index.
-                for (usz pi = 1; pi + 1 < arm_node.child_count; pi++)
-                {
-                    Node* binder = arm_node.children[pi];
-                    if (binder == null) { continue; }
-                    if (binder == v.src) { break; }
-                    arm_arg_idx++;
-                }
+                // The flat arg-slot index was assigned at lowering time and
+                // travels on the value itself (emit_arm_arg_params in ssi_ir) —
+                // deriving it from child POSITION would overcount `()`
+                // zero-arg placeholders and nested tuple binders.
                 cg.out.writes("  %v"); cg.out.writei(v.id);
                 cg.out.writes(" = call i64 @__pride_get_arm_arg(i64 ");
-                cg.out.writei(arm_arg_idx);
+                cg.out.writeu(v.ival);
                 cg.out.writes(")\n");
             }
             return;
@@ -5561,6 +5624,10 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 cg.out.writes("  %v"); cg.out.writei(v.id);
                 cg.out.writes(" = call ptr @__pride_perform(i64 ");
                 cg.out.writeu(op_id);
+                // Variadic ABI: the argument count comes first so the runtime
+                // can va_arg exactly that many op arguments into the frame.
+                cg.out.writes(", i64 ");
+                cg.out.writeu((ulong)v.arg_count);
                 for (usz i = 0; i < v.arg_count; i++)
                 {
                     ssi_ir::IrVal* pa2 = v.args[i];
@@ -5596,12 +5663,48 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
             {
                 // Handler frame setup. The TERM_SWITCH on this block's block
                 // dispatches to arm blocks — those are the actual handlers.
-                // At this instruction we call @__pride_push_handler().
+                // @__pride_push_handler(frame_id, nops, op_id+1, ...) returns
+                // 0 ("run the computation") or the performed op's id+1 —
+                // matching the TERM_SWITCH case labels produced by
+                // lower_handle.  The runtime needs the op list to find the
+                // newest frame that actually handles a performed op.
                 cg.out.writes("  %v"); cg.out.writei(v.id);
                 cg.out.writes(" = call i64 @__pride_push_handler(i64 ");
                 ulong frame_id = (v.binder != null) ? (ulong)v.binder.id : 0;
                 cg.out.writeu(frame_id);
+                // Collect the op dispatch tokens (same +1 tagging as the
+                // switch case labels) from the handle node's arms.
+                ulong[32] op_tags;
+                usz nops = 0;
+                Node* hnode = v.binder;
+                if (hnode != null && hnode.kind == Nk.NODE_EFFECT_HANDLE)
+                {
+                    for (usz ai = 1; ai < hnode.child_count && nops < 32; ai++)
+                    {
+                        Node* arm = hnode.children[ai];
+                        if (arm == null || arm.kind != Nk.NODE_HANDLER_ARM) { continue; }
+                        Node* op_decl = ssi_ir::effect_op_decl_of_arm(arm);
+                        op_tags[nops] = (op_decl != null) ? (ulong)op_decl.id + 1
+                                                          : (ulong)nops + 1;
+                        nops++;
+                    }
+                }
+                cg.out.writes(", i64 ");
+                cg.out.writeu((ulong)nops);
+                for (usz oi = 0; oi < nops; oi++)
+                {
+                    cg.out.writes(", i64 ");
+                    cg.out.writeu(op_tags[oi]);
+                }
                 cg.out.writes(")\n");
+            }
+
+        case ssi_ir::IrOp.IR_HANDLER_COMPLETE:
+            {
+                // Computation finished without diverging: pop the handler
+                // frame.  (Arms that resume never reach this point; arms
+                // that don't resume pop via IR_HANDLER_ARM instead.)
+                cg.out.writes("  call void @__pride_complete()\n");
             }
 
         case ssi_ir::IrOp.IR_HANDLER_ARM:
@@ -6343,6 +6446,59 @@ fn void CgenModule.emit_phi_edge_coerces(CgenModule* cg, ssi_ir::IrBlock* b, Typ
                     if (ph.pred[ai] != b.id) continue;
                     char* eop = null; char* esrc = null; char* edst = null;
                     if (!phi_edge_coercion(tm, ph, ai, &eop, &esrc, &edst)) continue;
+                    if (eop[0]=='i' && eop[1]=='n' && eop[2]=='s' && eop[3]=='v')
+                    {
+                        // Aggregate slot-0 fill: first bridge the scalar to the
+                        // slot's element type (inttoptr / ptrtoint as needed),
+                        // then `insertvalue AGG undef, ELEM x, 0`.
+                        char* elems = (char*)malloc(STRUCT_SPLIT_CAP * STRUCT_SPLIT_LEN);
+                        int ne = elems != null ? split_struct_ty(edst, elems, STRUCT_SPLIT_LEN) : 0;
+                        char* slot0 = ne >= 1 ? elems : (char*)"ptr";
+                        bool src_ptr = (esrc[0] == 'p');
+                        bool dst_ptr = (slot0[0] == 'p');
+                        bool bridged = false;
+                        char* bopc = null;
+                        if (src_ptr != dst_ptr)
+                        { bopc = src_ptr ? (char*)"ptrtoint" : (char*)"inttoptr"; }
+                        else if (!src_ptr)
+                        {
+                            // int→int of a different width: use the shared
+                            // coercion service (trunc/sext) — plain reuse is
+                            // only valid when the widths already agree.
+                            bool same_w = true;
+                            for (usz ci = 0; esrc[ci] != 0 && slot0[ci] != 0; ci++)
+                            {
+                                if (esrc[ci] != slot0[ci]) { same_w = false; break; }
+                            }
+                            if (!(same_w && strlen(esrc) == strlen(slot0)))
+                            { bopc = coerce_op(esrc, slot0); }
+                        }
+                        if (bopc != null)
+                        {
+                            cg.out.writes("  %phi."); cg.out.writei(ph.id);
+                            cg.out.writes(".in."); cg.out.writeu((ulong)ai);
+                            cg.out.writes(".iptr = "); cg.out.writes(bopc); cg.out.writes(" ");
+                            cg.out.writes(esrc); cg.out.writes(" ");
+                            cg.emit_vref(sigma_unwrap(ph.args[ai]));
+                            cg.out.writes(" to "); cg.out.writes(slot0); cg.out.writes("\n");
+                            bridged = true;
+                        }
+                        cg.out.writes("  %phi."); cg.out.writei(ph.id);
+                        cg.out.writes(".in."); cg.out.writeu((ulong)ai);
+                        cg.out.writes(" = insertvalue "); cg.out.writes(edst);
+                        cg.out.writes(" undef, ");
+                        cg.out.writes(slot0); cg.out.writes(" ");
+                        if (bridged)
+                        {
+                            cg.out.writes("%phi."); cg.out.writei(ph.id);
+                            cg.out.writes(".in."); cg.out.writeu((ulong)ai);
+                            cg.out.writes(".iptr");
+                        }
+                        else { cg.emit_vref(sigma_unwrap(ph.args[ai])); }
+                        cg.out.writes(", 0\n");
+                        if (elems != null) free(elems);
+                        continue;
+                    }
                     cg.out.writes("  %phi."); cg.out.writei(ph.id);
                     cg.out.writes(".in."); cg.out.writeu((ulong)ai);
                     cg.out.writes(" = "); cg.out.writes(eop); cg.out.writes(" ");
@@ -6510,6 +6666,29 @@ fn void CgenModule.emit_terminator(CgenModule* cg, ssi_ir::IrBlock* b, TypeTable
                             cg.out.writes(" "); cg.emit_vref(b.ret_val);
                             cg.out.writes(", ptr %coerce.alloca.B"); cg.out.writei(b.id); cg.out.writes("\n");
                             cg.out.writes("  ret ptr %coerce.alloca.B"); cg.out.writei(b.id); cg.out.writes("\n");
+                            return;
+                        }
+                        // Aggregate→int pun: LLVM's bitcast rejects aggregates
+                        // outright. Reinterpret through memory instead: store
+                        // the value, reload its leading word, then narrow.
+                        // (The honest-join-φ work means a fn-VALUE can now
+                        // reach this point where the declared ret is i32 —
+                        // before, the handle returned the dispatch token and
+                        // a plain trunc papered over the whole mismatch.)
+                        if (val_ty[0] == '{' && ret_ty[0] == 'i')
+                        {
+                            cg.out.writes("  %coerce.alloca.B"); cg.out.writei(b.id);
+                            cg.out.writes(" = alloca "); cg.out.writes(val_ty); cg.out.writes("\n");
+                            cg.out.writes("  store "); cg.out.writes(val_ty);
+                            cg.out.writes(" "); cg.emit_vref(b.ret_val);
+                            cg.out.writes(", ptr %coerce.alloca.B"); cg.out.writei(b.id); cg.out.writes("\n");
+                            cg.out.writes("  %coerce.word.B"); cg.out.writei(b.id);
+                            cg.out.writes(" = load i64, ptr %coerce.alloca.B"); cg.out.writei(b.id); cg.out.writes("\n");
+                            cg.out.writes("  %coerce.ret.B"); cg.out.writei(b.id);
+                            cg.out.writes(" = trunc i64 %coerce.word.B"); cg.out.writei(b.id);
+                            cg.out.writes(" to "); cg.out.writes(ret_ty); cg.out.writes("\n");
+                            cg.out.writes("  ret "); cg.out.writes(ret_ty);
+                            cg.out.writes(" %coerce.ret.B"); cg.out.writei(b.id); cg.out.writes("\n");
                             return;
                         }
                         // Scalar coercion: the shared coercion service picks the
@@ -7111,9 +7290,10 @@ fn void CgenModule.emit_runtime_decls(CgenModule* cg)
     // Pride runtime (implemented in runtime.c, linked separately)
     // Effects runtime (the ONLY runtime.c dependency — ucontext-based)
     cg.out.writes("; Pride effects runtime\n");
-    cg.out.writes("declare ptr  @__pride_perform(i64, ...)\n");
-    cg.out.writes("declare i64  @__pride_push_handler(i64)\n");
+    cg.out.writes("declare ptr  @__pride_perform(i64, i64, ...)\n");
+    cg.out.writes("declare i64  @__pride_push_handler(i64, i64, ...)\n");
     cg.out.writes("declare void @__pride_pop_handler()\n");
+    cg.out.writes("declare void @__pride_complete()\n");
     cg.out.writes("declare ptr  @__pride_resume(ptr)\n");
     cg.out.writes("declare void @__pride_drop(ptr)\n");
     cg.out.writes("declare void @__pride_panic(ptr, i64)\n");

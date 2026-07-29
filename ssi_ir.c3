@@ -98,6 +98,11 @@ enum IrOp : int
     IR_RESUME,       // resume(v) inside a handler arm:
                      //   args[0] = the value to resume the computation with
                      //   .binder → the NODE_HANDLER_ARM this resume belongs to
+    IR_HANDLER_COMPLETE, // computation finished normally: tear the handler
+                     //   frame down.  Emitted at the end of the computation
+                     //   block, before the branch to the handler join block.
+                     //   Carries no value; the join φ takes args[0] of the
+                     //   IR_HANDLER directly from the computation block.
     IR_STORE,        // store: args[0]=ptr_or_gep_base, args[1]=value[, args[2]=index]
                      //   variant A: *ptr = val  → args[0]=ptr, args[1]=val
                      //   variant B: arr[i] = val → args[0]=base, args[1]=val, args[2]=index
@@ -4628,6 +4633,45 @@ fn Node* effect_op_decl_of(Node* method_call)
     return null;
 }
 
+// The op head of a handler arm (children[0]) has the same
+// [EffectTypeVar, op_ident] shape as an effect method call's first two
+// children, so it can be resolved through effect_op_decl_of directly.
+fn Node* effect_op_decl_of_arm(Node* arm)
+{
+    if (arm == null || arm.kind != Nk.NODE_HANDLER_ARM || arm.child_count < 1)
+    {
+        return null;
+    }
+    Node* head = arm.children[0];
+    if (head == null || head.child_count < 2) { return null; }
+    return effect_op_decl_of(head);
+}
+
+// Declared parameter count of the op a handler arm dispatches, or -1 when the
+// op declaration can't be found (the resolver has already errored; the caller
+// then falls back to a positional guess so lowering can still finish).
+fn long effect_op_arity_of_arm(Node* arm)
+{
+    Node* op_decl = effect_op_decl_of_arm(arm);
+    if (op_decl == null || op_decl.child_count < 2) return -1;
+    Node* tyfn = op_decl.children[1];   // EffectOpDecl[name, TyFn]
+    if (tyfn == null || tyfn.kind != Nk.NODE_TYPE_FN || tyfn.child_count < 2) return -1;
+    Node* params = tyfn.children[0];    // TyFn[params, ret]
+    if (params == null) return -1;
+    if (params.kind == Nk.NODE_EXPR_UNIT || params.kind == Nk.NODE_LIT_BOTTOM) return 0;
+    if (params.kind == Nk.NODE_TYPE_TUPLE) return (long)params.child_count;
+    return 1;
+}
+
+// `()` in handler-arm binder position: the zero-arg placeholder pattern
+// (`State.get () k -> ...`). It names NO op argument and consumes no slot.
+fn bool is_arm_unit_binder(Node* b)
+{
+    if (b == null) return false;
+    if (b.kind == Nk.NODE_EXPR_UNIT) return true;
+    return b.kind == Nk.NODE_PATTERN_TUPLE && b.child_count == 0;
+}
+
 fn IrVal* SsiModule.lower_effect_perform(SsiModule* m, Node* n)
 {
     // Find the op declaration for the .binder field.
@@ -4692,6 +4736,37 @@ fn IrVal* SsiModule.lower_effect_perform(SsiModule* m, Node* n)
 
 // arm_blk must be pre-created by the caller (lower_handle) so that the
 // dispatch block's SWITCH edges are correctly established before lowering.
+// Bind one handler-arm argument pattern to exactly the runtime slots it
+// names, flattening tuple patterns: the effect ABI passes op arguments in
+// FLAT slots (the frame's arm_args[0..N)), so `Op.f (a, b)` is two slots,
+// `()` is zero. Emits one IR_PARAM per leaf binder with the flat slot index
+// on pv.ival (read directly by codegen's get_arm_arg emission). Returns the
+// next free slot.
+fn int SsiModule.emit_arm_arg_params(SsiModule* m, Node* pat, Node* arm, int slot) @private
+{
+    if (pat == null) return slot;
+    if (pat.kind == Nk.NODE_PATTERN_TUPLE)
+    {
+        for (usz i = 0; i < pat.child_count; i++)
+        { slot = m.emit_arm_arg_params(pat.children[i], arm, slot); }
+        return slot;
+    }
+    if (pat.kind == Nk.NODE_PATTERN_IDENT)
+    {
+        IrVal* pv = m.new_val(IrOp.IR_PARAM, pat);
+        if (pv != null)
+        {
+            pv.binder = arm;          // codegen: effect-arm arg branch
+            pv.ival = (ulong)slot;    // flat runtime slot index
+            m.emit(pv);
+        }
+        m.bind_let_pattern(pat, pv);
+        return slot + 1;
+    }
+    // Wildcards/literals consume a slot but bind nothing.
+    return slot + 1;
+}
+
 fn IrVal* SsiModule.lower_handler_arm(SsiModule* m, Node* arm, int arm_blk, int join)
 {
     m.cur = arm_blk;
@@ -4704,17 +4779,49 @@ fn IrVal* SsiModule.lower_handler_arm(SsiModule* m, Node* arm, int arm_blk, int 
     usz last = arm.child_count >= 1 ? arm.child_count - 1 : 0;
     Node* body_node = arm.child_count >= 1 ? arm.children[last] : null;
 
-    // Emit IR_PARAMs for effect op argument binders (children[1..last-2]).
-    // The LAST binder (child[last-1]) is the continuation `k` — bind it as a
-    // special IR_UNKNOWN sentinel so that k(val) lowers to IR_RESUME(val).
-    usz cont_idx = (last >= 2) ? last - 1 : 0;  // index of the continuation binder
+    // Binder classification — the op DECLARATION's arity is the ground truth.
+    // An arm names exactly the op's parameters (resume-style, no continuation)
+    // or the parameters PLUS a trailing continuation binder k. `()` in binder
+    // position is the zero-arg placeholder and names no slot.
+    //
+    // Previously this guessed positionally ("the last binder is k whenever
+    // there is ≥1 binder"), silently misclassifying a single ARGUMENT binder as
+    // the continuation: `| Ask.ask code -> resume(code * 2)` bound `code` to
+    // the never-emitted continuation sentinel, and the body's `code` read then
+    // decomposed that virtual value into `index (v70)` against an undefined
+    // register — only visible once the join φ was typed honestly and llvm-as
+    // got far enough to notice.
+    long op_nargs = effect_op_arity_of_arm(arm);
+    usz cont_idx = 0;   // child index of the continuation binder; 0 = none
+    {
+        usz eff = 0;
+        usz last_eff = 0;
+        for (usz i = 1; i < last; i++)
+        {
+            if (is_arm_unit_binder(arm.children[i])) continue;
+            eff++;
+            last_eff = i;
+        }
+        if (op_nargs >= 0)
+        {
+            if ((long)eff == op_nargs + 1) { cont_idx = last_eff; }
+        }
+        else if (last >= 2) { cont_idx = last - 1; }   // resolver already errored; legacy guess
+    }
+
+    // Emit IR_PARAMs for op ARGUMENT binders (children[1..last-1] minus the
+    // continuation). Tuple patterns flatten onto the runtime's flat arg-slot
+    // ABI: `Op.pair (a, b) k` names slots 0 and 1 just like `Op.pair a b k`.
+    // The slot index travels on the IR_PARAM value itself (pv.ival) — codegen
+    // must not re-derive it from child position (position ≠ slot the moment a
+    // `()` placeholder or a nested tuple appears).
+    int arm_slot = 0;
     for (usz i = 1; i < last; i++)
     {
         Node* binder = arm.children[i];
         if (binder == null) { continue; }
 
-        bool is_continuation = (i == cont_idx && last >= 2);
-        if (is_continuation)
+        if (cont_idx != 0 && i == cont_idx)
         {
             // Continuation k: bind to an IR_UNKNOWN sentinel tagged with the arm node.
             // When the body calls k(val), lower_expr detects this and emits IR_RESUME(val).
@@ -4725,17 +4832,10 @@ fn IrVal* SsiModule.lower_handler_arm(SsiModule* m, Node* arm, int arm_blk, int 
                 // Do NOT emit — it is a virtual value, never actually defined as an inst.
             }
             m.bind_let_pattern(binder, kv);
+            continue;
         }
-        else
-        {
-            IrVal* pv = m.new_val(IrOp.IR_PARAM, binder);
-            if (pv != null)
-            {
-                pv.binder = arm;   // tag with arm node so codegen retrieves via get_arm_arg
-                m.emit(pv);
-            }
-            m.bind_let_pattern(binder, pv);
-        }
+        if (is_arm_unit_binder(binder)) { continue; }
+        arm_slot = m.emit_arm_arg_params(binder, arm, arm_slot);
     }
 
     // Lower the arm body.
@@ -4836,9 +4936,16 @@ fn IrVal* SsiModule.lower_handle(SsiModule* m, Node* n)
     // ── comp_blk: run the computation AFTER handler is installed ─────────────
     m.cur = comp_blk;
     IrVal* comp_val = comp != null ? m.lower_expr(comp) : m.mk_unit(n);
-    // After computation completes normally (no effect performed), go to join
+    int comp_end = m.cur;
+    // The computation reached its end: tear the handler frame down before
+    // joining.  This is the ONLY correct pop point on the normal path — an
+    // arm that called resume() never returns (resume is a tail transfer of
+    // control to the computation), so the IR_HANDLER_ARM pop in the arm block
+    // executes only for arms that finish WITHOUT resuming.
     if (!m.terminated())
     {
+        IrVal* done_v = m.new_val(IrOp.IR_HANDLER_COMPLETE, n);
+        if (done_v != null) { m.emit(done_v); }
         IrBlock* cpb = m.blk(m.cur);
         if (cpb != null) { cpb.term = TermKind.TERM_BR; }
         m.link(m.cur, join);
@@ -4847,6 +4954,7 @@ fn IrVal* SsiModule.lower_handle(SsiModule* m, Node* n)
     if (handler_cond != null) { handler_cond.add_arg(comp_val, -1); }
 
     IrVal*[32] arm_vals;
+    int[32]    arm_blks;
     usz narms = 0;
 
     for (usz i = 1; i < n.child_count && narms < 32; i++)
@@ -4856,13 +4964,21 @@ fn IrVal* SsiModule.lower_handle(SsiModule* m, Node* n)
 
         // Create the arm block and add it as a SWITCH case successor of dispatch.
         int arm_blk = m.new_block();
-        // Use link_case so TERM_SWITCH emits `i64 <arm_idx+1>, label %Barm` entries.
-        // narms+1 because 0 = default (normal exit), 1 = arm 0, 2 = arm 1, etc.
-        m.link_case(dispatch, arm_blk, (ulong)(narms + 1));
+        // Dispatch token contract (with the runtime, see §4 of compiler_rt.c):
+        // __pride_push_handler returns 0 on first entry ("run the
+        // computation") and (op_id + 1) when operation `op_id` was performed.
+        // Case each arm on its op's declaration id + 1 — a stable, unique
+        // token that never collides with the 0 sentinel.  (Fall back to the
+        // arm ordinal only if the op declaration could not be resolved.)
+        Node* op_decl = effect_op_decl_of_arm(arm);
+        ulong case_tag = (op_decl != null) ? (ulong)op_decl.id + 1
+                                           : (ulong)(narms + 1);
+        m.link_case(dispatch, arm_blk, case_tag);
 
         // Lower the arm body into arm_blk.
         IrVal* av = m.lower_handler_arm(arm, arm_blk, join);
         arm_vals[narms] = av;
+        arm_blks[narms] = arm_blk;
         narms++;
     }
 
@@ -4877,9 +4993,40 @@ fn IrVal* SsiModule.lower_handle(SsiModule* m, Node* n)
         }
     }
 
-    // In the join block: the result is the handler value (resolved by the backend
-    // to whichever path actually ran — the computation's normal return or an arm).
+    // The value of the handle expression is a φ in the join block: the
+    // computation's result on the normal edge, each arm's result on its edge.
+    // (It used to be handler_cond itself — the push_handler dispatch token —
+    // which meant `handle` evaluated to a runtime cookie instead of the
+    // handled value.  Only include incoming edges that were actually linked:
+    // a diverging computation or arm leaves no edge to join.)
     m.cur = join;
+    IrBlock* jb = m.blk(join);
+    IrVal* rphi = m.new_val(IrOp.IR_PHI, n);
+    if (rphi != null)
+    {
+        // Type the φ from the computation's annotated node: arm values are
+        // runtime-ABI-shaped (resume returns ptr by declaration), so
+        // operand-driven inference would type the join φ "ptr".  The
+        // computation's type IS the handle expression's type.
+        if (comp != null && comp.type_annotation != null) { rphi.binder = comp; }
+        IrBlock* ce = m.blk(comp_end);
+        if (ce != null && ce.succ_count > 0) { rphi.add_arg(comp_val, comp_end); }
+        for (usz i = 0; i < narms; i++)
+        {
+            IrBlock* ab = m.blk(arm_blks[i]);
+            if (arm_vals[i] != null && ab != null && ab.succ_count > 0)
+            {
+                rphi.add_arg(arm_vals[i], arm_blks[i]);
+            }
+        }
+        if (rphi.arg_count > 0)
+        {
+            m.add_phi(join, rphi);
+            return rphi;
+        }
+    }
+    // Degenerate: every path diverged.
+    if (jb != null && jb.pred_count == 0) { jb.term = TermKind.TERM_UNREACHABLE; }
     return handler_cond;
 }
 
