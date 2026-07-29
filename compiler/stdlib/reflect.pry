@@ -1,0 +1,89 @@
+-- stdlib/reflect.pry — Runtime type information (reflection)
+-- Pryde has no full Rust-style Any, but provides type IDs, names, and
+-- basic structural info via compile-time constants and runtime tables.
+
+-- ─── Type IDs ────────────────────────────────────────────────────────────────
+-- Each named type gets a unique i64 ID via the type_id!() compile-time macro.
+-- The IDs are stable within a build (FNV hash of the type name).
+
+fn type_name_of_i64   : () -> *u8
+  | () -> "i64"   as *u8
+fn type_name_of_f64   : () -> *u8
+  | () -> "f64"   as *u8
+fn type_name_of_bool  : () -> *u8
+  | () -> "bool"  as *u8
+fn type_name_of_ptr   : () -> *u8
+  | () -> "ptr"   as *u8
+fn type_name_of_usize : () -> *u8
+  | () -> "usize" as *u8
+
+-- Type size at runtime (same as sizeof at compile time for primitives)
+fn type_size_i64  : () -> usize
+  | () -> 8
+fn type_size_f64  : () -> usize
+  | () -> 8
+fn type_size_bool : () -> usize
+  | () -> 1
+fn type_size_ptr  : () -> usize
+  | () -> 8
+fn type_size_i32  : () -> usize
+  | () -> 4
+fn type_size_i16  : () -> usize
+  | () -> 2
+fn type_size_i8   : () -> usize
+  | () -> 1
+fn type_size_f32  : () -> usize
+  | () -> 4
+
+-- ─── TypeInfo: runtime structural description ─────────────────────────────────
+struct TypeInfo
+  name    : *u8
+  size    : usize
+  kind    : i32     -- 0=primitive, 1=struct, 2=enum, 3=ptr, 4=array, 5=fn
+
+let KIND_PRIMITIVE : i32 = 0
+let KIND_STRUCT    : i32 = 1
+let KIND_ENUM      : i32 = 2
+let KIND_PTR       : i32 = 3
+let KIND_ARRAY     : i32 = 4
+let KIND_FN        : i32 = 5
+
+fn typeinfo_i64 : () -> TypeInfo
+  | () -> TypeInfo { name: "i64" as *u8, size: 8, kind: KIND_PRIMITIVE }
+
+fn typeinfo_f64 : () -> TypeInfo
+  | () -> TypeInfo { name: "f64" as *u8, size: 8, kind: KIND_PRIMITIVE }
+
+fn typeinfo_bool : () -> TypeInfo
+  | () -> TypeInfo { name: "bool" as *u8, size: 1, kind: KIND_PRIMITIVE }
+
+-- ─── Dynamic Any: box any i64-sized value with its TypeInfo ──────────────────
+struct Any
+  value    : i64
+  type_info: TypeInfo
+
+fn any_new_i64 : i64 -> Any
+  | (v) -> Any { value: v, type_info: typeinfo_i64() }
+
+fn any_new_f64 : f64 -> Any
+  | (v) -> Any { value: v as i64, type_info: typeinfo_f64() }
+
+fn any_as_i64 : *Any -> i64
+  | (a) -> a.value
+
+fn any_type_name : *Any -> *u8
+  | (a) -> a.type_info.name
+
+fn any_type_size : *Any -> usize
+  | (a) -> a.type_info.size
+
+-- ─── Type ID via FNV hash of name ────────────────────────────────────────────
+fn type_id_from_name : (*u8, usize) -> usize
+  | (name, len) ->
+      let mut h : usize = 14695981039346656037
+      let mut i : usize = 0
+      while i < len
+        h = h ^ (*((name as usize + i) as *u8)) as usize
+        h = h * 1099511628211
+        i = i + 1
+      h

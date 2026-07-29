@@ -1,0 +1,114 @@
+-- stdlib/dyn.pry — Dynamic dispatch via vtable (fat pointer: ptr + ptr)
+-- Pryde implements dyn Interface as a { data_ptr: ptr, vtable_ptr: ptr } pair.
+-- The vtable is a struct of function pointers, one per interface method.
+-- Since Pryde has no runtime reflection, vtables must be built explicitly.
+-- This file provides the core DynPtr type and vtable construction helpers.
+
+-- A DynPtr is a fat pointer: { data: ptr, vtable: ptr }
+struct DynPtr
+  data   : ptr
+  vtable : ptr
+
+-- Construct a DynPtr from a concrete value pointer and vtable pointer.
+fn dyn_new : (ptr, ptr) -> DynPtr
+  | (data, vtable) -> DynPtr { data: data, vtable: vtable }
+
+fn dyn_data   : DynPtr -> ptr
+  | (d) -> d.data
+fn dyn_vtable : DynPtr -> ptr
+  | (d) -> d.vtable
+
+-- Call a method through a vtable. The vtable entry at byte offset `slot_bytes`
+-- is a function pointer: fn(ptr, args...) -> ret.
+-- slot_bytes = slot_index * pointer_size (8 on x86_64).
+fn dyn_vtable_fn : (DynPtr, usize) -> ptr
+  | (d, slot_bytes) ->
+      let vt = d.vtable
+      let entry_addr = (vt as usize) + slot_bytes
+      let fn_ptr = *(entry_addr as *ptr)
+      fn_ptr
+
+-- ─── Operator overloading via interface ──────────────────────────────────────
+-- Standard interfaces that correspond to operators. Implement these to enable
+-- operator syntax with your types.
+
+-- Addition: a + b
+interface Add
+  fn add : (Self, Self) -> Self
+
+-- Subtraction: a - b
+interface Sub
+  fn sub : (Self, Self) -> Self
+
+-- Multiplication: a * b
+interface Mul
+  fn mul : (Self, Self) -> Self
+
+-- Division: a / b
+interface Div
+  fn div : (Self, Self) -> Self
+
+-- Remainder: a % b
+interface Rem
+  fn rem : (Self, Self) -> Self
+
+-- Negation: -a
+interface Neg
+  fn neg : Self -> Self
+
+-- Equality: a == b
+interface Eq
+  fn eq : (Self, Self) -> bool
+  fn ne : (Self, Self) -> bool
+
+-- Ordering: a < b, a > b, a <= b, a >= b
+interface Ord
+  fn lt  : (Self, Self) -> bool
+  fn gt  : (Self, Self) -> bool
+  fn lte : (Self, Self) -> bool
+  fn gte : (Self, Self) -> bool
+
+-- Bitwise AND: a & b
+interface BitAnd
+  fn bit_and : (Self, Self) -> Self
+
+-- Bitwise OR: a | b
+interface BitOr
+  fn bit_or : (Self, Self) -> Self
+
+-- Bitwise XOR: a ^ b
+interface BitXor
+  fn bit_xor : (Self, Self) -> Self
+
+-- Left shift: a << b
+interface Shl
+  fn shl : (Self, i32) -> Self
+
+-- Right shift: a >> b
+interface Shr
+  fn shr : (Self, i32) -> Self
+
+-- Index: a[i]
+interface Index
+  fn index : (*Self, usize) -> ptr
+
+-- Display: format value as string
+interface Display
+  fn display : (Self, *String) -> ()
+
+-- Iterator protocol
+interface Iterator
+  fn has_next : *Self -> bool
+  fn next_val : *Self -> i64
+
+-- Hash: for use in HashMap
+interface Hash
+  fn hash_val : Self -> usize
+
+-- Clone: deep copy
+interface Clone
+  fn clone : Self -> Self
+
+-- Drop: destructor hook
+interface Drop
+  fn drop : *Self -> ()

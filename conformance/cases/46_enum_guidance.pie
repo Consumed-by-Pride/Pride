@@ -1,0 +1,7 @@
+-- EXPECT-CLEAN
+-- enum is now a first-class keyword in Pride
+enum Color
+  Red,
+  Green,
+fn f : i32 -> i32
+  | n -> n

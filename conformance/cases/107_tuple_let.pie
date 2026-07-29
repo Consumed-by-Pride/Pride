@@ -1,0 +1,8 @@
+-- EXPECT-CLEAN
+fn swap : (i32, i32) -> (i32, i32)
+  | (a, b) -> (b, a)
+
+fn fst : (i32, i32) -> i32
+  | pair ->
+    let (x, _) = pair
+    x

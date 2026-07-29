@@ -1,0 +1,7 @@
+-- EXPECT-CLEAN
+fn sum_range : (i32, i32) -> i32
+  | (lo, hi) ->
+    let mut s = 0
+    for i in lo..hi
+      s = s + i
+    s

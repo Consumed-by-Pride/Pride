@@ -1,0 +1,7 @@
+-- EXPECT-CLEAN
+struct Box<T>
+  val : T
+fn mk : i32 -> i32
+  | n ->
+      let b = Box { val: n }
+      b.val

@@ -1,0 +1,10 @@
+-- EXPECT-CLEAN
+mod math
+  fn square : i32 -> i32
+    | n -> n * n
+
+  fn cube : i32 -> i32
+    | n -> n * n * n
+
+fn use_mod : i32 -> i32
+  | n -> math::square(n) + math::cube(n)

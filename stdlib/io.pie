@@ -1,0 +1,784 @@
+mod io
+
+use os.linux
+use mem
+
+-- §1  CORE CONSTANTS
+const DEFAULT_BUF_SIZE : i64 = 8192i64
+const STDIN_FD  : i64 = 0i64
+const STDOUT_FD : i64 = 1i64
+const STDERR_FD : i64 = 2i64
+
+-- §2  BUFFERED WRITER
+-- Wraps an fd with a userspace write buffer. Flush on full or explicit flush().
+-- Not thread-safe — use one per thread or guard externally.
+
+struct BufWriter
+  fd    : i64
+  buf   : *u8
+  pos   : i64
+  cap   : i64
+  err   : i64   -- last syscall error (0 = ok)
+
+fn bufwriter_new : (i64, i64) -> BufWriter
+  | (fd, cap) ->
+    let buf = os.linux.malloc(cap) as *u8
+    BufWriter { fd: fd, buf: buf, pos: 0i64, cap: cap, err: 0i64 }
+
+fn bufwriter_new_default : i64 -> BufWriter
+  | fd -> bufwriter_new(fd, DEFAULT_BUF_SIZE)
+
+fn bufwriter_destroy : *BufWriter -> ()
+  | w -> os.linux.free(w.buf as ptr); w.buf = 0 as *u8; w.pos = 0i64
+
+fn bufwriter_flush : *BufWriter -> i64
+  | w ->
+    if w.pos == 0i64 then 0i64
+    else
+      let r = os.linux.write_all(w.fd, w.buf as ptr, w.pos)
+      if r < 0i64 then w.err = -r; r
+      else w.pos = 0i64; 0i64
+
+fn bufwriter_write_byte : (*BufWriter, u8) -> i64
+  | (w, b) ->
+    if w.pos >= w.cap
+      let r = bufwriter_flush(w)
+      if r < 0i64 then r
+    w.buf[w.pos] = b; w.pos = w.pos + 1i64; 0i64
+
+fn bufwriter_write : (*BufWriter, ptr, i64) -> i64
+  | (w, src, n) ->
+    -- fast path: fits in buffer
+    if w.pos + n <= w.cap
+      os.linux.memcpy((w.buf as i64 + w.pos) as ptr, src, n as u64)
+      w.pos = w.pos + n; 0i64
+    else
+      -- flush what we have, then write large chunks directly, buffer remainder
+      let r = bufwriter_flush(w)
+      if r < 0i64 then r
+      else if n >= w.cap
+        -- bypass buffer for large writes
+        let wr = os.linux.write_all(w.fd, src, n)
+        if wr < 0i64 then w.err = -wr; wr else 0i64
+      else
+        os.linux.memcpy(w.buf as ptr, src, n as u64)
+        w.pos = n; 0i64
+
+fn bufwriter_write_str : (*BufWriter, ptr) -> i64
+  | (w, s) ->
+    let n = os.linux.strlen(s) as i64
+    bufwriter_write(w, s, n)
+
+fn bufwriter_writeln : (*BufWriter, ptr) -> i64
+  | (w, s) ->
+    let r = bufwriter_write_str(w, s)
+    if r < 0i64 then r
+    else bufwriter_write_byte(w, 10u8)
+
+fn bufwriter_write_i64 : (*BufWriter, i64) -> i64
+  | (w, v) ->
+    let tmp : *u8 = os.linux.malloc(24i64) as *u8
+    let mut n : i64 = 0i64; let mut vv = v
+    if vv == 0i64 then tmp[0i64] = 48u8; n = 1i64
+    else
+      let neg = vv < 0i64; if neg then vv = -vv
+      while vv > 0i64
+        tmp[n] = (48i64 + vv % 10i64) as u8; n = n + 1i64; vv = vv / 10i64
+      if neg then tmp[n] = 45u8; n = n + 1i64
+      let mut lo : i64 = 0i64; let mut hi = n - 1i64
+      while lo < hi
+        let t = tmp[lo]; tmp[lo] = tmp[hi]; tmp[hi] = t
+        lo = lo + 1i64; hi = hi - 1i64
+    let r = bufwriter_write(w, tmp as ptr, n)
+    os.linux.free(tmp as ptr); r
+
+fn bufwriter_write_u64_hex : (*BufWriter, u64, bool) -> i64
+  | (w, v, upper) ->
+    let hex = if upper then "0123456789ABCDEF" as *u8 else "0123456789abcdef" as *u8
+    let tmp : *u8 = os.linux.malloc(18i64) as *u8
+    tmp[0i64] = 48u8; tmp[1i64] = 120u8   -- "0x"
+    if v == 0u64
+      tmp[2i64] = 48u8
+      let r = bufwriter_write(w, tmp as ptr, 3i64)
+      os.linux.free(tmp as ptr); r
+    else
+      let mut n : i64 = 0i64; let mut vv = v
+      let digits : *u8 = os.linux.malloc(16i64) as *u8
+      while vv > 0u64
+        digits[n] = hex[(vv & 0xFu64) as i64]
+        n = n + 1i64; vv = vv >> 4u64
+      let mut i = n - 1i64; let mut p : i64 = 2i64
+      while i >= 0i64 then tmp[p] = digits[i]; p = p + 1i64; i = i - 1i64
+      let r = bufwriter_write(w, tmp as ptr, n + 2i64)
+      os.linux.free(tmp as ptr); os.linux.free(digits as ptr); r
+
+fn bufwriter_write_f64 : (*BufWriter, f64, i64) -> i64
+  | (w, v, prec) ->
+    if v != v then bufwriter_write_str(w, "nan" as ptr)
+    else if v > 1.7976931348623157e308f64 then bufwriter_write_str(w, "inf" as ptr)
+    else if v < -1.7976931348623157e308f64 then bufwriter_write_str(w, "-inf" as ptr)
+    else
+      let mut r : i64 = 0i64
+      if v < 0.0f64 then r = bufwriter_write_byte(w, 45u8)
+      if r < 0i64 then r
+      else
+        let abs_v = if v < 0.0f64 then -v else v
+        r = bufwriter_write_i64(w, abs_v as i64)
+        if r < 0i64 then r
+        else if prec > 0i64
+          r = bufwriter_write_byte(w, 46u8)
+          if r < 0i64 then r
+          else
+            let mut frac = abs_v - (abs_v as i64) as f64
+            let mut p : i64 = 0i64
+            while p < prec && r >= 0i64
+              frac = frac * 10.0f64
+              let d = frac as i64
+              r = bufwriter_write_byte(w, (48i64 + d) as u8)
+              frac = frac - d as f64; p = p + 1i64
+            r
+        else r
+
+fn bufwriter_write_bool : (*BufWriter, bool) -> i64
+  | (w, b) ->
+    if b then bufwriter_write_str(w, "true" as ptr)
+    else bufwriter_write_str(w, "false" as ptr)
+
+fn bufwriter_ok : *BufWriter -> bool | w -> w.err == 0i64
+
+-- §3  BUFFERED READER
+-- Wraps an fd with a userspace read buffer. Minimises syscalls.
+
+struct BufReader
+  fd    : i64
+  buf   : *u8
+  pos   : i64   -- consume position in buf
+  end   : i64   -- valid bytes end in buf
+  cap   : i64
+  eof   : bool
+  err   : i64
+
+fn bufreader_new : (i64, i64) -> BufReader
+  | (fd, cap) ->
+    let buf = os.linux.malloc(cap) as *u8
+    BufReader { fd: fd, buf: buf, pos: 0i64, end: 0i64, cap: cap, eof: false, err: 0i64 }
+
+fn bufreader_new_default : i64 -> BufReader
+  | fd -> bufreader_new(fd, DEFAULT_BUF_SIZE)
+
+fn bufreader_destroy : *BufReader -> ()
+  | r -> os.linux.free(r.buf as ptr); r.buf = 0 as *u8
+
+fn bufreader_fill : *BufReader -> i64
+  | r ->
+    if r.eof then 0i64
+    else
+      -- compact: move unconsumed bytes to front
+      let avail = r.end - r.pos
+      if avail > 0i64 && r.pos > 0i64
+        os.linux.memmove(r.buf as ptr, (r.buf as i64 + r.pos) as ptr, avail as u64)
+      r.end = avail; r.pos = 0i64
+      let space = r.cap - r.end
+      if space == 0i64 then avail
+      else
+        let n = os.linux.read(r.fd, (r.buf as i64 + r.end) as ptr, space)
+        if n < 0i64 then r.err = -n; n
+        else if n == 0i64 then r.eof = true; 0i64
+        else r.end = r.end + n; n
+
+fn bufreader_buffered : *BufReader -> i64 | r -> r.end - r.pos
+
+fn bufreader_read_byte : *BufReader -> i64
+  | r ->
+    if r.pos >= r.end
+      let n = bufreader_fill(r)
+      if n <= 0i64 then if r.eof then -2i64 else -1i64
+    if r.pos >= r.end then -2i64
+    else
+      let b = r.buf[r.pos] as i64
+      r.pos = r.pos + 1i64; b
+
+fn bufreader_peek_byte : *BufReader -> i64
+  | r ->
+    if r.pos >= r.end
+      let n = bufreader_fill(r)
+      if n <= 0i64 then if r.eof then -2i64 else -1i64
+    if r.pos >= r.end then -2i64 else r.buf[r.pos] as i64
+
+fn bufreader_read : (*BufReader, ptr, i64) -> i64
+  | (r, dst, n) ->
+    let mut off : i64 = 0i64
+    while off < n
+      let avail = r.end - r.pos
+      if avail == 0i64
+        let filled = bufreader_fill(r)
+        if filled < 0i64 then off
+        else if filled == 0i64 then off
+      let copy_n = if n - off < r.end - r.pos then n - off else r.end - r.pos
+      os.linux.memcpy((dst as i64 + off) as ptr, (r.buf as i64 + r.pos) as ptr, copy_n as u64)
+      r.pos = r.pos + copy_n; off = off + copy_n
+    off
+
+fn bufreader_read_exact : (*BufReader, ptr, i64) -> i64
+  | (r, dst, n) ->
+    let got = bufreader_read(r, dst, n)
+    if got < n then -(os.linux.EIO) else n
+
+fn bufreader_skip : (*BufReader, i64) -> i64
+  | (r, n) ->
+    let mut skipped : i64 = 0i64
+    while skipped < n
+      let avail = r.end - r.pos
+      if avail > 0i64
+        let skip = if n - skipped < avail then n - skipped else avail
+        r.pos = r.pos + skip; skipped = skipped + skip
+      else
+        let filled = bufreader_fill(r)
+        if filled <= 0i64 then skipped
+    skipped
+
+fn bufreader_read_line : (*BufReader, ptr, i64) -> i64
+  | (r, dst, max) ->
+    -- reads until '\n' or EOF, stores in dst, returns byte count (incl '\n' if found)
+    let mut n : i64 = 0i64
+    while n < max - 1i64
+      let b = bufreader_read_byte(r)
+      if b < 0i64 then n   -- EOF or error
+      let byte = b as u8
+      (dst as *u8)[n] = byte; n = n + 1i64
+      if byte == 10u8 then n   -- stop at newline
+    (dst as *u8)[n] = 0u8; n
+
+fn bufreader_read_line_bvec : (*BufReader, *mem.ByteVec) -> i64
+  | (r, out) ->
+    mem.bvec_clear(out)
+    let mut n : i64 = 0i64
+    while true
+      let b = bufreader_read_byte(r)
+      if b < 0i64 then n
+      let byte = b as u8
+      mem.bvec_push(out, byte); n = n + 1i64
+      if byte == 10u8 then n
+    n
+
+fn bufreader_read_until : (*BufReader, u8, ptr, i64) -> i64
+  | (r, delim, dst, max) ->
+    let mut n : i64 = 0i64
+    while n < max - 1i64
+      let b = bufreader_read_byte(r)
+      if b < 0i64 then n
+      let byte = b as u8
+      (dst as *u8)[n] = byte; n = n + 1i64
+      if byte == delim then n
+    (dst as *u8)[n] = 0u8; n
+
+fn bufreader_read_all_bvec : (*BufReader, *mem.ByteVec) -> i64
+  | (r, out) ->
+    let mut total : i64 = 0i64
+    let tmp : *u8 = os.linux.malloc(4096i64) as *u8
+    while true
+      let n = bufreader_read(r, tmp as ptr, 4096i64)
+      if n <= 0i64 then
+        os.linux.free(tmp as ptr); total
+      mem.bvec_push_slice(out, tmp as ptr, n)
+      total = total + n
+    total
+
+fn bufreader_at_eof : *BufReader -> bool
+  | r -> r.eof && r.pos >= r.end
+
+fn bufreader_ok : *BufReader -> bool | r -> r.err == 0i64
+
+-- §4  LINE ITERATOR
+struct LineIter
+  reader  : BufReader
+  buf     : *u8
+  buf_cap : i64
+
+fn lineiter_new : (i64, i64) -> LineIter
+  | (fd, line_cap) ->
+    LineIter {
+      reader:  bufreader_new_default(fd),
+      buf:     os.linux.malloc(line_cap) as *u8,
+      buf_cap: line_cap
+    }
+
+fn lineiter_destroy : *LineIter -> ()
+  | it -> bufreader_destroy(&it.reader); os.linux.free(it.buf as ptr); it.buf = 0 as *u8
+
+fn lineiter_next : *LineIter -> (*u8, i64)
+  | it ->
+    let n = bufreader_read_until(&it.reader, 10u8, it.buf as ptr, it.buf_cap)
+    if n == 0i64 && bufreader_at_eof(&it.reader) then (0 as *u8, 0i64)
+    -- strip trailing \r\n
+    let mut len = n
+    if len > 0i64 && it.buf[len - 1i64] == 10u8 then len = len - 1i64
+    if len > 0i64 && it.buf[len - 1i64] == 13u8 then len = len - 1i64
+    it.buf[len] = 0u8
+    (it.buf, len)
+
+fn lineiter_has_next : *LineIter -> bool
+  | it -> !bufreader_at_eof(&it.reader)
+
+-- §5  FILE READER (convenience wrapper around BufReader for file paths)
+struct FileReader
+  reader : BufReader
+  path   : ptr
+
+fn filereader_open : (ptr, i64) -> FileReader
+  | (path, buf_cap) ->
+    let fd = os.linux.open(path, os.linux.O_RDONLY, 0i64)
+    FileReader { reader: bufreader_new(fd, buf_cap), path: path }
+
+fn filereader_open_default : ptr -> FileReader
+  | path -> filereader_open(path, DEFAULT_BUF_SIZE)
+
+fn filereader_close : *FileReader -> ()
+  | f ->
+    bufreader_destroy(&f.reader)
+    if f.reader.fd >= 0i64 then os.linux.close(f.reader.fd)
+
+fn filereader_read : (*FileReader, ptr, i64) -> i64
+  | (f, dst, n) -> bufreader_read(&f.reader, dst, n)
+
+fn filereader_read_line : (*FileReader, ptr, i64) -> i64
+  | (f, dst, max) -> bufreader_read_until(&f.reader, 10u8, dst, max)
+
+fn filereader_ok : *FileReader -> bool | f -> f.reader.fd >= 0i64 && bufreader_ok(&f.reader)
+fn filereader_at_eof : *FileReader -> bool | f -> bufreader_at_eof(&f.reader)
+
+-- §6  FILE WRITER (convenience wrapper around BufWriter for file paths)
+struct FileWriter
+  writer : BufWriter
+  path   : ptr
+
+fn filewriter_open : (ptr, i64, i64) -> FileWriter
+  | (path, flags, buf_cap) ->
+    let fd = os.linux.open(path, flags, 493i64)   -- 0755
+    FileWriter { writer: bufwriter_new(fd, buf_cap), path: path }
+
+fn filewriter_open_create : ptr -> FileWriter
+  | path ->
+    filewriter_open(path, os.linux.O_WRONLY | os.linux.O_CREAT | os.linux.O_TRUNC, DEFAULT_BUF_SIZE)
+
+fn filewriter_open_append : ptr -> FileWriter
+  | path ->
+    filewriter_open(path, os.linux.O_WRONLY | os.linux.O_CREAT | os.linux.O_APPEND, DEFAULT_BUF_SIZE)
+
+fn filewriter_close : *FileWriter -> ()
+  | f ->
+    bufwriter_flush(&f.writer)
+    bufwriter_destroy(&f.writer)
+    if f.writer.fd >= 0i64 then os.linux.close(f.writer.fd)
+
+fn filewriter_write : (*FileWriter, ptr, i64) -> i64
+  | (f, src, n) -> bufwriter_write(&f.writer, src, n)
+
+fn filewriter_write_str : (*FileWriter, ptr) -> i64
+  | (f, s) -> bufwriter_write_str(&f.writer, s)
+
+fn filewriter_writeln : (*FileWriter, ptr) -> i64
+  | (f, s) -> bufwriter_writeln(&f.writer, s)
+
+fn filewriter_flush : *FileWriter -> i64
+  | f -> bufwriter_flush(&f.writer)
+
+fn filewriter_ok : *FileWriter -> bool | f -> f.writer.fd >= 0i64 && bufwriter_ok(&f.writer)
+
+-- §7  SCATTER-GATHER I/O (iovec helpers)
+struct IoVec
+  base : ptr
+  len  : i64
+
+fn iovec_new : (ptr, i64) -> IoVec
+  | (base, len) -> IoVec { base: base, len: len }
+
+fn iov_write : (i64, *IoVec, i64) -> i64
+  | (fd, iov, count) -> os.linux.writev(fd, iov as ptr, count)
+
+fn iov_read : (i64, *IoVec, i64) -> i64
+  | (fd, iov, count) -> os.linux.readv(fd, iov as ptr, count)
+
+fn iov_pwrite : (i64, *IoVec, i64, i64) -> i64
+  | (fd, iov, count, offset) -> os.linux.pwritev(fd, iov as ptr, count, offset)
+
+fn iov_pread : (i64, *IoVec, i64, i64) -> i64
+  | (fd, iov, count, offset) -> os.linux.preadv(fd, iov as ptr, count, offset)
+
+fn iov_total_len : (*IoVec, i64) -> i64
+  | (iov, count) ->
+    let mut total : i64 = 0i64; let mut i : i64 = 0i64
+    while i < count then total = total + iov[i].len; i = i + 1i64
+    total
+
+-- §8  PIPE HELPERS
+struct Pipe
+  read_fd  : i64
+  write_fd : i64
+
+fn pipe_new : () -> Pipe
+  | () ->
+    let fds : *i64 = os.linux.malloc(16i64) as *i64
+    os.linux.pipe2(fds as ptr, 0i64)
+    let p = Pipe { read_fd: fds[0i64], write_fd: fds[1i64] }
+    os.linux.free(fds as ptr); p
+
+fn pipe_new_cloexec : () -> Pipe
+  | () ->
+    let fds : *i64 = os.linux.malloc(16i64) as *i64
+    os.linux.pipe2(fds as ptr, os.linux.O_CLOEXEC)
+    let p = Pipe { read_fd: fds[0i64], write_fd: fds[1i64] }
+    os.linux.free(fds as ptr); p
+
+fn pipe_new_nonblock : () -> Pipe
+  | () ->
+    let fds : *i64 = os.linux.malloc(16i64) as *i64
+    os.linux.pipe2(fds as ptr, os.linux.O_NONBLOCK | os.linux.O_CLOEXEC)
+    let p = Pipe { read_fd: fds[0i64], write_fd: fds[1i64] }
+    os.linux.free(fds as ptr); p
+
+fn pipe_close_read  : *Pipe -> () | p -> os.linux.close(p.read_fd);  p.read_fd  = -1i64
+fn pipe_close_write : *Pipe -> () | p -> os.linux.close(p.write_fd); p.write_fd = -1i64
+fn pipe_close       : *Pipe -> () | p -> pipe_close_read(p); pipe_close_write(p)
+
+fn pipe_write : (*Pipe, ptr, i64) -> i64
+  | (p, src, n) -> os.linux.write_all(p.write_fd, src, n)
+
+fn pipe_read : (*Pipe, ptr, i64) -> i64
+  | (p, dst, n) -> os.linux.read(p.read_fd, dst, n)
+
+fn pipe_write_str : (*Pipe, ptr) -> i64
+  | (p, s) ->
+    let n = os.linux.strlen(s) as i64
+    pipe_write(p, s, n)
+
+-- §9  COPY FD TO FD (kernel splice or read/write fallback)
+fn copy_fd : (i64, i64, i64) -> i64
+  | (src_fd, dst_fd, max_bytes) ->
+    let r = os.linux.splice(src_fd, 0 as ptr, dst_fd, 0 as ptr, max_bytes,
+                            0i64)
+    if r >= 0i64 then r
+    else
+      -- splice unsupported (e.g. regular files), fall back to read/write
+      let buf : *u8 = os.linux.malloc(65536i64) as *u8
+      let mut total : i64 = 0i64
+      while total < max_bytes || max_bytes < 0i64
+        let want = if max_bytes < 0i64 then 65536i64
+                   else if max_bytes - total < 65536i64 then max_bytes - total
+                   else 65536i64
+        let rn = os.linux.read(src_fd, buf as ptr, want)
+        if rn <= 0i64 then os.linux.free(buf as ptr); total
+        let wn = os.linux.write_all(dst_fd, buf as ptr, rn)
+        if wn < rn then os.linux.free(buf as ptr); total + (if wn < 0i64 then 0i64 else wn)
+        total = total + rn
+      os.linux.free(buf as ptr); total
+
+fn copy_fd_all : (i64, i64) -> i64
+  | (src_fd, dst_fd) -> copy_fd(src_fd, dst_fd, -1i64)
+
+-- §10  MEMORY MAP I/O
+struct MmapWriter
+  ptr  : ptr
+  size : i64
+  pos  : i64
+  fd   : i64
+
+fn mmapwriter_new : (ptr, i64) -> MmapWriter
+  | (path, size) ->
+    let fd = os.linux.open(path,
+                           os.linux.O_RDWR | os.linux.O_CREAT | os.linux.O_TRUNC,
+                           420i64)   -- 0644
+    if fd < 0i64 then MmapWriter { ptr: 0 as ptr, size: 0i64, pos: 0i64, fd: -1i64 }
+    else
+      os.linux.ftruncate(fd, size)
+      let p = os.linux.mmap(0 as ptr, size,
+                            os.linux.PROT_READ | os.linux.PROT_WRITE,
+                            os.linux.MAP_SHARED, fd, 0i64)
+      MmapWriter { ptr: p, size: size, pos: 0i64, fd: fd }
+
+fn mmapwriter_write : (*MmapWriter, ptr, i64) -> i64
+  | (w, src, n) ->
+    let avail = w.size - w.pos
+    let write_n = if n < avail then n else avail
+    if write_n <= 0i64 then 0i64
+    else
+      os.linux.memcpy((w.ptr as i64 + w.pos) as ptr, src, write_n as u64)
+      w.pos = w.pos + write_n; write_n
+
+fn mmapwriter_flush : *MmapWriter -> i64
+  | w -> os.linux.msync(w.ptr, w.size, os.linux.MS_SYNC)
+
+fn mmapwriter_close : *MmapWriter -> ()
+  | w ->
+    if w.ptr as i64 != 0i64 then os.linux.munmap(w.ptr, w.size)
+    if w.fd >= 0i64 then os.linux.close(w.fd)
+    w.ptr = 0 as ptr; w.fd = -1i64
+
+-- §11  STDOUT / STDERR SINGLETONS (global buffered writers)
+let g_stdout : BufWriter = BufWriter { fd: -1i64, buf: 0 as *u8, pos: 0i64, cap: 0i64, err: 0i64 }
+let g_stderr : BufWriter = BufWriter { fd: -1i64, buf: 0 as *u8, pos: 0i64, cap: 0i64, err: 0i64 }
+
+fn init_stdout : () -> ()
+  | () ->
+    if g_stdout.fd < 0i64
+      g_stdout = bufwriter_new(STDOUT_FD, DEFAULT_BUF_SIZE)
+
+fn init_stderr : () -> ()
+  | () ->
+    if g_stderr.fd < 0i64
+      g_stderr = bufwriter_new(STDERR_FD, DEFAULT_BUF_SIZE)
+
+fn stdout_flush : () -> i64  | () -> bufwriter_flush(&g_stdout)
+fn stderr_flush : () -> i64  | () -> bufwriter_flush(&g_stderr)
+
+fn print      : ptr -> i64   | s -> init_stdout(); bufwriter_write_str(&g_stdout, s)
+fn println    : ptr -> i64   | s -> init_stdout(); bufwriter_writeln(&g_stdout, s)
+fn eprint     : ptr -> i64   | s -> init_stderr(); bufwriter_write_str(&g_stderr, s)
+fn eprintln   : ptr -> i64   | s -> init_stderr(); bufwriter_writeln(&g_stderr, s)
+fn print_i64  : i64 -> i64   | v -> init_stdout(); bufwriter_write_i64(&g_stdout, v)
+fn eprint_i64 : i64 -> i64   | v -> init_stderr(); bufwriter_write_i64(&g_stderr, v)
+fn print_f64  : (f64, i64) -> i64 | (v, p) -> init_stdout(); bufwriter_write_f64(&g_stdout, v, p)
+fn print_bool : bool -> i64  | b -> init_stdout(); bufwriter_write_bool(&g_stdout, b)
+fn print_hex  : u64 -> i64   | v -> init_stdout(); bufwriter_write_u64_hex(&g_stdout, v, false)
+fn print_byte : u8 -> i64    | b -> init_stdout(); bufwriter_write_byte(&g_stdout, b)
+
+-- §12  STDIN BUFFERED READER SINGLETON
+let g_stdin : BufReader = BufReader { fd: -1i64, buf: 0 as *u8, pos: 0i64, end: 0i64, cap: 0i64, eof: false, err: 0i64 }
+
+fn init_stdin : () -> ()
+  | () ->
+    if g_stdin.fd < 0i64
+      g_stdin = bufreader_new(STDIN_FD, DEFAULT_BUF_SIZE)
+
+fn read_line : (ptr, i64) -> i64
+  | (dst, max) ->
+    init_stdin()
+    bufreader_read_until(&g_stdin, 10u8, dst, max)
+
+fn read_line_bvec : *mem.ByteVec -> i64
+  | out -> init_stdin(); bufreader_read_line_bvec(&g_stdin, out)
+
+-- §13  POLLING HELPERS (blocking poll on single fd)
+fn wait_readable : (i64, i64) -> i64
+  | (fd, timeout_ms) ->
+    let pfd : *i64 = os.linux.malloc(16i64) as *i64
+    pfd[0i64] = fd
+    (pfd as *i32)[2i32] = os.linux.POLLIN as i32
+    (pfd as *i32)[3i32] = 0i32
+    let r = os.linux.poll(pfd as ptr, 1i64, timeout_ms)
+    os.linux.free(pfd as ptr); r
+
+fn wait_writable : (i64, i64) -> i64
+  | (fd, timeout_ms) ->
+    let pfd : *i64 = os.linux.malloc(16i64) as *i64
+    pfd[0i64] = fd
+    (pfd as *i32)[2i32] = os.linux.POLLOUT as i32
+    (pfd as *i32)[3i32] = 0i32
+    let r = os.linux.poll(pfd as ptr, 1i64, timeout_ms)
+    os.linux.free(pfd as ptr); r
+
+fn wait_readable_or_timeout : i64 -> bool
+  | fd -> wait_readable(fd, -1i64) > 0i64
+
+-- §14  EPOLL EVENT LOOP (simple single-threaded reactor)
+struct Epoll
+  epfd     : i64
+  events   : ptr   -- *epoll_event[max_events]
+  max_evs  : i64
+
+struct EpollEvent
+  events : u32
+  fd     : i64   -- user data fd (stored in data.fd field)
+
+fn epoll_new : i64 -> Epoll
+  | max_events ->
+    let epfd = os.linux.epoll_create1(os.linux.EPOLL_CLOEXEC)
+    -- epoll_event is 12 bytes: u32 events + u64 data
+    let events = os.linux.malloc(max_events * 12i64)
+    Epoll { epfd: epfd, events: events, max_evs: max_events }
+
+fn epoll_destroy : *Epoll -> ()
+  | e -> os.linux.close(e.epfd); os.linux.free(e.events); e.epfd = -1i64
+
+fn epoll_add : (*Epoll, i64, u32) -> i64
+  | (e, fd, evmask) ->
+    -- build epoll_event on stack: [u32 events][u32 pad][i64 data]
+    let ev : *u32 = os.linux.malloc(12i64) as *u32
+    ev[0u32] = evmask
+    ev[2u32] = fd as u32; ev[3u32] = (fd >> 32i64) as u32
+    let r = os.linux.epoll_ctl(e.epfd, os.linux.EPOLL_CTL_ADD, fd, ev as ptr)
+    os.linux.free(ev as ptr); r
+
+fn epoll_mod : (*Epoll, i64, u32) -> i64
+  | (e, fd, evmask) ->
+    let ev : *u32 = os.linux.malloc(12i64) as *u32
+    ev[0u32] = evmask
+    ev[2u32] = fd as u32; ev[3u32] = (fd >> 32i64) as u32
+    let r = os.linux.epoll_ctl(e.epfd, os.linux.EPOLL_CTL_MOD, fd, ev as ptr)
+    os.linux.free(ev as ptr); r
+
+fn epoll_del : (*Epoll, i64) -> i64
+  | (e, fd) -> os.linux.epoll_ctl(e.epfd, os.linux.EPOLL_CTL_DEL, fd, 0 as ptr)
+
+fn epoll_wait : (*Epoll, i64) -> i64
+  | (e, timeout_ms) ->
+    os.linux.epoll_wait(e.epfd, e.events, e.max_evs, timeout_ms)
+
+fn epoll_event_mask : (*Epoll, i64) -> u32
+  | (e, i) -> ((e.events as i64 + i * 12i64) as *u32)[0u32]
+
+fn epoll_event_fd : (*Epoll, i64) -> i64
+  | (e, i) ->
+    let p = (e.events as i64 + i * 12i64 + 4i64) as *u32
+    p[0u32] as i64 | ((p[1u32] as i64) << 32i64)
+
+fn epoll_is_readable : (*Epoll, i64) -> bool
+  | (e, i) -> (epoll_event_mask(e, i) & os.linux.EPOLLIN as u32) != 0u32
+
+fn epoll_is_writable : (*Epoll, i64) -> bool
+  | (e, i) -> (epoll_event_mask(e, i) & os.linux.EPOLLOUT as u32) != 0u32
+
+fn epoll_is_error : (*Epoll, i64) -> bool
+  | (e, i) ->
+    let m = epoll_event_mask(e, i)
+    (m & (os.linux.EPOLLERR as u32 | os.linux.EPOLLHUP as u32)) != 0u32
+
+-- §15  HEX DUMP (useful debugging I/O primitive)
+fn hex_dump : (i64, ptr, i64) -> ()
+  | (fd, data, len) ->
+    let hex = "0123456789abcdef" as *u8
+    let line : *u8 = os.linux.malloc(80i64) as *u8
+    let mut off : i64 = 0i64
+    while off < len
+      let mut p : i64 = 0i64
+      let mut j : i64 = 7i64
+      while j >= 0i64
+        line[j] = hex[(off >> ((7i64 - j) * 4i64)) & 0xFi64]
+        j = j - 1i64
+      p = 8i64; line[p] = 58u8; line[p + 1i64] = 32u8; p = p + 2i64
+      let row = if len - off < 16i64 then len - off else 16i64
+      j = 0i64
+      while j < 16i64
+        if j < row
+          line[p]      = hex[((data as *u8)[off + j] as i64 >> 4i64) & 0xFi64]
+          line[p + 1i64] = hex[(data as *u8)[off + j] as i64 & 0xFi64]
+          p = p + 2i64
+        else line[p] = 32u8; line[p + 1i64] = 32u8; p = p + 2i64
+        if j == 7i64 then line[p] = 32u8; p = p + 1i64
+        line[p] = 32u8; p = p + 1i64; j = j + 1i64
+      line[p] = 124u8; p = p + 1i64
+      j = 0i64
+      while j < row
+        let c = (data as *u8)[off + j] as i64
+        line[p] = if c >= 32i64 && c < 127i64 then c as u8 else 46u8
+        p = p + 1i64; j = j + 1i64
+      line[p] = 124u8; line[p + 1i64] = 10u8; p = p + 2i64
+      os.linux.write(fd, line as ptr, p)
+      off = off + row
+    os.linux.free(line as ptr)
+
+fn hex_dump_stdout : (ptr, i64) -> ()
+  | (data, len) -> hex_dump(STDOUT_FD, data, len)
+
+fn hex_dump_stderr : (ptr, i64) -> ()
+  | (data, len) -> hex_dump(STDERR_FD, data, len)
+
+-- §16  STRING WRITING HELPERS (direct unbuffered — for signal handlers, panic, etc.)
+fn write_raw : (i64, ptr) -> ()
+  | (fd, s) ->
+    let n = os.linux.strlen(s) as i64
+    os.linux.write(fd, s, n); ()
+
+fn write_raw_n : (i64, ptr, i64) -> ()
+  | (fd, s, n) -> os.linux.write(fd, s, n); ()
+
+fn panic_write : ptr -> ⊥
+  | msg ->
+    write_raw(STDERR_FD, "panic: " as ptr)
+    write_raw(STDERR_FD, msg)
+    write_raw(STDERR_FD, "\n" as ptr)
+    os.linux.exit_group(1i64)
+
+-- §17  TEMP FILE HELPERS
+fn tmpfile_open : (ptr, i64) -> i64
+  | (dir, flags) ->
+    os.linux.open(dir, os.linux.O_TMPFILE | os.linux.O_RDWR | flags, 384i64)   -- 0600
+
+fn tmpfile_path : (ptr, ptr) -> i64
+  | (template, out_path) ->
+    -- copy template, call mkstemp via open + O_EXCL loop
+    let n = os.linux.strlen(template) as i64
+    os.linux.memcpy(out_path, template, n as u64)
+    (out_path as *u8)[n] = 0u8
+    -- replace trailing X's with random hex
+    let mut i = n - 1i64
+    while i >= 0i64 && (out_path as *u8)[i] == 88u8   -- 'X'
+      let r = os.linux.random_u32() & 0xFu32
+      let hex = "0123456789abcdef" as *u8
+      (out_path as *u8)[i] = hex[r as i64]
+      i = i - 1i64
+    os.linux.open(out_path, os.linux.O_RDWR | os.linux.O_CREAT | os.linux.O_EXCL, 384i64)
+
+-- §18  ATOMIC FILE WRITE (write to temp, rename into place)
+fn atomic_write_file : (ptr, ptr, i64) -> i64
+  | (path, data, len) ->
+    -- write to <path>.tmp.<random>, then rename
+    let tmp_len = os.linux.strlen(path) as i64 + 20i64
+    let tmp_path : *u8 = os.linux.malloc(tmp_len) as *u8
+    os.linux.snprintf(tmp_path as ptr, tmp_len as u64, "%s.tmp.%08x" as ptr, path, os.linux.random_u32())
+    let fd = os.linux.open(tmp_path as ptr, os.linux.O_WRONLY | os.linux.O_CREAT | os.linux.O_TRUNC, 420i64)
+    if fd < 0i64 then os.linux.free(tmp_path as ptr); fd
+    else
+      let r = os.linux.write_all(fd, data, len)
+      os.linux.fsync(fd)
+      os.linux.close(fd)
+      if r < 0i64
+        os.linux.unlink(tmp_path as ptr)
+        os.linux.free(tmp_path as ptr); r
+      else
+        let rn = os.linux.rename(tmp_path as ptr, path)
+        os.linux.free(tmp_path as ptr); rn
+
+-- §19  SENDFILE WRAPPER (zero-copy file to socket)
+fn sendfile_all : (i64, i64, i64, i64) -> i64
+  | (out_fd, in_fd, offset, count) ->
+    let off : *i64 = os.linux.malloc(8i64) as *i64
+    off[0i64] = offset
+    let mut sent : i64 = 0i64
+    while sent < count
+      let n = os.linux.sendfile(out_fd, in_fd, (off as i64 + sent * 0i64) as ptr, count - sent)
+      if n <= 0i64 then os.linux.free(off as ptr); sent
+      sent = sent + n
+    os.linux.free(off as ptr); sent
+
+-- §20  READER / WRITER TRAIT PLACEHOLDERS
+-- Pride effects will replace these with proper resumable interfaces;
+-- for now these structs act as vtable-style dispatch.
+
+struct ReaderVtable
+  read     : ptr   -- fn(*Reader, ptr, i64) -> i64
+  read_byte : ptr  -- fn(*Reader) -> i64
+  close    : ptr   -- fn(*Reader) -> ()
+
+struct Reader
+  vtable : *ReaderVtable
+  state  : ptr   -- implementation-specific
+
+struct WriterVtable
+  write     : ptr   -- fn(*Writer, ptr, i64) -> i64
+  write_byte : ptr  -- fn(*Writer, u8) -> i64
+  flush     : ptr   -- fn(*Writer) -> i64
+  close     : ptr   -- fn(*Writer) -> ()
+
+struct Writer
+  vtable : *WriterVtable
+  state  : ptr
+
+fn reader_read      : (*Reader, ptr, i64) -> i64 | (r, dst, n) -> (r.vtable.read as fn(*Reader, ptr, i64) -> i64)(r, dst, n)
+fn reader_read_byte : *Reader -> i64              | r -> (r.vtable.read_byte as fn(*Reader) -> i64)(r)
+fn reader_close     : *Reader -> ()               | r -> (r.vtable.close as fn(*Reader) -> ())(r)
+
+fn writer_write      : (*Writer, ptr, i64) -> i64 | (w, src, n) -> (w.vtable.write as fn(*Writer, ptr, i64) -> i64)(w, src, n)
+fn writer_write_byte : (*Writer, u8) -> i64        | (w, b) -> (w.vtable.write_byte as fn(*Writer, u8) -> i64)(w, b)
+fn writer_flush      : *Writer -> i64              | w -> (w.vtable.flush as fn(*Writer) -> i64)(w)
+fn writer_close      : *Writer -> ()               | w -> (w.vtable.close as fn(*Writer) -> ())(w)

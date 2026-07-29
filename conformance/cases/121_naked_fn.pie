@@ -1,0 +1,7 @@
+-- EXPECT-CLEAN
+fn raw_fn #[naked] : () -> ()
+  | () -> ()
+fn g #[cold] : i32 -> i32
+  | n -> n
+fn h #[hot] : i32 -> i32
+  | n -> n

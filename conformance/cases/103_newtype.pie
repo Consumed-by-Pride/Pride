@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+newtype Meters = i64
+
+fn make_meters : i64 -> Meters
+  | n -> Meters(n)
+
+fn unwrap_meters : Meters -> i64
+  | Meters(d) -> d
+  | _ -> 0i64

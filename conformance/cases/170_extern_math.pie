@@ -1,0 +1,16 @@
+-- EXPECT-CLEAN
+fn sqrt   #[extern("sqrt")]   : f64 -> f64
+fn fabs   #[extern("fabs")]   : f64 -> f64
+fn floor  #[extern("floor")]  : f64 -> f64
+fn ceil   #[extern("ceil")]   : f64 -> f64
+fn sin    #[extern("sin")]    : f64 -> f64
+fn cos    #[extern("cos")]    : f64 -> f64
+fn exp    #[extern("exp")]    : f64 -> f64
+fn log    #[extern("log")]    : f64 -> f64
+fn pow    #[extern("pow")]    : (f64, f64) -> f64
+
+fn hypotenuse : (f64, f64) -> f64
+  | (a, b) -> sqrt(a * a + b * b)
+
+fn circle_area : f64 -> f64
+  | r -> 3.14159265358979 * r * r

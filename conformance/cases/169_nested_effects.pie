@@ -1,0 +1,20 @@
+-- EXPECT-CLEAN
+effect Log
+  emit : i64 -> ()
+
+effect Fail
+  abort_op : i64 -> ()
+
+fn safe_div : (i64, i64) -> i64 ! [Fail, Log]
+  | (a, b) ->
+    if b == 0i64 then
+      Log.emit(0i64 - 1i64)
+      Fail.abort_op(0i64 - 1i64)
+      0i64
+    else
+      a / b
+
+fn multi_div : (i64, i64, i64) -> i64 ! [Fail, Log]
+  | (a, b, c) ->
+    let x : i64 = safe_div(a, b)
+    safe_div(x, c)

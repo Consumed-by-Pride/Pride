@@ -1,0 +1,14 @@
+-- Test: multi-clause function (pattern dispatch)
+fn collatz_step : i64 -> i64
+  | n ->
+    if n % 2i64 == 0i64 then n / 2i64
+    else 3i64 * n + 1i64
+
+fn collatz_count : i64 -> i64
+  | n ->
+    let mut steps : i64 = 0i64
+    let mut x : i64 = n
+    while x != 1i64
+      x = collatz_step(x)
+      steps = steps + 1i64
+    steps

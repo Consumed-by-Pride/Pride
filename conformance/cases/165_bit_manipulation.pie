@@ -1,0 +1,38 @@
+-- EXPECT-CLEAN
+fn popcount : u64 -> i32
+  | x ->
+    let mut n : u64 = x
+    let mut c : i32 = 0i32
+    while n != 0u64
+      n = n & (n - 1u64)
+      c = c + 1i32
+    c
+
+fn lowest_set_bit : u64 -> u64
+  | x -> x & (0u64 - x)
+
+fn highest_set_bit : u64 -> i32
+  | x ->
+    let mut n : u64 = x
+    let mut pos : i32 = 0i32 - 1i32
+    while n != 0u64
+      n = n >> 1u64
+      pos = pos + 1i32
+    pos
+
+fn rotate_left : (u64, i32) -> u64
+  | (x, n) ->
+    let shl : u64 = x << (n as u64)
+    let shr : u64 = x >> ((64i32 - n) as u64)
+    shl | shr
+
+fn reverse_bits : u64 -> u64
+  | x ->
+    let mut n : u64 = x
+    let mut r : u64 = 0u64
+    let mut i : i32 = 0i32
+    while i < 64i32
+      r = (r << 1u64) | (n & 1u64)
+      n = n >> 1u64
+      i = i + 1i32
+    r

@@ -1,0 +1,10 @@
+-- Test: multi-level struct construction
+struct Pair
+    a : i32
+    b : i32
+
+fn pair_new : (i32, i32) -> Pair
+  | (a, b) -> Pair { a: a, b: b }
+
+fn pair_sum : Pair -> i64
+  | p -> (p.a + p.b) as i64

@@ -1,0 +1,5 @@
+-- EXPECT-COUNT: lint-warn=1
+fn f : bool -> i32
+  | b ->
+      match b
+        | true -> 1

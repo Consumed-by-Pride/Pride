@@ -1,0 +1,9 @@
+-- EXPECT: type-warn 9:12 unknown field
+mod geom
+  struct Point
+    x : i32
+    y : i32
+fn getx : geom::Point -> i32
+  | p -> p.x
+fn bad : geom::Point -> i32
+  | p -> p.z

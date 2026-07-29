@@ -1,0 +1,119 @@
+-- stdlib/io.pie — File I/O and standard streams
+-- Wraps POSIX file descriptors via libc.
+
+fn fopen_io  : (*u8, *u8) -> ptr #extern("fopen")  #cc(c)
+fn fclose_io : ptr -> i32       #extern("fclose") #cc(c)
+fn fread_io  : (ptr, usize, usize, ptr) -> usize #extern("fread")  #cc(c)
+fn fwrite_io : (ptr, usize, usize, ptr) -> usize #extern("fwrite") #cc(c)
+fn fseek_io  : (ptr, i64, i32) -> i32  #extern("fseek")  #cc(c)
+fn ftell_io  : ptr -> i64              #extern("ftell")  #cc(c)
+fn fflush_io : ptr -> i32              #extern("fflush") #cc(c)
+fn feof_io   : ptr -> i32              #extern("feof")   #cc(c)
+fn ferror_io : ptr -> i32              #extern("ferror") #cc(c)
+fn fgets_io  : (*u8, i32, ptr) -> *u8 #extern("fgets")  #cc(c)
+fn fputs_io  : (*u8, ptr) -> i32      #extern("fputs")  #cc(c)
+fn fprintf_io: (ptr, *u8) -> i32      #extern("fprintf") #cc(c)
+fn remove_io : *u8 -> i32             #extern("remove") #cc(c)
+fn rename_io : (*u8, *u8) -> i32      #extern("rename") #cc(c)
+fn malloc_io : usize -> ptr           #extern("malloc") #cc(c)
+fn free_io   : ptr -> ()              #extern("free")   #cc(c)
+
+-- Seek constants
+let SEEK_SET : i32 = 0
+let SEEK_CUR : i32 = 1
+let SEEK_END : i32 = 2
+
+-- Standard streams (as opaque pointers)
+fn stdin_ptr  : () -> ptr #extern("__pride_get_stdin")  #cc(c)
+fn stdout_ptr : () -> ptr #extern("__pride_get_stdout") #cc(c)
+fn stderr_ptr : () -> ptr #extern("__pride_get_stderr") #cc(c)
+
+struct File
+  handle : ptr
+  path   : *u8
+
+fn file_open : (*u8, *u8) -> File
+  | (path, mode) ->
+      let h = fopen_io(path, mode)
+      File { handle: h, path: path }
+
+fn file_is_open : File -> bool
+  | (f) -> f.handle != 0 as ptr
+
+fn file_close : *File -> i32
+  | (f) ->
+      if f.handle != 0 as ptr
+        let r = fclose_io(f.handle)
+        f.handle = 0 as ptr
+        r
+      else 0
+
+fn file_read : (*File, ptr, usize) -> usize
+  | (f, buf, n) ->
+      if f.handle == 0 as ptr then 0
+      else fread_io(buf, 1, n, f.handle)
+
+fn file_write : (*File, ptr, usize) -> usize
+  | (f, buf, n) ->
+      if f.handle == 0 as ptr then 0
+      else fwrite_io(buf, 1, n, f.handle)
+
+fn file_seek : (*File, i64, i32) -> i32
+  | (f, offset, whence) ->
+      if f.handle == 0 as ptr then -1
+      else fseek_io(f.handle, offset, whence)
+
+fn file_tell : *File -> i64
+  | (f) ->
+      if f.handle == 0 as ptr then -1
+      else ftell_io(f.handle)
+
+fn file_flush : *File -> i32
+  | (f) ->
+      if f.handle == 0 as ptr then -1
+      else fflush_io(f.handle)
+
+fn file_size : *File -> i64
+  | (f) ->
+      let cur = file_tell(f)
+      file_seek(f, 0, SEEK_END)
+      let sz = file_tell(f)
+      file_seek(f, cur, SEEK_SET)
+      sz
+
+-- Read entire file into a malloc'd buffer. Caller must free.
+fn file_read_all : (*File, *usize) -> ptr
+  | (f, out_len) ->
+      let sz = file_size(f)
+      file_seek(f, 0, SEEK_SET)
+      let buf = malloc_io((sz as usize) + 1)
+      let n = file_read(f, buf, sz as usize)
+      *out_len = n
+      let term = ((buf as usize) + n) as *u8
+      *term = 0i64
+      buf
+
+fn file_exists : *u8 -> bool
+  | (path) ->
+      let f = file_open(path, "r" as *u8)
+      let ok = file_is_open(f)
+      if ok then fclose_io(f.handle)
+      ok
+
+fn file_delete : *u8 -> bool
+  | (path) -> remove_io(path) == 0
+
+fn file_rename : (*u8, *u8) -> bool
+  | (from, to) -> rename_io(from, to) == 0
+
+-- Convenience: write string to stdout/stderr
+fn print_str : *u8 -> ()
+  | (s) ->
+      let p = stdout_ptr()
+      fputs_io(s, p)
+      fflush_io(p)
+
+fn eprint_str : *u8 -> ()
+  | (s) ->
+      let p = stderr_ptr()
+      fputs_io(s, p)

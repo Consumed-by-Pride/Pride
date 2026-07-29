@@ -1,0 +1,19 @@
+-- EXPECT-CLEAN
+fn utf8_len : u8 -> i32
+  | b, b < 128u8 -> 1i32
+  | b, b < 224u8 -> 2i32
+  | b, b < 240u8 -> 3i32
+  | _ -> 4i32
+
+fn utf8_count : (*u8, i64) -> i64
+  | (s, len) ->
+      let mut count : i64 = 0
+      let mut i : i64 = 0
+      while i < len
+        let skip = utf8_len(s[i]) as i64
+        i = i + skip
+        count = count + 1
+      count
+
+fn is_continuation_byte : u8 -> bool
+  | b -> b & 192u8 == 128u8

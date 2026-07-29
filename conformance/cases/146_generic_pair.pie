@@ -1,0 +1,19 @@
+-- EXPECT-CLEAN
+type Pair<A, B> = struct
+  fst : A
+  snd : B
+
+fn pair_swap<A, B> : Pair<A, B> -> Pair<B, A>
+  | p -> Pair { fst: p.snd, snd: p.fst }
+
+fn pair_map_fst<A, B, C> : (Pair<A, B>, (A -> C)) -> Pair<C, B>
+  | (p, f) -> Pair { fst: f(p.fst), snd: p.snd }
+
+fn pair_both<T> : (T, T) -> Pair<T, T>
+  | (a, b) -> Pair { fst: a, snd: b }
+
+fn fst<A, B> : Pair<A, B> -> A
+  | p -> p.fst
+
+fn snd<A, B> : Pair<A, B> -> B
+  | p -> p.snd

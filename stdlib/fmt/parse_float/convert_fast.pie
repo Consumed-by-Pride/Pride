@@ -1,0 +1,56 @@
+mod fmt.parse_float.convert_fast
+
+use fmt.parse_float.float_info
+
+-- Fast exact path: if mantissa × 10^exp fits exactly in f64/f32, use native FP multiply.
+-- This handles the vast majority of small decimal literals with zero error.
+
+-- Attempt fast f64 conversion. Returns (value, ok).
+-- ok = true means result is exact.
+fn fast_f64 : (u64, i64, bool) -> (f64, bool)
+  | (mantissa, exp, neg) ->
+    if mantissa == 0u64
+      (if neg then -0.0f64 else 0.0f64, true)
+    else if exp >= float_info.F64_MIN_EXPONENT_FAST && exp <= float_info.F64_MAX_EXPONENT_FAST &&
+            mantissa <= float_info.F64_MAX_MANTISSA_FAST
+      -- mantissa and 10^exp are both exactly representable in f64
+      let base : f64 = mantissa as f64
+      let scaled =
+        if exp == 0i64 then base
+        else if exp > 0i64 then base * float_info.f64_pow10_exact(exp)
+        else base / float_info.f64_pow10_exact(-exp)
+      (if neg then -scaled else scaled, true)
+    else if exp >= 0i64 && exp <= float_info.F64_MAX_EXPONENT_FAST + 20i64 &&
+            mantissa <= float_info.F64_MAX_MANTISSA_FAST
+      -- mantissa is small; try shifting decimal point
+      -- e.g. 1234e25 = 12.34e27 if we can absorb some digits
+      let shift = exp - float_info.F64_MAX_EXPONENT_FAST
+      let pow_shift = float_info.f64_pow10_exact(shift)
+      let new_mantissa = mantissa as f64 / pow_shift
+      if new_mantissa <= float_info.F64_MAX_MANTISSA_FAST as f64
+        let scaled = new_mantissa * float_info.f64_pow10_exact(float_info.F64_MAX_EXPONENT_FAST)
+        (if neg then -scaled else scaled, true)
+      else (0.0f64, false)
+    else (0.0f64, false)
+
+-- Attempt fast f32 conversion. Returns (value, ok).
+fn fast_f32 : (u64, i64, bool) -> (f32, bool)
+  | (mantissa, exp, neg) ->
+    if mantissa == 0u64
+      (if neg then -0.0f32 else 0.0f32, true)
+    else if exp >= float_info.F32_MIN_EXPONENT_FAST && exp <= float_info.F32_MAX_EXPONENT_FAST &&
+            mantissa <= float_info.F32_MAX_MANTISSA_FAST
+      let base : f32 = mantissa as f32
+      let scaled =
+        if exp == 0i64 then base
+        else if exp > 0i64 then base * float_info.f32_pow10_exact(exp)
+        else base / float_info.f32_pow10_exact(-exp)
+      (if neg then -scaled else scaled, true)
+    else (0.0f32, false)
+
+-- Check if a u64 mantissa fits exactly in an f64 (no rounding needed)
+fn mantissa_fits_f64 : u64 -> bool
+  | m -> m <= 9007199254740992u64   -- 2^53
+
+fn mantissa_fits_f32 : u64 -> bool
+  | m -> m <= float_info.F32_MAX_MANTISSA_FAST

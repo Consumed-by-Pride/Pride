@@ -1,0 +1,122 @@
+-- Pride showcase — exercises a broad slice of the language.
+-- This is Pride source (.pie); comments use -- and --[ ]-- per the spec.
+
+--[
+  Block comment.
+  --[ nested block ]--
+  Still inside the outer comment.
+]--
+
+mod math
+  fn sin : f64 -> f64 #extern("sin") #cc(c)
+  fn sqrt : f64 -> f64 #extern("sqrt") #cc(c)
+
+use std::mem
+use math as m
+
+-- a plain immutable binding with a folded constant
+let answer = 6 * 7
+
+-- mutable binding
+let mut counter : i32 = 0
+
+-- struct with attributes
+type Vec3f = struct
+  x : f32
+  y : f32
+  z : f32
+
+type Node = struct
+  val  : i32
+  next : *Node
+
+type FloatBits = union
+  f : f32
+  i : u32
+
+-- effect declaration
+effect IO
+  read_byte  : () -> u8
+  write_byte : u8 -> ()
+  flush      : () -> ()
+
+-- recursive clause function
+fn fact : i64 -> i64
+  | 0 -> 1
+  | n -> n * fact(n - 1)
+
+-- guards and tuples
+fn classify : i32 -> Str
+  | 0        -> "zero"
+  | n, n > 0 -> "positive"
+  | _        -> "negative"
+
+-- effect in signature, ub! usage
+fn divide : (i32, i32) -> i32 ! [UB]
+  | (_, 0) -> ub! "division by zero"
+  | (a, b) -> a / b
+
+-- multi-line body with control flow + memory
+fn find_max : (*i32, u64) -> i32 ! [UB]
+  | (_, 0)     -> ub! "empty array"
+  | (arr, len) ->
+      let mut top = arr[0]
+      for i in 1..len
+        if arr[i] > top
+          top = arr[i]
+      top
+
+-- generics, where clause, effect polymorphism
+fn map<A, B> : (*A, u64, A -> B ! [..r]) -> *B ! [Alloc, ..r]
+  | (arr, n, f) ->
+      let out : *B = alloc [B; n]
+      for i in 0..n
+        out[i] = f(arr[i])
+      out
+
+-- pattern matching with structs and or-patterns
+fn vowel : char -> Str
+  | 'a' | 'e' | 'i' | 'o' | 'u' -> "vowel"
+  | _                           -> "consonant"
+
+-- term rewriting (first-class)
+let arith : Rewrite = rewrite
+  | x + 0 ↦ x
+  | x * 1 ↦ x
+  | x * 2 ↦ x << 1
+
+-- pattern generation language (log2 = integer floor-log2 for shift rules)
+fn log2 : i64 -> i64
+  | n ->
+      let mut k : i64 = 0
+      let mut v : i64 = n
+      while v > 1
+        v = v / 2
+        k = k + 1
+      k
+
+pgen mul_to_shift<T : Int> ->
+  [x : T, n : T]
+  where [x * n]
+  ↦ x << log2(n)
+
+-- code quotation + comptime fixpoint
+let folded = comptime
+  let tree = ~Tree (1 + 2 + 3) |> arith*
+  tree
+
+-- IRDL dialect
+dialect MyDialect
+  opcode add_i32
+  opcode mul_f32
+  region entry
+
+-- handler (program = the computation whose IO ops are intercepted here)
+fn program : () -> () ! [IO]
+  | () -> ()
+
+fn run : () -> () ! [IO]
+  | () ->
+      handle program()
+        | IO.write_byte byte k -> k ()
+        | IO.flush () k        -> k ()

@@ -1,0 +1,12 @@
+-- EXPECT-CLEAN
+fn add : (i32, i32) -> i32
+  | (a, b) -> a + b
+fn neg : i32 -> i32
+  | a -> 0 - a
+dialect Opt
+  opcode adj
+irdl
+  Opt.adj [a : i32, b : i32], b < 0 ↦ neg(a)
+  Opt.adj [a : i32, b : i32] ↦ add(a, b)
+fn u : i32 -> i32
+  | x -> Opt.adj(x, -1)

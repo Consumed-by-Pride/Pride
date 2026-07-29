@@ -1,0 +1,20 @@
+-- EXPECT-CLEAN
+fn count_unique_rows : (*i64, i64, i64) -> i64
+  | (mat, rows, cols) ->
+    let mut count : i64 = 0i64
+    let mut i : i64 = 0i64
+    'rows: while i < rows
+      let mut j : i64 = 0i64
+      while j < i
+        let mut k : i64 = 0i64
+        let mut same : bool = true
+        while k < cols
+          if mat[i * cols + k] != mat[j * cols + k] then same = false
+          k = k + 1i64
+        if same then
+          i = i + 1i64
+          continue 'rows
+        j = j + 1i64
+      count = count + 1i64
+      i = i + 1i64
+    count

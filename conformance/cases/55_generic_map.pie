@@ -1,0 +1,5 @@
+-- EXPECT-CLEAN
+struct Box<T>
+  val : T
+fn map_box<A, B> : (Box<A>, A -> B) -> Box<B>
+  | (b, f) -> Box { val: f(b.val) }

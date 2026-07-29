@@ -1,0 +1,7 @@
+-- Test: for loop over range
+fn sum_for : i64 -> i64
+  | n ->
+    let mut s : i64 = 0i64
+    for i in 0i64..n
+      s = s + i
+    s

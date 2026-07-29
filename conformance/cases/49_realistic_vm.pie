@@ -1,0 +1,32 @@
+-- EXPECT-CLEAN
+-- A tiny stack-machine VM: the kind of code a compiler/kernel author writes.
+struct Frame
+  sp : i64
+  base : i64
+
+fn push : (*i64, i64, i64) -> i64
+  | (stack, sp, val) ->
+      stack[sp] = val
+      sp + 1
+
+fn pop : (*i64, i64) -> i64
+  | (stack, sp) -> stack[sp - 1]
+
+fn exec_add : (*i64, i64) -> i64
+  | (stack, sp) ->
+      let a = stack[sp - 1]
+      let b = stack[sp - 2]
+      stack[sp - 2] = a + b
+      sp - 1
+
+fn run : (*i64, i64) -> i64
+  | (stack, n) ->
+      let mut sp : i64 = 0
+      let mut i : i64 = 0
+      while i < n
+        if i % 2 == 0
+          sp = push(stack, sp, i)
+        else
+          sp = exec_add(stack, sp)
+        i = i + 1
+      pop(stack, sp)

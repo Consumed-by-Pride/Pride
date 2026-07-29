@@ -1,0 +1,3 @@
+-- EXPECT: type-warn 3:10 expected bool operand
+fn f : i32 -> bool
+  | x -> x && x

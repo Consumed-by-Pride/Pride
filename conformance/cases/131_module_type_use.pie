@@ -1,0 +1,11 @@
+-- EXPECT-CLEAN
+mod geom
+  type Vec2 = struct
+    x : i64
+    y : i64
+
+  fn len_sq : Vec2 -> i64
+    | v -> v.x * v.x + v.y * v.y
+
+fn f : geom::Vec2 -> i64
+  | v -> geom::len_sq(v)

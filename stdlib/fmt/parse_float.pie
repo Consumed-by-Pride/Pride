@@ -1,0 +1,218 @@
+mod fmt.parse_float
+
+use os.linux
+use fmt.parse_float.common
+use fmt.parse_float.float_info
+use fmt.parse_float.float_stream
+use fmt.parse_float.convert_fast
+use fmt.parse_float.convert_eisel_lemire
+use fmt.parse_float.convert_hex
+use fmt.parse_float.convert_slow
+
+-- Top-level float parser. Orchestrates fast → eisel-lemire → slow pipeline.
+
+-- §1  DIGIT ACCUMULATOR
+-- Reads up to 19 significant decimal digits from a float_stream.
+-- Returns (mantissa, num_digits, exp_adjustment).
+-- exp_adjustment compensates for decimal point position.
+
+fn read_mantissa : *float_stream.FloatStream -> (u64, i64, i64)
+  | (s) ->
+    let mut mantissa : u64 = 0u64
+    let mut n_digits : i64 = 0i64
+    let mut exp_adj  : i64 = 0i64
+    let mut has_dot  = false
+    let mut dot_pos  : i64 = -1i64
+    let mut many     = false
+    let mut leading_zeros : i64 = 0i64
+    let mut saw_digit = false
+
+    -- skip leading zeros before any digits
+    while float_stream.stream_peek(s) == 48i64 && !has_dot
+      float_stream.stream_advance(s); leading_zeros = leading_zeros + 1i64
+
+    while !float_stream.stream_at_end(s)
+      let c = float_stream.stream_peek(s)
+      if c == 46i64   -- '.'
+        if has_dot then s.len   -- break: second dot not part of float
+        else has_dot = true; dot_pos = n_digits; float_stream.stream_advance(s)
+      else if c >= 48i64 && c <= 57i64
+        float_stream.stream_advance(s)
+        if c == 48i64 && !saw_digit
+          -- leading zeros (possibly after dot)
+          if has_dot then exp_adj = exp_adj - 1i64
+        else
+          saw_digit = true
+          if n_digits < 19i64
+            mantissa = mantissa *% 10u64 +% (c as u64 - 48u64)
+            n_digits = n_digits + 1i64
+          else
+            many = true
+            if !has_dot then exp_adj = exp_adj + 1i64
+      else s.len   -- break: non-digit, non-dot
+
+    -- account for decimal point
+    if has_dot && dot_pos >= 0i64
+      exp_adj = exp_adj - (n_digits - dot_pos)
+
+    (mantissa, n_digits, exp_adj)
+
+-- §2  EXPONENT PARSER
+fn read_exponent : *float_stream.FloatStream -> i64
+  | (s) ->
+    if float_stream.stream_at_end(s) then 0i64
+    else
+      let c = float_stream.stream_peek(s)
+      if c != 101i64 && c != 69i64 then 0i64   -- 'e' 'E'
+      else
+        float_stream.stream_advance(s)
+        let neg = if float_stream.stream_peek(s) == 45i64 then float_stream.stream_advance(s); true
+                  else if float_stream.stream_peek(s) == 43i64 then float_stream.stream_advance(s); false
+                  else false
+        let mut exp : i64 = 0i64
+        while !float_stream.stream_at_end(s)
+          let d = float_stream.stream_read_digit(s)
+          if d < 0i64 then s.len
+          else if exp < 99999i64 then exp = exp*10i64 + d
+        if neg then -exp else exp
+
+-- §3  NAN / INF DETECTION
+
+fn try_parse_special_f64 : (*float_stream.FloatStream, bool) -> (f64, bool)
+  | (s, neg) ->
+    -- Try "nan", "inf", "infinity" (case-insensitive)
+    let saved_pos = s.pos
+    if float_stream.stream_match_char_ci(s, 110u8)   -- 'n'
+      if float_stream.stream_match_char_ci(s, 97u8)  -- 'a'
+        if float_stream.stream_match_char_ci(s, 110u8)  -- 'n'
+          (os.linux.F64_NAN_BITS as f64, true)
+        else s.pos=saved_pos; (0.0f64, false)
+      else s.pos=saved_pos; (0.0f64, false)
+    else if float_stream.stream_match_char_ci(s, 105u8)   -- 'i'
+      if float_stream.stream_match_char_ci(s, 110u8)  -- 'n'
+        if float_stream.stream_match_char_ci(s, 102u8)  -- 'f'
+          -- optionally consume "inity"
+          let saved2 = s.pos
+          if !float_stream.stream_match_char_ci(s, 105u8) then s.pos=saved2
+          let inf_bits : u64 = if neg then 0xFFF0000000000000u64 else 0x7FF0000000000000u64
+          (inf_bits as f64, true)
+        else s.pos=saved_pos; (0.0f64, false)
+      else s.pos=saved_pos; (0.0f64, false)
+    else (0.0f64, false)
+
+fn F64_NAN_BITS : u64  = 0x7FF8000000000000u64
+fn F64_INF_BITS : u64  = 0x7FF0000000000000u64
+
+-- §4  MAIN PARSER — f64
+
+fn parse_f64 : ptr -> f64
+  | (s) -> parse_f64_n(s, os.linux.strlen(s) as i64)
+
+fn parse_f64_n : (ptr, i64) -> f64
+  | (s, n) ->
+    let mut stream = float_stream.stream_new(s, n)
+    float_stream.stream_skip_whitespace(&stream)
+
+    -- sign
+    let neg = if float_stream.stream_peek(&stream) == 45i64 then float_stream.stream_advance(&stream); true
+              else if float_stream.stream_peek(&stream) == 43i64 then float_stream.stream_advance(&stream); false
+              else false
+
+    -- special values
+    let (sv, sv_ok) = try_parse_special_f64(&stream, neg)
+    if sv_ok then sv
+    else
+
+    -- hex float?
+    if float_stream.stream_peek(&stream) == 48i64 &&
+       (float_stream.stream_peek2(&stream) == 120i64 || float_stream.stream_peek2(&stream) == 88i64)
+      -- 0x / 0X
+      float_stream.stream_advance(&stream); float_stream.stream_advance(&stream)
+      let (hv, hok) = convert_hex.parse_hex_f64(&stream, neg)
+      if hok then hv else if neg then -0.0f64 else 0.0f64
+    else
+
+    -- decimal float
+    let (mantissa, n_digits, exp_adj) = read_mantissa(&stream)
+    let exp_explicit = read_exponent(&stream)
+    let exp = exp_adj + exp_explicit
+
+    if n_digits == 0i64 then if neg then -0.0f64 else 0.0f64
+    else
+
+    -- Fast path
+    let (fv, fok) = convert_fast.fast_f64(mantissa, exp, neg)
+    if fok then fv
+    else
+
+    -- Eisel-Lemire path
+    let (el_mant, el_exp, el_ok) = convert_eisel_lemire.el_convert_f64(exp, mantissa, neg)
+    if el_ok
+      common.assemble_f64(neg, el_exp, el_mant)
+    else
+      -- Slow path
+      convert_slow.slow_f64_from_number(mantissa, exp, neg, false)
+
+-- §5  MAIN PARSER — f32
+
+fn parse_f32 : ptr -> f32
+  | (s) -> parse_f32_n(s, os.linux.strlen(s) as i64)
+
+fn parse_f32_n : (ptr, i64) -> f32
+  | (s, n) ->
+    let mut stream = float_stream.stream_new(s, n)
+    float_stream.stream_skip_whitespace(&stream)
+    let neg = if float_stream.stream_peek(&stream) == 45i64 then float_stream.stream_advance(&stream); true
+              else if float_stream.stream_peek(&stream) == 43i64 then float_stream.stream_advance(&stream); false
+              else false
+
+    -- check nan/inf via f64 path then cast
+    let (sv, sv_ok) = try_parse_special_f64(&stream, neg)
+    if sv_ok then sv as f32
+    else
+
+    if float_stream.stream_peek(&stream) == 48i64 &&
+       (float_stream.stream_peek2(&stream) == 120i64 || float_stream.stream_peek2(&stream) == 88i64)
+      float_stream.stream_advance(&stream); float_stream.stream_advance(&stream)
+      let (hv, hok) = convert_hex.parse_hex_f32(&stream, neg)
+      if hok then hv else if neg then -0.0f32 else 0.0f32
+    else
+
+    let (mantissa, n_digits, exp_adj) = read_mantissa(&stream)
+    let exp_explicit = read_exponent(&stream)
+    let exp = exp_adj + exp_explicit
+
+    if n_digits == 0i64 then if neg then -0.0f32 else 0.0f32
+    else
+
+    let (fv, fok) = convert_fast.fast_f32(mantissa, exp, neg)
+    if fok then fv
+    else
+
+    let (el_mant, el_exp, el_ok) = convert_eisel_lemire.el_convert_f32(exp, mantissa as u64, neg)
+    if el_ok
+      common.assemble_f32(neg, el_exp, el_mant)
+    else
+      convert_slow.slow_f32_from_number(mantissa, exp, neg, false)
+
+-- §6  CONVENIENCE WRAPPERS
+
+fn try_parse_f64 : ptr -> (f64, bool)
+  | (s) ->
+    let n = os.linux.strlen(s) as i64
+    if n == 0i64 then (0.0f64, false)
+    else (parse_f64_n(s, n), true)
+
+fn try_parse_f32 : ptr -> (f32, bool)
+  | (s) ->
+    let n = os.linux.strlen(s) as i64
+    if n == 0i64 then (0.0f32, false)
+    else (parse_f32_n(s, n), true)
+
+-- Parse with explicit endptr (like strtod) — returns bytes consumed
+fn parse_f64_partial : (ptr, i64, *f64) -> i64
+  | (s, n, out) ->
+    let mut stream = float_stream.stream_new(s, n)
+    let start = stream.pos
+    out[0i64] = parse_f64_n(s, n)
+    stream.pos - start

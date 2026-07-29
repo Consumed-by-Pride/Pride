@@ -1,0 +1,49 @@
+-- Stress: the densest valid combination regular grammar features the
+-- compiler accepts — generics with bounds, where-equality, an effect
+-- polymorphic callback, attributes, membership test, fixpoint rewriting,
+-- ub!, pattern matching over pointers, and effect handlers.
+-- (Companion to spec_coverage.pie; every construct here compiles.)
+
+-- generic pair used in the where-clause below
+type Pair<A, B> = struct
+  first  : A
+  second : B
+
+-- membership operand for the ∈ test
+let valid_set : i64 = 255
+
+-- the strength-reduction rewrite set applied to each mapped value
+let simplify : Rewrite = rewrite
+  | x + 0 ↦ x
+  | x * 1 ↦ x
+  | x * 2 ↦ x << 1
+
+-- IO.write's raw sink and Mem.alloc's backing allocator for the handler
+fn raw : i64 -> i64
+  | byte -> byte
+
+fn bump : i64 -> i64
+  | n -> n
+
+fn prog : () -> () ! [IO]
+  | () -> ()
+
+fn complex<A, B : Ord> : (*A, u64, A -> B ! [..r]) -> *B ! [Alloc, IO, ..r]
+  where B = Pair<A, A>
+  #inline #vectorize
+  | (arr, n, f) ->
+      let mut acc : *B = alloc [B; n]
+      for i in 0..=n
+        if arr[i] ∈ valid_set
+          acc[i] = f(arr[i]) |> simplify*
+        else
+          acc[i] = ub! "out of range"
+      match acc
+        | null -> trap
+        | p    -> p
+
+let combined : Rewrite = simplify ++ simplify
+
+handle prog()
+  | IO.write byte k -> (raw(byte); k ())
+  | Mem.alloc n k   -> k bump(n)
