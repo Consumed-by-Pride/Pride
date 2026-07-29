@@ -212,6 +212,13 @@ struct LoopCtx
     IrVal**  break_vals;          // heap matrix [break * nphi] of captured values
     usz      break_count;
     IrVal*[MAX_BREAKS] break_result; // break-with-value result per site
+    // For-range loops only (null for while/do/non-range iterators): the
+    // induction counter φ and its step.  A `continue` edge must feed
+    // counter+step into the counter φ — exactly like the body-end back-edge —
+    // because the generic path feeds the CURRENT value, which skips the
+    // increment and spins forever on the un-advanced counter.
+    IrVal*   counter_phi;
+    IrVal*   counter_step;
 }
 
 // A captured per-binder value reached at the end of a branch.
@@ -2308,6 +2315,22 @@ fn void SsiModule.lower_continue(SsiModule* m)
     for (usz i = 0; i < lc.nphi; i++)
     {
         IrVal* back = m.env_lookup(lc.hdr_binders[i]);
+        // For-range loop: the counter advances across a continue, too — feed
+        // counter+step (mirrors the body-end back-edge in lower_for) instead
+        // of the current counter, or the loop re-runs the SAME index forever.
+        if (back != null && lc.counter_phi != null && lc.counter_step != null
+            && lc.hdr_phis[i] == lc.counter_phi)
+        {
+            IrVal* bc = m.new_val(IrOp.IR_BIN, lc.counter_phi.src);
+            if (bc != null)
+            {
+                bc.bop = Tt.TOKEN_PLUS;
+                bc.add_arg(lc.counter_phi, -1);
+                bc.add_arg(lc.counter_step, -1);
+                m.emit(bc);
+                back = bc;
+            }
+        }
         if (back == null) continue;
         lc.hdr_phis[i].add_arg(back, m.cur);
     }
@@ -2361,6 +2384,20 @@ fn void SsiModule.lower_continue_label(SsiModule* m, char* name, usz nlen)
     for (usz i = 0; i < lc.nphi; i++)
     {
         IrVal* back = m.env_lookup(lc.hdr_binders[i]);
+        // Same counter-advance rule as lower_continue for a for-range target.
+        if (back != null && lc.counter_phi != null && lc.counter_step != null
+            && lc.hdr_phis[i] == lc.counter_phi)
+        {
+            IrVal* bc = m.new_val(IrOp.IR_BIN, lc.counter_phi.src);
+            if (bc != null)
+            {
+                bc.bop = Tt.TOKEN_PLUS;
+                bc.add_arg(lc.counter_phi, -1);
+                bc.add_arg(lc.counter_step, -1);
+                m.emit(bc);
+                back = bc;
+            }
+        }
         if (back == null) continue;
         lc.hdr_phis[i].add_arg(back, m.cur);
     }
@@ -4604,6 +4641,10 @@ fn IrVal** SsiModule.push_loop(SsiModule* m, int header, int exit, IrVal** hdr_p
     lc.nphi = nphi;
     lc.break_count = 0;
     lc.break_vals = null;
+    // Slots are reused across sibling loops — clear the for-range hook or a
+    // stale counter from a previous loop would corrupt this one's continue.
+    lc.counter_phi = null;
+    lc.counter_step = null;
     if (nphi > 0)
     {
         lc.break_vals = (IrVal**)malloc(MAX_BREAKS * nphi * IrValPtr::size);
@@ -5518,7 +5559,27 @@ fn void SsiModule.lower_for(SsiModule* m, Node* n)
         IrVal* iv = m.new_val(IrOp.IR_PARAM, binder);
         if (iv != null) { m.emit(iv); m.bind_let_pattern(binder, iv); }
     }
+    // Hoist the range step: one value feeds both the body-end back-edge and
+    // every `continue` edge's counter increment (LoopCtx.counter_step).
+    // (Emitted in body_blk, which dominates the latch and all continue sites.)
+    IrVal* step_val = null;
+    if (is_range && counter_phi != null)
+    {
+        step_val = range_step;
+        if (step_val == null)
+        {
+            IrVal* one = m.new_val(IrOp.IR_CONST_INT, n);
+            if (one != null) { one.ival = 1; m.emit(one); }
+            step_val = one;
+        }
+    }
     IrVal** break_vals = m.push_loop(header, exit, &hdr_phis[0], &hdr_binders[0], nphi);
+    if (is_range && counter_phi != null && m.loop_count >= 1)
+    {
+        LoopCtx* lc2 = &m.loops[m.loop_count - 1];
+        lc2.counter_phi  = counter_phi;
+        lc2.counter_step = step_val;
+    }
     if (body != null) { m.lower_stmt(body); }
     LoopCtx done = m.pop_loop();
 
@@ -5530,13 +5591,6 @@ fn void SsiModule.lower_for(SsiModule* m, Node* n)
         IrVal* back_counter = null;
         if (is_range && counter_phi != null)
         {
-            IrVal* step_val = range_step;
-            if (step_val == null)
-            {
-                IrVal* one = m.new_val(IrOp.IR_CONST_INT, n);
-                if (one != null) { one.ival = 1; m.emit(one); }
-                step_val = one;
-            }
             back_counter = m.new_val(IrOp.IR_BIN, n);
             if (back_counter != null)
             {
