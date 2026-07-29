@@ -5924,6 +5924,12 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         if (ai > 0) { tovr[off++] = ','; tovr[off++] = ' '; }
                         char* ety = (v.args[ai] != null) ? tm.get(v.args[ai].id) : null;
                         if (ety == null || ety[0] == 0) ety = (char*)"i64";
+                        // A register-held ARRAY can't be a record component:
+                        // the fat-record contract stores its ADDRESS (data
+                        // pointer).  Field loads like `r.vals` arrive here as
+                        // `[N x T]` SSA values (sg1) — materialize a memory
+                        // home below and type the component as ptr.
+                        if (ety[0] == '[') { ety = (char*)"ptr"; }
                         for (usz ei = 0; ety[ei] != 0 && off < TYMAP_ENTRY - 4; ei++)
                         { tovr[off++] = ety[ei]; }
                     }
@@ -6352,6 +6358,23 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 {
                     for (usz ti2 = 0; ti2 < v.arg_count; ti2++)
                     {
+                        // Register-held array component: give it a memory home
+                        // and store its ADDRESS (fat-record contract).
+                        char* raw_ety = (v.args[ti2] != null) ? tm.get(v.args[ti2].id) : null;
+                        bool arr_home = (raw_ety != null && raw_ety[0] == '[');
+                        if (arr_home)
+                        {
+                            cg.out.writes("  %mc."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(ti2);
+                            cg.out.writes(" = alloca "); cg.out.writes(raw_ety);
+                            cg.out.writes("\n");
+                            cg.out.writes("  store "); cg.out.writes(raw_ety);
+                            cg.out.writes(" ");
+                            if (v.args[ti2] != null) { cg.emit_vref(v.args[ti2]); }
+                            else { cg.out.writes("undef"); }
+                            cg.out.writes(", ptr %mc."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(ti2); cg.out.writes("\n");
+                        }
                         if (ti2 + 1 == v.arg_count)
                         { cg.out.writes("  %v"); cg.out.writei(v.id); }
                         else
@@ -6366,11 +6389,16 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             cg.out.writes("."); cg.out.writeu(ti2 - 1);
                             cg.out.writes(", ");
                         }
-                        char* e2ty = (v.args[ti2] != null) ? tm.get(v.args[ti2].id) : null;
+                        char* e2ty = arr_home ? (char*)"ptr" : raw_ety;
                         if (e2ty == null || e2ty[0] == 0) e2ty = (char*)"i64";
                         cg.out.writes(e2ty);
                         cg.out.writes(" ");
-                        if (v.args[ti2] != null) { cg.emit_vref(v.args[ti2]); }
+                        if (arr_home)
+                        {
+                            cg.out.writes("%mc."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(ti2);
+                        }
+                        else if (v.args[ti2] != null) { cg.emit_vref(v.args[ti2]); }
                         else { cg.out.writes("undef"); }
                         cg.out.writes(", "); cg.out.writeu(ti2); cg.out.writes("\n");
                     }
