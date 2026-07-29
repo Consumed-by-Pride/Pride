@@ -2533,6 +2533,19 @@ fn char* coerce_op(char* src, char* dst)
     return (char*)"bitcast";
 }
 
+// Signedness-aware sibling of coerce_op: identical, except an integer
+// WIDENING zero-extends when the VALUE is unsigned-typed. The LLVM type text
+// is sign-agnostic — signedness survives only in the AST annotation and on
+// integer literals, both of which is_signed_int_val knows how to read
+// (r38/r40). A sext of u8 200 / u32 4000000001 / bool true negates the value.
+fn char* coerce_op_val(char* src, char* dst, ssi_ir::IrVal* v)
+{
+    char* r = coerce_op(src, dst);
+    if (r != null && r[0] == 's' && r[1] == 'e' && !is_signed_int_val(v))
+    { return (char*)"zext"; }
+    return r;
+}
+
 // ── Typed φ-edge normalisation ─────────────────────────────────────────────
 // LLVM requires every φ incoming value to have EXACTLY the φ's type and to
 // dominate the end of its predecessor block. Branch/match arm results often
@@ -2604,7 +2617,7 @@ fn bool phi_edge_coercion(TypeTable* tm, ssi_ir::IrVal* ph, usz ai,
         return true;
     }
     if (apty[0] == '{' || (apty[0] == 'v' && apty[1] == 'o')) return false;   // prints undef
-    char* opc = coerce_op(apty, phi_ty);
+    char* opc = coerce_op_val(apty, phi_ty, arg);
     if (opc == null) return false;
     *op = opc; *src = apty; *dst = phi_ty;
     return true;
@@ -3196,7 +3209,9 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     if (lw != rw)
                     {
                         cg.out.writes("  %rhs.coerce."); cg.out.writei(v.id);
-                        cg.out.writes(" = "); cg.out.writes(lw > rw ? "sext " : "trunc ");
+                        cg.out.writes(" = ");
+                        if (lw > rw) { cg.out.writes(is_signed_int_val(rhs) ? "sext " : "zext "); }
+                        else         { cg.out.writes("trunc "); }
                         cg.out.writes(rhs_ty); cg.out.writes(" "); cg.emit_vref(rhs);
                         cg.out.writes(" to "); cg.out.writes(lhs_ty); cg.out.writes("\n");
                         // For comparison ops: if lhs_ty="i64" but actual lhs register is narrower
@@ -3225,7 +3240,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             if (lhs_is_narrow)
                             {
                                 cg.out.writes("  %lhs.coerce."); cg.out.writei(v.id);
-                                cg.out.writes(" = sext "); cg.out.writes(lhs_real_ty);
+                                cg.out.writes(is_signed_int_val(lhs) ? " = sext " : " = zext "); cg.out.writes(lhs_real_ty);
                                 cg.out.writes(" "); cg.emit_vref(lhs);
                                 cg.out.writes(" to "); cg.out.writes(lhs_ty); cg.out.writes("\n");
                             }
@@ -3733,6 +3748,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             char* ap=aty_c+1; while(*ap>='0'&&*ap<='9'){an=an*10+(long)(*ap-'0');ap++;}
                             char* pp=pt+1;    while(*pp>='0'&&*pp<='9'){pn=pn*10+(long)(*pp-'0');pp++;}
                             if (an > pn) { cg.out.writes(" = trunc "); }
+                            else if (!is_signed_int_val(aval_c)) { cg.out.writes(" = zext "); }
                             else         { cg.out.writes(" = sext ");  }
                             cg.out.writes(aty_c); cg.out.writes(" "); cg.emit_vref(aval_c);
                             cg.out.writes(" to "); cg.out.writes(pt); cg.out.writes("\n");
@@ -4038,6 +4054,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             cg.out.writes("  %clarg.c."); cg.out.writei(v.id);
                             cg.out.writes("."); cg.out.writeu(ia2);
                             if (w2a == w2b)     { cg.out.writes(" = bitcast "); }
+                            else if (w2a < w2b && !is_signed_int_val(arg2)) { cg.out.writes(" = zext "); }
                             else if (w2a < w2b) { cg.out.writes(" = sext "); }
                             else                { cg.out.writes(" = trunc "); }
                             cg.out.writes(aty2); cg.out.writes(" ");
@@ -4995,6 +5012,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         char* vp2=val_ty_st+1;  while(*vp2>='0'&&*vp2<='9'){vn2=vn2*10+(long)(*vp2-'0');vp2++;}
                         cg.out.writes("  %st.coerce.v"); cg.out.writei(v.id);
                         if (vn2 > en2) { cg.out.writes(" = trunc "); }
+                        else if (!is_signed_int_val(val_arg)) { cg.out.writes(" = zext "); }
                         else           { cg.out.writes(" = sext ");  }
                         cg.out.writes(val_ty_st); cg.out.writes(" ");
                         if (val_arg != null) { cg.emit_vref(val_arg); } else { cg.out.writes("undef"); }
@@ -5178,7 +5196,9 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             if (sw1 != sw2)
                             {
                                 cg.out.writes("  %fst.coerce.v"); cg.out.writei(v.id);
-                                cg.out.writes(sw1>sw2 ? " = trunc " : " = sext ");
+                                if (sw1 > sw2)                       { cg.out.writes(" = trunc "); }
+                                else if (!is_signed_int_val(val_arg)) { cg.out.writes(" = zext "); }
+                                else                                  { cg.out.writes(" = sext "); }
                                 cg.out.writes(val_ty_st); cg.out.writes(" ");
                                 if (val_arg != null) { cg.emit_vref(val_arg); } else { cg.out.writes("undef"); }
                                 cg.out.writes(" to "); cg.out.writes(field_store_ty); cg.out.writes("\n");
@@ -5649,7 +5669,9 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             char* ap=el_ty+1;   while(*ap>='0'&&*ap<='9'){aw=aw*10+(long)(*ap-'0');ap++;}
                             char* ep=ety_arr+1; while(*ep>='0'&&*ep<='9'){ew=ew*10+(long)(*ep-'0');ep++;}
                             cg.out.writes("  %ac."); cg.out.writei(v.id); cg.out.writes("."); cg.out.writeu(ai);
-                            cg.out.writes(aw>ew?" = trunc ":" = sext ");
+                            if (aw > ew)                             { cg.out.writes(" = trunc "); }
+                            else if (!is_signed_int_val(v.args[ai])) { cg.out.writes(" = zext "); }
+                            else                                     { cg.out.writes(" = sext "); }
                             cg.out.writes(el_ty); cg.out.writes(" ");
                             if(v.args[ai]!=null){cg.emit_vref(v.args[ai]);}else{cg.out.writes("undef");}
                             cg.out.writes(" to "); cg.out.writes(ety_arr); cg.out.writes("\n");
@@ -5989,10 +6011,12 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                 cg.out.writes("  %fcoerce."); cg.out.writei(v.id);
                                 cg.out.writes("."); cg.out.writeu(i);
                                 cg.out.writes(" = ");
-                                // i1 → wider: use zext (zero-extend bool to byte)
-                                if (aw2 == 1 && fw2 > 1) { cg.out.writes("zext "); }
-                                else if (aw2 > fw2)       { cg.out.writes("trunc "); }
-                                else                      { cg.out.writes("sext "); }
+                                // i1 → wider: use zext (zero-extend bool to byte);
+                                // likewise any unsigned source zero-extends (r40).
+                                if (aw2 == 1 && fw2 > 1)              { cg.out.writes("zext "); }
+                                else if (aw2 > fw2)                    { cg.out.writes("trunc "); }
+                                else if (!is_signed_int_val(v.args[i])) { cg.out.writes("zext "); }
+                                else                                   { cg.out.writes("sext "); }
                                 cg.out.writes(arg_ty2); cg.out.writes(" "); cg.emit_vref(v.args[i]);
                                 cg.out.writes(" to "); cg.out.writes(&field_ty_buf[0]); cg.out.writes("\n");
                                 field_coerced = true;
@@ -6239,6 +6263,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         cg.out.writeu(i); cg.out.writes(" = ");
                         if (is_bool)   { cg.out.writes("zext i1 "); }
                         else if (is_ptr_arg) { cg.out.writes("ptrtoint ptr "); }
+                        else if (!is_signed_int_val(pa)) { cg.out.writes("zext "); cg.out.writes(aty); cg.out.writes(" "); }
                         else { cg.out.writes("sext "); cg.out.writes(aty); cg.out.writes(" "); }
                         cg.emit_vref(pa);
                         cg.out.writes(" to i64\n");
@@ -6799,7 +6824,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         if (a == null || a.op == ssi_ir::IrOp.IR_CONST_INT) continue;
                         char* at = resolve_ty(tm, a);
                         if (at == null || at[0] == 0) continue;
-                        char* opc = coerce_op(at, (char*)"i64");
+                        char* opc = coerce_op_val(at, (char*)"i64", a);
                         if (opc == null) continue;
                         cg.out.writes("  %sysarg."); cg.out.writeu(sci);
                         cg.out.writes(".v"); cg.out.writei(v.id);
@@ -7142,7 +7167,7 @@ fn void CgenModule.emit_phi_edge_coerces(CgenModule* cg, ssi_ir::IrBlock* b, Typ
                                 if (esrc[ci] != slot0[ci]) { same_w = false; break; }
                             }
                             if (!(same_w && strlen(esrc) == strlen(slot0)))
-                            { bopc = coerce_op(esrc, slot0); }
+                            { bopc = coerce_op_val(esrc, slot0, ph.args[ai]); }
                         }
                         if (bopc != null)
                         {
@@ -7366,7 +7391,7 @@ fn void CgenModule.emit_terminator(CgenModule* cg, ssi_ir::IrBlock* b, TypeTable
                         // opcode (trunc/sext/fptrunc/fpext/fptosi/sitofp/…) —
                         // including the correct fpext for float→double widening,
                         // which the old per-site code emitted as invalid fptrunc.
-                        char* ret_opc = coerce_op(val_ty, ret_ty);
+                        char* ret_opc = coerce_op_val(val_ty, ret_ty, b.ret_val);
                         if (ret_opc == null) ret_opc = (char*)"bitcast";
                         cg.out.writes("  %coerce.ret.B"); cg.out.writei(b.id); cg.out.writes(" = ");
                         cg.out.writes(ret_opc); cg.out.writes(" ");
