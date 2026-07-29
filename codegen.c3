@@ -2098,6 +2098,17 @@ fn Node* struct_body_of(Node* n)
 {
     if (n == null) return null;
     if (n.kind == Nk.NODE_DECL_STRUCT || n.kind == Nk.NODE_DECL_UNION) return n;
+    // Generic instantiation (`Pair<i64, f64>`): the struct decl lives behind
+    // the application's head TypeVar — the same look-through as
+    // ast::struct_decl_of (needed so field INDEX lookup works on instantiations).
+    if (n.kind == Nk.NODE_TYPE_GENERIC_APP && n.child_count >= 1)
+    {
+        Node* hd = n.children[0];
+        if (hd != null && hd.resolved != null && hd.resolved != n)
+        { return struct_body_of(hd.resolved); }
+        if (n.resolved != null && n.resolved != n) return struct_body_of(n.resolved);
+        return null;
+    }
     // TypeVar use → its declaration (which may itself be an alias).
     if (n.kind == Nk.NODE_TYPEVAR && n.resolved != null) return struct_body_of(n.resolved);
     if (n.kind == Nk.NODE_DECL_TYPE && n.child_count >= 1)
@@ -4473,18 +4484,16 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     Node* bt2 = base_ast.type_annotation;
                     if (bt2 != null)
                     {
+                        // struct_body_of covers DECL_STRUCT/UNION, TYPEVAR (alias
+                        // chains), DECL_TYPE aliases and GENERIC_APP instantiations.
                         if (bt2.kind == Nk.NODE_TYPE_PTR && bt2.child_count >= 1 && bt2.children[0] != null)
-                        { bt2 = bt2.children[0]; }
-                        if (bt2.kind == Nk.NODE_TYPEVAR && bt2.resolved != null
-                            && bt2.resolved.kind == Nk.NODE_DECL_STRUCT)
-                        { struct_decl = bt2.resolved; }
-                        else if (bt2.kind == Nk.NODE_DECL_STRUCT)
-                        { struct_decl = bt2; }
+                        { struct_decl = struct_body_of(bt2.children[0]); }
+                        if (struct_decl == null) { struct_decl = struct_body_of(bt2); }
                     }
-                    // Also try resolved name on the base ident itself
-                    if (struct_decl == null && base_ast.resolved != null
-                        && base_ast.resolved.kind == Nk.NODE_DECL_STRUCT)
-                    { struct_decl = base_ast.resolved; }
+                    // Also try the resolved name on the base ident itself (direct
+                    // decl reference or alias chain).
+                    if (struct_decl == null && base_ast.resolved != null)
+                    { struct_decl = struct_body_of(base_ast.resolved); }
                     // Check if ident resolves to a let/param binding that has a struct type
                     if (struct_decl == null && base_ast.resolved != null)
                     {
@@ -4495,12 +4504,8 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         if (dtype != null)
                         {
                             if (dtype.kind == Nk.NODE_TYPE_PTR && dtype.child_count >= 1 && dtype.children[0] != null)
-                            { dtype = dtype.children[0]; }
-                            if (dtype.kind == Nk.NODE_TYPEVAR && dtype.resolved != null
-                                && dtype.resolved.kind == Nk.NODE_DECL_STRUCT)
-                            { struct_decl = dtype.resolved; }
-                            else if (dtype.kind == Nk.NODE_DECL_STRUCT)
-                            { struct_decl = dtype; }
+                            { struct_decl = struct_body_of(dtype.children[0]); }
+                            if (struct_decl == null) { struct_decl = struct_body_of(dtype); }
                         }
                     }
                 }
@@ -4511,29 +4516,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                                field_name_node.p.ident.name_ptr,
                                                field_name_node.p.ident.name_len);
                 }
-                else if (field_name_node != null && struct_decl == null && base != null)
-                {
-                    // String/format record { ptr, i64(len), i64(cap) }: the
-                    // type is a synthesized tuple, so field_index_of found no
-                    // struct and the index defaulted to 0 — `.len` silently
-                    // loaded the DATA POINTER. Map the three layout names by
-                    // shape+name (mirrors synth_field in typecheck.c3).
-                    char* bty_r = (tm != null) ? tm.get(base.id) : null;
-                    bool is_str_rec = bty_r != null
-                        && cstr_eq_n(bty_r, (char*)"{ ptr, i64", 10);
-                    if (is_str_rec)
-                    {
-                        char* rnp = field_name_node.p.ident.name_ptr;
-                        usz   rnl = field_name_node.p.ident.name_len;
-                        if (rnl == 3 && rnp != null)
-                        {
-                            if (rnp[0]=='l' && rnp[1]=='e' && rnp[2]=='n')
-                            { field_idx = 1; }
-                            else if (rnp[0]=='c' && rnp[1]=='a' && rnp[2]=='p')
-                            { field_idx = 2; }
-                        }
-                    }
-                }
+
 
                 // Emit struct type name
                 char* sname = null; usz snlen = 0;
@@ -5933,13 +5916,16 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     if (i < field_arg_start_pre) { continue; }
                     usz field_i_pre = i - field_arg_start_pre;
 
-                    // Compute actual struct field index for this arg:
-                    // For struct update: look up the field NAME from the FIELD_INIT node.
-                    // For struct literal: use positional index (field_i_pre).
+                    // Compute actual struct field index for this arg by NAME:
+                    // both struct literals and struct updates carry FIELD_INIT
+                    // children (possibly written out of declaration order) —
+                    // insertvalue must target the declared slot, not the write
+                    // position.  Only bare positional inits fall back to the
+                    // write index.
                     int actual_field_idx = (int)field_i_pre;
-                    if (is_struct_update && struct_body_block != null && v.src != null)
+                    if (struct_body_block != null && v.src != null)
                     {
-                        usz fi_child_idx_pre = field_i_pre + 1;  // +1 to skip base ident at src.children[0]
+                        usz fi_child_idx_pre = field_i_pre + 1;  // +1: name/base ident at src.children[0]
                         if (fi_child_idx_pre < v.src.child_count)
                         {
                             Node* fi_node_pre = v.src.children[fi_child_idx_pre];
@@ -5998,7 +5984,42 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     if (need_coerce_elem && v.args[i] != null)
                     {
                         char* arg_ty2 = (tm != null) ? tm.get(v.args[i].id) : null;
-                        if (arg_ty2 != null && arg_ty2[0] == 'i' && field_ty_buf[0] == 'i')
+                        bool arg_int2  = (arg_ty2 != null && arg_ty2[0] == 'i');
+                        bool arg_fp2   = (arg_ty2 != null && (arg_ty2[0] == 'f' || arg_ty2[0] == 'd'));
+                        bool fld_int2  = (field_ty_buf[0] == 'i');
+                        bool fld_fp2   = (field_ty_buf[0] == 'f' || field_ty_buf[0] == 'd');
+                        if (arg_int2 && fld_fp2)
+                        {
+                            // Integer value into a float field.
+                            cg.out.writes("  %fcoerce."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(i);
+                            cg.out.writes(" = sitofp ");
+                            cg.out.writes(arg_ty2); cg.out.writes(" "); cg.emit_vref(v.args[i]);
+                            cg.out.writes(" to "); cg.out.writes(&field_ty_buf[0]); cg.out.writes("\n");
+                            field_coerced = true;
+                        }
+                        else if (arg_fp2 && fld_fp2 && (arg_ty2[0] != field_ty_buf[0]))
+                        {
+                            // float ↔ double rank change.
+                            cg.out.writes("  %fcoerce."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(i);
+                            cg.out.writes(arg_ty2[0] == 'd' ? " = fptrunc " : " = fpext ");
+                            cg.out.writes(arg_ty2); cg.out.writes(" "); cg.emit_vref(v.args[i]);
+                            cg.out.writes(" to "); cg.out.writes(&field_ty_buf[0]); cg.out.writes("\n");
+                            field_coerced = true;
+                        }
+                        else if (arg_fp2 && fld_int2)
+                        {
+                            // Float value into an int field (C-style truncation).
+                            cg.out.writes("  %fcoerce."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(i);
+                            cg.out.writes(" = fptosi ");
+                            cg.out.writes(arg_ty2); cg.out.writes(" "); cg.emit_vref(v.args[i]);
+                            cg.out.writes(" to "); cg.out.writes(&field_ty_buf[0]); cg.out.writes("\n");
+                            field_coerced = true;
+                        }
+                        if (field_coerced) { /* handled by the float paths above */ }
+                        else if (arg_ty2 != null && arg_ty2[0] == 'i' && field_ty_buf[0] == 'i')
                         {
                             usz al2 = strlen(arg_ty2); usz fl2 = strlen(&field_ty_buf[0]);
                             bool tymatch2 = (al2 == fl2);
