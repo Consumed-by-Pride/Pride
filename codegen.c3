@@ -200,6 +200,38 @@ fn usz prim_alignof(char* name, usz len)
 // Write the LLVM type string for a Pride type node into buf[cap].
 // Returns buf (always null-terminated). Falls back to "i64" for unknown types.
 
+// Concrete generic-struct instantiation (r33): `Pair<i64, f64>`.  Returns
+// the struct decl's FIELD BLOCK when the app instantiates a STRUCT with
+// every argument concrete (no type-parameter TypeVars).  The ABI must then
+// print the SUBSTITUTED field record ({ i64, double }) — not the decl's
+// boxed { ptr, ptr } parameter repr, which is only coherent in still-generic
+// contexts.  Construction (insertvalue), field access (extractvalue),
+// parameters, and returns all print through this helper, so one substitution
+// keeps the whole value repr consistent.  An app that still mentions a type
+// parameter (or whose head is not a struct) returns null and keeps the
+// historical boxed head repr.
+fn Node* cg_concrete_struct_app_fblk(Node* app)
+{
+    if (app == null || app.kind != Nk.NODE_TYPE_GENERIC_APP || app.child_count < 2)
+    { return null; }
+    for (usz ai = 1; ai < app.child_count; ai++)
+    {
+        Node* arg = app.children[ai];
+        if (arg != null && arg.kind == Nk.NODE_TYPEVAR && arg.resolved != null
+            && (arg.resolved.kind == Nk.NODE_PARAM
+                || arg.resolved.kind == Nk.NODE_GENERIC_PARAM))
+        { return null; }   // still generic — boxed repr
+    }
+    Node* sd = ast::struct_decl_of(app);
+    if (sd == null) return null;
+    for (usz fi = 0; fi < sd.child_count; fi++)
+    {
+        Node* fc = sd.children[fi];
+        if (fc != null && fc.kind == Nk.NODE_EXPR_BLOCK) return fc;
+    }
+    return null;
+}
+
 fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
 {
     if (cap == 0) return buf;
@@ -415,7 +447,34 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
         return buf;
     }
     if (t.kind == Nk.NODE_TYPE_GENERIC_APP && t.child_count >= 1)
-    { return type_to_llvm_buf(t.children[0], buf, cap, depth+1); }
+    {
+        // Concrete generic-struct instantiation: emit the substituted field
+        // record inline (see cg_concrete_struct_app_fblk).
+        Node* fblk2 = cg_concrete_struct_app_fblk(t);
+        if (fblk2 != null)
+        {
+            usz off2 = 0;
+            if (off2 < cap-2) { buf[off2++] = '{'; buf[off2++] = ' '; }
+            bool first2 = true;
+            for (usz fi = 0; fi < fblk2.child_count; fi++)
+            {
+                Node* fd = fblk2.children[fi];
+                if (fd == null || fd.kind != Nk.NODE_FIELD_DECL || fd.child_count < 2) continue;
+                if (!first2 && off2 < cap-2) { buf[off2++] = ','; buf[off2++] = ' '; }
+                first2 = false;
+                if (off2 < cap - 1)
+                {
+                    Node* fty = ast::generic_payload_subst(t, fd.children[1]);
+                    type_to_llvm_buf(fty, buf + off2, cap - off2, depth + 1);
+                    off2 += strlen(buf + off2);
+                }
+            }
+            if (off2 < cap-2) { buf[off2++] = ' '; buf[off2++] = '}'; }
+            buf[off2] = 0;
+            return buf;
+        }
+        return type_to_llvm_buf(t.children[0], buf, cap, depth+1);
+    }
     if (t.kind == Nk.NODE_TYPE_TUPLE)
     {
         // Tuple → struct.  Build { T0, T1, ... } in buf, recursing directly
@@ -1688,8 +1747,25 @@ fn void CgenModule.emit_type(CgenModule* cg, Node* t, bool in_ret_pos, int depth
             }
 
         case Nk.NODE_TYPE_GENERIC_APP:
-            // Monomorphized generic app: head should resolve to a concrete struct
-            if (t.child_count >= 1)
+            // Concrete generic-struct instantiation: emit the substituted
+            // field record inline (see cg_concrete_struct_app_fblk); a still-
+            // generic app keeps the boxed head repr.
+            Node* fblk9 = cg_concrete_struct_app_fblk(t);
+            if (fblk9 != null)
+            {
+                cg.out.writes("{ ");
+                bool first9 = true;
+                for (usz fi = 0; fi < fblk9.child_count; fi++)
+                {
+                    Node* fd = fblk9.children[fi];
+                    if (fd == null || fd.kind != Nk.NODE_FIELD_DECL || fd.child_count < 2) continue;
+                    if (!first9) { cg.out.writes(", "); }
+                    first9 = false;
+                    cg.emit_type(ast::generic_payload_subst(t, fd.children[1]), false, depth + 1);
+                }
+                cg.out.writes(" }");
+            }
+            else if (t.child_count >= 1)
             {
                 cg.emit_type(t.children[0], in_ret_pos, depth + 1);
             }
@@ -2642,6 +2718,26 @@ fn long sizeof_type_x86(Node* t)
             if (aln > 0) { long r2 = tot % aln; if (r2 != 0) tot += aln - r2; }
             return tot > 0 ? tot : 1;
         }
+        case Nk.NODE_TYPE_GENERIC_APP:
+        {
+            // Concrete generic-struct instantiation: substituted field sizes
+            // (must agree with the printed record repr — r33).
+            Node* fblk5 = cg_concrete_struct_app_fblk(t);
+            if (fblk5 == null) return 8;
+            long tot = 0; long aln = 1;
+            for (usz fi = 0; fi < fblk5.child_count; fi++)
+            {
+                Node* c = fblk5.children[fi];
+                if (c == null || c.kind != Nk.NODE_FIELD_DECL) continue;
+                Node* ft = c.child_count >= 2 ? ast::generic_payload_subst(t, c.children[1]) : null;
+                long fs = sizeof_type_x86(ft); long fa = alignof_type_x86(ft);
+                if (fa > aln) aln = fa;
+                long r = fa > 0 ? (tot % fa) : 0; if (r != 0) tot += fa - r;
+                tot += fs;
+            }
+            if (aln > 0) { long r2 = tot % aln; if (r2 != 0) tot += aln - r2; }
+            return tot > 0 ? tot : 1;
+        }
         case Nk.NODE_TYPEVAR: return t.resolved != null ? sizeof_type_x86(t.resolved) : 8;
         default: return 8;
     }
@@ -2665,6 +2761,20 @@ fn long alignof_type_x86(Node* t)
                 long fa = alignof_type_x86(ft); if (fa > a) a = fa;
             }
             return a;
+        }
+        case Nk.NODE_TYPE_GENERIC_APP:
+        {
+            Node* fblk6 = cg_concrete_struct_app_fblk(t);
+            if (fblk6 == null) return 8;
+            long a6 = 1;
+            for (usz fi = 0; fi < fblk6.child_count; fi++)
+            {
+                Node* c = fblk6.children[fi];
+                if (c == null || c.kind != Nk.NODE_FIELD_DECL) continue;
+                Node* ft = c.child_count >= 2 ? ast::generic_payload_subst(t, c.children[1]) : null;
+                long fa = alignof_type_x86(ft); if (fa > a6) a6 = fa;
+            }
+            return a6;
         }
         case Nk.NODE_TYPEVAR: return t.resolved != null ? alignof_type_x86(t.resolved) : 8;
         default: return 8;
@@ -5566,6 +5676,15 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         if (c0 != null && c0.kind == Nk.NODE_EXPR_BLOCK) { struct_body_block = c0; break; }
                     }
                 }
+                // Generic-struct instantiation (r33): the literal is stamped
+                // with the app type (`Pair<i64, f64>`) — the decl's field
+                // types name type parameters, which print as the boxed ptr
+                // repr.  Substitute through the app for BOTH the element
+                // coerce and the record type so a concrete literal builds a
+                // concrete record ({ i64, double }, not { ptr, ptr }).
+                Node* struct_app_ann = (v.src != null && v.src.type_annotation != null
+                    && v.src.type_annotation.kind == Nk.NODE_TYPE_GENERIC_APP)
+                    ? v.src.type_annotation : null;
                 bool is_struct_update = (v.ival == 1);
                 usz field_arg_start_pre = is_struct_update ? 1 : 0;
 
@@ -5626,7 +5745,10 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             if (fd == null || fd.kind != Nk.NODE_FIELD_DECL) { continue; }
                             if ((int)fi_coerce == actual_field_idx && fd.child_count >= 2)
                             {
-                                type_to_llvm_buf(fd.children[1], &field_ty_buf[0], TYMAP_ENTRY, 0);
+                                Node* cfd_ty = fd.children[1];
+                                if (struct_app_ann != null)
+                                { cfd_ty = ast::generic_payload_subst(struct_app_ann, cfd_ty); }
+                                type_to_llvm_buf(cfd_ty, &field_ty_buf[0], TYMAP_ENTRY, 0);
                                 need_coerce_elem = (field_ty_buf[0] != 0);
                                 break;
                             }
@@ -5678,7 +5800,10 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             if (!first_f) cg.out.writes(", ");
                             first_f = false;
                             char[TYMAP_ENTRY] ftbuf2;
-                            type_to_llvm_buf(fd2.children[1], &ftbuf2[0], TYMAP_ENTRY, 0);
+                            Node* rfd_ty = fd2.children[1];
+                            if (struct_app_ann != null)
+                            { rfd_ty = ast::generic_payload_subst(struct_app_ann, rfd_ty); }
+                            type_to_llvm_buf(rfd_ty, &ftbuf2[0], TYMAP_ENTRY, 0);
                             cg.out.writes(ftbuf2[0] != 0 ? &ftbuf2[0] : (char*)"i64");
                         }
                         cg.out.writes(" }");

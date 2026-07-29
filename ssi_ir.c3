@@ -2161,6 +2161,61 @@ fn void SsiModule.bind_let_pattern(SsiModule* m, Node* pat, IrVal* val)
                 int ord = 0; Node* vp_ty = null; Node* vp_un = null;
                 if (!variant_pattern_info(pat, &vp_un, &ord, &vp_ty))
                 {
+                    // Plain-struct destructure (`let { x, y } = p`,
+                    // `let { fst: a } = pair`): NOT a variant pattern.  Each
+                    // named field is projected out of the aggregate by its
+                    // DECLARATION ordinal (the pattern may list fields in any
+                    // order), then the subpattern binds recursively — or, for
+                    // the `{ x }` shorthand, the field node itself (the
+                    // resolver keys shorthand uses to the PATTERN_FIELD:
+                    // bind_pattern_field).  Previously this fell into the
+                    // unstamped fallback below, binding the UNIT value (or
+                    // nothing at all for the shorthand) — reads came out 0.
+                    Node* sdecl = ast::struct_decl_of(pat.type_annotation);
+                    if (sdecl != null)
+                    {
+                        for (usz si = 0; si < pat.child_count; si++)
+                        {
+                            Node* pf = pat.children[si];
+                            if (pf == null || pf.kind != Nk.NODE_PATTERN_FIELD
+                                || pf.child_count < 1) continue;
+                            Node* vn = pf.children[0];
+                            if (vn == null || vn.p.ident.name_ptr == null) continue;
+                            Node* fty2 = null;
+                            int ford = ast::struct_field_lookup(sdecl,
+                                vn.p.ident.name_ptr, vn.p.ident.name_len, &fty2);
+                            if (ford < 0) continue;   // typecheck already hard-errored
+                            if (pf.type_annotation == null)
+                            {
+                                // Unstamped (closure-body) form: fabricate the
+                                // field type from the declaration so codegen
+                                // can type the projection.
+                                pf.type_annotation =
+                                    ast::generic_payload_subst(pat.type_annotation, fty2);
+                            }
+                            IrVal* proj = m.new_val(IrOp.IR_INDEX, pf);
+                            if (proj != null && val != null)
+                            {
+                                proj.add_arg(val, -1);
+                                proj.ival = (ulong)ford;
+                            }
+                            if (proj != null) m.emit(proj);
+                            if (pf.child_count >= 2 && pf.children[1] != null
+                                && pf.children[1].kind != Nk.NODE_PATTERN_LITERAL)
+                            {
+                                // `{ name: subpattern }` — recursive binding
+                                // (nested tuple/struct destructuring works).
+                                m.bind_let_pattern(pf.children[1], proj);
+                            }
+                            else if (pf.child_count < 2)
+                            {
+                                m.env_push(pf, proj);
+                            }
+                            // `{ name: literal }` binds nothing (irrefutable
+                            // let-pattern convention, same as tuple lets).
+                        }
+                        return;
+                    }
                     // Unstamped pattern (e.g. inside an unannotated closure
                     // body, which the type checker never visits): the binder
                     // must still name a DEFINED value. Binding nothing turns
