@@ -359,6 +359,7 @@ typedef struct PrideHandlerFrame {
     ucontext_t  disp_ctx;       /* dispatch trampoline context (coro_stack)   */
     void*       resume_val;     /* value passed to __pride_resume             */
     uint64_t    perform_op_id;  /* performed op id (dispatch token minus 1)   */
+    struct PrideHandlerFrame* prev_dispatched; /* dispatch identity to reinstate */
     int         reentered;      /* getcontext double-return flag              */
     int         resume_used;    /* one-shot guard for resume()                */
 } PrideHandlerFrame;
@@ -432,6 +433,7 @@ uintptr_t __pride_push_handler(uint64_t frame_id, uint64_t nops, ...) {
     f->saved_size    = 0;
     f->resume_val    = NULL;
     f->perform_op_id = 0;
+    f->prev_dispatched = NULL;
     f->reentered     = 0;
     f->resume_used   = 0;
     f->mini_saved    = NULL;
@@ -582,10 +584,27 @@ static void effect_dispatch_tramp(uint32_t ptr_hi, uint32_t ptr_lo) {
     panic_fmt("effect: failed to re-enter handler dispatch");
 }
 
+/* Frames whose arms are currently in flight: effect_dispatched plus the
+ * saved-dispatcher chain dangling below it.  While a handler's arm runs,
+ * that handler's prompt is dissolved (deep-handler semantics): an arm that
+ * re-performs one of ITS OWN ops must bypass its own frame (and any frame
+ * whose arm it is nested inside) and escape to a strictly outer handler —
+ * otherwise dispatch would re-enter the same getcontext point, free the
+ * still-needed suspended-computation snapshot, and silently restart the
+ * arm in an infinite loop. */
+static bool effect_in_arm_chain(PrideHandlerFrame* f) {
+    for (PrideHandlerFrame* d = effect_dispatched; d != NULL;
+         d = d->prev_dispatched) {
+        if (d == f) return true;
+    }
+    return false;
+}
+
 void* __pride_perform(uint64_t op_id, uint64_t nargs, ...) {
     PrideHandlerFrame* f = NULL;
     for (int i = effect_top; i >= 0; i--) {
         PrideHandlerFrame* cand = &effect_stack[i];
+        if (effect_in_arm_chain(cand)) continue;
         for (uint64_t k = 0; k < cand->nops; k++) {
             if (cand->ops[k] == op_id + 1) { f = cand; break; }
         }
@@ -646,8 +665,22 @@ void* __pride_perform(uint64_t op_id, uint64_t nargs, ...) {
     f->stack_lo   = lo;
     memcpy(f->saved, lo, (size_t)size);
 
-    f->perform_op_id  = op_id;
-    effect_dispatched = f;
+    /* The dispatch pointer must behave like a STACK: an arm body may itself
+     * perform an operation (dispatched to some — typically outer — frame),
+     * and when that nested perform is eventually resumed, control returns
+     * right here and the arm goes on running as the arm OF THE FRAME THAT
+     * DISPATCHED IT.  Save/restore the pointer across the suspension so the
+     * enclosing arm's own resume() still targets its own frame; a single
+     * global slot would leave resume() aimed at the nested frame (whose
+     * snapshot was already consumed and freed) → "no suspended computation". *
+     * Bracketing is exact: the only way back into this function body is a
+     * tail-resume of THIS perform, and performs strictly nest (LIFO).
+     * The save MUST live in the frame struct (TLS): this function's own
+     * activation sits INSIDE the snapshotted region, so any local (stack)
+     * copy is clobbered by the restore memcpy before it could be read back. */
+    f->prev_dispatched = effect_dispatched;
+    f->perform_op_id   = op_id;
+    effect_dispatched  = f;
 
     EFFDBG("perform: op=%llu nargs=%llu lo=%p hi=%p size=%ld\n",
            (unsigned long long)op_id, (unsigned long long)nargs,
@@ -667,7 +700,9 @@ void* __pride_perform(uint64_t op_id, uint64_t nargs, ...) {
     swapcontext(&f->perform_ctx, &f->disp_ctx);
     EFFDBG("perform: resumed, val=%p\n", f->resume_val);
 
-    /* Resumed: the trampoline restored the snapshot; hands us resume_val. */
+    /* Resumed: the trampoline restored the snapshot; hands us resume_val.
+     * Reinstate the dispatch identity of the enclosing arm (see above). */
+    effect_dispatched = f->prev_dispatched;
     free(f->saved);
     f->saved      = NULL;
     f->saved_size = 0;

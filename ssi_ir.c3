@@ -4589,93 +4589,11 @@ fn bool is_effect_method_call(Node* n)
             && base.resolved.kind == Nk.NODE_DECL_EFFECT);
 }
 
-fn Node* effect_op_decl_of(Node* method_call)
-{
-    // child[0] = effect typevar, child[1] = op ident
-    if (method_call.child_count < 2) return null;
-    Node* op_ident = method_call.children[1];
-    if (op_ident == null) return null;
-    // Fast path: resolver already linked the op ident to its EffectOpDecl.
-    if (op_ident.resolved != null && op_ident.resolved.kind == Nk.NODE_EFFECT_OP_DECL)
-    {
-        return op_ident.resolved;
-    }
-    // Slow path: search the effect declaration manually (resolver did not link it).
-    Node* effect_tyvar = method_call.children[0];
-    Node* effect_decl = (effect_tyvar != null) ? effect_tyvar.resolved : null;
-    if (effect_decl == null || effect_decl.kind != Nk.NODE_DECL_EFFECT) { return null; }
-    // Effect decl: children[0]=TypeVar(name), children[1]=Block(op decls)
-    Node* body = null;
-    for (usz bi = 0; bi < effect_decl.child_count; bi++)
-    {
-        Node* bc = effect_decl.children[bi];
-        if (bc != null && bc.kind == Nk.NODE_EXPR_BLOCK) { body = bc; break; }
-    }
-    if (body == null) { return null; }
-    // Match op name
-    char* want_name = op_ident.p.ident.name_ptr;
-    usz   want_len  = op_ident.p.ident.name_len;
-    for (usz oi = 0; oi < body.child_count; oi++)
-    {
-        Node* op = body.children[oi];
-        if (op == null || op.kind != Nk.NODE_EFFECT_OP_DECL || op.child_count < 1) { continue; }
-        Node* op_name = op.children[0];
-        if (op_name == null) { continue; }
-        char* nm = op_name.p.ident.name_ptr;
-        usz   nl = op_name.p.ident.name_len;
-        if (nl == want_len && nm != null)
-        {
-            bool match = true;
-            for (usz k = 0; k < nl; k++) { if (nm[k] != want_name[k]) { match = false; break; } }
-            if (match) { return op; }
-        }
-    }
-    return null;
-}
-
-// The op head of a handler arm (children[0]) has the same
-// [EffectTypeVar, op_ident] shape as an effect method call's first two
-// children, so it can be resolved through effect_op_decl_of directly.
-fn Node* effect_op_decl_of_arm(Node* arm)
-{
-    if (arm == null || arm.kind != Nk.NODE_HANDLER_ARM || arm.child_count < 1)
-    {
-        return null;
-    }
-    Node* head = arm.children[0];
-    if (head == null || head.child_count < 2) { return null; }
-    return effect_op_decl_of(head);
-}
-
-// Declared parameter count of the op a handler arm dispatches, or -1 when the
-// op declaration can't be found (the resolver has already errored; the caller
-// then falls back to a positional guess so lowering can still finish).
-fn long effect_op_arity_of_arm(Node* arm)
-{
-    Node* op_decl = effect_op_decl_of_arm(arm);
-    if (op_decl == null || op_decl.child_count < 2) return -1;
-    Node* tyfn = op_decl.children[1];   // EffectOpDecl[name, TyFn]
-    if (tyfn == null || tyfn.kind != Nk.NODE_TYPE_FN || tyfn.child_count < 2) return -1;
-    Node* params = tyfn.children[0];    // TyFn[params, ret]
-    if (params == null) return -1;
-    if (params.kind == Nk.NODE_EXPR_UNIT || params.kind == Nk.NODE_LIT_BOTTOM) return 0;
-    if (params.kind == Nk.NODE_TYPE_TUPLE) return (long)params.child_count;
-    return 1;
-}
-
-// `()` in handler-arm binder position: the zero-arg placeholder pattern
-// (`State.get () k -> ...`). It names NO op argument and consumes no slot.
-fn bool is_arm_unit_binder(Node* b)
-{
-    if (b == null) return false;
-    if (b.kind == Nk.NODE_EXPR_UNIT) return true;
-    return b.kind == Nk.NODE_PATTERN_TUPLE && b.child_count == 0;
-}
 
 fn IrVal* SsiModule.lower_effect_perform(SsiModule* m, Node* n)
 {
     // Find the op declaration for the .binder field.
-    Node* op_decl = effect_op_decl_of(n);
+    Node* op_decl = ast::effect_op_decl_of(n);
 
     IrVal* v = m.new_val(IrOp.IR_EFFECT_OP, n);
     if (v != null) { v.binder = op_decl; }
@@ -4791,14 +4709,14 @@ fn IrVal* SsiModule.lower_handler_arm(SsiModule* m, Node* arm, int arm_blk, int 
     // decomposed that virtual value into `index (v70)` against an undefined
     // register — only visible once the join φ was typed honestly and llvm-as
     // got far enough to notice.
-    long op_nargs = effect_op_arity_of_arm(arm);
+    long op_nargs = ast::effect_op_arity_of_arm(arm);
     usz cont_idx = 0;   // child index of the continuation binder; 0 = none
     {
         usz eff = 0;
         usz last_eff = 0;
         for (usz i = 1; i < last; i++)
         {
-            if (is_arm_unit_binder(arm.children[i])) continue;
+            if (ast::is_arm_unit_binder(arm.children[i])) continue;
             eff++;
             last_eff = i;
         }
@@ -4834,7 +4752,7 @@ fn IrVal* SsiModule.lower_handler_arm(SsiModule* m, Node* arm, int arm_blk, int 
             m.bind_let_pattern(binder, kv);
             continue;
         }
-        if (is_arm_unit_binder(binder)) { continue; }
+        if (ast::is_arm_unit_binder(binder)) { continue; }
         arm_slot = m.emit_arm_arg_params(binder, arm, arm_slot);
     }
 
@@ -4970,7 +4888,7 @@ fn IrVal* SsiModule.lower_handle(SsiModule* m, Node* n)
         // Case each arm on its op's declaration id + 1 — a stable, unique
         // token that never collides with the 0 sentinel.  (Fall back to the
         // arm ordinal only if the op declaration could not be resolved.)
-        Node* op_decl = effect_op_decl_of_arm(arm);
+        Node* op_decl = ast::effect_op_decl_of_arm(arm);
         ulong case_tag = (op_decl != null) ? (ulong)op_decl.id + 1
                                            : (ulong)(narms + 1);
         m.link_case(dispatch, arm_blk, case_tag);

@@ -4634,6 +4634,25 @@ fn Node* Parser.parse_handle(Parser* self)
     if (self.check(Tt.TOKEN_KW_HANDLE))
     {
         s.push(self.parse_handle());
+
+        // The nested handle consumed its own arm-block DEDENT, but the DEDENT
+        // that closes THIS handler's computation indent is typically still
+        // pending (the lexer emits all pops of the deeper levels first).
+        // Our arms then appear after that DEDENT — possibly behind a fresh
+        // INDENT of their own (when they dedent to a column that is not on
+        // the indent stack). Reconcile both so the arm loop below actually
+        // sees this handler's arms instead of orphaning them.
+        if (indented && self.check(Tt.TOKEN_DEDENT))
+        {
+            self.advance();
+            indented = false;
+        }
+        self.skip_newlines();
+        if (!indented && self.check(Tt.TOKEN_INDENT))
+        {
+            self.advance();
+            indented = true;
+        }
         self.skip_newlines();
     }
 

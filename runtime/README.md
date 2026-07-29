@@ -138,6 +138,23 @@ __pride_pop_handler()← arm finished WITHOUT resuming: unwind to the prompt
 __pride_get_arm_arg(i) → arm_args[i] of the currently dispatched frame
 ```
 
+**Dispatch is a stack, not a slot.** An arm body may itself `perform` an
+operation — routed to some (typically outer) frame. `__pride_perform`
+saves the current dispatch identity in the handler frame struct
+(`prev_dispatched`, TLS — never on the machine stack, because perform's
+own activation lives inside the snapshotted region and a local copy would
+be clobbered by the restore memcpy) and reinstates it when the nested
+perform is resumed. Performs therefore strictly nest (LIFO), and an inner
+arm's own `resume()` always targets its own frame.
+
+**Deep-handler re-perform rule.** While a handler's arm is in flight, that
+handler's prompt is dissolved: the dispatch search skips every frame in the
+in-flight arm chain (`effect_dispatched` + its `prev_dispatched` links).
+An arm that re-performs one of its own ops escapes to a strictly outer
+handler — or, with none, panics as *unhandled effect operation* — instead
+of re-entering its own dispatch context (which would free the still-needed
+snapshot and loop forever).
+
 **Dispatch-token ABI (with `ssi_ir.c3 lower_handle` / `codegen.c3`):**
 the token returned by push_handler drives the LLVM `switch`: default (0) is
 the computation edge, a case `op_id+1` is that op's arm edge. The handle

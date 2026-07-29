@@ -804,6 +804,16 @@ fn bool infer_fn_types(ssi_ir::SsiModule* ir, ssi_ir::SsiFunc* f, TypeTable* t)
                     && iv.src.children[0].type_annotation.child_count > 2)
                 { snprintf(&buf[0], TYMAP_ENTRY, "ptr"); }
 
+                // Priority 1c: an IR_CAST whose src is itself a TYPE node —
+                // lower_effect_perform encodes the perform-result coercion by
+                // pointing src AT the op's declared return type (deliberately
+                // unannotated: the node IS the dst type). Without this the dst
+                // collapses to the generic i64 fallback and f64/i32 op results
+                // mis-box through the ptr-slot ABI (`mul nsw i64 %p, 4.0`).
+                if (buf[0] == 0 && iv.op == ssi_ir::IrOp.IR_CAST && iv.src != null
+                    && cast_src_is_type_node(iv.src))
+                { type_to_llvm_buf(iv.src, &buf[0], TYMAP_ENTRY, 0); }
+
                 // Priority 2: propagate from operand (for bin/un/sigma/cast)
                 if (buf[0] == 0 && iv.arg_count >= 1 && iv.args[0] != null)
                 {
@@ -1285,7 +1295,33 @@ fn bool phi_annotation_type(ssi_ir::IrVal* ph, char* pbuf, usz cap)
     return false;
 }
 
-
+// Mirror of ssi's is_type_or_row restricted to the kinds type_to_llvm_buf
+// lowers — codegen deliberately doesn't import module ssi. Used only to
+// recognise an IR_CAST whose src encodes the destination TYPE directly
+// (effect-perform result coercions from lower_effect_perform).
+fn bool cast_src_is_type_node(Node* n)
+{
+    if (n == null) return false;
+    switch (n.kind)
+    {
+        case Nk.NODE_TYPE_PRIMITIVE:
+        case Nk.NODE_TYPE_PATH:
+        case Nk.NODE_TYPE_PTR:
+        case Nk.NODE_TYPE_REF:
+        case Nk.NODE_TYPE_MUT_REF:
+        case Nk.NODE_TYPE_ARRAY:
+        case Nk.NODE_TYPE_SLICE:
+        case Nk.NODE_TYPE_TUPLE:
+        case Nk.NODE_TYPE_FN:
+        case Nk.NODE_TYPE_UNION:
+        case Nk.NODE_TYPE_INTERSECT:
+        case Nk.NODE_TYPE_GENERIC_APP:
+        case Nk.NODE_TYPE_TENSOR:
+            return true;
+        default:
+            return false;
+    }
+}
 
 const usz TYMAP_ENTRY = 256;  // bytes per entry — must hold fully-expanded
                               // nested aggregate types ({ i64, { i64, ... } })
@@ -2631,10 +2667,63 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 // travels on the value itself (emit_arm_arg_params in ssi_ir) —
                 // deriving it from child POSITION would overcount `()`
                 // zero-arg placeholders and nested tuple binders.
-                cg.out.writes("  %v"); cg.out.writei(v.id);
-                cg.out.writes(" = call i64 @__pride_get_arm_arg(i64 ");
-                cg.out.writeu(v.ival);
-                cg.out.writes(")\n");
+                //
+                // The slot's runtime type is always i64 bits. The binder's
+                // STAMPED type may be anything passable through a slot — float,
+                // narrow int, ptr — so read the slot raw and unbox it honestly:
+                // float gets its bits back, narrow ints truncate, ptr becomes
+                // a pointer again. (Same protocol as the perform/resume ends.)
+                char* argty = (tm != null) ? tm.get(v.id) : null;
+                int aw = 0;
+                if (argty != null && argty[0] == 'i')
+                { for (usz ci = 1; argty[ci] >= '0' && argty[ci] <= '9'; ci++) aw = aw * 10 + (int)(argty[ci] - '0'); }
+                bool arg_fp  = (argty != null && (argty[0] == 'f' || argty[0] == 'd'));
+                bool arg_ptr = (argty != null && argty[0] == 'p');
+                bool arg_bool = (aw == 1 && argty != null && argty[2] == 0);
+                bool arg_narrow = (aw > 1 && aw < 64);
+                if (!arg_fp && !arg_ptr && !arg_bool && !arg_narrow)
+                {
+                    cg.out.writes("  %v"); cg.out.writei(v.id);
+                    cg.out.writes(" = call i64 @__pride_get_arm_arg(i64 ");
+                    cg.out.writeu(v.ival);
+                    cg.out.writes(")\n");
+                }
+                else
+                {
+                    cg.out.writes("  %armarg."); cg.out.writei(v.id);
+                    cg.out.writes(" = call i64 @__pride_get_arm_arg(i64 ");
+                    cg.out.writeu(v.ival);
+                    cg.out.writes(")\n");
+                    cg.out.writes("  %v"); cg.out.writei(v.id);
+                    if (arg_fp && argty[0] == 'f')
+                    {
+                        cg.out.writes("w");   // require a distinct temp for the trunc
+                    }
+                    if (arg_fp && argty[0] == 'f')
+                    {
+                        // bitcast needs i32 first
+                        cg.out.writes(" = trunc i64 %armarg."); cg.out.writei(v.id);
+                        cg.out.writes(" to i32\n");
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        cg.out.writes(" = bitcast i32 %v"); cg.out.writei(v.id);
+                        cg.out.writes("w to float\n");
+                    }
+                    else if (arg_fp)
+                    {
+                        cg.out.writes(" = bitcast i64 %armarg."); cg.out.writei(v.id);
+                        cg.out.writes(" to double\n");
+                    }
+                    else if (arg_ptr)
+                    {
+                        cg.out.writes(" = inttoptr i64 %armarg."); cg.out.writei(v.id);
+                        cg.out.writes(" to ptr\n");
+                    }
+                    else
+                    {
+                        cg.out.writes(" = trunc i64 %armarg."); cg.out.writei(v.id);
+                        cg.out.writes(" to "); cg.out.writes(argty); cg.out.writes("\n");
+                    }
+                }
             }
             return;
 
@@ -4880,6 +4969,61 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 }
 
                 // ptr → integer: ptrtoint (address cast, NOT a load)
+                // Effect-perform result unboxing: __pride_perform returns the
+                // resume value through the frame's ptr SLOT — the value's bits,
+                // NOT a pointer to it. A ptr→float cast on a perform result
+                // reinterprets the slot bits (ptrtoint + bitcast), and a narrow
+                // integer result truncates back to the op's declared width —
+                // never a dereference, and never a bare i64 that masks the
+                // declared type.
+                if (src_is_ptr && src != null && src.op == ssi_ir::IrOp.IR_EFFECT_OP)
+                {
+                    if (dst_fp)
+                    {
+                        bool narrow32 = (dst_type_str[0] == 'f');   // float (vs double)
+                        cg.out.writes("  %eff.i."); cg.out.writei(v.id);
+                        cg.out.writes(" = ptrtoint ptr "); cg.emit_vref(src);
+                        cg.out.writes(" to i64\n");
+                        if (narrow32)
+                        {
+                            cg.out.writes("  %eff.w."); cg.out.writei(v.id);
+                            cg.out.writes(" = trunc i64 %eff.i."); cg.out.writei(v.id);
+                            cg.out.writes(" to i32\n");
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = bitcast i32 %eff.w."); cg.out.writei(v.id);
+                            cg.out.writes(" to float\n");
+                        }
+                        else
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = bitcast i64 %eff.i."); cg.out.writei(v.id);
+                            cg.out.writes(" to double\n");
+                        }
+                        return;
+                    }
+                    if (dst_int)
+                    {
+                        int dw_eff = 0;
+                        for (usz ci = 1; dst_type_str[ci] >= '0' && dst_type_str[ci] <= '9'; ci++)
+                        { dw_eff = dw_eff * 10 + (int)(dst_type_str[ci] - '0'); }
+                        cg.out.writes("  %eff.i."); cg.out.writei(v.id);
+                        cg.out.writes(" = ptrtoint ptr "); cg.emit_vref(src);
+                        cg.out.writes(" to i64\n");
+                        if (dw_eff >= 64 || dw_eff == 0)
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = add i64 %eff.i."); cg.out.writei(v.id);
+                            cg.out.writes(", 0\n");
+                        }
+                        else
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = trunc i64 %eff.i."); cg.out.writei(v.id);
+                            cg.out.writes(" to "); cg.out.writes(dst_type_str); cg.out.writes("\n");
+                        }
+                        return;
+                    }
+                }
                 // `p as i64` = the pointer value as integer, NOT *p.
                 // The dereference `*p` is handled by IR_UN with TOKEN_STAR.
                 if (src_is_ptr && dst_int)
@@ -5610,6 +5754,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         && !(aty[1]=='6' && aty[2]=='4' && aty[3]==0));
                     bool is_bool = (aty[0]=='i' && aty[1]=='1' && aty[2]==0);
                     bool is_ptr_arg = (aty[0]=='p');
+                    bool is_fp_arg = (aty[0]=='f' || aty[0]=='d');
                     if (needs_widen || is_bool || is_ptr_arg)
                     {
                         cg.out.writes("  %pw."); cg.out.writei(v.id); cg.out.writes(".");
@@ -5619,6 +5764,26 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         else { cg.out.writes("sext "); cg.out.writes(aty); cg.out.writes(" "); }
                         cg.emit_vref(pa);
                         cg.out.writes(" to i64\n");
+                    }
+                    else if (is_fp_arg)
+                    {
+                        // Box float arg bits into the i64 variadic slot.
+                        if (aty[0]=='f')
+                        {
+                            cg.out.writes("  %pwb."); cg.out.writei(v.id); cg.out.writes(".");
+                            cg.out.writeu(i); cg.out.writes(" = bitcast float ");
+                            cg.emit_vref(pa); cg.out.writes(" to i32\n");
+                            cg.out.writes("  %pw."); cg.out.writei(v.id); cg.out.writes(".");
+                            cg.out.writeu(i); cg.out.writes(" = zext i32 %pwb.");
+                            cg.out.writei(v.id); cg.out.writes("."); cg.out.writeu(i);
+                            cg.out.writes(" to i64\n");
+                        }
+                        else
+                        {
+                            cg.out.writes("  %pw."); cg.out.writei(v.id); cg.out.writes(".");
+                            cg.out.writeu(i); cg.out.writes(" = bitcast double ");
+                            cg.emit_vref(pa); cg.out.writes(" to i64\n");
+                        }
                     }
                 }
                 cg.out.writes("  %v"); cg.out.writei(v.id);
@@ -5643,13 +5808,14 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         && !(aty2[1]=='6' && aty2[2]=='4' && aty2[3]==0));
                     bool ib2 = (aty2[0]=='i' && aty2[1]=='1' && aty2[2]==0);
                     bool ptr2i2 = (aty2[0]=='p');  // ptr → i64 for variadic
+                    bool fp2 = (aty2[0]=='f' || aty2[0]=='d');
                     cg.out.writes(", i64 ");
                     if (nw2 || ib2)
                     {
                         cg.out.writes("%pw."); cg.out.writei(v.id); cg.out.writes(".");
                         cg.out.writeu(i);
                     }
-                    else if (ptr2i2)
+                    else if (ptr2i2 || fp2)
                     {
                         cg.out.writes("%pw."); cg.out.writei(v.id); cg.out.writes(".");
                         cg.out.writeu(i);
@@ -5683,7 +5849,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     {
                         Node* arm = hnode.children[ai];
                         if (arm == null || arm.kind != Nk.NODE_HANDLER_ARM) { continue; }
-                        Node* op_decl = ssi_ir::effect_op_decl_of_arm(arm);
+                        Node* op_decl = ast::effect_op_decl_of_arm(arm);
                         op_tags[nops] = (op_decl != null) ? (ulong)op_decl.id + 1
                                                           : (ulong)nops + 1;
                         nops++;
@@ -5746,6 +5912,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     || (rv_ty != null && rv_ty[0] == '{' && rv_ty[1] == ' ' && rv_ty[2] == '}')); // {}
                 bool rv_is_ptr = (rv_ty != null && rv_ty[0] == 'p');
                 bool rv_is_int = (rv_ty != null && rv_ty[0] == 'i');
+                bool rv_is_fp  = (rv_ty != null && (rv_ty[0] == 'f' || rv_ty[0] == 'd'));
                 // Pre-emit coerce if needed
                 if (!rv_is_unit && rv_is_int && rv != null)
                 {
@@ -5753,10 +5920,36 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     cg.out.writes(" = inttoptr "); cg.out.writes(rv_ty);
                     cg.out.writes(" "); cg.emit_vref(rv); cg.out.writes(" to ptr\n");
                 }
+                if (!rv_is_unit && rv_is_fp && rv != null)
+                {
+                    // Box float bits into the ptr slot: bitcast to iN, widen to
+                    // the slot width, inttoptr. The computation side mirrors
+                    // this exactly (IR_CAST unboxing of perform results).
+                    if (rv_ty[0] == 'f')
+                    {
+                        cg.out.writes("  %resume.bits."); cg.out.writei(v.id);
+                        cg.out.writes(" = bitcast float "); cg.emit_vref(rv);
+                        cg.out.writes(" to i32\n");
+                        cg.out.writes("  %resume.w."); cg.out.writei(v.id);
+                        cg.out.writes(" = zext i32 %resume.bits."); cg.out.writei(v.id);
+                        cg.out.writes(" to i64\n");
+                    }
+                    else
+                    {
+                        cg.out.writes("  %resume.bits."); cg.out.writei(v.id);
+                        cg.out.writes(" = bitcast double "); cg.emit_vref(rv);
+                        cg.out.writes(" to i64\n");
+                    }
+                    cg.out.writes("  %resume.arg."); cg.out.writei(v.id);
+                    cg.out.writes(" = inttoptr i64 %resume.");
+                    if (rv_ty[0] == 'f') { cg.out.writes("w."); } else { cg.out.writes("bits."); }
+                    cg.out.writei(v.id); cg.out.writes(" to ptr\n");
+                }
                 cg.out.writes("  %v"); cg.out.writei(v.id);
                 cg.out.writes(" = call ptr @__pride_resume(ptr ");
                 if (rv_is_unit)                     { cg.out.writes("null"); }
                 else if (rv_is_int && rv != null)   { cg.out.writes("%resume.arg."); cg.out.writei(v.id); }
+                else if (rv_is_fp && rv != null)    { cg.out.writes("%resume.arg."); cg.out.writei(v.id); }
                 else                                { cg.emit_vref(rv); }
                 cg.out.writes(")\n");
             }

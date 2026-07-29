@@ -1845,3 +1845,110 @@ fn bool union_is_c_union(AstNode* udecl)
     }
     return nfields >= 1;
 }
+
+// ── Algebraic-effect operation queries ───────────────────────────────────────
+// Pure AST queries over effect declarations (resolver .resolved links), shared
+// by typecheck, ssi lowering and codegen. Previously lived in ssi_ir.c3 where
+// the typechecker could not reach them — arm binder typing needs exactly the
+// same ground truth (op arity, param types) as the runtime lowering.
+
+// Find the EffectOpDecl for an effect method call/nodepair.
+// child[0] = effect typevar, child[1] = op ident
+fn AstNode* effect_op_decl_of(AstNode* method_call)
+{
+    if (method_call == null || method_call.child_count < 2) return null;
+    AstNode* op_ident = method_call.children[1];
+    if (op_ident == null) return null;
+    // Fast path: resolver already linked the op ident to its EffectOpDecl.
+    if (op_ident.resolved != null && op_ident.resolved.kind == NodeKind.NODE_EFFECT_OP_DECL)
+    {
+        return op_ident.resolved;
+    }
+    // Slow path: search the effect declaration manually (resolver did not link it).
+    AstNode* effect_tyvar = method_call.children[0];
+    AstNode* effect_decl = (effect_tyvar != null) ? effect_tyvar.resolved : null;
+    if (effect_decl == null || effect_decl.kind != NodeKind.NODE_DECL_EFFECT) { return null; }
+    // Effect decl: children[0]=TypeVar(name), children[1]=Block(op decls)
+    AstNode* body = null;
+    for (usz bi = 0; bi < effect_decl.child_count; bi++)
+    {
+        AstNode* bc = effect_decl.children[bi];
+        if (bc != null && bc.kind == NodeKind.NODE_EXPR_BLOCK) { body = bc; break; }
+    }
+    if (body == null) { return null; }
+    char* want_name = op_ident.p.ident.name_ptr;
+    usz   want_len  = op_ident.p.ident.name_len;
+    for (usz oi = 0; oi < body.child_count; oi++)
+    {
+        AstNode* op = body.children[oi];
+        if (op == null || op.kind != NodeKind.NODE_EFFECT_OP_DECL || op.child_count < 1) { continue; }
+        AstNode* op_name = op.children[0];
+        if (op_name == null) { continue; }
+        char* nm = op_name.p.ident.name_ptr;
+        usz   nl = op_name.p.ident.name_len;
+        if (nl == want_len && nm != null)
+        {
+            bool match = true;
+            for (usz k = 0; k < nl; k++) { if (nm[k] != want_name[k]) { match = false; break; } }
+            if (match) { return op; }
+        }
+    }
+    return null;
+}
+
+// The op head of a handler arm (children[0]) has the same
+// [EffectTypeVar, op_ident] shape as an effect method call's first two
+// children, so it resolves through effect_op_decl_of directly.
+fn AstNode* effect_op_decl_of_arm(AstNode* arm)
+{
+    if (arm == null || arm.kind != NodeKind.NODE_HANDLER_ARM || arm.child_count < 1)
+    {
+        return null;
+    }
+    AstNode* head = arm.children[0];
+    if (head == null || head.child_count < 2) { return null; }
+    return effect_op_decl_of(head);
+}
+
+// Declared parameter count of the op a handler arm dispatches, or -1 when the
+// op declaration can't be found (the resolver has already errored; the caller
+// then falls back to a positional guess so lowering can still finish).
+fn long effect_op_arity_of_arm(AstNode* arm)
+{
+    AstNode* op_decl = effect_op_decl_of_arm(arm);
+    if (op_decl == null || op_decl.child_count < 2) return -1;
+    AstNode* tyfn = op_decl.children[1];   // EffectOpDecl[name, TyFn]
+    if (tyfn == null || tyfn.kind != NodeKind.NODE_TYPE_FN || tyfn.child_count < 2) return -1;
+    AstNode* params = tyfn.children[0];    // TyFn[params, ret]
+    if (params == null) return -1;
+    if (params.kind == NodeKind.NODE_EXPR_UNIT || params.kind == NodeKind.NODE_LIT_BOTTOM) return 0;
+    if (params.kind == NodeKind.NODE_TYPE_TUPLE) return (long)params.child_count;
+    return 1;
+}
+
+// Declared parameter type at flat index `idx` for an EffectOpDecl's TyFn, or
+// null when unknown/out of range. Mirrors the flattening view of the runtime
+// arg-slot ABI exactly.
+fn AstNode* effect_op_param_type(AstNode* op_decl, int idx)
+{
+    if (op_decl == null || idx < 0 || op_decl.child_count < 2) return null;
+    AstNode* tyfn = op_decl.children[1];
+    if (tyfn == null || tyfn.kind != NodeKind.NODE_TYPE_FN || tyfn.child_count < 2) return null;
+    AstNode* params = tyfn.children[0];
+    if (params == null) return null;
+    if (params.kind == NodeKind.NODE_EXPR_UNIT || params.kind == NodeKind.NODE_LIT_BOTTOM) return null;
+    if (params.kind == NodeKind.NODE_TYPE_TUPLE)
+    {
+        return idx < (int)params.child_count ? params.children[idx] : null;
+    }
+    return idx == 0 ? params : null;
+}
+
+// `()` in handler-arm binder position: the zero-arg placeholder pattern
+// (`State.get () k -> ...`). It names NO op argument and consumes no slot.
+fn bool is_arm_unit_binder(AstNode* b)
+{
+    if (b == null) return false;
+    if (b.kind == NodeKind.NODE_EXPR_UNIT) return true;
+    return b.kind == NodeKind.NODE_PATTERN_TUPLE && b.child_count == 0;
+}

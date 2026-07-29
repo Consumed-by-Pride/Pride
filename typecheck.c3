@@ -826,6 +826,58 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
                 return comp_t;
             }
 
+        case Nk.NODE_HANDLER_ARM:
+        {
+            // Argument binders receive the op's DECLARED parameter types —
+            // arity-driven, the same ground truth the lowering uses to lay
+            // out the runtime arg slots (an effective binder beyond the op's
+            // arity is the continuation k). Without this every binder fell
+            // back to i64 at codegen: a float op arg came back through its
+            // slot as raw bits fed to an integer op (`mul nsw i64 %x, 2.0`).
+            long nargs = ast::effect_op_arity_of_arm(e);
+            Node* op_decl = ast::effect_op_decl_of_arm(e);
+            usz alast = e.child_count >= 1 ? e.child_count - 1 : 0;
+
+            // Continuation slot: exactly one EFFECTIVE binder beyond arity.
+            usz cont_i = 0;
+            if (nargs >= 0)
+            {
+                usz eff = 0;
+                usz last_eff = 0;
+                for (usz ci = 1; ci < alast; ci++)
+                {
+                    if (ast::is_arm_unit_binder(e.children[ci])) continue;
+                    eff++;
+                    last_eff = ci;
+                }
+                if ((long)eff == nargs + 1) cont_i = last_eff;
+            }
+
+            int aslot = 0;
+            for (usz i = 1; i < alast; i++)
+            {
+                Node* b = e.children[i];
+                if (b == null || i == cont_i) continue;
+                if (ast::is_arm_unit_binder(b)) continue;
+                aslot = self.stamp_arm_pattern(b, op_decl, aslot);
+            }
+
+            // Head + body synthesize normally (resolution and effect checking
+            // both need the body walked in this scope).
+            Node* bt = null;
+            for (usz i = 0; i < e.child_count; i++)
+            {
+                Node* c = e.children[i];
+                if (c == null || i == alast) continue;
+                self.synth(c);
+            }
+            if (alast >= 1)
+            {
+                bt = self.synth(e.children[alast]);
+            }
+            return bt;
+        }
+
         default:
             // Recurse so nested expressions still get checked, but report no type.
             for (usz i = 0; i < e.child_count; i++) self.synth(e.children[i]);
@@ -3465,6 +3517,30 @@ fn void TypeChecker.check_clause(TypeChecker* self, Node* clause, Node* arg, Nod
 
 // Distribute a parameter type over a pattern, recording each binder's type on
 // its PatIdent's inner name node (so `synth_name` can read it back).
+// Stamp a handler-arm ARGUMENT pattern with the declared op parameter types,
+// flattening tuple patterns onto the op's flat arg-slot positions — exactly
+// the same walk the lowering's emit_arm_arg_params performs (it emits one
+// IR_PARAM per flattened slot; here we bind one TYPE per flattened slot).
+// Returns the next free slot index.
+fn int TypeChecker.stamp_arm_pattern(TypeChecker* self, Node* pat, Node* op_decl, int slot)
+{
+    if (pat == null) return slot;
+    if (pat.kind == Nk.NODE_PATTERN_TUPLE)
+    {
+        for (usz i = 0; i < pat.child_count; i++)
+        { slot = self.stamp_arm_pattern(pat.children[i], op_decl, slot); }
+        return slot;
+    }
+    if (pat.kind == Nk.NODE_PATTERN_IDENT)
+    {
+        Node* pty = ast::effect_op_param_type(op_decl, slot);
+        if (pty != null) { self.bind_pattern_types(pat, pty); }
+        return slot + 1;
+    }
+    // Wildcards/literals consume a slot but bind nothing.
+    return slot + 1;
+}
+
 fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
 {
     if (pat == null) return;
