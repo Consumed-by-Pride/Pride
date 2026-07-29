@@ -1,4 +1,4 @@
-# Pryde Frontend Semantic Conformance Suite
+# Pride Frontend Semantic Conformance Suite
 
 `conformance/` holds **semantic** tests: each case declares the exact
 diagnostics the compiler must produce, so we verify the frontend *accepts valid
@@ -6,7 +6,7 @@ programs and rejects invalid ones with the right message at the right location* 
 not merely "doesn't crash."
 
 ## Format
-Each `conformance/cases/*.pry` begins with EXPECT directives:
+Each `conformance/cases/*.pie` begins with EXPECT directives:
 ```
 -- EXPECT: <tag> <line>:<col> [substring]   assert a diagnostic exists there
 -- EXPECT-COUNT: <category>=<n>             assert exactly n diagnostics of a kind
@@ -83,12 +83,12 @@ VM, a bump-allocator). Two realistic end-to-end programs (cases 49, 50) compile
 0-error through the entire frontend AND lower to a verified SSA-CFG.
 
 No correctness bugs this round — only **diagnostic-quality** defects, now fixed:
-6. `enum`/`class`/`interface`/`trait` (features Pryde deliberately lacks) used to
+6. `enum`/`class`/`interface`/`trait` (features Pride deliberately lacks) used to
    mis-parse into cryptic cascades. They now emit ONE clear, actionable error
-   pointing at the Pryde idiom (union type / struct+free-fn / generic
+   pointing at the Pride idiom (union type / struct+free-fn / generic
    constraint) and recover cleanly so following declarations still parse.
 
-Note (not a bug): Pryde reserves several identifiers systems code reaches for
+Note (not a bug): Pride reserves several identifiers systems code reaches for
 (`use`, `align`, `node`, `edge`, `graph`); using them as names is correctly
 rejected. This is a deliberate keyword-richness tradeoff.
 
@@ -132,10 +132,10 @@ Continued the developer lens into operator semantics, error-handling idioms
 
 10. **`Str` (a documented primitive) was "undefined name" everywhere.** Capitalised
     primitive names lex as TYPEVARs and never reached `is_primitive_name`, so every
-    `Str` in a signature/let — even in `examples/showcase.pry` — produced a resolve
+    `Str` in a signature/let — even in `examples/showcase.pie` — produced a resolve
     error. Fixed `parse_type_atom` to recognise primitive names arriving as
     TYPEVARs (when not followed by `::`).
-11. **Comparison/ordering on aggregates & bool was silently accepted.** Pryde has
+11. **Comparison/ordering on aggregates & bool was silently accepted.** Pride has
     no operator overloading or structural comparison, yet `structA == structB`,
     `tupleA < tupleB`, `arrA == arrB`, and `boolA < boolB` type-checked with no
     diagnostic. Added `check_comparable`: aggregates (struct/union/tuple/array/
@@ -166,7 +166,7 @@ rewrite), and learner-curiosity mistakes. Four more real bugs:
     `rewrite` declarations introduce pattern metavariables (`[x : T]` in PGL; bare
     idents in a rewrite LHS) that scope over the conditions/action and RHS — but
     the resolver had no case for them, so EVERY metavar (and the pgen name and
-    `<T>`) errored. `examples/pgen_demo.pry` had 33 resolve errors; a 2-rule
+    `<T>`) errored. `examples/pgen_demo.pie` had 33 resolve errors; a 2-rule
     rewrite had 4. Added `resolve_pgen`, `resolve_rewrite_rule`, and
     `bind_rewrite_metavars` (binds free LHS idents, leaves real fn calls alone),
     plus hoisting the pgen name. pgen_demo 33→1 (the 1 is a genuinely-undeclared
@@ -189,9 +189,9 @@ rewrite), and learner-curiosity mistakes. Four more real bugs:
 
 ## Coverage now: 70 cases. Cumulative frontend bugs found & fixed: 17.
 
-## Rounds 14-17 — Pryde-specific feature stress (IRDL crown jewel + systems)
+## Rounds 14-17 — Pride-specific feature stress (IRDL crown jewel + systems)
 
-Stress-tested the headline Pryde features. IRDL — "define whole IR dialects at
+Stress-tested the headline Pride features. IRDL — "define whole IR dialects at
 compile time" — was the most concerning, and it was indeed broken at the
 resolver level (same metavar gap PGL had). Three more bugs:
 
@@ -212,7 +212,7 @@ resolver level (same metavar gap PGL had). Three more bugs:
     and wired `irdl_failed` into the exit code, consistent with every other phase.
 20. **Attribute names were resolved as identifiers.** `#extern("malloc") #cc(c)`
     produced 3 "undefined name" errors (extern/cc/c) — fatal for ALL FFI/systems
-    code. `examples/showcase.pry` had these throughout. Attributes are metadata;
+    code. `examples/showcase.pie` had these throughout. Attributes are metadata;
     added a `NODE_ATTRIBUTE_LIST` no-op case in the resolver. showcase resolve
     errors 29→3 (the 3 remaining are genuinely-undeclared demo intrinsics).
 
@@ -223,7 +223,7 @@ explicit UB (`ub!` + `! [UB]`), MSP `comptime`, generic-constrained pgen.
 
 ## Rounds 18-21 — effects/with + IRDL CROWN-JEWEL upgrade
 
-Closed the remaining "binders treated as undefined" gaps in Pryde-specific
+Closed the remaining "binders treated as undefined" gaps in Pride-specific
 features, then substantially upgraded IRDL from a one-shot macro into a real,
 flexible, untyped IR term-rewriting system.
 
@@ -246,7 +246,7 @@ Upgraded to a flexible term-rewriting target:
     any number of trailing args (flexible dialects).
   * Validation updated: a use is valid if SOME rule's arity/pattern accepts it.
   * Multi-level fixpoint lowering still collapses dialect chains.
-  See `examples/irdl_showcase.pry` — 1 dialect, 2 opcodes, 4 distinct rule kinds,
+  See `examples/irdl_showcase.pie` — 1 dialect, 2 opcodes, 4 distinct rule kinds,
   4 lowerings applied, 0 errors.
 
 Note: sigil quotation (`~Tree`/`~Data`/`~Bytes`) verified working in EXPRESSION
@@ -468,7 +468,7 @@ SSI-IR → LLVM IR or equivalent, without any rough edges.
 - Module header rewritten: two-pass inference algorithm, correctness guarantees,
   and diagnostics all documented clearly for a backend author.
 
-### `pryde.c3` — `--dump-mono` flag + effect summary counts
+### `pride.c3` — `--dump-mono` flag + effect summary counts
 
 - `--dump-mono` wired through the argument parser and into `mn.dump()`.
 - `VerifyResult` init blocks in the driver zero-initialise the three new fields.
@@ -477,8 +477,8 @@ SSI-IR → LLVM IR or equivalent, without any rough edges.
 
 ### `Makefile` (new)
 
-- `make` — fetch c3c if needed, build `./pryde`
-- `make asan` — AddressSanitizer build (`./pryde_asan`)
+- `make` — fetch c3c if needed, build `./pride`
+- `make asan` — AddressSanitizer build (`./pride_asan`)
 - `make test` — build + run both suites (conformance + redteam)
 - `make conform` / `make redteam` — individual suites
 - `make clean` — remove binaries
@@ -524,9 +524,9 @@ errors in the emitted LLVM 22 IR. All 87 conformance programs now:
 | `with r` body uses IR_UNKNOWN | `lower_with` pushes env keyed on ASSIGN node (what body references resolve to) |
 | `ret void/ret i8` from void fn | Defensive void check: `else if fn_ret==void { ret void }` before coerce path |
 | Mixed-width bin type table | After rhs coerce, update type table to lhs_ty (prevents wrong ret coerce) |
-| Handler arm params undefined | Tag arm IR_PARAMs with `v.binder=arm`; emit as `call @__pryde_get_arm_arg(idx)` |
+| Handler arm params undefined | Tag arm IR_PARAMs with `v.binder=arm`; emit as `call @__pride_get_arm_arg(idx)` |
 | `bitcast {} undef to {}` invalid | All unit-placeholder results → `add i64 0, 0` |
-| `__pryde_get_arm_arg` undeclared | Added `declare i64 @__pryde_get_arm_arg(i64)` to runtime decls and stub to `runtime.c` |
+| `__pride_get_arm_arg` undeclared | Added `declare i64 @__pride_get_arm_arg(i64)` to runtime decls and stub to `runtime.c` |
 
 ### `ssi_ir.c3` change
 
@@ -562,16 +562,16 @@ node) so codegen can detect handler arm parameters and emit them as runtime call
 
 ### Performance benchmark results (LLVM 22 O3 vs gcc-14 O3)
 
-| Benchmark | Pryde | gcc-O3 | Ratio | Notes |
+| Benchmark | Pride | gcc-O3 | Ratio | Notes |
 |---|---|---|---|---|
-| stack_vm (N=10K, 1K iters) | ~12 µs | ~12.5 µs | **0.97x** | Pryde FASTER |
+| stack_vm (N=10K, 1K iters) | ~12 µs | ~12.5 µs | **0.97x** | Pride FASTER |
 | sieve(1M, 100 iters) | ~1.75 ms | ~1.54 ms | 1.14x | ~C |
 | sum_array(64K, 100K iters) | ~7.8 µs | ~5.5 µs | 1.42x | gap: loop unroll factor |
-| fib(35, 1K iters) | ~25.5 ms | ~16 ms | 1.59x | gcc uses explicit tree stack; clang-22 = Pryde |
+| fib(35, 1K iters) | ~25.5 ms | ~16 ms | 1.59x | gcc uses explicit tree stack; clang-22 = Pride |
 
 stack_vm at O3: LLVM inlines push/exec_add/pop, infers `norecurse`/`nounwind`/`memory(argmem:readwrite)`.
 sum_array gap: LLVM vectorizes to `<2 x i64>` (SSE2); gcc unrolls more aggressively (xmm0-xmm4).
-fib gap: gcc restructures recursive fib into an iterative tree traversal with an explicit stack — different algorithm, not a codegen quality difference. Pryde/clang-22 are identical for pure recursive fib.
+fib gap: gcc restructures recursive fib into an iterative tree traversal with an explicit stack — different algorithm, not a codegen quality difference. Pride/clang-22 are identical for pure recursive fib.
 
 ### Correctness fixes
 - u8/i8 array stores now use correct 1-byte GEP stride (was incorrectly using 8-byte i64 stride)
@@ -583,7 +583,7 @@ fib gap: gcc restructures recursive fib into an iterative tree traversal with an
 ### understand-anything installed
 
 Installed `Lum1104/Understand-Anything` (54k★) from source at `/home/user/understand-anything`.
-Built with Node 22 + pnpm. Generated a knowledge graph for the Pryde project at
+Built with Node 22 + pnpm. Generated a knowledge graph for the Pride project at
 `.understand-anything/knowledge-graph.json` (271 nodes, 34 edges, 6 architectural layers).
 The graph covers all 272 files in the project with layer attribution, summaries for key compiler
 modules, a guided tour through the compilation pipeline, and inter-module edges for the pass graph.

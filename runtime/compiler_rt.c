@@ -39,6 +39,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -287,165 +288,491 @@ PRIDE_NORETURN static void panic_fmt(const char* msg) {
 }
 
 
-/* ── §4  Algebraic effects: ucontext prompt stack ───────────────────────── */
+/* ── §4  Algebraic effects: delimited prompt stack, snapshot-style ──────── */
 /*
- * The effect system uses a per-thread prompt stack of handler frames.
- * Each frame holds a ucontext_t so we can perform genuine coroutine-style
- * suspension and resumption — not just longjmp.
+ * Design: one linear C stack, with the live portion snapshotted (copied to
+ * the heap) whenever a computation performs an effect.  This is the classic
+ * snapshot-based implementation of delimited control ("shift/reset for C"),
+ * adapted to Pride's inline-generated handle blocks.
  *
- * Lifecycle of one effect operation:
+ * Why snapshots?  The generated code for `handle` is INLINE in the calling
+ * function: the dispatch block, the computation block, and the arm blocks
+ * are all basic blocks of one LLVM function sharing one C stack.  When the
+ * computation performs an op, the handler arm must run at the handle's
+ * dispatch point — its frames would overwrite the suspended computation's
+ * frames.  So __pride_perform copies every byte of the suspended region
+ * (from its own SP up to the high-water mark captured in push_handler) to
+ * a heap buffer before yielding, and __pride_resume memcpies it back before
+ * re-entering the computation.
  *
- *   1. Code calls __pride_push_handler(frame_id).
- *      We save the caller's context in frame->caller_ctx.
- *      We allocate a coroutine stack for the computation.
- *      We swap to the computation context (which runs the body).
- *      When the body finishes or performs an op, we swap back.
+ * Semantics — TAIL-RESUMPTIVE, ONE-SHOT (Koka-style):
+ *   resume() is a TAIL transfer of control: the resumed computation runs to
+ *   completion and the handler arm does NOT continue afterwards.  Values
+ *   flow:  computation result → the handle expression's value (via the
+ *   join-block φ), or an arm's value if the arm finished without resuming.
+ *   A computation may perform any number of ops in sequence: each perform
+ *   re-snapshots the suspended region, so sequential multi-perform works.
+ *   The continuation is one-shot per perform: calling resume() twice for
+ *   the same perform panics.
  *
- *   2. Inside the computation, __pride_perform(op_id, ...) is called.
- *      We walk the stack, find the matching handler, snapshot the
- *      continuation (the coroutine context), and swap to the handler body.
+ * Dispatch-token ABI (with ssi_ir.c3 lower_handle / codegen.c3):
+ *   push_handler(frame_id, nops, op_id+1, ...)  →  dispatch token:
+ *     0        → first entry: run the computation (switch default edge)
+ *     op_id+1  → op `op_id` was performed: run that op's arm (switch case)
+ *   The frame records its op list so perform() can find the NEWEST frame
+ *   that actually handles the op — an inner handler that doesn't handle the
+ *   op is transparently bypassed, exactly like dynamic-winding prompt
+ *   bypass in multi-prompt delimited control.
  *
- *   3. The handler body may call __pride_resume(val).
- *      We swap back to the saved computation context with the resume value.
- *      The computation continues from after the perform() call.
+ * __pride_complete() pops the frame when the computation finishes normally.
+ * It is the ONLY pop on the resumed path: resume() never returns, so the
+ * arm-block `__pride_pop_handler()` (which unwinds to the dispatched frame)
+ * runs only for arms that finish WITHOUT resuming.
  *
- *   4. __pride_pop_handler() tears down the frame and frees the coro stack.
- *
- * Stack size: 256 KB per handler frame (user programs can exceed this by
- * nesting multiple handles — each gets its own stack).
- *
- * Thread safety: the handler stack is __thread (per-thread storage).
+ * Thread safety: the handler stack is __thread — one per OS thread.
+ * Stack size: 256 KB scratch stack per frame, used by the restore trampoline.
  */
 
 #define EFFECT_STACK_DEPTH  16
-#define EFFECT_CORO_STACK   (256 * 1024)  /* 256 KB per handler frame         */
+#define EFFECT_CORO_STACK   (256 * 1024)  /* scratch stack per handler frame  */
+#define EFFECT_MAX_OPS      32            /* arms per handler                 */
+#define EFFECT_MAX_OP_ARGS  8             /* op arguments passed to an arm    */
+#define EFFECT_SNAPSHOT_CAP ((ptrdiff_t)(64 * 1024 * 1024)) /* 64 MB sanity */
 
 typedef struct PrideHandlerFrame {
-    uint64_t    frame_id;       /* effect decl AST node id                      */
-    ucontext_t  handler_ctx;    /* context of the handler body (the arm code)   */
-    ucontext_t  perform_ctx;    /* context of the performing computation        */
-    char*       coro_stack;     /* heap stack for the coroutine                 */
-    void*       perform_arg;    /* argument passed to __pride_perform           */
-    uint64_t    perform_op_id;  /* op id passed to __pride_perform              */
-    void*       resume_val;     /* value passed to __pride_resume               */
-    bool        resumed;        /* true after a resume() call                   */
-    bool        complete;       /* true after the handler body returned          */
+    uint64_t    frame_id;       /* NODE_EFFECT_HANDLE AST node id               */
+    uint64_t    ops[EFFECT_MAX_OPS];   /* handled dispatch tokens (op_id+1)    */
+    uint64_t    nops;           /* number of handled ops                      */
+    uint64_t    arm_args[EFFECT_MAX_OP_ARGS]; /* stashed op arguments         */
+    ucontext_t  dispatch_ctx;   /* handle-site context (double-return point)  */
+    ucontext_t  perform_ctx;    /* suspended computation context              */
+    ucontext_t  restore_ctx;    /* restore trampoline context (on coro_stack) */
+    char*       coro_stack;     /* heap scratch stack for the trampoline      */
+    char*       stack_lo;       /* low end of the suspended stack region      */
+    char*       frame_top;      /* caller SP at push time: exact high bound
+                                 * of every frame the computation can make   */
+    void*       saved;          /* heap copy of [stack_lo, stack_hi)          */
+    size_t      saved_size;     /* bytes in `saved`                           */
+    char*       mini_saved;     /* push-time frame repair snapshot            */
+    char*       mini_lo;        /* destination of the frame repair copy       */
+    size_t      mini_size;      /* bytes in `mini_saved`                      */
+    ucontext_t  disp_ctx;       /* dispatch trampoline context (coro_stack)   */
+    void*       resume_val;     /* value passed to __pride_resume             */
+    uint64_t    perform_op_id;  /* performed op id (dispatch token minus 1)   */
+    struct PrideHandlerFrame* prev_dispatched; /* dispatch identity to reinstate */
+    int         reentered;      /* getcontext double-return flag              */
+    int         resume_used;    /* one-shot guard for resume()                */
 } PrideHandlerFrame;
 
 static __thread PrideHandlerFrame  effect_stack[EFFECT_STACK_DEPTH];
 static __thread int                effect_top = -1;
+static __thread PrideHandlerFrame* effect_dispatched = NULL;
+
+#define EFFDBG(...) do { if (getenv("PRIDE_EFF_DEBUG")) { \
+    dprintf(2, "[eff] " __VA_ARGS__); } } while (0)
 
 /*
- * __pride_push_handler — install a handler frame.
- *
- * The caller (the `handle` block in generated IR) invokes this, then the
- * TERM_SWITCH in the IR routes to either the normal-exit join block (if no
- * effect was performed) or one of the arm blocks (if an op was performed and
- * dispatched here).
- *
- * Returns a discriminant pointer that the TERM_SWITCH uses to select the arm.
- * In our implementation the discriminant is the frame pointer itself; the
- * generated IR switch has case labels matching arm indices [1..N].
- * We return an integer-sized tag: 0 = normal return, k = arm k performed.
+ * effect_vma_floor — the start of the VM mapping containing `addr`.
+ * The stack-snapshot low bound is SP minus a margin, which can dip below
+ * the (lazily-grown) stack VMA: probing there hits the kernel's stack
+ * guard gap and SIGSEGVs instead of growing, because the read is not
+ * SP-driven.  Clamp every snapshot's low bound to the VMA start — bytes
+ * inside the VMA are all readable, so no "pre-touch" probing is needed.
  */
-void* __pride_push_handler(uint64_t frame_id) {
+static void effect_vma_bounds(char* addr, char* rsp_now,
+                              char** out_lo, char** out_hi) {
+    /* The stack VMA's [start, end).  Guards for two distinct killers:
+     *  1. SP - margin can dip BELOW the lazily-grown stack start into the
+     *     guard gap (non-SP-driven reads there SIGSEGV),
+     *  2. the snapshot's high-water mark can rise ABOVE the VMA end into
+     *     the gap before argv/env — and glibc's AVX memcpy legitimately
+     *     over-reads the copy's final page internally — so we clamp hi a
+     *     full page below the VMA end as well.
+     * Anchor the search on the live SP, never on the target address. */
+    uintptr_t rsp = (uintptr_t)rsp_now;
+    uintptr_t start = (uintptr_t)addr, end = UINTPTR_MAX;
+    FILE* fp = fopen("/proc/self/maps", "r");
+    if (fp != NULL) {
+        char line[512];
+        uintptr_t best_above = UINTPTR_MAX;
+        while (fgets(line, (int)sizeof(line), fp) != NULL) {
+            uintptr_t mlo = 0, mhi = 0;
+            if (sscanf(line, "%lx-%lx", &mlo, &mhi) != 2) continue;
+            if (rsp >= mlo && rsp < mhi) { start = mlo; end = mhi; break; }
+            if (mlo > rsp && mlo < best_above) best_above = mlo;
+        }
+        fclose(fp);
+        if (end == UINTPTR_MAX && best_above != UINTPTR_MAX) {
+            start = best_above;   /* SP's own line missed: next mapping up */
+        }
+    }
+    if (start < (uintptr_t)addr) start = (uintptr_t)addr;
+    *out_lo = (char*)start;
+    *out_hi = (char*)end;
+}
+
+__attribute__((noinline, optimize("no-omit-frame-pointer")))
+uintptr_t __pride_push_handler(uint64_t frame_id, uint64_t nops, ...) {
     if (PRIDE_UNLIKELY(effect_top + 1 >= EFFECT_STACK_DEPTH)) {
-        panic_fmt("effect handler stack overflow (max 64 nested handlers)");
+        panic_fmt("effect handler stack overflow (too many nested handlers)");
+    }
+    if (PRIDE_UNLIKELY(nops > EFFECT_MAX_OPS)) {
+        panic_fmt("effect handler has too many arms (max 32)");
     }
     effect_top++;
     PrideHandlerFrame* f = &effect_stack[effect_top];
     f->frame_id      = frame_id;
-    f->perform_arg   = NULL;
-    f->perform_op_id = 0;
+    f->nops          = nops;
+    va_list ap;
+    va_start(ap, nops);
+    for (uint64_t i = 0; i < nops; i++) {
+        f->ops[i] = va_arg(ap, uint64_t);
+    }
+    va_end(ap);
+    f->saved         = NULL;
+    f->saved_size    = 0;
     f->resume_val    = NULL;
-    f->resumed       = false;
-    f->complete      = false;
+    f->perform_op_id = 0;
+    f->prev_dispatched = NULL;
+    f->reentered     = 0;
+    f->resume_used   = 0;
+    f->mini_saved    = NULL;
+    f->mini_size     = 0;
 
-    /* Allocate coroutine stack via our pool allocator */
+    /* Scratch stack for the restore trampoline (not a coroutine stack:
+     * computations and arms both run inline on the main C stack). */
     f->coro_stack = (char*)pride_alloc(EFFECT_CORO_STACK);
     if (PRIDE_UNLIKELY(f->coro_stack == NULL)) {
-        panic_fmt("effect: failed to allocate coroutine stack");
+        panic_fmt("effect: failed to allocate handler scratch stack");
+    }
+
+    {
+        /* The exact high-water mark: the caller's SP at the push call.  Any
+         * frame the computation creates sits strictly below it, so the big
+         * snapshot and the frame repair copy both end exactly here — and a
+         * bounded-end memcpy can never over-read into the unmapped gap
+         * above the stack VMA (the +2048 "margin" this replaces did exactly
+         * that, intermittently, by ASLR luck). */
+        f->frame_top = (char*)__builtin_frame_address(0) + 16;
     }
 
     /*
-     * Return the frame pointer as the IR_HANDLER value.
-     * The generated TERM_SWITCH uses this as the discriminant.
-     * A real evidence-passing backend would thread this as a hidden
-     * argument; here we use a global (per-thread) stack instead.
+     * Frame-repair snapshot.  When __pride_perform later re-enters THIS
+     * context, the machine stack region that held this very frame has been
+     * recycled by the computation's call frames (fatally, the call-site
+     * return address slot gets overwritten by the computation's own
+     * innermost `call`).  Reactivating a context whose frame memory died is
+     * THE classic ucontext footgun: the epilogue then "returns" through a
+     * hijacked slot.  Snapshot [RSP-4096, caller_SP) NOW — before the
+     * computation can touch it — so the dispatch trampoline can memcpy it
+     * back and the second return lands on a repaired frame.
+     * The high bound is exactly the caller's SP (frame_address+16 with a
+     * forced frame pointer): it includes the return-address slot but NOT a
+     * single caller local — restoring must never revert state the
+     * computation legitimately mutated.
      */
-    return (void*)f;
+    {
+        char* mlo;
+        __asm__ volatile("mov %%rsp, %0" : "=r"(mlo));
+        mlo -= 4096;
+        char* mhi = f->frame_top;
+        { char* rsp0; __asm__ volatile("mov %%rsp, %0" : "=r"(rsp0));
+          char* vfl; char* vfh;
+          effect_vma_bounds(mlo, rsp0, &vfl, &vfh);
+          if (mlo < vfl) mlo = vfl; }
+        if (PRIDE_UNLIKELY(mhi <= mlo)) {
+            panic_fmt("effect: corrupt handler frame (bad repair bounds)");
+        }
+        f->mini_lo    = mlo;
+        f->mini_size  = (size_t)(mhi - mlo);
+        f->mini_saved = malloc(f->mini_size);
+        if (PRIDE_UNLIKELY(f->mini_saved == NULL)) {
+            panic_fmt("effect: failed to allocate frame repair snapshot");
+        }
+        memcpy(f->mini_saved, mlo, f->mini_size);
+    }
+
+    getcontext(&f->dispatch_ctx);
+    if (!f->reentered) {
+        f->reentered = 1;
+        EFFDBG("push_handler: first entry, frame %p top=%d\n", (void*)f, effect_top);
+        return 0;                    /* first entry: run the computation */
+    }
+    EFFDBG("push_handler: SECOND return, token=%llu\n",
+           (unsigned long long)(f->perform_op_id + 1));
+    /* Re-entered via __pride_perform: op_id+1 → the op's arm. */
+    return f->perform_op_id + 1;
 }
 
-void __pride_pop_handler(void) {
-    if (PRIDE_UNLIKELY(effect_top < 0)) return;
+/* Pop the top frame, releasing its snapshot buffer and scratch stack. */
+static void effect_pop_top(void) {
+    if (effect_top < 0) return;
     PrideHandlerFrame* f = &effect_stack[effect_top];
     if (f->coro_stack) {
         pride_free(f->coro_stack, EFFECT_CORO_STACK);
         f->coro_stack = NULL;
     }
+    if (f->saved) {
+        free(f->saved);
+        f->saved = NULL;
+        f->saved_size = 0;
+    }
+    if (f->mini_saved) {
+        free(f->mini_saved);
+        f->mini_saved = NULL;
+        f->mini_size = 0;
+    }
+    if (effect_dispatched == f) effect_dispatched = NULL;
     effect_top--;
 }
 
 /*
- * __pride_perform — invoke an effect operation.
- *
- * Walks the per-thread handler stack from top to bottom.  When a matching
- * frame is found, saves the current (computation) context and swaps to the
- * handler body.  The perform_arg field carries the first argument; variadic
- * args are accessed by the arm via the standard calling convention (they are
- * already on the hardware stack at the call to __pride_perform).
- *
- * Returns the resume value set by __pride_resume().
+ * __pride_pop_handler — called at the end of a handler arm that finished
+ * WITHOUT resuming (an "abortive" answer-type arm).  The computation is
+ * abandoned: unwind every frame from the top down to (and including) the
+ * frame that dispatched this arm.  Frames above the dispatched one belong
+ * to inner handlers whose computations are being abandoned along with it.
+ * If no dispatch is in flight, simply pop the top frame.
  */
-void* __pride_perform(uint64_t op_id, ...) {
+void __pride_pop_handler(void) {
+    if (PRIDE_UNLIKELY(effect_top < 0)) return;
+    if (effect_dispatched == NULL) { effect_pop_top(); return; }
+    while (effect_top >= 0) {
+        PrideHandlerFrame* f = &effect_stack[effect_top];
+        bool is_dispatched = (f == effect_dispatched);
+        effect_pop_top();
+        if (is_dispatched) break;
+    }
+}
+
+/*
+ * __pride_complete — the handled computation finished normally: pop its
+ * handler frame.  Inner handlers are balanced by their own completes, so
+ * the frame to pop is always the top one here.
+ */
+void __pride_complete(void) {
+    EFFDBG("complete: popping top=%d\n", effect_top);
+    effect_pop_top();
+}
+
+/*
+ * __pride_perform — invoke an effect operation.
+ *   1. Find the NEWEST handler frame that lists op_id among its handled ops.
+ *      (Inner handlers that don't handle the op are bypassed — their live
+ *      state lies inside the snapshotted region and is restored verbatim
+ *      when the outer arm resumes the computation.)
+ *   2. Stash the op's arguments for __pride_get_arm_arg().
+ *   3. Snapshot [stack_lo, stack_hi) — the entire suspended call chain —
+ *      to a heap buffer.  Pages below the current SP are touched first so
+ *      reading the margin cannot fault on unmapped stack.
+ *   4. Jump back into push_handler's getcontext → push returns op_id+1 →
+ *      the generated switch dispatches to the arm.
+ *   5. When the arm calls __pride_resume(), the snapshot is memcpy'd back
+ *      (by the trampoline on the scratch stack) and control lands here —
+ *      return the resume value to the computation.
+ */
+/*
+ * Dispatch trampoline — runs on the frame's scratch stack.  Repairs the
+ * push_handler frame from the mini snapshot, then enters the captured
+ * dispatch context: push_handler "returns" a second time on intact memory.
+ */
+static void effect_dispatch_tramp(uint32_t ptr_hi, uint32_t ptr_lo) {
+    uintptr_t raw = ((uintptr_t)ptr_hi << 32) | (uintptr_t)ptr_lo;
+    PrideHandlerFrame* f = (PrideHandlerFrame*)raw;
+    memcpy(f->mini_lo, f->mini_saved, f->mini_size);
+    setcontext(&f->dispatch_ctx);
+    panic_fmt("effect: failed to re-enter handler dispatch");
+}
+
+/* Frames whose arms are currently in flight: effect_dispatched plus the
+ * saved-dispatcher chain dangling below it.  While a handler's arm runs,
+ * that handler's prompt is dissolved (deep-handler semantics): an arm that
+ * re-performs one of ITS OWN ops must bypass its own frame (and any frame
+ * whose arm it is nested inside) and escape to a strictly outer handler —
+ * otherwise dispatch would re-enter the same getcontext point, free the
+ * still-needed suspended-computation snapshot, and silently restart the
+ * arm in an infinite loop. */
+static bool effect_in_arm_chain(PrideHandlerFrame* f) {
+    for (PrideHandlerFrame* d = effect_dispatched; d != NULL;
+         d = d->prev_dispatched) {
+        if (d == f) return true;
+    }
+    return false;
+}
+
+void* __pride_perform(uint64_t op_id, uint64_t nargs, ...) {
+    PrideHandlerFrame* f = NULL;
     for (int i = effect_top; i >= 0; i--) {
-        PrideHandlerFrame* f = &effect_stack[i];
-        f->perform_op_id = op_id;
-        f->resume_val    = NULL;
-        f->resumed       = false;
-
-        /*
-         * Save the current (performing) context and swap to the handler
-         * context.  The handler code will run in handler_ctx; when it calls
-         * __pride_resume() we swap back here.
-         *
-         * Note: in the setjmp model the handler ran as a function call.
-         * In the ucontext model we co-routinely swap.  The generated IR
-         * simply reads the resume value from __pride_resume's return —
-         * so this is transparent to the compiler output.
-         */
-        swapcontext(&f->perform_ctx, &f->handler_ctx);
-
-        /* When we return here, the handler has called __pride_resume() */
-        return f->resume_val;
+        PrideHandlerFrame* cand = &effect_stack[i];
+        if (effect_in_arm_chain(cand)) continue;
+        for (uint64_t k = 0; k < cand->nops; k++) {
+            if (cand->ops[k] == op_id + 1) { f = cand; break; }
+        }
+        if (f != NULL) break;
+    }
+    if (PRIDE_UNLIKELY(f == NULL)) {
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "unhandled effect operation (op_id=%llu)",
+                 (unsigned long long)op_id);
+        panic_fmt(buf);
+        __builtin_unreachable();
+    }
+    if (PRIDE_UNLIKELY(nargs > EFFECT_MAX_OP_ARGS)) {
+        panic_fmt("effect operation has too many arguments (max 8)");
     }
 
-    /* No handler installed: unhandled effect */
-    char buf[128];
-    snprintf(buf, sizeof(buf),
-             "unhandled effect operation (op_id=%llu)",
-             (unsigned long long)op_id);
-    panic_fmt(buf);
+    EFFDBG("perform: matched frame %p op=%llu\n", (void*)f,
+           (unsigned long long)op_id);
+    va_list ap;
+    va_start(ap, nargs);
+    for (uint64_t i = 0; i < nargs; i++) {
+        f->arm_args[i] = va_arg(ap, uint64_t);
+    }
+    va_end(ap);
+
+    f->resume_val  = NULL;
+    f->resume_used = 0;
+
+    /* Snapshot the suspended stack region.  The low bound is the current
+     * stack pointer minus a margin (call-saved return addresses, red zone,
+     * and swapcontext bookkeeping all live just below SP); pre-touch pages
+     * downward so the memcpy cannot fault on an unmapped guard-adjacent
+     * page.  GROWS-DOWN stacks only — x86-64/AArch64 SysV. */
+    char* lo;
+    __asm__ volatile("mov %%rsp, %0" : "=r"(lo));
+    lo -= 4096;
+    char* hi = f->frame_top;
+    { char* rsp1; __asm__ volatile("mov %%rsp, %0" : "=r"(rsp1));
+      char* vfl; char* vfh;
+      effect_vma_bounds(lo, rsp1, &vfl, &vfh);
+      if (lo < vfl) lo = vfl;
+      if (hi > vfh) hi = vfh; }
+    if (PRIDE_UNLIKELY(hi <= lo)) {
+        panic_fmt("effect: corrupt handler frame (bad stack bounds)");
+    }
+    ptrdiff_t size = hi - lo;
+    if (PRIDE_UNLIKELY(size > EFFECT_SNAPSHOT_CAP)) {
+        panic_fmt("effect: suspended stack too large to snapshot (>64 MB)");
+    }
+    EFFDBG("perform: snapshot [%p, %p) size=%ld\n", (void*)lo, (void*)hi, (long)size);
+    if (f->saved) { free(f->saved); f->saved = NULL; }
+    f->saved      = malloc((size_t)size);
+    if (PRIDE_UNLIKELY(f->saved == NULL)) {
+        panic_fmt("effect: failed to allocate continuation snapshot");
+    }
+    f->saved_size = (size_t)size;
+    f->stack_lo   = lo;
+    memcpy(f->saved, lo, (size_t)size);
+
+    /* The dispatch pointer must behave like a STACK: an arm body may itself
+     * perform an operation (dispatched to some — typically outer — frame),
+     * and when that nested perform is eventually resumed, control returns
+     * right here and the arm goes on running as the arm OF THE FRAME THAT
+     * DISPATCHED IT.  Save/restore the pointer across the suspension so the
+     * enclosing arm's own resume() still targets its own frame; a single
+     * global slot would leave resume() aimed at the nested frame (whose
+     * snapshot was already consumed and freed) → "no suspended computation". *
+     * Bracketing is exact: the only way back into this function body is a
+     * tail-resume of THIS perform, and performs strictly nest (LIFO).
+     * The save MUST live in the frame struct (TLS): this function's own
+     * activation sits INSIDE the snapshotted region, so any local (stack)
+     * copy is clobbered by the restore memcpy before it could be read back. */
+    f->prev_dispatched = effect_dispatched;
+    f->perform_op_id   = op_id;
+    effect_dispatched  = f;
+
+    EFFDBG("perform: op=%llu nargs=%llu lo=%p hi=%p size=%ld\n",
+           (unsigned long long)op_id, (unsigned long long)nargs,
+           (void*)lo, (void*)hi, (long)size);
+    /* Save the computation, then jump to the dispatch trampoline: it repairs
+     * push_handler's frame from the mini snapshot and re-enters the dispatch
+     * context (the second return). */
+    getcontext(&f->disp_ctx);
+    f->disp_ctx.uc_stack.ss_sp   = f->coro_stack;
+    f->disp_ctx.uc_stack.ss_size = EFFECT_CORO_STACK;
+    f->disp_ctx.uc_link          = NULL;
+    {
+        uintptr_t raw = (uintptr_t)f;
+        makecontext(&f->disp_ctx, (void (*)(void))effect_dispatch_tramp, 2,
+                    (uint32_t)(raw >> 32), (uint32_t)(raw & 0xFFFFFFFFu));
+    }
+    swapcontext(&f->perform_ctx, &f->disp_ctx);
+    EFFDBG("perform: resumed, val=%p\n", f->resume_val);
+
+    /* Resumed: the trampoline restored the snapshot; hands us resume_val.
+     * Reinstate the dispatch identity of the enclosing arm (see above). */
+    effect_dispatched = f->prev_dispatched;
+    free(f->saved);
+    f->saved      = NULL;
+    f->saved_size = 0;
+    return f->resume_val;
+}
+
+/*
+ * Stack-restore trampoline — runs on the frame's scratch stack (coro_stack),
+ * NOT on the main C stack, so the memcpy back over the suspended region can
+ * never overwrite the trampoline's own activation.  After the copy, switch
+ * directly into the suspended computation context.
+ */
+static void effect_restore_tramp(uint32_t ptr_hi, uint32_t ptr_lo) {
+    uintptr_t raw = ((uintptr_t)ptr_hi << 32) | (uintptr_t)ptr_lo;
+    PrideHandlerFrame* f = (PrideHandlerFrame*)raw;
+    memcpy(f->stack_lo, f->saved, f->saved_size);
+    setcontext(&f->perform_ctx);
+    /* setcontext does not return */
+    panic_fmt("effect: failed to restore suspended computation");
+}
+
+/*
+ * __pride_resume — TAIL resume: hand `val` to the suspended computation as
+ * the result of its perform() call and transfer control to it FOR GOOD.
+ * This function never returns (the arm does not continue after resuming);
+ * it is defined to return void* purely so the generated IR, which treats
+ * resume as an ordinary value-returning call, stays well-formed.
+ */
+void* __pride_resume(void* val) {
+    PrideHandlerFrame* f = effect_dispatched;
+    if (PRIDE_UNLIKELY(f == NULL || effect_top < 0)) {
+        panic_fmt("resume called outside of a handler arm");
+    }
+    if (PRIDE_UNLIKELY(f->saved == NULL)) {
+        panic_fmt("resume called with no suspended computation");
+    }
+    if (PRIDE_UNLIKELY(f->resume_used)) {
+        panic_fmt("effect continuation resumed twice (continuations are one-shot)");
+    }
+    f->resume_used = 1;
+    f->resume_val  = val;
+
+    getcontext(&f->restore_ctx);
+    f->restore_ctx.uc_stack.ss_sp   = f->coro_stack;
+    f->restore_ctx.uc_stack.ss_size = EFFECT_CORO_STACK;
+    f->restore_ctx.uc_link          = NULL;
+    uintptr_t raw = (uintptr_t)f;
+    EFFDBG("resume: val=%p, tramp on scratch %p\n", val, (void*)f->coro_stack);
+    makecontext(&f->restore_ctx, (void (*)(void))effect_restore_tramp, 2,
+                (uint32_t)(raw >> 32), (uint32_t)(raw & 0xFFFFFFFFu));
+    setcontext(&f->restore_ctx);
+    /* never reached */
+    panic_fmt("effect: resume trampoline failed");
     __builtin_unreachable();
 }
 
 /*
- * __pride_resume — resume a suspended computation with value `val`.
- *
- * Called from inside a handler arm body.  Saves the handler context and
- * swaps back to the computation that called __pride_perform().
+ * __pride_get_arm_arg — op argument `idx` for the currently-dispatched arm.
+ * The codegen materialises all arm arguments eagerly at the top of the arm
+ * block, so reading from the single dispatched frame is safe.
  */
-void* __pride_resume(void* val) {
-    if (PRIDE_UNLIKELY(effect_top < 0)) {
-        panic_fmt("resume called outside of a handler arm");
+uint64_t __pride_get_arm_arg(uint64_t idx) {
+    PrideHandlerFrame* f = effect_dispatched;
+    if (PRIDE_UNLIKELY(f == NULL)) {
+        panic_fmt("effect: arm argument read outside of a handler arm");
     }
-    PrideHandlerFrame* f = &effect_stack[effect_top];
-    f->resume_val = val;
-    f->resumed    = true;
-    /* Swap back to the performing computation */
-    swapcontext(&f->handler_ctx, &f->perform_ctx);
-    /* When the computation next performs an op we'll return here */
-    return val;
+    if (PRIDE_UNLIKELY(idx >= EFFECT_MAX_OP_ARGS)) {
+        panic_fmt("effect: arm argument index out of range");
+    }
+    return f->arm_args[idx];
 }
 
 
@@ -759,6 +1086,29 @@ void* __pride_matmul(void* lhs_ptr, void* rhs_ptr) {
     PrideTensor* A = (PrideTensor*)lhs_ptr;
     PrideTensor* B = (PrideTensor*)rhs_ptr;
 
+    uint64_t* a_dims = tensor_dims(A);
+    uint64_t* b_dims = tensor_dims(B);
+
+    /* Matrix-vector contractions (spec §11 checked by the typechecker).
+     * A rank-1 operand is a matrix view: on the right it is a [K×1]
+     * column (m[M×K] @ v[K] → v[M]), on the left a [1×K] row
+     * (v[K] @ m[K×N] → v[N]).  The result is always rank 1; the
+     * vector·vector dot product is a SCALAR and comes through
+     * __pride_vecdot below instead. */
+    if (A->rank >= 1 && A->rank <= 2 && B->rank >= 1 && B->rank <= 2
+        && (A->rank == 1 || B->rank == 1)) {
+        size_t M = (A->rank == 2) ? (size_t)a_dims[0] : 1;
+        size_t K = (size_t)a_dims[A->rank - 1];
+        size_t N = (B->rank == 2) ? (size_t)b_dims[1] : 1;
+        if (PRIDE_UNLIKELY(K != (size_t)b_dims[0])) {
+            panic_fmt("matmul: inner dimensions do not match");
+        }
+        uint64_t c_dim = (uint64_t)(A->rank == 2 ? M : N);
+        PrideTensor* C = __pride_tensor_new(1, &c_dim);
+        gemm_block(tensor_data(C), tensor_data(A), tensor_data(B), M, K, N);
+        return (void*)C;
+    }
+
     if (PRIDE_UNLIKELY(A->rank < 2 || B->rank < 2)) {
         panic_fmt("matmul: operands must have rank >= 2");
     }
@@ -767,8 +1117,6 @@ void* __pride_matmul(void* lhs_ptr, void* rhs_ptr) {
     }
 
     uint64_t rank    = A->rank;
-    uint64_t* a_dims = tensor_dims(A);
-    uint64_t* b_dims = tensor_dims(B);
 
     /* Matrix dims: A=[...×M×K], B=[...×K×N] */
     size_t M = (size_t)a_dims[rank - 2];
@@ -811,6 +1159,31 @@ void* __pride_matmul(void* lhs_ptr, void* rhs_ptr) {
     }
 
     return (void*)C;
+}
+
+/* __pride_vecdot — vector·vector dot product (spec §11: (k)@(k) -> scalar).
+ * Both operands are rank-1 tensors of equal length; the result is the
+ * scalar sum of elementwise products (tensors store f64 elements). */
+double __pride_vecdot(void* lhs_ptr, void* rhs_ptr) {
+    if (PRIDE_UNLIKELY(lhs_ptr == NULL || rhs_ptr == NULL)) {
+        panic_fmt("vecdot: null operand");
+    }
+    PrideTensor* A = (PrideTensor*)lhs_ptr;
+    PrideTensor* B = (PrideTensor*)rhs_ptr;
+    if (PRIDE_UNLIKELY(A->rank != 1 || B->rank != 1)) {
+        panic_fmt("vecdot: operands must be rank 1");
+    }
+    uint64_t* a_dims = tensor_dims(A);
+    uint64_t* b_dims = tensor_dims(B);
+    size_t K = (size_t)a_dims[0];
+    if (PRIDE_UNLIKELY(K != (size_t)b_dims[0])) {
+        panic_fmt("vecdot: lengths do not match");
+    }
+    double* Ad = tensor_data(A);
+    double* Bd = tensor_data(B);
+    double acc = 0.0;
+    for (size_t i = 0; i < K; i++) acc += Ad[i] * Bd[i];
+    return acc;
 }
 
 /* Elementwise binary op: result = f(A[i], B[i]) for each element.
@@ -937,6 +1310,18 @@ void __pride_thread_detach(void* tid_ptr) {
  */
 
 static void crash_handler(int sig, siginfo_t* info PRIDE_UNUSED, void* uctx PRIDE_UNUSED) {
+#ifdef __x86_64__
+    if (getenv("PRIDE_EFF_DEBUG") && uctx != NULL) {
+        ucontext_t* uc = (ucontext_t*)uctx;
+        greg_t* g = uc->uc_mcontext.gregs;
+        dprintf(2, "[crash] RIP=%llx RSP=%llx RBP=%llx\n",
+                (unsigned long long)g[16], (unsigned long long)g[15],
+                (unsigned long long)g[12] /* REG_RBX? dump several */ );
+        dprintf(2, "[crash] R8=%llx R12=%llx R13=%llx R14=%llx\n",
+                (unsigned long long)g[8], (unsigned long long)g[13],
+                (unsigned long long)g[14], (unsigned long long)g[9]);
+    }
+#endif
     /* Async-signal-safe path: only write() and backtrace*_fd() */
     const char* signame =
         sig == SIGSEGV ? "SIGSEGV (segmentation fault)" :

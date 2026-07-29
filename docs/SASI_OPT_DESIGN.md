@@ -143,7 +143,7 @@ already had guards.
 ## Hardening round 2 — structure-aware fuzzing
 
 Random byte-mutation mostly produces parse errors; to exercise the *semantic*
-pipeline deeply I added a structure-aware fuzzer that emits VALID nested Pryde
+pipeline deeply I added a structure-aware fuzzer that emits VALID nested Pride
 programs (if/while/for/match/break/continue/return over mutable vars). It found
 two real **post-optimization CFG corruption** bugs that byte-fuzzing missed:
 

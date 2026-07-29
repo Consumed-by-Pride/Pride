@@ -2,12 +2,12 @@
 
 This is the SSA-CFG that the **backend lowers to LLVM**. It is produced by
 `ssi_ir.c3` (`SsiModule.build(program)`), verified by `SsiModule.verify()`, and
-printed by `./pryde --dump-ir <file>`. Read `FRONTEND_STATUS.md` §3 first; this
+printed by `./pride --dump-ir <file>`. Read `FRONTEND_STATUS.md` §3 first; this
 doc is the detailed reference + worked examples.
 
 ## Why "SSI" and not plain SSA
 
-Pryde's IR is **Static Single Information** form: standard SSA (single
+Pride's IR is **Static Single Information** form: standard SSA (single
 assignment, φ-merges at joins) PLUS **σ-nodes** ("sigma") on the out-edges of
 conditional branches. A σ-node rebinds a value on a specific branch and carries a
 **refinement** (the fact learned by taking that edge). Example: after
@@ -113,11 +113,11 @@ Assert `verify().errors == 0 && verify().undef_refs == 0` before lowering.
 ## Worked example
 
 Source:
-```pryde
+```pride
 fn max : (i64, i64) -> i64
   | (a, b) -> if a > b then a else b
 ```
-`./pryde --dump-ir`:
+`./pride --dump-ir`:
 ```
 fn max  (entry B0, 4 blocks)
   B0:

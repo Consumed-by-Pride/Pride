@@ -1,6 +1,6 @@
-# Pryde MSP Stage — Architecture & Design
+# Pride MSP Stage — Architecture & Design
 
-> The MSP (Meta-Staging / Program) stage is where Pryde stops being "a checked
+> The MSP (Meta-Staging / Program) stage is where Pride stops being "a checked
 > language" and becomes "a programmable compiler." It runs **after** the typed
 > frontend (resolve → typecheck → effectcheck → lint) and **before** codegen.
 >
@@ -123,7 +123,7 @@ struct SsiGraph {
 }
 ```
 
-Build algorithm (single pass, dominator-light because Pryde blocks are already
+Build algorithm (single pass, dominator-light because Pride blocks are already
 tree-structured — no `goto`):
 
 1. Walk the AST in source order maintaining a **scope→current-version** map.
@@ -135,7 +135,7 @@ tree-structured — no `goto`):
 5. At a `φ` join: create a merge version; `refinement` = union of incoming
    refinements (the join in the subtyping lattice the typechecker already has).
 
-Because Pryde has no arbitrary `goto`, the CFG is reducible and tree-shaped, so
+Because Pride has no arbitrary `goto`, the CFG is reducible and tree-shaped, so
 SSI construction is **O(n)** with no iterative dominance-frontier computation.
 
 ### 2.3 Why MSP needs it
@@ -158,7 +158,7 @@ explicit CFG — `IrBlock`s with one terminator each (`ret`/`br`/`cbr`/`switch`/
 `unreachable`), `IrVal` SSA values, φ-nodes tagged with predecessor *block ids*,
 and σ-nodes emitted at the head of the edge-block where the fact holds.
 
-Because Pryde has no `goto`, this is single-pass structured SSA construction
+Because Pride has no `goto`, this is single-pass structured SSA construction
 (Brandis & Mössenböck) + σ-splits (Ananian): one walk, no dominance frontiers.
 It handles the hard cases for real — multi-clause functions become dispatch
 cascades; `break`/`continue` add extra exit/header edges and the loop-φ /
@@ -279,7 +279,7 @@ This turns the classic "rewrite until nothing changes = N full passes" into
 
 `a ++ b` concatenates rule sets (priority preserved: `a`'s rules first). Because
 rules are values, `++` is just `RuleSet` concatenation + a merged discrimination
-tree. Confluence is **not** required (Pryde trusts you); determinism comes from
+tree. Confluence is **not** required (Pride trusts you); determinism comes from
 priority order. Optional `--check-confluence` can warn on overlapping LHSs.
 
 ### 3.7 Safety rails (untyped, but not reckless)
@@ -383,7 +383,7 @@ at the source.
 
 Modeled on MetaOCaml's three operators (the mental model you already have):
 
-| MetaOCaml | Pryde | AST node | MSP action |
+| MetaOCaml | Pride | AST node | MSP action |
 |---|---|---|---|
 | bracket `.<e>.` | `~Tree e` / `quote e` | `NODE_SIGIL_TREE` / `NODE_QUOTE` | freeze `e` as data: stop normalizing inside |
 | escape `.~e` | `splice e` / `unquote e` | `NODE_SPLICE`/`NODE_UNQUOTE` | run `e` now, graft its result into the surrounding quote |
@@ -438,7 +438,7 @@ ast.c3:  + intern table on AstArena (hash-cons; opt-in, MSP only)
          + node_intern(), node_equal() (structural)
 ```
 
-Driver wiring in `pryde.c3`: after lint, `if (!strict_errors) msp.run(program)`,
+Driver wiring in `pride.c3`: after lint, `if (!strict_errors) msp.run(program)`,
 then a final `--dump-msp` to print the rewritten tree.
 
 ---

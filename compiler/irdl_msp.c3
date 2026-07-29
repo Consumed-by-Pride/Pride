@@ -5,7 +5,7 @@
 //
 // IRDL (IR Definition Language, MLIR's idea) lets a program DECLARE its own
 // intermediate-representation opcodes ("dialects") and the rules that LOWER
-// those opcodes to other ops (ultimately target instructions). In Pryde:
+// those opcodes to other ops (ultimately target instructions). In Pride:
 //
 //   dialect GpuD                         -- registers opcodes/regions
 //     opcode gadd
