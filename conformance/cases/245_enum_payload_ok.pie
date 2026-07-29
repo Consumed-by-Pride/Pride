@@ -1,0 +1,7 @@
+-- EXPECT-CLEAN
+enum Ptr
+  P(*i64)
+  I(i64)
+  N
+fn useit : Ptr -> i64
+  | _ -> 0

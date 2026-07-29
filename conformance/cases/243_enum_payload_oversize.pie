@@ -1,0 +1,4 @@
+-- EXPECT-COUNT: type-err=1
+enum Blob
+  A([i64; 3])
+  B

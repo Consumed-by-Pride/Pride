@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+type Box<T> = struct
+  items : [T; 2]
+  n : i64
+type Duo<A, B> = struct
+  fst : A
+  snd : B
+fn peek : Duo<i64, Box<i64>> -> i64
+  | d -> d.snd.n

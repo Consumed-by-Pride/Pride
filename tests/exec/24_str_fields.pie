@@ -1,0 +1,44 @@
+-- EXPECT: 1\n97\n42\n120\n113\n7\n
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+type Rec = struct
+  name : Str
+  n : i64
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      let mut r : Rec = Rec { name: "abc", n: 1 }
+      print_i64_nl(r.n)
+      print_i64_nl(r.name[0] as i64)
+      r.n = 42
+      r.name = "xyz"
+      print_i64_nl(r.n)
+      print_i64_nl(r.name[0] as i64)
+      let p : *Rec = alloc Rec
+      p.name = "qw"
+      p.n = 7
+      print_i64_nl(p.name[0] as i64)
+      print_i64_nl(p.n)
+      free p
+      syscall(231, 0)

@@ -1,0 +1,53 @@
+-- EXPECT: 10\n20\n7\n99\n8\n1\n2\n3\n4\n33\n44\n11\n
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+type Box<T> = struct
+  items : [T; 2]
+  n : i64
+type Duo<A, B> = struct
+  fst : A
+  snd : B
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      let mut b : Box<i64> = Box { items: [10, 20], n: 7 }
+      print_i64_nl(b.items[0])
+      print_i64_nl(b.items[1])
+      print_i64_nl(b.n)
+      b.items[1] = 99
+      b.n += 1
+      print_i64_nl(b.items[1])
+      print_i64_nl(b.n)
+      let mut d : Duo<i64, Box<i64>> = Duo { fst: 1, snd: Box { items: [2, 3], n: 4 } }
+      print_i64_nl(d.fst)
+      print_i64_nl(d.snd.items[0])
+      print_i64_nl(d.snd.items[1])
+      print_i64_nl(d.snd.n)
+      d.snd.items[1] = 33
+      d.snd.n = 44
+      d.fst = 11
+      print_i64_nl(d.snd.items[1])
+      print_i64_nl(d.snd.n)
+      print_i64_nl(d.fst)
+      syscall(231, 0)
