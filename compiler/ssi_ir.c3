@@ -10,7 +10,7 @@
 // needs an EXPLICIT control-flow graph: real basic blocks, SSA values,
 // terminators, φ-nodes naming predecessor blocks, σ-splits on conditional edges.
 //
-// This module lowers Pryde's structured, goto-free AST into exactly that form.
+// This module lowers Pride's structured, goto-free AST into exactly that form.
 //
 // DATA MODEL
 // ──────────
@@ -25,7 +25,7 @@
 //
 // COMPLETENESS — NO STUBS
 // ───────────────────────
-// Every Pryde language construct is lowered to concrete IR.  IR_UNKNOWN appears
+// Every Pride language construct is lowered to concrete IR.  IR_UNKNOWN appears
 // only at two well-defined sites:
 //   • NODE_STMT_ASM (inline asm):  IR_UNKNOWN carrying AsmLine/AsmOperand
 //     children; .src.kind == NODE_STMT_ASM; tagged EFFECT_UNSAFE.
@@ -47,7 +47,7 @@
 //
 // CONSTRUCTION ALGORITHM
 // ──────────────────────
-// Because Pryde has no goto, the CFG is built by a single structured walk
+// Because Pride has no goto, the CFG is built by a single structured walk
 // (Brandis & Mössenböck single-pass SSA, extended with σ-splits) — no
 // dominance-frontier iteration needed.  Loops use a pre-placed header φ per
 // loop-carried binder; break/continue feed extra operands via LoopCtx.
@@ -1110,7 +1110,7 @@ fn IrVal* SsiModule.lower_stmt(SsiModule* m, Node* n)
             // `assert cond` — CBR: cond ? continue_blk : trap_blk.
             // On the true edge: emit σ-refinements (the asserted facts are known to
             // hold for the rest of the block).  On the false edge: UNREACHABLE
-            // (the assertion failure is defined as UB / program abort in Pryde).
+            // (the assertion failure is defined as UB / program abort in Pride).
             {
                 Node* cond = n.child_count >= 1 ? n.children[0] : null;
                 if (cond == null || m.terminated()) { return null; }
@@ -1983,7 +1983,7 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                     m.pending_inner_count++;
                 }
 
-                // Create an IR_UNKNOWN reference so calls resolve to @pryde_name
+                // Create an IR_UNKNOWN reference so calls resolve to @pride_name
                 IrVal* fref = m.new_val(IrOp.IR_UNKNOWN, n);
                 if (fref != null)
                 {
