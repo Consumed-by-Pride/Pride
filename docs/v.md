@@ -516,6 +516,28 @@ type FloatBits = union
   i : u32       -- same bytes, different interpretation
 ```
 
+A union whose variants all carry concrete payloads is an **untagged C-union**:
+one shared 64-bit cell, fields reinterpret it. A union that mentions a **type
+parameter** is a **tagged sum type** instead — an untagged cell cannot exist at
+an unknown payload size — represented as `{ tag, payload }` and used with
+variant construction and pattern matching:
+
+```pride
+type Maybe<T>  = union
+  some : T
+  none : ()
+
+type Either<E, T> = union
+  err : E
+  ok  : T
+
+fn unwrap_or : (Maybe<i64>, i64) -> i64
+  | ({ some: v }, _) -> v
+  | ({ none: _ }, d) -> d
+
+let x = unwrap_or(Maybe.some(7), 0)   -- 7
+```
+
 Field access checks the field exists on the (auto-derefed) struct and yields its
 type. Indexing requires a pointer, array, slice, or tensor.
 

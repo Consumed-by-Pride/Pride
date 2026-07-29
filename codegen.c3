@@ -45,7 +45,12 @@
 //    Per handler frame:
 //      struct __pride_frame { jmp_buf buf; ptr handler_fn; ptr prev; }
 //      IR_EFFECT_OP   → call __pride_perform(frame_ptr, op_id, arg_ptr)
-//      IR_HANDLER     → setjmp; on resume → call body; tear down frame
+//      IR_HANDLER     → __pride_push_handler double-returns a dispatch token:
+//                       0 = run computation (default edge); op_id+1 = arm edge
+//      IR_HANDLER_ARM → arm body; pop frame (only reached when not resumed)
+//      IR_HANDLER_COMPLETE → __pride_complete() pops the frame on the normal
+//                       computation-exit path (the only pop a resumed
+//                       computation ever performs — resume is tail-only)
 //      IR_RESUME      → longjmp into saved buf with resume value
 //    Runtime declarations are emitted into the .ll file as `declare` stmts.
 // 8. SIZEOF/ALIGNOF sentinels: IR_CONST_INT with ival=0 and src.kind ==
@@ -107,6 +112,14 @@ fn bool cstr_eq(char* a, char* b)
     usz i = 0;
     while (a[i] != 0 && b[i] != 0) { if (a[i] != b[i]) return false; i++; }
     return a[i] == b[i];
+}
+
+// Is the first n bytes of a equal to the (exactly n bytes) literal b?
+fn bool cstr_eq_n(char* a, char* b, usz n) @private
+{
+    if (a == null || b == null) return false;
+    for (usz i = 0; i < n; i++) { if (a[i] != b[i]) return false; }
+    return true;
 }
 
 // Exact, full-byte comparison of a (ptr,len) span against a C string literal.
@@ -706,59 +719,12 @@ fn bool infer_fn_types(ssi_ir::SsiModule* ir, ssi_ir::SsiFunc* f, TypeTable* t)
                 pbuf[0] = 0;
                 bool resolved = false;
 
-                // Priority 1a: binder node type_annotation (e.g. PatIdent for `let mut i : i32`)
-                // The phi binder may be a DECL_MUT/DECL_LET node (resolved via bind_name_node).
-                // In that case, the type annotation lives on children[0] (the PAT_IDENT), not on
-                // the decl node itself.  Also check explicit type children of the decl (child 1+).
-                if (!resolved && ph.binder != null)
-                {
-                    Node* binder_ty_node = ph.binder.type_annotation;
-                    // If binder is DECL_LET/DECL_MUT, look for type annotation on children
-                    if (binder_ty_node == null
-                        && (ph.binder.kind == Nk.NODE_DECL_MUT || ph.binder.kind == Nk.NODE_DECL_LET))
-                    {
-                        // children[0] is the pattern, check its type_annotation
-                        if (ph.binder.child_count >= 1 && ph.binder.children[0] != null)
-                        { binder_ty_node = ph.binder.children[0].type_annotation; }
-                        // Also check explicit type children (index 1+): type nodes
-                        for (usz bci = 1; bci < ph.binder.child_count && binder_ty_node == null; bci++)
-                        {
-                            Node* bc = ph.binder.children[bci];
-                            if (bc == null) continue;
-                            // Inline is_type_node: check for NODE_TYPE_* kinds
-                            bool bc_is_type = (bc.kind == Nk.NODE_TYPE_PRIMITIVE
-                                || bc.kind == Nk.NODE_TYPE_PTR
-                                || bc.kind == Nk.NODE_TYPE_FN
-                                || bc.kind == Nk.NODE_TYPE_TUPLE
-                                || bc.kind == Nk.NODE_TYPE_ARRAY
-                                || bc.kind == Nk.NODE_TYPEVAR
-                                || bc.kind == Nk.NODE_EXPR_UNIT);
-                            if (bc_is_type) { binder_ty_node = bc; break; }
-                        }
-                    }
-                    if (binder_ty_node != null)
-                    {
-                        type_to_llvm_buf(binder_ty_node, &pbuf[0], TYMAP_ENTRY, 0);
-                        // Reject "ptr" from union/complex types (fallback type) as phi type.
-                        // It will be overridden by arm type inference below.
-                        bool binder_ty_ok = (pbuf[0] != 0 && pbuf[0] != 'v' && pbuf[0] != 'p');
-                        // Allow ptr if binder annotation IS a real pointer type
-                        if (pbuf[0] == 'p' && binder_ty_node.kind == Nk.NODE_TYPE_PTR)
-                        { binder_ty_ok = true; }
-                        if (binder_ty_ok) { t.set(ph.id, &pbuf[0]); resolved = true; }
-                    }
-                }
-                // Priority 1b: src.type_annotation (the AST node that spawned the phi)
-                // Same rejection as 1a: skip ptr/union-fallback types.
-                if (!resolved && ph.src != null && ph.src.type_annotation != null)
-                {
-                    type_to_llvm_buf(ph.src.type_annotation, &pbuf[0], TYMAP_ENTRY, 0);
-                    bool src_ty_ok = (pbuf[0] != 0 && pbuf[0] != 'v' && pbuf[0] != 'p');
-                    // Allow ptr if src annotation IS a real pointer type
-                    if (pbuf[0] == 'p' && ph.src.type_annotation.kind == Nk.NODE_TYPE_PTR)
-                    { src_ty_ok = true; }
-                    if (src_ty_ok) { t.set(ph.id, &pbuf[0]); resolved = true; }
-                }
+                // Priority 1: front-end annotations are authoritative — binder
+                // node type_annotation (1a: with DECL_LET/DECL_MUT child walk),
+                // then the type stamped on the AST node that spawned the φ
+                // (1b). Shared with Step 3 via phi_annotation_type().
+                if (!resolved && phi_annotation_type(ph, &pbuf[0], TYMAP_ENTRY))
+                { t.set(ph.id, &pbuf[0]); resolved = true; }
                 // Priority 2: propagate from first non-i64 arg (so we don't widen to i64)
                 if (!resolved)
                 {
@@ -809,12 +775,44 @@ fn bool infer_fn_types(ssi_ir::SsiModule* ir, ssi_ir::SsiFunc* f, TypeTable* t)
                 buf[0] = 0;
 
                 // Priority 1: src.type_annotation
-                if (iv.src != null && iv.src.type_annotation != null)
+                // — EXCEPT the effect ABI values: the IR_HANDLER dispatch token,
+                // its arm markers, op performs and resume calls are shaped by the
+                // runtime ABI (i64 token, ptr payloads), not by whatever the
+                // front-end stamped on the handle expression. The handle's
+                // semantic VALUE type is carried by the join φ, not the token —
+                // typing the token `{ ptr, ptr }` (a fn-valued computation)
+                // corrupts the dispatch switch into `switch { ptr, ptr }`.
+                bool effect_abi_op = (iv.op == ssi_ir::IrOp.IR_HANDLER
+                    || iv.op == ssi_ir::IrOp.IR_HANDLER_ARM
+                    || iv.op == ssi_ir::IrOp.IR_HANDLER_COMPLETE
+                    || iv.op == ssi_ir::IrOp.IR_EFFECT_OP
+                    || iv.op == ssi_ir::IrOp.IR_RESUME);
+                if (!effect_abi_op && iv.src != null && iv.src.type_annotation != null)
                 {
                     type_to_llvm_buf(iv.src.type_annotation, &buf[0], TYMAP_ENTRY, 0);
                     // Filter out "void" in non-return position (void can't be a value)
                     if (buf[0] == 'v' && buf[1] == 'o') buf[0] = 0;
                 }
+
+                // Priority 1b: a rank ≥ 2 tensor INDEX materialises a
+                // headered sub-tensor — its VALUE is a pointer, not the
+                // element type synth_index reports (which drops all ranks).
+                if (iv.op == ssi_ir::IrOp.IR_INDEX && iv.src != null
+                    && iv.src.child_count >= 1 && iv.src.children[0] != null
+                    && iv.src.children[0].type_annotation != null
+                    && iv.src.children[0].type_annotation.kind == Nk.NODE_TYPE_TENSOR
+                    && iv.src.children[0].type_annotation.child_count > 2)
+                { snprintf(&buf[0], TYMAP_ENTRY, "ptr"); }
+
+                // Priority 1c: an IR_CAST whose src is itself a TYPE node —
+                // lower_effect_perform encodes the perform-result coercion by
+                // pointing src AT the op's declared return type (deliberately
+                // unannotated: the node IS the dst type). Without this the dst
+                // collapses to the generic i64 fallback and f64/i32 op results
+                // mis-box through the ptr-slot ABI (`mul nsw i64 %p, 4.0`).
+                if (buf[0] == 0 && iv.op == ssi_ir::IrOp.IR_CAST && iv.src != null
+                    && cast_src_is_type_node(iv.src))
+                { type_to_llvm_buf(iv.src, &buf[0], TYMAP_ENTRY, 0); }
 
                 // Priority 2: propagate from operand (for bin/un/sigma/cast)
                 if (buf[0] == 0 && iv.arg_count >= 1 && iv.args[0] != null)
@@ -993,6 +991,7 @@ fn bool infer_fn_types(ssi_ir::SsiModule* ir, ssi_ir::SsiFunc* f, TypeTable* t)
                         case ssi_ir::IrOp.IR_EFFECT_OP:    snprintf(&buf[0], TYMAP_ENTRY, "ptr");
                         case ssi_ir::IrOp.IR_HANDLER:      snprintf(&buf[0], TYMAP_ENTRY, "i64");
                         case ssi_ir::IrOp.IR_HANDLER_ARM:  snprintf(&buf[0], TYMAP_ENTRY, "ptr");
+                        case ssi_ir::IrOp.IR_HANDLER_COMPLETE: snprintf(&buf[0], TYMAP_ENTRY, "void");
                         case ssi_ir::IrOp.IR_RESUME:       snprintf(&buf[0], TYMAP_ENTRY, "ptr");
                         case ssi_ir::IrOp.IR_UNKNOWN:
                             // Closure / named-fn VALUE: uniformly { ptr, ptr }
@@ -1038,6 +1037,19 @@ fn bool infer_fn_types(ssi_ir::SsiModule* ir, ssi_ir::SsiFunc* f, TypeTable* t)
             char* cur = t.get(ph.id);
             if (cur == null || (cur[0] == 'i' && cur[1] == '6'))
             {
+                // Annotation-derived types are authoritative: "i64" here may be
+                // the fallback sentinel (upgradeable) OR the type the front-end
+                // actually stamped (final). Never let the operand scan clobber
+                // the latter — e.g. an effect-handle join stamped i64 whose
+                // resume-edge operand is ABI-typed ptr would otherwise rot to
+                // `phi ptr [ 42, ... ]`.
+                char[TYMAP_ENTRY] abuf3;
+                if (phi_annotation_type(ph, &abuf3[0], TYMAP_ENTRY))
+                {
+                    t.set(ph.id, &abuf3[0]);
+                    ph = ph.next;
+                    continue;
+                }
                 // Try each arg — strip sigma chains before type lookup
                 for (usz k = 0; k < ph.arg_count; k++)
                 {
@@ -1219,9 +1231,97 @@ struct CgenModule
 
 const usz TRAMP_CAP = 512;
 
-// Filled by infer_fn_types() before emit_function() emits any instructions.
-// Entry k holds the LLVM type string for IrVal with id k, as a null-terminated
-// char[64]. A value_count of 0 means the table is not yet built.
+// Priority-1 φ typing, shared by infer_fn_types' pre-pass AND the Step-3
+// forward-value re-resolution: a type the front-end actually ANNOTATED (on the
+// φ's binder or on its originating AST node) is authoritative and must win
+// over every operand-scan heuristic. "i64" is both a real type AND the
+// fallback sentinel — without this guard, Step 3 clobbers honestly-i64 phis
+// (e.g. an effect-handle join whose computation is unannotated but whose
+// HANDLE node was stamped i64 by the checker) with whatever operand type it
+// finds first — the resume ABI's ptr — producing `phi ptr [ 42, ... ]`.
+fn bool phi_annotation_type(ssi_ir::IrVal* ph, char* pbuf, usz cap)
+{
+    if (ph == null) return false;
+    // 1a: binder type annotation (with DECL_LET/DECL_MUT child walk)
+    if (ph.binder != null)
+    {
+        Node* binder_ty_node = ph.binder.type_annotation;
+        // If binder is DECL_LET/DECL_MUT, look for type annotation on children
+        if (binder_ty_node == null
+            && (ph.binder.kind == Nk.NODE_DECL_MUT || ph.binder.kind == Nk.NODE_DECL_LET))
+        {
+            // children[0] is the pattern, check its type_annotation
+            if (ph.binder.child_count >= 1 && ph.binder.children[0] != null)
+            { binder_ty_node = ph.binder.children[0].type_annotation; }
+            // Also check explicit type children (index 1+): type nodes
+            for (usz bci = 1; bci < ph.binder.child_count && binder_ty_node == null; bci++)
+            {
+                Node* bc = ph.binder.children[bci];
+                if (bc == null) continue;
+                // Inline is_type_node: check for NODE_TYPE_* kinds
+                bool bc_is_type = (bc.kind == Nk.NODE_TYPE_PRIMITIVE
+                    || bc.kind == Nk.NODE_TYPE_PTR
+                    || bc.kind == Nk.NODE_TYPE_FN
+                    || bc.kind == Nk.NODE_TYPE_TUPLE
+                    || bc.kind == Nk.NODE_TYPE_ARRAY
+                    || bc.kind == Nk.NODE_TYPEVAR
+                    || bc.kind == Nk.NODE_EXPR_UNIT);
+                if (bc_is_type) { binder_ty_node = bc; break; }
+            }
+        }
+        if (binder_ty_node != null)
+        {
+            type_to_llvm_buf(binder_ty_node, pbuf, cap, 0);
+            // Reject "ptr" from union/complex types (fallback type) as phi type.
+            // It will be overridden by arm type inference below.
+            bool binder_ty_ok = (pbuf[0] != 0 && pbuf[0] != 'v' && pbuf[0] != 'p');
+            // Allow ptr if binder annotation IS a real pointer type
+            if (pbuf[0] == 'p' && binder_ty_node.kind == Nk.NODE_TYPE_PTR)
+            { binder_ty_ok = true; }
+            if (binder_ty_ok) { return true; }
+        }
+    }
+    // 1b: src.type_annotation (the AST node that spawned the phi)
+    // Same rejection as 1a: skip ptr/union-fallback types.
+    if (ph.src != null && ph.src.type_annotation != null)
+    {
+        type_to_llvm_buf(ph.src.type_annotation, pbuf, cap, 0);
+        bool src_ty_ok = (pbuf[0] != 0 && pbuf[0] != 'v' && pbuf[0] != 'p');
+        // Allow ptr if src annotation IS a real pointer type
+        if (pbuf[0] == 'p' && ph.src.type_annotation.kind == Nk.NODE_TYPE_PTR)
+        { src_ty_ok = true; }
+        if (src_ty_ok) { return true; }
+    }
+    return false;
+}
+
+// Mirror of ssi's is_type_or_row restricted to the kinds type_to_llvm_buf
+// lowers — codegen deliberately doesn't import module ssi. Used only to
+// recognise an IR_CAST whose src encodes the destination TYPE directly
+// (effect-perform result coercions from lower_effect_perform).
+fn bool cast_src_is_type_node(Node* n)
+{
+    if (n == null) return false;
+    switch (n.kind)
+    {
+        case Nk.NODE_TYPE_PRIMITIVE:
+        case Nk.NODE_TYPE_PATH:
+        case Nk.NODE_TYPE_PTR:
+        case Nk.NODE_TYPE_REF:
+        case Nk.NODE_TYPE_MUT_REF:
+        case Nk.NODE_TYPE_ARRAY:
+        case Nk.NODE_TYPE_SLICE:
+        case Nk.NODE_TYPE_TUPLE:
+        case Nk.NODE_TYPE_FN:
+        case Nk.NODE_TYPE_UNION:
+        case Nk.NODE_TYPE_INTERSECT:
+        case Nk.NODE_TYPE_GENERIC_APP:
+        case Nk.NODE_TYPE_TENSOR:
+            return true;
+        default:
+            return false;
+    }
+}
 
 const usz TYMAP_ENTRY = 256;  // bytes per entry — must hold fully-expanded
                               // nested aggregate types ({ i64, { i64, ... } })
@@ -1695,6 +1795,45 @@ fn usz str_const_decoded_len(ssi_ir::IrVal* v)
         else { kk++; decoded_len++; }
     }
     return decoded_len;
+}
+
+// Print the CONSTANT aggregate form of a string literal:
+// `{ ptr @.str.N, i64 LEN }`. Required wherever the fat string record is
+// used as one value (stored into memory in one piece); emit_vref alone
+// renders `@.str.N`, the raw byte-global pointer, which is not a value of
+// the record type.
+// Recursively read a tensor literal's static shape from its nesting:
+// `[| a, b |]` is rank 1 with dims[0] = 2, `[| [|..|], [|..|] |]` adds a
+// rank. Writes dims[0..rank) and returns the rank (0 = not a tensor shape
+// we can materialise). Ragged shapes are the type checker's error, not
+// codegen's — by this point every sibling row has the same length.
+fn usz tensor_lit_shape(Node* n, long* dims, usz cap)
+{
+    if (n == null || cap == 0) return 0;
+    Node* c0 = n.child_count >= 1 ? n.children[0] : null;
+    if (c0 != null && c0.kind == Nk.NODE_EXPR_TENSOR_LIT && cap > 1)
+    {
+        usz sub = tensor_lit_shape(c0, dims + 1, cap - 1);
+        if (sub == 0) return 0;
+        dims[0] = (long)n.child_count;
+        return sub + 1;
+    }
+    dims[0] = (long)n.child_count;
+    return 1;
+}
+
+fn void cgen_emit_str_const_record(CgenModule* cg, ssi_ir::IrVal* v)
+{
+    if (v == null || v.op != ssi_ir::IrOp.IR_CONST_STR)
+    {
+        cg.out.writes("undef");
+        return;
+    }
+    cg.out.writes("{ ptr @.str.");
+    cg.out.writei(v.id);
+    cg.out.writes(", i64 ");
+    cg.out.writeu((ulong)str_const_decoded_len(v));
+    cg.out.writes(" }");
 }
 
 fn void CgenModule.emit_string_globals(CgenModule* cg)
@@ -2294,15 +2433,41 @@ fn bool phi_edge_coercion(TypeTable* tm, ssi_ir::IrVal* ph, usz ai,
     char* phi_ty = (tm != null) ? tm.get(ph.id) : null;
     if (phi_ty == null || phi_ty[0] == 0) return false;   // untyped φ: legacy i64 fallback
     if (phi_ty[0] == 'v' && phi_ty[1] == 'o') return false;   // void φ: not emitted at all
-    if (phi_ty[0] == '{') return false;   // aggregate φ: args match by construction
     ssi_ir::IrVal* arg = sigma_unwrap(ph.args[ai]);
     if (arg == null || arg.op == ssi_ir::IrOp.IR_CONST_UNIT) return false;  // prints undef
     // Constants are folded inline by emit_phi / emit_vref — no anchor.
     if (arg.op == ssi_ir::IrOp.IR_CONST_INT  || arg.op == ssi_ir::IrOp.IR_CONST_BOOL
      || arg.op == ssi_ir::IrOp.IR_CONST_FLOAT || arg.op == ssi_ir::IrOp.IR_CONST_NULL)
     { return false; }
+    // A value that EMITS as bare `void` (e.g. a unit-typed call) defines no
+    // SSA register at all — emit_phi renders its incoming edge as `undef`.
+    // resolve_ty deliberately upgrades void to its i64 fallback (its callers
+    // want a materialisable type), but HERE that drift would anchor a
+    // conversion on a name that never exists: the phi-edge pass must agree
+    // with emit_phi's raw-tymap classification, exactly (lockstep).
+    char* raw_ty = (tm != null) ? tm.get(arg.id) : null;
+    if (raw_ty != null && raw_ty[0] == 'v' && raw_ty[1] == 'o') return false;  // prints undef
     char* apty = resolve_ty(tm, arg);
     if (apty == null || apty[0] == 0) return false;
+    if (phi_ty[0] == '{')
+    {
+        // Aggregate φ: incoming aggregates match by construction; a SCALAR
+        // incoming (effect-handler arms feed the join φ their resume ABI's raw
+        // ptr/i64 while the φ itself is typed by the computation — e.g. a
+        // fn-VALUE) can only be widened honestly by filling slot 0.
+        if (apty[0] == '{' || (apty[0] == 'v' && apty[1] == 'o')) return false;
+        bool same = true;
+        for (usz ci = 0; phi_ty[ci] != 0 && apty[ci] != 0; ci++)
+        {
+            if (phi_ty[ci] != apty[ci]) { same = false; break; }
+        }
+        if (same && strlen(phi_ty) == strlen(apty)) return false;
+        // Only ptr/int scalars are fillable into slot 0 materialisably.
+        bool scalar = (apty[0] == 'p') || (apty[0] == 'i' && apty[1] >= '0' && apty[1] <= '9');
+        if (!scalar) return false;
+        *op = (char*)"insv0"; *src = apty; *dst = phi_ty;
+        return true;
+    }
     if (apty[0] == '{' || (apty[0] == 'v' && apty[1] == 'o')) return false;   // prints undef
     char* opc = coerce_op(apty, phi_ty);
     if (opc == null) return false;
@@ -2498,23 +2663,67 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
             {
                 // This IR_PARAM is an effect operation argument in a handler arm.
                 // The runtime provides these via __pride_get_arm_arg(index).
-                // Determine which argument index this param is (by position in the arm's params).
-                int arm_arg_idx = 0;
-                Node* arm_node = v.binder;
-                // Count which param position this is (skip op_head child[0] and body (last child))
-                // v.src is the PatIdent node for this param (set by new_val(IR_PARAM, binder)).
-                // Compare arm children against v.src to find the correct 0-based index.
-                for (usz pi = 1; pi + 1 < arm_node.child_count; pi++)
+                // The flat arg-slot index was assigned at lowering time and
+                // travels on the value itself (emit_arm_arg_params in ssi_ir) —
+                // deriving it from child POSITION would overcount `()`
+                // zero-arg placeholders and nested tuple binders.
+                //
+                // The slot's runtime type is always i64 bits. The binder's
+                // STAMPED type may be anything passable through a slot — float,
+                // narrow int, ptr — so read the slot raw and unbox it honestly:
+                // float gets its bits back, narrow ints truncate, ptr becomes
+                // a pointer again. (Same protocol as the perform/resume ends.)
+                char* argty = (tm != null) ? tm.get(v.id) : null;
+                int aw = 0;
+                if (argty != null && argty[0] == 'i')
+                { for (usz ci = 1; argty[ci] >= '0' && argty[ci] <= '9'; ci++) aw = aw * 10 + (int)(argty[ci] - '0'); }
+                bool arg_fp  = (argty != null && (argty[0] == 'f' || argty[0] == 'd'));
+                bool arg_ptr = (argty != null && argty[0] == 'p');
+                bool arg_bool = (aw == 1 && argty != null && argty[2] == 0);
+                bool arg_narrow = (aw > 1 && aw < 64);
+                if (!arg_fp && !arg_ptr && !arg_bool && !arg_narrow)
                 {
-                    Node* binder = arm_node.children[pi];
-                    if (binder == null) { continue; }
-                    if (binder == v.src) { break; }
-                    arm_arg_idx++;
+                    cg.out.writes("  %v"); cg.out.writei(v.id);
+                    cg.out.writes(" = call i64 @__pride_get_arm_arg(i64 ");
+                    cg.out.writeu(v.ival);
+                    cg.out.writes(")\n");
                 }
-                cg.out.writes("  %v"); cg.out.writei(v.id);
-                cg.out.writes(" = call i64 @__pride_get_arm_arg(i64 ");
-                cg.out.writei(arm_arg_idx);
-                cg.out.writes(")\n");
+                else
+                {
+                    cg.out.writes("  %armarg."); cg.out.writei(v.id);
+                    cg.out.writes(" = call i64 @__pride_get_arm_arg(i64 ");
+                    cg.out.writeu(v.ival);
+                    cg.out.writes(")\n");
+                    cg.out.writes("  %v"); cg.out.writei(v.id);
+                    if (arg_fp && argty[0] == 'f')
+                    {
+                        cg.out.writes("w");   // require a distinct temp for the trunc
+                    }
+                    if (arg_fp && argty[0] == 'f')
+                    {
+                        // bitcast needs i32 first
+                        cg.out.writes(" = trunc i64 %armarg."); cg.out.writei(v.id);
+                        cg.out.writes(" to i32\n");
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        cg.out.writes(" = bitcast i32 %v"); cg.out.writei(v.id);
+                        cg.out.writes("w to float\n");
+                    }
+                    else if (arg_fp)
+                    {
+                        cg.out.writes(" = bitcast i64 %armarg."); cg.out.writei(v.id);
+                        cg.out.writes(" to double\n");
+                    }
+                    else if (arg_ptr)
+                    {
+                        cg.out.writes(" = inttoptr i64 %armarg."); cg.out.writei(v.id);
+                        cg.out.writes(" to ptr\n");
+                    }
+                    else
+                    {
+                        cg.out.writes(" = trunc i64 %armarg."); cg.out.writei(v.id);
+                        cg.out.writes(" to "); cg.out.writes(argty); cg.out.writes("\n");
+                    }
+                }
             }
             return;
 
@@ -2556,6 +2765,35 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 ssi_ir::IrVal* lhs = v.arg_count >= 1 ? v.args[0] : null;
                 ssi_ir::IrVal* rhs = v.arg_count >= 2 ? v.args[1] : null;
                 bool fp = is_float_val_ty(lhs, tm);
+
+                // Elementwise tensor arithmetic + - * /  → the runtime helper
+                // (shape-checked, allocates the result header). Detection is
+                // by the LHS operand's source annotation: tensor literals and
+                // tensor-typed binders alike carry NODE_TYPE_TENSOR. Without
+                // this dispatch `a + b` on two heap-ptr tensors fell into
+                // generic pointer arithmetic.
+                if (v.bop == Tt.TOKEN_PLUS || v.bop == Tt.TOKEN_MINUS
+                    || v.bop == Tt.TOKEN_STAR || v.bop == Tt.TOKEN_SLASH)
+                {
+                    Node* tbsrc = v.src;
+                    Node* tlann = (tbsrc != null && tbsrc.child_count >= 1
+                                   && tbsrc.children[0] != null)
+                                  ? tbsrc.children[0].type_annotation : null;
+                    if (tlann != null && tlann.kind == Nk.NODE_TYPE_TENSOR)
+                    {
+                        int ew_op = (v.bop == Tt.TOKEN_PLUS)  ? 0
+                                  : (v.bop == Tt.TOKEN_MINUS) ? 1
+                                  : (v.bop == Tt.TOKEN_STAR)  ? 2 : 3;
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        cg.out.writes(" = call ptr @__pride_tensor_elemwise(ptr ");
+                        cg.emit_vref(lhs);
+                        cg.out.writes(", ptr ");
+                        cg.emit_vref(rhs);
+                        cg.out.writes(", i32 "); cg.out.writei(ew_op);
+                        cg.out.writes(")\n");
+                        return;
+                    }
+                }
 
                 // Matmul: emit as call (may hook BLAS)
                 if (v.bop == Tt.TOKEN_AT)
@@ -2606,6 +2844,58 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 bool lhs_is_struct = (lhs_ty != null && lhs_ty[0] == '{');
                 if (lhs_is_struct)
                 {
+                    // Str (= { ptr, i64 }) equality/inequality is a CONTENT
+                    // comparison, not a type error: route through the runtime's
+                    // pride_str_eq (the PrideStr by-value SysV ABI flattens to
+                    // (ptr,len) pairs). It used to fall into the placeholder
+                    // below — an always-false `add i1 0, 0` for EVERY string
+                    // comparison, silently.
+                    if (cstr_eq(lhs_ty, "{ ptr, i64 }")
+                        && (v.bop == Tt.TOKEN_EQEQ || v.bop == Tt.TOKEN_NEQ))
+                    {
+                        // String-literal operands are their raw byte-global
+                        // via emit_vref; the fat record needs the constant
+                        // aggregate form (`{ ptr @.str.N, i64 LEN }`).
+                        cg.out.writes("  %seqa."); cg.out.writei(v.id);
+                        cg.out.writes(" = extractvalue { ptr, i64 } ");
+                        if (lhs != null && lhs.op == ssi_ir::IrOp.IR_CONST_STR) { cgen_emit_str_const_record(cg, lhs); }
+                        else { cg.emit_vref(lhs); }
+                        cg.out.writes(", 0\n");
+                        cg.out.writes("  %seqb."); cg.out.writei(v.id);
+                        cg.out.writes(" = extractvalue { ptr, i64 } ");
+                        if (lhs != null && lhs.op == ssi_ir::IrOp.IR_CONST_STR) { cgen_emit_str_const_record(cg, lhs); }
+                        else { cg.emit_vref(lhs); }
+                        cg.out.writes(", 1\n");
+                        cg.out.writes("  %seqc."); cg.out.writei(v.id);
+                        cg.out.writes(" = extractvalue { ptr, i64 } ");
+                        if (rhs != null && rhs.op == ssi_ir::IrOp.IR_CONST_STR) { cgen_emit_str_const_record(cg, rhs); }
+                        else { cg.emit_vref(rhs); }
+                        cg.out.writes(", 0\n");
+                        cg.out.writes("  %seqd."); cg.out.writei(v.id);
+                        cg.out.writes(" = extractvalue { ptr, i64 } ");
+                        if (rhs != null && rhs.op == ssi_ir::IrOp.IR_CONST_STR) { cgen_emit_str_const_record(cg, rhs); }
+                        else { cg.emit_vref(rhs); }
+                        cg.out.writes(", 1\n");
+                        if (v.bop == Tt.TOKEN_NEQ)
+                        {
+                            cg.out.writes("  %seqr."); cg.out.writei(v.id);
+                            cg.out.writes(" = call i1 @pride_str_eq(ptr %seqa."); cg.out.writei(v.id);
+                            cg.out.writes(", i64 %seqb."); cg.out.writei(v.id);
+                            cg.out.writes(", ptr %seqc."); cg.out.writei(v.id);
+                            cg.out.writes(", i64 %seqd."); cg.out.writei(v.id); cg.out.writes(")\n");
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = xor i1 %seqr."); cg.out.writei(v.id); cg.out.writes(", true\n");
+                        }
+                        else
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = call i1 @pride_str_eq(ptr %seqa."); cg.out.writei(v.id);
+                            cg.out.writes(", i64 %seqb."); cg.out.writei(v.id);
+                            cg.out.writes(", ptr %seqc."); cg.out.writei(v.id);
+                            cg.out.writes(", i64 %seqd."); cg.out.writei(v.id); cg.out.writes(")\n");
+                        }
+                        return;
+                    }
                     // Emit placeholder matching result type (i1 for comparison, i64 otherwise)
                     char* res_ty2 = (tm != null) ? tm.get(v.id) : null;
                     bool is_cmp_op = (v.bop == Tt.TOKEN_LT || v.bop == Tt.TOKEN_GT
@@ -3331,6 +3621,92 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                 cg.emit_vref(aval_c); cg.out.writes(" to "); cg.out.writes(pt); cg.out.writes("\n");
                             }
                         }
+                        else if (aty_c[0]=='{' && pt[0]=='{')
+                        {
+                            // Aggregate → aggregate, caught by the generic
+                            // fallback because the exact-shape comparison
+                            // above rejected it first (e.g. a value whose
+                            // tymap string differs textually from the
+                            // callee's parameter struct but is elementwise
+                            // compatible: enum tagged repr, nested tuples).
+                            // Rebuild per element like the main path does —
+                            // silent bitcasts of aggregates are invalid LLVM.
+                            char[STRUCT_SPLIT_CAP * STRUCT_SPLIT_LEN] from_elems2;
+                            char[STRUCT_SPLIT_CAP * STRUCT_SPLIT_LEN] to_elems2;
+                            int nf2 = split_struct_ty(aty_c, &from_elems2[0], STRUCT_SPLIT_LEN);
+                            int nt2 = split_struct_ty(pt,    &to_elems2[0],   STRUCT_SPLIT_LEN);
+                            if (nf2 > 0 && nf2 == nt2)
+                            {
+                                for (int ei2 = 0; ei2 < nf2; ei2++)
+                                {
+                                    char* fe2 = (char*)&from_elems2[0] + (usz)ei2 * STRUCT_SPLIT_LEN;
+                                    char* te2 = (char*)&to_elems2[0]   + (usz)ei2 * STRUCT_SPLIT_LEN;
+                                    cg.out.writes("  %arg.c."); cg.out.writeu(ia);
+                                    cg.out.writes(".x"); cg.out.writei((long)ei2);
+                                    cg.out.writes(".v"); cg.out.writei(v.id);
+                                    cg.out.writes(" = extractvalue "); cg.out.writes(aty_c);
+                                    cg.out.writes(" "); cg.emit_vref(aval_c);
+                                    cg.out.writes(", "); cg.out.writei((long)ei2); cg.out.writes("\n");
+                                    char* eopc2 = coerce_op(fe2, te2);
+                                    if (eopc2 != null)
+                                    {
+                                        cg.out.writes("  %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".w"); cg.out.writei((long)ei2);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                        cg.out.writes(" = "); cg.out.writes(eopc2);
+                                        cg.out.writes(" "); cg.out.writes(fe2);
+                                        cg.out.writes(" %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".x"); cg.out.writei((long)ei2);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                        cg.out.writes(" to "); cg.out.writes(te2); cg.out.writes("\n");
+                                    }
+                                    bool last_i2 = (ei2 == nf2 - 1);
+                                    if (last_i2)
+                                    {
+                                        cg.out.writes("  %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                    }
+                                    else
+                                    {
+                                        cg.out.writes("  %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".i"); cg.out.writei((long)ei2);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                    }
+                                    cg.out.writes(" = insertvalue "); cg.out.writes(pt);
+                                    if (ei2 == 0)
+                                    {
+                                        cg.out.writes(" undef");
+                                    }
+                                    else
+                                    {
+                                        cg.out.writes(" %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".i"); cg.out.writei((long)(ei2 - 1));
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                    }
+                                    cg.out.writes(", "); cg.out.writes(te2);
+                                    if (eopc2 != null)
+                                    {
+                                        cg.out.writes(" %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".w"); cg.out.writei((long)ei2);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                    }
+                                    else
+                                    {
+                                        cg.out.writes(" %arg.c."); cg.out.writeu(ia);
+                                        cg.out.writes(".x"); cg.out.writei((long)ei2);
+                                        cg.out.writes(".v"); cg.out.writei(v.id);
+                                    }
+                                    cg.out.writes(", "); cg.out.writei((long)ei2); cg.out.writes("\n");
+                                }
+                            }
+                            else
+                            {
+                                cg.out.writes(" = freeze "); cg.out.writes(pt);
+                                cg.out.writes(" undef  ; unsupported argument coercion (codegen hard error)\n");
+                                cg.errors++;
+                                printf("codegen error: unsupported argument coercion (%s -> %s)\n", aty_c, pt);
+                            }
+                        }
                         else
                         {
                             // Unhandled coercion shape (e.g. an aggregate
@@ -3429,13 +3805,17 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         char[TYMAP_ENTRY] cptbuf;
                         fn_param_llvm_type(clo_decl, (int)ia2, &cptbuf[0], TYMAP_ENTRY);
                         char* cpt = &cptbuf[0];
-                        cg.out.writes(", ");
-                        bool same2b = cstr_eq(aty2, cpt);
-                        if (!same2b && (aty2[0] == '{' || cpt[0] == '{'))
-                        {
-                            cg.out.writes("i64 undef  ; closure arg ABI mismatch (hard error)");
-                            continue;
-                        }
+                    cg.out.writes(", ");
+                    bool same2b = cstr_eq(aty2, cpt);
+                    if (!same2b && (aty2[0] == '{' || cpt[0] == '{'))
+                    {
+                        // Hard-error path (printf + cg.errors++ above): still
+                        // emit a syntactically COMPLETE call so the .ll stays
+                        // parseable by llvm-as — an inline `; comment` here
+                        // used to eat the closing paren and corrupt the file.
+                        cg.out.writes("i64 undef");
+                        continue;
+                    }
                         if (!same2b && aty2[0] == 'i' && cpt[0] == 'i')
                         {
                             cg.out.writes(cpt); cg.out.writes(" %clarg.c.");
@@ -3615,7 +3995,15 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         if (emit_ty[0] == '%') { cg.out.writes("ptr"); }
                         else { cg.out.writes(emit_ty); }
                         cg.out.writes(" ");
-                        cg.emit_vref(v.args[i]);  // emit_vref sigma-unwraps automatically
+                        // A string literal passed as an aggregate argument is
+                        // the fat record { ptr @.str.N, i64 LEN }, not the
+                        // bare byte-global ref emit_vref renders (llvm-as:
+                        // "global variable reference must have pointer type").
+                        if (emit_ty[0] == '{'
+                            && v.args[i] != null
+                            && v.args[i].op == ssi_ir::IrOp.IR_CONST_STR)
+                        { cgen_emit_str_const_record(cg, v.args[i]); }
+                        else { cg.emit_vref(v.args[i]); }  // emit_vref sigma-unwraps automatically
                     }
                 }
                 cg.out.writes(")\n");
@@ -3846,6 +4234,29 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                                field_name_node.p.ident.name_ptr,
                                                field_name_node.p.ident.name_len);
                 }
+                else if (field_name_node != null && struct_decl == null && base != null)
+                {
+                    // String/format record { ptr, i64(len), i64(cap) }: the
+                    // type is a synthesized tuple, so field_index_of found no
+                    // struct and the index defaulted to 0 — `.len` silently
+                    // loaded the DATA POINTER. Map the three layout names by
+                    // shape+name (mirrors synth_field in typecheck.c3).
+                    char* bty_r = (tm != null) ? tm.get(base.id) : null;
+                    bool is_str_rec = bty_r != null
+                        && cstr_eq_n(bty_r, (char*)"{ ptr, i64", 10);
+                    if (is_str_rec)
+                    {
+                        char* rnp = field_name_node.p.ident.name_ptr;
+                        usz   rnl = field_name_node.p.ident.name_len;
+                        if (rnl == 3 && rnp != null)
+                        {
+                            if (rnp[0]=='l' && rnp[1]=='e' && rnp[2]=='n')
+                            { field_idx = 1; }
+                            else if (rnp[0]=='c' && rnp[1]=='a' && rnp[2]=='p')
+                            { field_idx = 2; }
+                        }
+                    }
+                }
 
                 // Emit struct type name
                 char* sname = null; usz snlen = 0;
@@ -3876,7 +4287,16 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         cg.out.writes("  %struct.ptr.v"); cg.out.writei(v.id);
                         cg.out.writes(" = alloca "); cg.out.writes(base_ty2); cg.out.writes("\n");
                         cg.out.writes("  store "); cg.out.writes(base_ty2);
-                        cg.out.writes(" "); cg.emit_vref(base);
+                        cg.out.writes(" ");
+                        // A string literal's LLVM value is its fat record
+                        // { ptr @.str.N, i64 LEN } — emit_vref renders the
+                        // raw byte-global ref alone, which is NOT a value of
+                        // the record type (llvm-as: "global variable
+                        // reference must have pointer type"... and even when
+                        // accepted it stored bytes over the record).
+                        if (base != null && base.op == ssi_ir::IrOp.IR_CONST_STR)
+                        { cgen_emit_str_const_record(cg, base); }
+                        else { cg.emit_vref(base); }
                         cg.out.writes(", ptr %struct.ptr.v"); cg.out.writei(v.id); cg.out.writes("\n");
                     }
                     else if (base_ty2 != null && base_ty2[0] != 'p' && base_ty2[0] != '%' && base_ty2[0] != 0)
@@ -4024,6 +4444,166 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 // Two patterns:
                 //   A. let (ok, v) = f() — IR_INDEX with 1 arg, field idx in v.ival
                 //   B. arr[expr] with struct base — IR_INDEX with 2 args, base is struct
+                //
+                // String indexing (v.md §10.2: `s[i]` is the byte at offset
+                // i, u8-typed by synth_index). A Str-typed base must NOT take
+                // the tuple-extractvalue path — extractvalue of a byte-global
+                // is invalid IR, and "field 1" of the { ptr, len } record is
+                // the LENGTH, not element i. Load the byte through the data
+                // pointer instead.
+                bool base_is_str = false;
+                if (base != null && base.op == ssi_ir::IrOp.IR_CONST_STR)
+                { base_is_str = true; }
+                else if (v.src != null && v.src.child_count >= 1 && v.src.children[0] != null)
+                {
+                    Node* san = v.src.children[0].type_annotation;
+                    if (san != null && san.kind == Nk.NODE_TYPE_PRIMITIVE
+                        && san.p.ident.name_len == 3
+                        && san.p.ident.name_ptr[0] == 'S'
+                        && san.p.ident.name_ptr[1] == 't'
+                        && san.p.ident.name_ptr[2] == 'r')
+                    { base_is_str = true; }
+                }
+                // Tensor indexing (PrideTensor wire format — compiler_rt §8:
+                // rank, dims[rank], double data[]). A rank-1 index loads the
+                // element (a double) and converts to the element type the
+                // program sees; a rank ≥ 2 index materialises a headered
+                // sub-tensor VIEW: fresh rank-(R-1) tensor on the stack with
+                // dims from the annotation and its row memcpy'd out of the
+                // source. Every tensor-typed value then always points at a
+                // full header — chained indexing t[i][j] stays uniform.
+                Node* tbase_ann = (v.src != null && v.src.child_count >= 1
+                                   && v.src.children[0] != null)
+                                  ? v.src.children[0].type_annotation : null;
+                if (tbase_ann != null && tbase_ann.kind == Nk.NODE_TYPE_TENSOR
+                    && base != null)
+                {
+                    usz trank = tbase_ann.child_count >= 1 ? tbase_ann.child_count - 1 : 1;
+                    long data_off = (long)(1 + trank) * 8;
+                    if (trank <= 1)
+                    {
+                        cg.out.writes("  %td.gep.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = getelementptr inbounds i8, ptr ");
+                        cg.emit_vref(base);
+                        cg.out.writes(", i64 "); cg.out.writei((long)data_off); cg.out.writes("\n");
+                        cg.out.writes("  %gep.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = getelementptr inbounds double, ptr %td.gep.v");
+                        cg.out.writei(v.id);
+                        cg.out.writes(", i64 ");
+                        cg.emit_vref(index);
+                        cg.out.writes("\n");
+                        char* erty = (tm != null) ? tm.get(v.id) : null;
+                        if (erty == null || erty[0] == 0) erty = (char*)"double";
+                        if (erty[0] == 'd')
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = load double, ptr %gep.v"); cg.out.writei(v.id);
+                            cg.out.writes("\n");
+                        }
+                        else if (erty[0] == 'f')
+                        {
+                            cg.out.writes("  %v.ld"); cg.out.writei(v.id);
+                            cg.out.writes(" = load double, ptr %gep.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = fptrunc double %v.ld"); cg.out.writei(v.id);
+                            cg.out.writes(" to float\n");
+                        }
+                        else
+                        {
+                            cg.out.writes("  %v.ld"); cg.out.writei(v.id);
+                            cg.out.writes(" = load double, ptr %gep.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = fptosi double %v.ld"); cg.out.writei(v.id);
+                            cg.out.writes(" to "); cg.out.writes(erty); cg.out.writes("\n");
+                        }
+                        return;
+                    }
+                    long row_elems = 1;
+                    for (usz di = 2; di < tbase_ann.child_count; di++)
+                    {
+                        Node* dc = tbase_ann.children[di];
+                        row_elems *= (dc != null && dc.kind == Nk.NODE_LIT_INT)
+                                     ? (long)dc.p.lit_int.int_val : 1;
+                    }
+                    long row_bytes = row_elems * 8;
+                    long sub_hdr = (long)trank * 8;   // (1 + (rank-1)) * 8
+                    cg.out.writes("  %th.v"); cg.out.writei(v.id);
+                    cg.out.writes(" = alloca i8, i64 ");
+                    cg.out.writei((long)(sub_hdr + row_bytes)); cg.out.writes("\n");
+                    cg.out.writes("  store i64 "); cg.out.writeu((ulong)(trank - 1));
+                    cg.out.writes(", ptr %th.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                    for (usz di = 2; di < tbase_ann.child_count; di++)
+                    {
+                        Node* dc = tbase_ann.children[di];
+                        long dv = (dc != null && dc.kind == Nk.NODE_LIT_INT)
+                                  ? (long)dc.p.lit_int.int_val : 0;
+                        cg.out.writes("  %th.d"); cg.out.writei(v.id);
+                        cg.out.writes("."); cg.out.writeu(di - 1);
+                        cg.out.writes(" = getelementptr inbounds i64, ptr %th.v");
+                        cg.out.writei(v.id);
+                        cg.out.writes(", i64 "); cg.out.writeu((ulong)(di - 1)); cg.out.writes("\n");
+                        cg.out.writes("  store i64 "); cg.out.writei((long)dv);
+                        cg.out.writes(", ptr %th.d"); cg.out.writei(v.id);
+                        cg.out.writes("."); cg.out.writeu(di - 1); cg.out.writes("\n");
+                    }
+                    cg.out.writes("  %tr.off.v"); cg.out.writei(v.id);
+                    cg.out.writes(" = mul i64 ");
+                    cg.emit_vref(index);
+                    cg.out.writes(", "); cg.out.writei((long)row_bytes); cg.out.writes("\n");
+                    cg.out.writes("  %tr.base.v"); cg.out.writei(v.id);
+                    cg.out.writes(" = getelementptr inbounds i8, ptr ");
+                    cg.emit_vref(base);
+                    cg.out.writes(", i64 "); cg.out.writei((long)data_off); cg.out.writes("\n");
+                    cg.out.writes("  %tr.src.v"); cg.out.writei(v.id);
+                    cg.out.writes(" = getelementptr inbounds i8, ptr %tr.base.v");
+                    cg.out.writei(v.id);
+                    cg.out.writes(", i64 %tr.off.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                    cg.out.writes("  %th.dst.v"); cg.out.writei(v.id);
+                    cg.out.writes(" = getelementptr inbounds i8, ptr %th.v"); cg.out.writei(v.id);
+                    cg.out.writes(", i64 "); cg.out.writei((long)sub_hdr); cg.out.writes("\n");
+                    cg.out.writes("  call void @llvm.memcpy.p0.p0.i64(ptr %th.dst.v");
+                    cg.out.writei(v.id);
+                    cg.out.writes(", ptr %tr.src.v"); cg.out.writei(v.id);
+                    cg.out.writes(", i64 "); cg.out.writei((long)row_bytes);
+                    cg.out.writes(", i1 false)\n");
+                    cg.out.writes("  %v"); cg.out.writei(v.id);
+                    cg.out.writes(" = bitcast ptr %th.v"); cg.out.writei(v.id);
+                    cg.out.writes(" to ptr\n");
+                    if (tm != null) { tm.set(v.id, (char*)"ptr"); }
+                    return;
+                }
+                if (base_is_str)
+                {
+                    // Data pointer: the literal's byte global directly, else
+                    // field 0 of the fat record value.
+                    if (base != null && base.op == ssi_ir::IrOp.IR_CONST_STR)
+                    {
+                        cg.out.writes("  %gep.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = getelementptr inbounds i8, ptr @.str.");
+                        cg.out.writei(base.id);
+                    }
+                    else
+                    {
+                        char* srt = (tm != null) ? tm.get(base.id) : null;
+                        if (srt == null) srt = resolve_ty(tm, base);
+                        if (srt == null || srt[0] != '{') srt = (char*)"{ ptr, i64 }";
+                        cg.out.writes("  %str.ptr.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = extractvalue "); cg.out.writes(srt);
+                        cg.out.writes(" ");
+                        if (base != null) { cg.emit_vref(base); } else { cg.out.writes("undef"); }
+                        cg.out.writes(", 0\n");
+                        cg.out.writes("  %gep.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = getelementptr inbounds i8, ptr %str.ptr.v");
+                        cg.out.writei(v.id);
+                    }
+                    cg.out.writes(", i64 ");
+                    cg.emit_vref(index);
+                    cg.out.writes("\n");
+                    cg.out.writes("  %v"); cg.out.writei(v.id);
+                    cg.out.writes(" = load i8, ptr %gep.v"); cg.out.writei(v.id);
+                    cg.out.writes("\n");
+                    return;
+                }
                 if (base != null)
                 {
                     char* base_struct_ty = (tm != null) ? tm.get(base.id) : null;
@@ -4441,6 +5021,61 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 }
 
                 // ptr → integer: ptrtoint (address cast, NOT a load)
+                // Effect-perform result unboxing: __pride_perform returns the
+                // resume value through the frame's ptr SLOT — the value's bits,
+                // NOT a pointer to it. A ptr→float cast on a perform result
+                // reinterprets the slot bits (ptrtoint + bitcast), and a narrow
+                // integer result truncates back to the op's declared width —
+                // never a dereference, and never a bare i64 that masks the
+                // declared type.
+                if (src_is_ptr && src != null && src.op == ssi_ir::IrOp.IR_EFFECT_OP)
+                {
+                    if (dst_fp)
+                    {
+                        bool narrow32 = (dst_type_str[0] == 'f');   // float (vs double)
+                        cg.out.writes("  %eff.i."); cg.out.writei(v.id);
+                        cg.out.writes(" = ptrtoint ptr "); cg.emit_vref(src);
+                        cg.out.writes(" to i64\n");
+                        if (narrow32)
+                        {
+                            cg.out.writes("  %eff.w."); cg.out.writei(v.id);
+                            cg.out.writes(" = trunc i64 %eff.i."); cg.out.writei(v.id);
+                            cg.out.writes(" to i32\n");
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = bitcast i32 %eff.w."); cg.out.writei(v.id);
+                            cg.out.writes(" to float\n");
+                        }
+                        else
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = bitcast i64 %eff.i."); cg.out.writei(v.id);
+                            cg.out.writes(" to double\n");
+                        }
+                        return;
+                    }
+                    if (dst_int)
+                    {
+                        int dw_eff = 0;
+                        for (usz ci = 1; dst_type_str[ci] >= '0' && dst_type_str[ci] <= '9'; ci++)
+                        { dw_eff = dw_eff * 10 + (int)(dst_type_str[ci] - '0'); }
+                        cg.out.writes("  %eff.i."); cg.out.writei(v.id);
+                        cg.out.writes(" = ptrtoint ptr "); cg.emit_vref(src);
+                        cg.out.writes(" to i64\n");
+                        if (dw_eff >= 64 || dw_eff == 0)
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = add i64 %eff.i."); cg.out.writei(v.id);
+                            cg.out.writes(", 0\n");
+                        }
+                        else
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = trunc i64 %eff.i."); cg.out.writei(v.id);
+                            cg.out.writes(" to "); cg.out.writes(dst_type_str); cg.out.writes("\n");
+                        }
+                        return;
+                    }
+                }
                 // `p as i64` = the pointer value as integer, NOT *p.
                 // The dereference `*p` is handled by IR_UN with TOKEN_STAR.
                 if (src_is_ptr && dst_int)
@@ -4547,9 +5182,135 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 // skip this path and use insertvalue below.
                 char* agg_ty = (tm != null) ? tm.get(v.id) : null;
                 bool is_struct_lit = (v.op == ssi_ir::IrOp.IR_STRUCT);
+                // Tensor literal: the runtime wire format (compiler_rt.c §8)
+                // is   PrideTensor { u64 rank, u64 dims[rank], double data[] }
+                // with the helpers (matmul/elemwise) reading exactly that.
+                // The legacy path allocated a bare count*8 double buffer —
+                // no header — so __pride_matmul read the first ELEMENT as the
+                // rank, and elementwise `+` never reached the helper at all.
+                // Int elements also became `store double 1` (invalid IR).
+                if (agg_ty != null && agg_ty[0] == 'p' && v.arg_count > 0 && !is_struct_lit
+                    && v.src != null && v.src.kind == Nk.NODE_EXPR_TENSOR_LIT)
+                {
+                    long[4] tdims;
+                    usz trank = tensor_lit_shape(v.src, &tdims[0], 4);
+                    if (trank > 0)
+                    {
+                        long telems = 1;
+                        for (usz ti = 0; ti < trank; ti++) telems *= tdims[ti];
+                        long hdr_bytes = (long)(1 + trank) * 8;
+                        // One buffer: header + data.
+                        cg.out.writes("  %ten."); cg.out.writei(v.id);
+                        cg.out.writes(" = call ptr @malloc(i64 ");
+                        cg.out.writei((long)(hdr_bytes + telems * 8));
+                        cg.out.writes(")\n");
+                        cg.out.writes("  store i64 "); cg.out.writeu((ulong)trank);
+                        cg.out.writes(", ptr %ten."); cg.out.writei(v.id);
+                        cg.out.writes("\n");
+                        for (usz di = 0; di < trank; di++)
+                        {
+                            cg.out.writes("  %td.gep."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(di);
+                            cg.out.writes(" = getelementptr inbounds i64, ptr %ten.");
+                            cg.out.writei(v.id); cg.out.writes(", i64 ");
+                            cg.out.writeu((ulong)(1 + di)); cg.out.writes("\n");
+                            cg.out.writes("  store i64 "); cg.out.writei((long)tdims[di]);
+                            cg.out.writes(", ptr %td.gep."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(di); cg.out.writes("\n");
+                        }
+                        cg.out.writes("  %tdp."); cg.out.writei(v.id);
+                        cg.out.writes(" = getelementptr inbounds i8, ptr %ten.");
+                        cg.out.writei(v.id); cg.out.writes(", i64 ");
+                        cg.out.writei((long)hdr_bytes); cg.out.writes("\n");
+                        if (trank == 1)
+                        {
+                            // Leaf rank: convert each element to double.
+                            for (usz ti = 0; ti < v.arg_count; ti++)
+                            {
+                                cg.out.writes("  %ten.gep."); cg.out.writei(v.id);
+                                cg.out.writes("."); cg.out.writeu(ti);
+                                cg.out.writes(" = getelementptr inbounds double, ptr %tdp.");
+                                cg.out.writei(v.id); cg.out.writes(", i64 ");
+                                cg.out.writeu(ti); cg.out.writes("\n");
+                                char* ety = (tm != null && v.args[ti] != null)
+                                            ? tm.get(v.args[ti].id) : null;
+                                if (ety == null || ety[0] == 0) ety = "double";
+                                if (ety[0] == 'f' && ety[1] == 'l')   // float
+                                {
+                                    cg.out.writes("  %ten.cv."); cg.out.writei(v.id);
+                                    cg.out.writes("."); cg.out.writeu(ti);
+                                    cg.out.writes(" = fpext float ");
+                                    if (v.args[ti] != null) { cg.emit_vref(v.args[ti]); }
+                                    else { cg.out.writes("0.0"); }
+                                    cg.out.writes(" to double\n");
+                                    cg.out.writes("  store double %ten.cv.");
+                                    cg.out.writei(v.id); cg.out.writes(".");
+                                    cg.out.writeu(ti);
+                                }
+                                else if (ety[0] == 'i')   // any integer
+                                {
+                                    cg.out.writes("  %ten.cv."); cg.out.writei(v.id);
+                                    cg.out.writes("."); cg.out.writeu(ti);
+                                    cg.out.writes(" = sitofp ");
+                                    cg.out.writes(ety); cg.out.writes(" ");
+                                    if (v.args[ti] != null) { cg.emit_vref(v.args[ti]); }
+                                    else { cg.out.writes("0"); }
+                                    cg.out.writes(" to double\n");
+                                    cg.out.writes("  store double %ten.cv.");
+                                    cg.out.writei(v.id); cg.out.writes(".");
+                                    cg.out.writeu(ti);
+                                }
+                                else   // already double (or unknown: store as-is)
+                                {
+                                    cg.out.writes("  store double ");
+                                    if (v.args[ti] != null) { cg.emit_vref(v.args[ti]); }
+                                    else { cg.out.writes("0.0"); }
+                                }
+                                cg.out.writes(", ptr %ten.gep."); cg.out.writei(v.id);
+                                cg.out.writes("."); cg.out.writeu(ti); cg.out.writes("\n");
+                            }
+                        }
+                        else
+                        {
+                            // Higher ranks: each child is its own headered
+                            // tensor; consolidate their data regions into this
+                            // buffer with one memcpy per child.
+                            long child_elems = telems / tdims[0];
+                            long child_bytes = child_elems * 8;
+                            long child_data_off = (long)trank * 8;   // (1+(rank-1))*8
+                            for (usz ti = 0; ti < v.arg_count; ti++)
+                            {
+                                cg.out.writes("  %csrc."); cg.out.writei(v.id);
+                                cg.out.writes("."); cg.out.writeu(ti);
+                                cg.out.writes(" = getelementptr inbounds i8, ptr ");
+                                if (v.args[ti] != null) { cg.emit_vref(v.args[ti]); }
+                                else { cg.out.writes("null"); }
+                                cg.out.writes(", i64 "); cg.out.writei((long)child_data_off);
+                                cg.out.writes("\n");
+                                cg.out.writes("  %cdst."); cg.out.writei(v.id);
+                                cg.out.writes("."); cg.out.writeu(ti);
+                                cg.out.writes(" = getelementptr inbounds i8, ptr %tdp.");
+                                cg.out.writei(v.id); cg.out.writes(", i64 ");
+                                cg.out.writei((long)(child_bytes * (long)ti));
+                                cg.out.writes("\n");
+                                cg.out.writes("  call void @llvm.memcpy.p0.p0.i64(ptr %cdst.");
+                                cg.out.writei(v.id); cg.out.writes(".");
+                                cg.out.writeu(ti); cg.out.writes(", ptr %csrc.");
+                                cg.out.writei(v.id); cg.out.writes(".");
+                                cg.out.writeu(ti);
+                                cg.out.writes(", i64 "); cg.out.writei((long)child_bytes);
+                                cg.out.writes(", i1 false)\n");
+                            }
+                        }
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        cg.out.writes(" = bitcast ptr %ten."); cg.out.writei(v.id);
+                        cg.out.writes(" to ptr\n");
+                        return;
+                    }
+                }
+                // Tensor: allocate elem_count * 8 bytes (double), store each element
                 if (agg_ty != null && agg_ty[0] == 'p' && v.arg_count > 0 && !is_struct_lit)
                 {
-                    // Tensor: allocate elem_count * 8 bytes (double), store each element
                     cg.out.writes("  %ten."); cg.out.writei(v.id);
                     cg.out.writes(" = call ptr @malloc(i64 ");
                     cg.out.writei((long)(v.arg_count * 8));
@@ -5045,6 +5806,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         && !(aty[1]=='6' && aty[2]=='4' && aty[3]==0));
                     bool is_bool = (aty[0]=='i' && aty[1]=='1' && aty[2]==0);
                     bool is_ptr_arg = (aty[0]=='p');
+                    bool is_fp_arg = (aty[0]=='f' || aty[0]=='d');
                     if (needs_widen || is_bool || is_ptr_arg)
                     {
                         cg.out.writes("  %pw."); cg.out.writei(v.id); cg.out.writes(".");
@@ -5055,10 +5817,34 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         cg.emit_vref(pa);
                         cg.out.writes(" to i64\n");
                     }
+                    else if (is_fp_arg)
+                    {
+                        // Box float arg bits into the i64 variadic slot.
+                        if (aty[0]=='f')
+                        {
+                            cg.out.writes("  %pwb."); cg.out.writei(v.id); cg.out.writes(".");
+                            cg.out.writeu(i); cg.out.writes(" = bitcast float ");
+                            cg.emit_vref(pa); cg.out.writes(" to i32\n");
+                            cg.out.writes("  %pw."); cg.out.writei(v.id); cg.out.writes(".");
+                            cg.out.writeu(i); cg.out.writes(" = zext i32 %pwb.");
+                            cg.out.writei(v.id); cg.out.writes("."); cg.out.writeu(i);
+                            cg.out.writes(" to i64\n");
+                        }
+                        else
+                        {
+                            cg.out.writes("  %pw."); cg.out.writei(v.id); cg.out.writes(".");
+                            cg.out.writeu(i); cg.out.writes(" = bitcast double ");
+                            cg.emit_vref(pa); cg.out.writes(" to i64\n");
+                        }
+                    }
                 }
                 cg.out.writes("  %v"); cg.out.writei(v.id);
                 cg.out.writes(" = call ptr @__pride_perform(i64 ");
                 cg.out.writeu(op_id);
+                // Variadic ABI: the argument count comes first so the runtime
+                // can va_arg exactly that many op arguments into the frame.
+                cg.out.writes(", i64 ");
+                cg.out.writeu((ulong)v.arg_count);
                 for (usz i = 0; i < v.arg_count; i++)
                 {
                     ssi_ir::IrVal* pa2 = v.args[i];
@@ -5074,13 +5860,14 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         && !(aty2[1]=='6' && aty2[2]=='4' && aty2[3]==0));
                     bool ib2 = (aty2[0]=='i' && aty2[1]=='1' && aty2[2]==0);
                     bool ptr2i2 = (aty2[0]=='p');  // ptr → i64 for variadic
+                    bool fp2 = (aty2[0]=='f' || aty2[0]=='d');
                     cg.out.writes(", i64 ");
                     if (nw2 || ib2)
                     {
                         cg.out.writes("%pw."); cg.out.writei(v.id); cg.out.writes(".");
                         cg.out.writeu(i);
                     }
-                    else if (ptr2i2)
+                    else if (ptr2i2 || fp2)
                     {
                         cg.out.writes("%pw."); cg.out.writei(v.id); cg.out.writes(".");
                         cg.out.writeu(i);
@@ -5094,12 +5881,48 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
             {
                 // Handler frame setup. The TERM_SWITCH on this block's block
                 // dispatches to arm blocks — those are the actual handlers.
-                // At this instruction we call @__pride_push_handler().
+                // @__pride_push_handler(frame_id, nops, op_id+1, ...) returns
+                // 0 ("run the computation") or the performed op's id+1 —
+                // matching the TERM_SWITCH case labels produced by
+                // lower_handle.  The runtime needs the op list to find the
+                // newest frame that actually handles a performed op.
                 cg.out.writes("  %v"); cg.out.writei(v.id);
                 cg.out.writes(" = call i64 @__pride_push_handler(i64 ");
                 ulong frame_id = (v.binder != null) ? (ulong)v.binder.id : 0;
                 cg.out.writeu(frame_id);
+                // Collect the op dispatch tokens (same +1 tagging as the
+                // switch case labels) from the handle node's arms.
+                ulong[32] op_tags;
+                usz nops = 0;
+                Node* hnode = v.binder;
+                if (hnode != null && hnode.kind == Nk.NODE_EFFECT_HANDLE)
+                {
+                    for (usz ai = 1; ai < hnode.child_count && nops < 32; ai++)
+                    {
+                        Node* arm = hnode.children[ai];
+                        if (arm == null || arm.kind != Nk.NODE_HANDLER_ARM) { continue; }
+                        Node* op_decl = ast::effect_op_decl_of_arm(arm);
+                        op_tags[nops] = (op_decl != null) ? (ulong)op_decl.id + 1
+                                                          : (ulong)nops + 1;
+                        nops++;
+                    }
+                }
+                cg.out.writes(", i64 ");
+                cg.out.writeu((ulong)nops);
+                for (usz oi = 0; oi < nops; oi++)
+                {
+                    cg.out.writes(", i64 ");
+                    cg.out.writeu(op_tags[oi]);
+                }
                 cg.out.writes(")\n");
+            }
+
+        case ssi_ir::IrOp.IR_HANDLER_COMPLETE:
+            {
+                // Computation finished without diverging: pop the handler
+                // frame.  (Arms that resume never reach this point; arms
+                // that don't resume pop via IR_HANDLER_ARM instead.)
+                cg.out.writes("  call void @__pride_complete()\n");
             }
 
         case ssi_ir::IrOp.IR_HANDLER_ARM:
@@ -5141,6 +5964,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     || (rv_ty != null && rv_ty[0] == '{' && rv_ty[1] == ' ' && rv_ty[2] == '}')); // {}
                 bool rv_is_ptr = (rv_ty != null && rv_ty[0] == 'p');
                 bool rv_is_int = (rv_ty != null && rv_ty[0] == 'i');
+                bool rv_is_fp  = (rv_ty != null && (rv_ty[0] == 'f' || rv_ty[0] == 'd'));
                 // Pre-emit coerce if needed
                 if (!rv_is_unit && rv_is_int && rv != null)
                 {
@@ -5148,10 +5972,36 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     cg.out.writes(" = inttoptr "); cg.out.writes(rv_ty);
                     cg.out.writes(" "); cg.emit_vref(rv); cg.out.writes(" to ptr\n");
                 }
+                if (!rv_is_unit && rv_is_fp && rv != null)
+                {
+                    // Box float bits into the ptr slot: bitcast to iN, widen to
+                    // the slot width, inttoptr. The computation side mirrors
+                    // this exactly (IR_CAST unboxing of perform results).
+                    if (rv_ty[0] == 'f')
+                    {
+                        cg.out.writes("  %resume.bits."); cg.out.writei(v.id);
+                        cg.out.writes(" = bitcast float "); cg.emit_vref(rv);
+                        cg.out.writes(" to i32\n");
+                        cg.out.writes("  %resume.w."); cg.out.writei(v.id);
+                        cg.out.writes(" = zext i32 %resume.bits."); cg.out.writei(v.id);
+                        cg.out.writes(" to i64\n");
+                    }
+                    else
+                    {
+                        cg.out.writes("  %resume.bits."); cg.out.writei(v.id);
+                        cg.out.writes(" = bitcast double "); cg.emit_vref(rv);
+                        cg.out.writes(" to i64\n");
+                    }
+                    cg.out.writes("  %resume.arg."); cg.out.writei(v.id);
+                    cg.out.writes(" = inttoptr i64 %resume.");
+                    if (rv_ty[0] == 'f') { cg.out.writes("w."); } else { cg.out.writes("bits."); }
+                    cg.out.writei(v.id); cg.out.writes(" to ptr\n");
+                }
                 cg.out.writes("  %v"); cg.out.writei(v.id);
                 cg.out.writes(" = call ptr @__pride_resume(ptr ");
                 if (rv_is_unit)                     { cg.out.writes("null"); }
                 else if (rv_is_int && rv != null)   { cg.out.writes("%resume.arg."); cg.out.writei(v.id); }
+                else if (rv_is_fp && rv != null)    { cg.out.writes("%resume.arg."); cg.out.writei(v.id); }
                 else                                { cg.emit_vref(rv); }
                 cg.out.writes(")\n");
             }
@@ -5841,6 +6691,59 @@ fn void CgenModule.emit_phi_edge_coerces(CgenModule* cg, ssi_ir::IrBlock* b, Typ
                     if (ph.pred[ai] != b.id) continue;
                     char* eop = null; char* esrc = null; char* edst = null;
                     if (!phi_edge_coercion(tm, ph, ai, &eop, &esrc, &edst)) continue;
+                    if (eop[0]=='i' && eop[1]=='n' && eop[2]=='s' && eop[3]=='v')
+                    {
+                        // Aggregate slot-0 fill: first bridge the scalar to the
+                        // slot's element type (inttoptr / ptrtoint as needed),
+                        // then `insertvalue AGG undef, ELEM x, 0`.
+                        char* elems = (char*)malloc(STRUCT_SPLIT_CAP * STRUCT_SPLIT_LEN);
+                        int ne = elems != null ? split_struct_ty(edst, elems, STRUCT_SPLIT_LEN) : 0;
+                        char* slot0 = ne >= 1 ? elems : (char*)"ptr";
+                        bool src_ptr = (esrc[0] == 'p');
+                        bool dst_ptr = (slot0[0] == 'p');
+                        bool bridged = false;
+                        char* bopc = null;
+                        if (src_ptr != dst_ptr)
+                        { bopc = src_ptr ? (char*)"ptrtoint" : (char*)"inttoptr"; }
+                        else if (!src_ptr)
+                        {
+                            // int→int of a different width: use the shared
+                            // coercion service (trunc/sext) — plain reuse is
+                            // only valid when the widths already agree.
+                            bool same_w = true;
+                            for (usz ci = 0; esrc[ci] != 0 && slot0[ci] != 0; ci++)
+                            {
+                                if (esrc[ci] != slot0[ci]) { same_w = false; break; }
+                            }
+                            if (!(same_w && strlen(esrc) == strlen(slot0)))
+                            { bopc = coerce_op(esrc, slot0); }
+                        }
+                        if (bopc != null)
+                        {
+                            cg.out.writes("  %phi."); cg.out.writei(ph.id);
+                            cg.out.writes(".in."); cg.out.writeu((ulong)ai);
+                            cg.out.writes(".iptr = "); cg.out.writes(bopc); cg.out.writes(" ");
+                            cg.out.writes(esrc); cg.out.writes(" ");
+                            cg.emit_vref(sigma_unwrap(ph.args[ai]));
+                            cg.out.writes(" to "); cg.out.writes(slot0); cg.out.writes("\n");
+                            bridged = true;
+                        }
+                        cg.out.writes("  %phi."); cg.out.writei(ph.id);
+                        cg.out.writes(".in."); cg.out.writeu((ulong)ai);
+                        cg.out.writes(" = insertvalue "); cg.out.writes(edst);
+                        cg.out.writes(" undef, ");
+                        cg.out.writes(slot0); cg.out.writes(" ");
+                        if (bridged)
+                        {
+                            cg.out.writes("%phi."); cg.out.writei(ph.id);
+                            cg.out.writes(".in."); cg.out.writeu((ulong)ai);
+                            cg.out.writes(".iptr");
+                        }
+                        else { cg.emit_vref(sigma_unwrap(ph.args[ai])); }
+                        cg.out.writes(", 0\n");
+                        if (elems != null) free(elems);
+                        continue;
+                    }
                     cg.out.writes("  %phi."); cg.out.writei(ph.id);
                     cg.out.writes(".in."); cg.out.writeu((ulong)ai);
                     cg.out.writes(" = "); cg.out.writes(eop); cg.out.writes(" ");
@@ -6010,6 +6913,29 @@ fn void CgenModule.emit_terminator(CgenModule* cg, ssi_ir::IrBlock* b, TypeTable
                             cg.out.writes("  ret ptr %coerce.alloca.B"); cg.out.writei(b.id); cg.out.writes("\n");
                             return;
                         }
+                        // Aggregate→int pun: LLVM's bitcast rejects aggregates
+                        // outright. Reinterpret through memory instead: store
+                        // the value, reload its leading word, then narrow.
+                        // (The honest-join-φ work means a fn-VALUE can now
+                        // reach this point where the declared ret is i32 —
+                        // before, the handle returned the dispatch token and
+                        // a plain trunc papered over the whole mismatch.)
+                        if (val_ty[0] == '{' && ret_ty[0] == 'i')
+                        {
+                            cg.out.writes("  %coerce.alloca.B"); cg.out.writei(b.id);
+                            cg.out.writes(" = alloca "); cg.out.writes(val_ty); cg.out.writes("\n");
+                            cg.out.writes("  store "); cg.out.writes(val_ty);
+                            cg.out.writes(" "); cg.emit_vref(b.ret_val);
+                            cg.out.writes(", ptr %coerce.alloca.B"); cg.out.writei(b.id); cg.out.writes("\n");
+                            cg.out.writes("  %coerce.word.B"); cg.out.writei(b.id);
+                            cg.out.writes(" = load i64, ptr %coerce.alloca.B"); cg.out.writei(b.id); cg.out.writes("\n");
+                            cg.out.writes("  %coerce.ret.B"); cg.out.writei(b.id);
+                            cg.out.writes(" = trunc i64 %coerce.word.B"); cg.out.writei(b.id);
+                            cg.out.writes(" to "); cg.out.writes(ret_ty); cg.out.writes("\n");
+                            cg.out.writes("  ret "); cg.out.writes(ret_ty);
+                            cg.out.writes(" %coerce.ret.B"); cg.out.writei(b.id); cg.out.writes("\n");
+                            return;
+                        }
                         // Scalar coercion: the shared coercion service picks the
                         // opcode (trunc/sext/fptrunc/fpext/fptosi/sitofp/…) —
                         // including the correct fpext for float→double widening,
@@ -6157,6 +7083,7 @@ const char*[*] RUNTIME_DECL_NAMES = {
     "__pride_resume", "__pride_drop", "__pride_panic", "__pride_get_arm_arg",
     // Str runtime helpers
     "pride_str_init", "pride_str_push_str", "pride_str_push_i64", "pride_str_push_f64",
+    "pride_str_eq",
     // libc: memory / string / process
     "malloc", "free", "realloc", "calloc", "memcpy", "memmove", "memset", "memcmp",
     "strdup", "strndup", "strlen", "strcmp", "strncmp", "getenv", "putenv", "_exit",
@@ -6609,20 +7536,23 @@ fn void CgenModule.emit_runtime_decls(CgenModule* cg)
     // Pride runtime (implemented in runtime.c, linked separately)
     // Effects runtime (the ONLY runtime.c dependency — ucontext-based)
     cg.out.writes("; Pride effects runtime\n");
-    cg.out.writes("declare ptr  @__pride_perform(i64, ...)\n");
-    cg.out.writes("declare i64  @__pride_push_handler(i64)\n");
+    cg.out.writes("declare ptr  @__pride_perform(i64, i64, ...)\n");
+    cg.out.writes("declare i64  @__pride_push_handler(i64, i64, ...)\n");
     cg.out.writes("declare void @__pride_pop_handler()\n");
+    cg.out.writes("declare void @__pride_complete()\n");
     cg.out.writes("declare ptr  @__pride_resume(ptr)\n");
     cg.out.writes("declare void @__pride_drop(ptr)\n");
     cg.out.writes("declare void @__pride_panic(ptr, i64)\n");
     cg.out.writes("declare i64  @__pride_get_arm_arg(i64)\n");
     // Tensor matmul (`@` operator) — implemented in runtime/compiler_rt.c
     cg.out.writes("declare ptr  @__pride_matmul(ptr, ptr)\n");
+    cg.out.writes("declare ptr  @__pride_tensor_elemwise(ptr, ptr, i32)\n");
     // Str runtime helpers (string builder used by fmt)
     cg.out.writes("declare void @pride_str_init(ptr)\n");
     cg.out.writes("declare void @pride_str_push_str(ptr, ptr, i64)\n");
     cg.out.writes("declare void @pride_str_push_i64(ptr, i64)\n");
     cg.out.writes("declare void @pride_str_push_f64(ptr, double)\n");
+    cg.out.writes("declare i1   @pride_str_eq(ptr, i64, ptr, i64)\n");
     // LLVM intrinsics — zero runtime cost, inlined by the backend
     // Bit manipulation
     cg.out.writes("declare i64 @llvm.ctpop.i64(i64)\n");

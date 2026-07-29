@@ -385,6 +385,27 @@ fn void Resolver.bind_pattern(Resolver* self, Node* pat)
             }
 
         case Nk.NODE_PATTERN_STRUCT:
+            // The name heading the pattern (`Dollars(v)`, `Point{x, y}`) is a
+            // USE of a type, not a binder: resolve it QUIETLY (a miss is left
+            // unresolved, never an error — heads may be generic params or
+            // names bound later), so the type checker and both lowerings can
+            // recognize a newtype destructure (identity unwrap) from
+            // .resolved. It went unresolved before — emit-side pipelines
+            // compensated from the fn signature, but the lowering saw nothing
+            // and fabricated unit/undefined binders for what is really an
+            // identity operation.
+            if (pat.child_count >= 1 && pat.children[0] != null
+                && (pat.children[0].kind == Nk.NODE_TYPEVAR
+                    || pat.children[0].kind == Nk.NODE_IDENT)
+                && pat.children[0].resolved == null)
+            {
+                char* hp; usz hl;
+                if (name_of(pat.children[0], &hp, &hl))
+                {
+                    Node* pd = self.lookup(hp, hl, NS_TYPE);
+                    if (pd != null) pat.children[0].resolved = self.chase_member_use(pd);
+                }
+            }
             for (usz i = 0; i < pat.child_count; i++)
             {
                 self.bind_pattern_field(pat.children[i]);
@@ -482,6 +503,17 @@ fn void Resolver.hoist_decl(Resolver* self, Node* d)
                     self.bind_name_node(ev.children[0], NS_VALUE, ev, true);
                     self.bind_name_node(ev.children[0], NS_TYPE, ev, false);  // also in type NS
                     if (ev.children[0] != null) ev.children[0].resolved = ev;
+                    // The tree is parent-less: link each variant back to the
+                    // owning enum decl so a use (`Green`) or a bare
+                    // variant-name pattern can recover the discriminant by
+                    // declaration order (the { i32, i64 } repr's tag). Uses
+                    // .resolved — putting the back-link in .type_annotation
+                    // creates a cycle monomorphization's clone_node follows
+                    // recursively (variant → enum → children → variant:
+                    // exponential blowup; hung the compiler on a bare enum
+                    // declaration). .resolved is only remapped shallowly by
+                    // fixup_resolved, so no tree walk ever cycles through it.
+                    ev.resolved = d;
                 }
             }
 
@@ -681,21 +713,32 @@ fn void Resolver.resolve_use_name(Resolver* self, Node* name, int ns)
     // If already resolved (e.g. pre-resolved at definition site), skip lookup.
     if (name.resolved != null) return;
 
-    Node* decl = self.lookup(ptr, len, ns);
-    if (decl != null)
-    {
-        name.resolved = self.chase_member_use(decl);
-        return;
-    }
-
-    // Fall back to the other namespace before giving up (handles cases where a
-    // name was bound as a type but used in value position, e.g. constructors).
+    // Walk scopes innermost→outermost; WITHIN each scope the requested
+    // namespace wins over the cross-namespace fallback. A local value binder
+    // must shadow a global TYPE-namespace name of the same spelling —
+    // `let Red = 7` shadows the enum variant `Red`, exactly like a lowercase
+    // local shadows a global fn. The old order (whole NS chain, then the
+    // whole other-NS chain) let global enum variants snipe value uses past a
+    // local binder, because uppercase uses lex as TYPEVARs and NS_TYPE never
+    // contains value binders: the two lowerings then disagreed about what the
+    // name meant and emitted invalid LLVM (i64 local used as { i32, i64 }).
     int other = ns == NS_VALUE ? NS_TYPE : NS_VALUE;
-    Node* alt = self.lookup(ptr, len, other);
-    if (alt != null)
+    for (Scope* s = self.cur(); s != null; s = s.parent)
     {
-        name.resolved = self.chase_member_use(alt);
-        return;
+        for (int pass = 0; pass < 2; pass++)
+        {
+            int want = pass == 0 ? ns : other;
+            // Newest→oldest within the scope: same-scope redefinition wins.
+            for (usz ii = s.count; ii-- > 0;)
+            {
+                Binding* b = &s.bindings[ii];
+                if (b.ns == want && name_eq(b.name_ptr, b.name_len, ptr, len))
+                {
+                    name.resolved = self.chase_member_use(b.decl);
+                    return;
+                }
+            }
+        }
     }
 
     // Suppress "undefined name" for uppercase-initial idents that are likely

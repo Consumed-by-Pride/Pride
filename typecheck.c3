@@ -375,6 +375,18 @@ fn bool TypeChecker.subtype_body(TypeChecker* self, Node* a, Node* b)
         return pa == pb;
     }
 
+    // Array-to-element pointer decay: *[T; N] <: *T. An allocated array's
+    // address IS the address of its first element — exactly what
+    // `let p : *i64 = alloc [i64; 10]` means (v.md §15). Applied before the
+    // invariant rule, which would otherwise reject the allocation idiom.
+    if (a.kind == Nk.NODE_TYPE_PTR && a.child_count >= 1
+        && b.kind == Nk.NODE_TYPE_PTR && b.child_count >= 1)
+    {
+        Node* aelem = self.unfold(a.children[0]);
+        if (aelem != null && aelem.kind == Nk.NODE_TYPE_ARRAY
+            && aelem.child_count >= 1)
+        { return self.subtype(aelem.children[0], b.children[0]); }
+    }
     // Pointers: *T <: *U iff T <: U and U <: T (invariant). ptr is top pointer.
     if (a.kind == Nk.NODE_TYPE_PTR && b.kind == Nk.NODE_TYPE_PTR)
     {
@@ -627,6 +639,19 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
             return self.synth_binary(e);
         case Nk.NODE_EXPR_UNARY:
             return self.synth_unary(e);
+        case Nk.NODE_EXPR_ALLOC:
+            // `alloc T` / `alloc [T; N]` is a fresh pointer to the type
+            // child (v.md §15). Without a synthesis the binder stayed
+            // untyped, and a later `*p` deref fell to the junk `ptr`
+            // fallback — loading the pointee AS a ptr (invalid IR the moment
+            // an integer consumer saw it; `q as i32`-style casts hid it).
+            if (e.child_count >= 1 && e.children[0] != null)
+            {
+                self.synth(e.children[0]);   // type errors inside the type child
+                return ast::node1(self.arena, Nk.NODE_TYPE_PTR, e.children[0],
+                                  e.line, e.col);
+            }
+            return null;
         case Nk.NODE_EXPR_ASSIGN:
             return self.synth_assign(e);
 
@@ -667,6 +692,32 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
                               self.mk_prim(Prim.PRIM_I64),
                               0, 0);
 
+        case Nk.NODE_EXPR_TUPLE_LIT:
+            // `(a, b, ...)` is the tuple of its element types. The
+            // tuple-DESTRUCTURING let (`let (c, n) = (Blue, 7)`) stamps its
+            // binders componentwise from exactly this synthesis — without it
+            // the literal typed to null, the destructure stamped nothing, and
+            // a match over a destructured enum binder compiled every arm as a
+            // plain binder: no tag test existed in the lowering, so the FIRST
+            // arm always fired no matter the scrutinee's tag.
+            {
+                Node* tt = ast::node_raw(self.arena, Nk.NODE_TYPE_TUPLE,
+                                         e.line, e.col);
+                if (tt == null) return null;
+                bool complete = true;
+                for (usz i = 0; i < e.child_count; i++)
+                {
+                    Node* et = self.synth(e.children[i]);
+                    if (et == null) complete = false;
+                    ast::add_child(self.arena, tt, et);
+                }
+                // All-or-nothing: a tuple type carrying null holes would be a
+                // new hazard for every consumer walking type children; keep
+                // the previous honest "unknown" for that case instead.
+                if (!complete) return null;
+                return tt;
+            }
+
         case Nk.NODE_EXPR_CAST:
             // expr as Type — result is the target type (child 1).
             {
@@ -699,6 +750,29 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
         case Nk.NODE_EXPR_BLOCK:
             return self.synth_block(e);
 
+        case Nk.NODE_EXPR_FOR:
+            // for binder in iterable — the lowering supports integer RANGES
+            // (`lo..hi`, `lo..=hi`, `lo..hi by step`) only. Any other iterable
+            // (array literal, tuple, an arbitrary expr) used to walk into a
+            // lowering that fabricated an undefined loop variable and a
+            // constant-zero guard: a silently broken module that even
+            // llvm-as rejects. Loud here, so emission is skipped instead.
+            {
+                Node* iter = e.child_count >= 2 ? e.children[1] : null;
+                if (iter != null
+                    && iter.kind != Nk.NODE_EXPR_RANGE
+                    && iter.kind != Nk.NODE_EXPR_RANGE_STEP)
+                {
+                    self.hard("for-loops iterate integer ranges (for i in lo..hi, lo..=hi, lo..hi by step)",
+                              iter.line, iter.col);
+                }
+                for (usz fci = 0; fci < e.child_count; fci++)
+                {
+                    if (e.children[fci] != null) self.synth(e.children[fci]);
+                }
+                return null;
+            }
+
         case Nk.NODE_EXPR_RANGE:
             if (e.child_count >= 1) return self.synth(e.children[0]);
             return null;
@@ -727,6 +801,82 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
             // value flows through the pipeline; type of the left operand.
             if (e.child_count >= 1) return self.synth(e.children[0]);
             return null;
+
+        case Nk.NODE_EFFECT_HANDLE:
+            // handle computation | arm... — the expression's type is the
+            // computation's type: a handler discharges effects, it does not
+            // change the value type (each arm ends in resume(...) or yields
+            // a fallback value coercion-compatible with the computation).
+            // Without this case the generic default below walked the children
+            // but stamped NOTHING on the handle node itself, so the join φ
+            // in the ssi lowering (and any consumer of the handle's value —
+            // a surrounding `+`, a binding ascription, a return) had no type
+            // to bind to: inference then fell to the arm operand, which is
+            // ABI-shaped (`ptr`, by resume's declared return) — producing
+            // `phi ptr [ 42, ... ]` (llvm-as rejects) or GEPs on ptrs.
+            {
+                Node* comp_t = null;
+                for (usz hi = 0; hi < e.child_count; hi++)
+                {
+                    Node* ec = e.children[hi];
+                    if (ec == null) continue;
+                    Node* t = self.synth(ec);
+                    if (hi == 0 && ec.kind != Nk.NODE_HANDLER_ARM) comp_t = t;
+                }
+                return comp_t;
+            }
+
+        case Nk.NODE_HANDLER_ARM:
+        {
+            // Argument binders receive the op's DECLARED parameter types —
+            // arity-driven, the same ground truth the lowering uses to lay
+            // out the runtime arg slots (an effective binder beyond the op's
+            // arity is the continuation k). Without this every binder fell
+            // back to i64 at codegen: a float op arg came back through its
+            // slot as raw bits fed to an integer op (`mul nsw i64 %x, 2.0`).
+            long nargs = ast::effect_op_arity_of_arm(e);
+            Node* op_decl = ast::effect_op_decl_of_arm(e);
+            usz alast = e.child_count >= 1 ? e.child_count - 1 : 0;
+
+            // Continuation slot: exactly one EFFECTIVE binder beyond arity.
+            usz cont_i = 0;
+            if (nargs >= 0)
+            {
+                usz eff = 0;
+                usz last_eff = 0;
+                for (usz ci = 1; ci < alast; ci++)
+                {
+                    if (ast::is_arm_unit_binder(e.children[ci])) continue;
+                    eff++;
+                    last_eff = ci;
+                }
+                if ((long)eff == nargs + 1) cont_i = last_eff;
+            }
+
+            int aslot = 0;
+            for (usz i = 1; i < alast; i++)
+            {
+                Node* b = e.children[i];
+                if (b == null || i == cont_i) continue;
+                if (ast::is_arm_unit_binder(b)) continue;
+                aslot = self.stamp_arm_pattern(b, op_decl, aslot);
+            }
+
+            // Head + body synthesize normally (resolution and effect checking
+            // both need the body walked in this scope).
+            Node* bt = null;
+            for (usz i = 0; i < e.child_count; i++)
+            {
+                Node* c = e.children[i];
+                if (c == null || i == alast) continue;
+                self.synth(c);
+            }
+            if (alast >= 1)
+            {
+                bt = self.synth(e.children[alast]);
+            }
+            return bt;
+        }
 
         default:
             // Recurse so nested expressions still get checked, but report no type.
@@ -764,16 +914,22 @@ fn Node* TypeChecker.synth_call(TypeChecker* self, Node* e)
             && callee_n.resolved.kind == Nk.NODE_ENUM_VARIANT)
         {
             Node* variant = callee_n.resolved;
-            // Find the enum decl: scan the global scope for it
-            // The variant's parent is identified by checking whose child it is.
-            // For now: synthesize args and return the enum name ident as type.
+            // The variant is back-linked to its owning DECL_ENUM via .resolved
+            // (see decl_type's NODE_ENUM_VARIANT case for why .resolved and
+            // not .type_annotation). Synthesize the payload args, then the
+            // construction's type IS the enum's tagged repr — annotating it
+            // with the variant's name ident collapsed to an opaque ptr in
+            // codegen (tensor heap path, invalid `store double` of ints).
             for (usz ai = 1; ai < e.child_count; ai++)
             { self.synth(e.children[ai]); }
-            // Type of the expression = the enum typevar node (child 0 of variant)
+            if (variant.resolved != null && variant.resolved.kind == Nk.NODE_DECL_ENUM)
+            {
+                e.type_annotation = variant.resolved;
+                return variant.resolved;
+            }
             if (variant.child_count >= 1)
             {
                 Node* vname = variant.children[0];
-                // Return a primitive-sized placeholder; full enum type TBD in SSI
                 e.type_annotation = vname;
                 return vname;
             }
@@ -1441,6 +1597,58 @@ fn Node* TypeChecker.synth_field(TypeChecker* self, Node* e)
     Node* fields = self.struct_fields_of(bt);
     if (fields == null)
     {
+        // A plain string literal binds as PRIM_STR (not a tuple); the runtime
+        // repr is PrideStr { ptr, len } (runtime/compiler_rt.c). Map the two
+        // slots by that layout — without this `s.len` on a let-bound literal
+        // drew a misleading "field access on a non-struct value", and the
+        // field went untyped downstream. `.cap` is NOT in the repr (it's a
+        // property of the runtime's growable builder only): an unambiguous
+        // hard error, since continuing used to GEP field 2 of a 2-field
+        // record — invalid IR.
+        if (name != null && name.kind == Nk.NODE_IDENT)
+        {
+            Node* btf = self.unfold(bt);
+            if (btf != null && type_prim(btf) == Prim.PRIM_STR)
+            {
+                char* np = name.p.ident.name_ptr; usz nl = name.p.ident.name_len;
+                if (nl == 3 && np[0]=='p' && np[1]=='t' && np[2]=='r')
+                { return self.mk_prim(Prim.PRIM_PTR); }
+                if (nl == 3 && np[0]=='l' && np[1]=='e' && np[2]=='n')
+                { return self.mk_prim(Prim.PRIM_I64); }
+                if (nl == 3 && np[0]=='c' && np[1]=='a' && np[2]=='p')
+                {
+                    self.hard("string has no `cap` field (Str is { ptr, len })",
+                              name.line, name.col);
+                    return null;
+                }
+                self.soft("unknown field in string (ptr, len exist)",
+                          name.line, name.col);
+                return null;
+            }
+        }
+        // String/format record { ptr, i64(len), i64(cap) }: named slots by
+        // layout (v.md §10.2 uses s.len on a Str). The type is a tuple, so
+        // struct_fields_of saw nothing and this used to fall through to the
+        // generic "non-struct" soft-warning while codegen defaulted the GEP
+        // index to 0 — .len silently loaded the data POINTER. Resolve the
+        // three layout names here; anything else stays the honest warning.
+        Node* bt2 = self.unfold(bt);
+        bool str_shape = bt2 != null && bt2.kind == Nk.NODE_TYPE_TUPLE
+            && bt2.child_count >= 2 && bt2.children[0] != null
+            && type_prim(self.unfold(bt2.children[0])) == Prim.PRIM_PTR;
+        if (str_shape && name != null && name.kind == Nk.NODE_IDENT)
+        {
+            char* np = name.p.ident.name_ptr; usz nl = name.p.ident.name_len;
+            if (nl == 3 && np[0]=='p' && np[1]=='t' && np[2]=='r')
+            { return bt2.children[0]; }
+            if (nl == 3 && np[0]=='l' && np[1]=='e' && np[2]=='n')
+            { return bt2.children[1]; }
+            if (nl == 3 && np[0]=='c' && np[1]=='a' && np[2]=='p'
+                && bt2.child_count >= 3)
+            { return bt2.children[2]; }
+            self.soft("unknown field in string record (ptr, len, cap exist)", name.line, name.col);
+            return null;
+        }
         // A module-qualified type (`geom::Point`) we could not resolve to a
         // concrete struct (e.g. the module member isn't a struct, or it's an
         // unresolved cross-module reference): stay abstract-soft rather than
@@ -1590,9 +1798,30 @@ fn Node* TypeChecker.synth_index(TypeChecker* self, Node* e)
         case Nk.NODE_TYPE_SLICE:
             return bt.child_count >= 1 ? bt.children[0] : null;
         case Nk.NODE_TYPE_TENSOR:
-            // tensor index drops one rank; for simplicity yield the element type
+            // Tensor indexing drops ONE rank: Tensor<T; d0, d1, ...> →
+            // Tensor<T; d1, ...>; only a rank-1 index yields the bare
+            // element. (Yielding T for every rank meant `t[i][j]` typed and
+            // lowered the outer index as though it indexed an f64 — the
+            // row's rank header was then read as the value.)
+            if (bt.child_count > 2)
+            {
+                // Result is [elem, dims[1..]] = children[0] + children[2..].
+                Node*[8] tbuf;
+                usz tn = 0;
+                tbuf[tn] = bt.children[0]; tn++;
+                for (usz ti = 2; ti < bt.child_count && tn < 8; ti++)
+                { tbuf[tn] = bt.children[ti]; tn++; }
+                return ast::node_n(self.arena, Nk.NODE_TYPE_TENSOR, &tbuf[0],
+                                   tn, e.line, e.col);
+            }
             return bt.child_count >= 1 ? bt.children[0] : null;
         default:
+            // A Str is indexable: `s[i]` is the byte at offset i —
+            // v.md §10.2 writes `IO.write_byte(s[i])`, and write_byte takes
+            // u8, so the element type is u8. Without this arm a string base
+            // fell to "indexing a non-indexable value" and downstream codegen
+            // coerced whatever the tuple path produced.
+            if (type_prim(bt) == Prim.PRIM_STR) return self.mk_prim(Prim.PRIM_U8);
             // ptr (untyped) indexes to unknown; anything else is an error.
             if (type_prim(bt) == Prim.PRIM_PTR) return null;
             self.soft("indexing a non-indexable value (expected pointer/array/slice)", e.line, e.col);
@@ -1804,11 +2033,20 @@ fn Node* TypeChecker.decl_type(TypeChecker* self, Node* decl)
             return null;
 
         case Nk.NODE_ENUM_VARIANT:
-            // A variant constructor — its type is the parent enum's typevar.
-            // Walk up: the variant's parent is the DECL_ENUM node.
-            // The enum name is children[0] of the DECL_ENUM.
-            // Return the variant itself as the type annotation so callers can
-            // match on it; the caller (synth_call) will synthesize the enum type.
+            // A variant constructor — its type is the OWNING enum's repr.
+            // The resolver back-links every variant to its DECL_ENUM in
+            // .resolved (never .type_annotation: mono's clone_node would
+            // chase that into a variant→enum→children→variant cycle).
+            // Returning the DECL_ENUM gives codegen the tagged
+            // { i32, i64 } repr through type_to_llvm and keeps enum
+            // machinery (enum_decl_of) happy on every value/pattern
+            // annotation. The old answer — the variant's own name ident —
+            // eroded to an opaque `ptr` downstream, sending tagged ctor
+            // values down the tensor heap path (malloc + `store double`
+            // of integer constants: invalid LLVM, and an unmarshalable
+            // argument at call sites).
+            if (decl.resolved != null && decl.resolved.kind == Nk.NODE_DECL_ENUM)
+            { return decl.resolved; }
             return decl.child_count >= 1 ? decl.children[0] : null;
 
         default:
@@ -3279,6 +3517,30 @@ fn void TypeChecker.check_clause(TypeChecker* self, Node* clause, Node* arg, Nod
 
 // Distribute a parameter type over a pattern, recording each binder's type on
 // its PatIdent's inner name node (so `synth_name` can read it back).
+// Stamp a handler-arm ARGUMENT pattern with the declared op parameter types,
+// flattening tuple patterns onto the op's flat arg-slot positions — exactly
+// the same walk the lowering's emit_arm_arg_params performs (it emits one
+// IR_PARAM per flattened slot; here we bind one TYPE per flattened slot).
+// Returns the next free slot index.
+fn int TypeChecker.stamp_arm_pattern(TypeChecker* self, Node* pat, Node* op_decl, int slot)
+{
+    if (pat == null) return slot;
+    if (pat.kind == Nk.NODE_PATTERN_TUPLE)
+    {
+        for (usz i = 0; i < pat.child_count; i++)
+        { slot = self.stamp_arm_pattern(pat.children[i], op_decl, slot); }
+        return slot;
+    }
+    if (pat.kind == Nk.NODE_PATTERN_IDENT)
+    {
+        Node* pty = ast::effect_op_param_type(op_decl, slot);
+        if (pty != null) { self.bind_pattern_types(pat, pty); }
+        return slot + 1;
+    }
+    // Wildcards/literals consume a slot but bind nothing.
+    return slot + 1;
+}
+
 fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
 {
     if (pat == null) return;
@@ -3400,6 +3662,10 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
                                       vn.line, vn.col);
                             continue;
                         }
+                        // Generic union (`Maybe<i64>`): the decl's payload
+                        // names the type parameter — substitute it with the
+                        // instantiation's argument before scalar typing.
+                        payload_ty = ast::generic_payload_subst(ty, payload_ty);
                         if (bind != null && bind.kind == Nk.NODE_PATTERN_IDENT)
                         {
                             // Unit payload: a `marker` binder is tolerated (the
