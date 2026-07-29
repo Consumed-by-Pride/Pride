@@ -1,0 +1,11 @@
+-- EXPECT-CLEAN
+fn find : i32 -> i32
+  | target ->
+      let mut result : i32 = 0i32 - 1i32
+      let mut i : i32 = 0i32
+      while i < 100i32
+        if i * i == target
+          result = i
+          break 'search
+        i = i + 1i32
+      result

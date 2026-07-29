@@ -1,0 +1,7 @@
+-- EXPECT-CLEAN
+fn sum_inclusive : i32 -> i32
+  | n ->
+      let mut s : i32 = 0i32
+      for i in 0..=n
+        s = s + i
+      s

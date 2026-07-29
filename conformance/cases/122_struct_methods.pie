@@ -1,0 +1,16 @@
+-- Test: functions as struct methods (via normal fns)
+struct Counter
+    value : i64
+    step  : i64
+
+fn counter_new : i64 -> Counter
+  | step -> Counter { value: 0i64, step: step }
+
+fn counter_tick : Counter -> Counter
+  | c -> c { value: c.value + c.step }
+
+fn counter_reset : Counter -> Counter
+  | c -> c { value: 0i64 }
+
+fn counter_value : Counter -> i64
+  | c -> c.value

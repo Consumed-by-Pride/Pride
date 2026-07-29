@@ -1,0 +1,26 @@
+-- EXPECT-CLEAN
+fn be_u16 : (*u8) -> u16
+  | buf -> ((buf[0i64] as u16) << 8u16) | (buf[1i64] as u16)
+
+fn be_u32 : (*u8) -> u32
+  | buf ->
+    ((buf[0i64] as u32) << 24u32) | ((buf[1i64] as u32) << 16u32) |
+    ((buf[2i64] as u32) << 8u32)  |  (buf[3i64] as u32)
+
+fn be_u64 : (*u8) -> u64
+  | buf ->
+    let hi : u64 = be_u32(buf) as u64
+    let lo : u64 = be_u32(buf + 4i64) as u64
+    (hi << 32u64) | lo
+
+fn write_be_u16 : (*u8, u16) -> ()
+  | (buf, v) ->
+    buf[0i64] = ((v >> 8u16) & 0xFFu16) as u8
+    buf[1i64] = (v & 0xFFu16) as u8
+
+fn write_be_u32 : (*u8, u32) -> ()
+  | (buf, v) ->
+    buf[0i64] = ((v >> 24u32) & 0xFFu32) as u8
+    buf[1i64] = ((v >> 16u32) & 0xFFu32) as u8
+    buf[2i64] = ((v >> 8u32)  & 0xFFu32) as u8
+    buf[3i64] = (v & 0xFFu32) as u8

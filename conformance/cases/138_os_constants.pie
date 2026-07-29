@@ -1,0 +1,14 @@
+-- EXPECT-CLEAN
+mod os
+  fn STDIN_FD  : () -> i64
+    | () -> 0
+  fn STDOUT_FD : () -> i64
+    | () -> 1
+  fn STDERR_FD : () -> i64
+    | () -> 2
+  fn O_RDONLY  : () -> i64
+    | () -> 0
+  fn O_WRONLY  : () -> i64
+    | () -> 1
+  fn O_CREAT   : () -> i64
+    | () -> 64

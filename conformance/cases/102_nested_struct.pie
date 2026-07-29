@@ -1,0 +1,17 @@
+-- Test: nested struct field access
+struct Point
+    x : f64
+    y : f64
+
+struct Rect
+    tl : Point
+    br : Point
+
+fn rect_width : Rect -> f64
+  | r -> r.br.x - r.tl.x
+
+fn rect_height : Rect -> f64
+  | r -> r.br.y - r.tl.y
+
+fn rect_area : Rect -> f64
+  | r -> rect_width(r) * rect_height(r)

@@ -1,0 +1,10 @@
+-- EXPECT-CLEAN
+union FloatBits
+  f : f32
+  i : u32
+
+fn get_i : FloatBits -> u32
+  | fb -> fb.i
+
+fn get_f : FloatBits -> f32
+  | fb -> fb.f

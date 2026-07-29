@@ -1,0 +1,7 @@
+-- EXPECT-CLEAN
+fn wrap_add : (u8, u8) -> u8
+  | (a, b) ->
+    unchecked a + b
+
+fn saturate_add : (i32, i32) -> i32
+  | (a, b) -> a + b

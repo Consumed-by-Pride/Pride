@@ -1,0 +1,12 @@
+-- format! builds a runtime string record { ptr, len, cap } on the heap.
+-- There is no field syntax for tuples, so printing one is:
+-- destructure the record, then write `len` bytes from the data pointer.
+
+fn main : () -> () ! [IO]
+  | () ->
+      let x = 40
+      let s = format!("x={} y={}", x + 1, 1)
+      let (p, n, c) = s
+      syscall(1, 1, p as i64, n)
+      syscall(1, 1, "\n" as i64, 1)
+      ()

@@ -1,0 +1,31 @@
+-- Member/field system: field access, auto-deref, struct literals, indexing.
+-- Self-contained; should type-check with ZERO type errors/warnings.
+
+type Vec3 = struct
+  x : f32
+  y : f32
+  z : f32
+
+type Node = struct
+  val  : i32
+  next : *Node
+
+-- field access
+fn get_x : Vec3 -> f32
+  | v -> v.x
+
+-- auto-deref through pointer (p : *Vec3, p.y works without ->)
+fn get_y : *Vec3 -> f32
+  | p -> p.y
+
+-- self-referential struct field access via pointer
+fn next_val : *Node -> i32
+  | nd -> nd.next.val
+
+-- valid struct literal with all fields
+fn origin : () -> Vec3
+  | () -> Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+
+-- pointer indexing
+fn first : *i32 -> i32
+  | p -> p[0]

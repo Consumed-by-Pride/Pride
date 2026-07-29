@@ -1,0 +1,31 @@
+-- EXPECT-CLEAN
+fn str_len : *u8 -> i64
+  | s ->
+    let mut i : i64 = 0i64
+    while s[i] != 0u8
+      i = i + 1i64
+    i
+
+fn str_starts_with : (*u8, i64, *u8, i64) -> bool
+  | (s, slen, prefix, plen) ->
+    if plen > slen then false
+    else
+      let mut i : i64 = 0i64
+      let mut ok : bool = true
+      while i < plen && ok
+        if s[i] != prefix[i] then ok = false
+        i = i + 1i64
+      ok
+
+fn str_to_upper_byte : u8 -> u8
+  | c ->
+    if c >= 97u8 && c <= 122u8 then c - 32u8 else c
+
+fn str_count_char : (*u8, i64, u8) -> i64
+  | (s, len, ch) ->
+    let mut count : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i < len
+      if s[i] == ch then count = count + 1i64
+      i = i + 1i64
+    count

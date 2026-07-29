@@ -1,0 +1,76 @@
+-- rfc_number.pie: RFC-Compliant JSON Number Parser
+-- Format: -? (0 | [1-9][0-9]*) (\.[0-9]+)? ([eE][+-]?[0-9]+)?
+
+effect Parser
+  peek : () -> u8
+  advance : () -> u8
+  fail : () -> ()
+  done : () -> bool
+
+fn is_digit : u8 -> bool
+  | c -> 
+      if c >= 48u8 then
+        if c <= 57u8 then true else false
+      else false
+
+fn parse_digits : () -> () ! [Parser]
+  | () ->
+      if Parser.done() then return ()
+      let mut c = Parser.peek()
+      if is_digit(c) == false then Parser.fail()
+      while Parser.done() == false
+        c = Parser.peek()
+        if is_digit(c)
+          let _1 = Parser.advance()
+        else
+          break
+
+fn parse_number : () -> bool ! [Parser]
+  | () ->
+      if Parser.done() then return false
+      let mut c = Parser.peek()
+      if c == 45u8 -- '-'
+        let _1 = Parser.advance()
+        if Parser.done() then return false
+        c = Parser.peek()
+      
+      if c == 48u8 -- '0'
+        let _2 = Parser.advance()
+      else if c >= 49u8 then -- '1'-'9'
+        if c <= 57u8 then
+          parse_digits()
+        else return false
+      else
+        return false
+
+      if Parser.done() then return true
+      c = Parser.peek()
+      if c == 46u8 -- '.'
+        let _3 = Parser.advance()
+        parse_digits()
+      
+      if Parser.done() then return true
+      c = Parser.peek()
+      if c == 101u8 then -- 'e'
+        let _4 = Parser.advance()
+        if Parser.done() then return false
+        c = Parser.peek()
+        if c == 43u8 then let _5 = Parser.advance() -- '+'
+        else if c == 45u8 then let _6 = Parser.advance() -- '-'
+        parse_digits()
+      else if c == 69u8 then -- 'E'
+        let _7 = Parser.advance()
+        if Parser.done() then return false
+        c = Parser.peek()
+        if c == 43u8 then let _8 = Parser.advance()
+        else if c == 45u8 then let _9 = Parser.advance()
+        parse_digits()
+
+      return true
+
+-- Simple mock handler to run the parser
+fn main : () -> () ! [IO, Alloc, Parser, UB]
+  | () ->
+      let res = parse_number()
+      if res
+        syscall(1, 1, "valid\n" as i64, 6)

@@ -1,0 +1,3 @@
+-- Test: closure capturing local variable
+fn make_adder : i64 -> (i64 -> i64)
+  | n -> | x -> x + n

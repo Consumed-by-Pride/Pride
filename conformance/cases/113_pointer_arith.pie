@@ -1,0 +1,9 @@
+-- Test: pointer arithmetic
+fn ptr_add : (*i64, i64) -> *i64
+  | (p, n) -> p + n
+
+fn ptr_diff : (*i64, *i64) -> i64
+  | (a, b) -> a as i64 - b as i64
+
+fn deref_offset : (*i64, i64) -> i64
+  | (p, n) -> p[n]

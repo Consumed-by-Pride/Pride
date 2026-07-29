@@ -1,0 +1,11 @@
+-- EXPECT-CLEAN
+fn scan_for : (*u8, i64, u8) -> i64
+  | (buf, len, target) ->
+    let mut i : i64 = 0i64
+    let mut result : i64 = 0i64 - 1i64
+    while i < len
+      if buf[i] == target then
+        result = i
+        break
+      i = i + 1i64
+    result

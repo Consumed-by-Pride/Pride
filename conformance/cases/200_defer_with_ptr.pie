@@ -1,0 +1,13 @@
+-- EXPECT-CLEAN
+fn guarded_alloc : i64 -> *i64 ! [Alloc]
+  | n ->
+    let p : *i64 = alloc [i64; 1]
+    p[0i64] = n
+    p
+
+fn copy_and_free : (*i64) -> i64 ! [Alloc]
+  | src ->
+    let dst : *i64 = alloc [i64; 1]
+    defer free(dst as *u8)
+    dst[0i64] = src[0i64]
+    dst[0i64] + 1i64

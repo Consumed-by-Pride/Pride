@@ -1,0 +1,17 @@
+-- EXPECT-CLEAN
+fn dns_type_is_address : u16 -> bool
+  | qtype -> qtype == 1u16 || qtype == 28u16   -- A or AAAA
+
+fn dns_type_is_name : u16 -> bool
+  | qtype -> qtype == 2u16 || qtype == 5u16 || qtype == 12u16  -- NS CNAME PTR
+
+fn dns_rcode_ok : u8 -> bool
+  | rcode -> rcode == 0u8
+
+fn dns_id_from_bytes : (*u8, i64) -> u16
+  | (buf, len) ->
+    if len < 2i64 then 0u16
+    else ((buf[0i64] as u16) << 8u16) | (buf[1i64] as u16)
+
+fn dns_is_query : u16 -> bool
+  | flags -> (flags & 0x8000u16) == 0u16

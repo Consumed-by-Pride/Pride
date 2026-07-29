@@ -1,0 +1,11 @@
+-- Test: constant expressions and consts
+const PI    : f64 = 3.14159265358979f64
+const E     : f64 = 2.71828182845905f64
+const MAX_I32: i32 = 2147483647i32
+const MIN_I32: i32 = -2147483648i32
+
+fn circle_area : f64 -> f64
+  | r -> PI * r * r
+
+fn circle_circumference : f64 -> f64
+  | r -> 2.0 * PI * r

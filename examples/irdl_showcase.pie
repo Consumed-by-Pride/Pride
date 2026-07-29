@@ -1,0 +1,28 @@
+-- IRDL crown-jewel showcase: define a custom IR dialect and lower it with
+-- multi-rule, guard-conditional, literal-pattern, and variadic lowering.
+
+fn add  : (i32, i32) -> i32  | (a, b) -> a + b
+fn id   : i32 -> i32         | a -> a
+fn neg  : i32 -> i32         | a -> 0 - a
+fn pack : i32 -> i32         | a -> a
+
+-- Declare an optimizing arithmetic dialect.
+dialect Arith
+  opcode oadd
+  opcode oany
+
+-- Lowering rules: tried in order, first match wins.
+irdl
+  -- constant-fold:  oadd(a, 0)  ->  a
+  Arith.oadd [a : i32, 0] ↦ id(a)
+  -- guard:  oadd(a, b) where b < 0  ->  neg(a)
+  Arith.oadd [a : i32, b : i32], b < 0 ↦ neg(a)
+  -- general case
+  Arith.oadd [a : i32, b : i32] ↦ add(a, b)
+  -- variadic / flexible op: accepts any extra args
+  Arith.oany [a : i32, ..rest] ↦ pack(a)
+
+fn fold_case  : i32 -> i32           | x -> Arith.oadd(x, 0)
+fn neg_case   : i32 -> i32           | x -> Arith.oadd(x, -3)
+fn gen_case   : (i32, i32) -> i32    | (x, y) -> Arith.oadd(x, y)
+fn flex_case  : (i32,i32,i32) -> i32 | (x,y,z) -> Arith.oany(x, y, z)

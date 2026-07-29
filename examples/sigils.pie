@@ -1,0 +1,36 @@
+-- Code-as-data quotation sigils (v.md §13)
+-- Each sigil quotes its operand as a distinct representation:
+--   ~Tree expr   Code-as-Tree:  the expression as an AST
+--   ~Data value  Code-as-Data:  the operand as raw data
+--   ~Bytes f     Code-as-Bytes: the operand as a byte sequence
+-- The quotation surface is consumed by the comptime/stage pipeline
+-- (see showcase.pie's `comptime` rewrite example).
+
+fn my_function : i64 -> i64
+  | n -> n + 1
+
+fn f : i64 -> i64
+  | n -> n * 2
+
+fn g : i64 -> i64
+  | n -> n - 1
+
+fn main : () -> i64
+  | () ->
+      let x = 1
+      let y = 2
+      let z = 3
+      let my_vec3f = 0
+
+      let arith : Rewrite = rewrite
+        | r + 0 ↦ r
+        | r * 1 ↦ r
+
+      let as_tree  = ~Tree (x + y * z)        -- full AST of the expr
+      let as_data  = ~Data my_vec3f           -- operand as raw data
+      let as_bytes = ~Bytes my_function       -- operand as byte seq
+
+      -- sigils compose with the rest of the grammar:
+      let folded   = ~Tree (1 + 2 + 3) |> arith*   -- quoted, folded, fixpoint-applied
+      let nested   = ~Bytes (f(x) + g(y))
+      0

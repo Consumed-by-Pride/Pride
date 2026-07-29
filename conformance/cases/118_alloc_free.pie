@@ -1,0 +1,10 @@
+-- Test: alloc and free
+fn alloc_array : i64 -> *i64 ! [Alloc]
+  | n -> alloc [i64; n]
+
+fn fill_array : (*i64, i64, i64) -> ()
+  | (arr, n, val) ->
+    let mut i : i64 = 0i64
+    while i < n
+      arr[i] = val
+      i = i + 1i64

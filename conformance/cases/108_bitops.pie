@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+fn mask_set : (u64, u64) -> u64
+  | (v, mask) -> v | mask
+
+fn mask_clear : (u64, u64) -> u64
+  | (v, mask) -> v & ~mask
+
+fn rotate : (u32, i32) -> u32
+  | (v, n) -> (v << n) | (v >> (32 - n))

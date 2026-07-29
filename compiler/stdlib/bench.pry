@@ -1,0 +1,80 @@
+-- stdlib/bench.pry — Benchmarking framework (criterion-style)
+-- Measures wall-clock time via clock_gettime(CLOCK_MONOTONIC).
+
+fn clock_gettime_fn : (i32, ptr) -> i32 #extern("clock_gettime") #cc(c)
+fn malloc_bench      : usize -> ptr     #extern("malloc")         #cc(c)
+fn free_bench        : ptr   -> ()      #extern("free")           #cc(c)
+fn printf_bench      : *u8  -> i32     #extern("printf")          #cc(c)
+
+let CLOCK_MONOTONIC : i32 = 1
+let BENCH_WARMUP    : i64 = 3
+let BENCH_ITERS     : i64 = 10
+
+struct Timespec
+  tv_sec  : i64
+  tv_nsec : i64
+
+fn bench_now : () -> i64
+  | () ->
+      let ts = Timespec { tv_sec: 0, tv_nsec: 0 }
+      clock_gettime_fn(CLOCK_MONOTONIC, &ts as ptr)
+      ts.tv_sec * 1000000000 + ts.tv_nsec
+
+struct BenchResult
+  name        : *u8
+  iters       : i64
+  total_ns    : i64
+  min_ns      : i64
+  max_ns      : i64
+
+fn bench_result_avg : *BenchResult -> i64
+  | (r) -> if r.iters == 0 then 0 else r.total_ns / r.iters
+
+fn bench_print : *BenchResult -> ()
+  | (r) ->
+      let avg = bench_result_avg(r)
+      let avg_us = avg / 1000
+      let avg_ms = avg_us / 1000
+      if avg_ms > 0
+        str_push_str(&str_new(), r.name, strlen_fn(r.name as *u8))
+      -- (full printf wiring omitted; user calls printf directly)
+
+-- ─── Benchmark runner ─────────────────────────────────────────────────────────
+-- Usage:
+--   let result = bench_run("my_fn", 1000, &fn_to_bench)
+-- where fn_to_bench : () -> i64
+
+fn strlen_fn : *u8 -> usize #extern("strlen") #cc(c)
+
+fn bench_run_raw : (*u8, i64) -> BenchResult
+  | (name, iters) ->
+      BenchResult {
+        name:     name,
+        iters:    0,
+        total_ns: 0,
+        min_ns:   9223372036854775807,
+        max_ns:   0
+      }
+
+-- Benchmark a zero-argument function by call-site wrapping.
+-- Example:
+--   let t0 = bench_now()
+--   for i in 0..iters
+--     my_fn()
+--   let elapsed = bench_now() - t0
+fn bench_elapsed_ns : i64 -> i64
+  | (t0) -> bench_now() - t0
+
+fn bench_ns_to_us : i64 -> i64
+  | (ns) -> ns / 1000
+fn bench_ns_to_ms : i64 -> i64
+  | (ns) -> ns / 1000000
+fn bench_ns_to_s  : i64 -> i64
+  | (ns) -> ns / 1000000000
+
+-- Print benchmark summary to stdout
+fn bench_print_ns : (*u8, i64, i64) -> ()
+  | (name, iters, total_ns) ->
+      let avg = if iters > 0 then total_ns / iters else 0
+      let avg_us  = avg / 1000
+      let avg_ns  = avg % 1000

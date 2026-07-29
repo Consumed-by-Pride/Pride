@@ -1,0 +1,3 @@
+-- EXPECT-CLEAN
+fn greet : Str -> Str
+  | s -> s

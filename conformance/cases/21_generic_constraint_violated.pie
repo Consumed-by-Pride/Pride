@@ -1,0 +1,5 @@
+-- EXPECT: type-warn 5:13 does not satisfy the generic constraint
+fn dbl<T : Num> : T -> T
+  | x -> x + x
+fn apply : bool -> bool
+  | b -> dbl(b)

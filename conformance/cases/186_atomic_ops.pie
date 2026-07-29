@@ -1,0 +1,25 @@
+-- EXPECT-CLEAN
+fn atomic_store_i64 : (*i64, i64) -> ()
+  | (ptr_val, val) -> *ptr_val = val
+
+fn atomic_load_i64 : *i64 -> i64
+  | ptr_val -> *ptr_val
+
+fn cas_loop_increment : (*i64, i64) -> bool
+  | (ptr_val, expected) ->
+    if *ptr_val == expected then
+      *ptr_val = expected + 1i64
+      true
+    else false
+
+fn refcount_inc : *i64 -> i64
+  | rc ->
+    let old : i64 = *rc
+    *rc = old + 1i64
+    old + 1i64
+
+fn refcount_dec : *i64 -> bool
+  | rc ->
+    let new_val : i64 = *rc - 1i64
+    *rc = new_val
+    new_val == 0i64
