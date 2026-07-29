@@ -1,0 +1,22 @@
+-- Operator gallery: the prefix/postfix operator forms the grammar
+-- accepts, each in a runnable context.
+--
+--   expr?   postfix try — unwraps the happy path of a fallible call
+--   $name   comptime value reference
+--   ~name   raw-bits reinterpretation of a value
+
+fn try_thing : () -> i64
+  | () -> 40
+
+fn main : () -> i64
+  | () ->
+      let comptime_val = 1
+      let raw_bits = 0
+      let x = 0
+      let y = 1
+
+      let a = try_thing()?
+      let c = $comptime_val
+      let d = ~raw_bits
+      let e = x? + y?
+      a + c + d + e

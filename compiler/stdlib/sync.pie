@@ -1,0 +1,108 @@
+-- stdlib/sync.pie — Atomic operations, Mutex, RwLock, Condvar, Semaphore
+-- All backed by POSIX primitives via the Pride runtime.
+
+-- ─── Atomics (i64) ───────────────────────────────────────────────────────────
+fn atomic_load    : *i64 -> i64           #extern("__pride_atomic_load_i64")  #cc(c)
+fn atomic_store   : (*i64, i64) -> ()     #extern("__pride_atomic_store_i64") #cc(c)
+fn atomic_add     : (*i64, i64) -> i64    #extern("__pride_atomic_add_i64")   #cc(c)
+fn atomic_sub     : (*i64, i64) -> i64    #extern("__pride_atomic_sub_i64")   #cc(c)
+fn atomic_and     : (*i64, i64) -> i64    #extern("__pride_atomic_and_i64")   #cc(c)
+fn atomic_or      : (*i64, i64) -> i64    #extern("__pride_atomic_or_i64")    #cc(c)
+fn atomic_xor     : (*i64, i64) -> i64    #extern("__pride_atomic_xor_i64")   #cc(c)
+fn atomic_swap    : (*i64, i64) -> i64    #extern("__pride_atomic_swap_i64")  #cc(c)
+fn atomic_cas     : (*i64, *i64, i64) -> bool #extern("__pride_atomic_cas_i64") #cc(c)
+fn fence_seq_cst  : () -> ()              #extern("__pride_atomic_fence_seq") #cc(c)
+fn fence_acquire  : () -> ()              #extern("__pride_atomic_fence_acq") #cc(c)
+fn fence_release  : () -> ()              #extern("__pride_atomic_fence_rel") #cc(c)
+
+-- i32 atomics
+fn atomic_load_i32 : *i32 -> i32         #extern("__pride_atomic_load_i32")  #cc(c)
+fn atomic_store_i32: (*i32, i32) -> ()   #extern("__pride_atomic_store_i32") #cc(c)
+fn atomic_add_i32  : (*i32, i32) -> i32  #extern("__pride_atomic_add_i32")   #cc(c)
+
+-- ─── Mutex ───────────────────────────────────────────────────────────────────
+fn mutex_new    : () -> ptr         #extern("__pride_mutex_new")    #cc(c)
+fn mutex_lock   : ptr -> ()         #extern("__pride_mutex_lock")   #cc(c)
+fn mutex_unlock : ptr -> ()         #extern("__pride_mutex_unlock") #cc(c)
+fn mutex_trylock: ptr -> bool       #extern("__pride_mutex_trylock") #cc(c)
+fn mutex_free   : ptr -> ()         #extern("__pride_mutex_free")   #cc(c)
+
+struct Mutex
+  handle : ptr
+
+
+fn mutex_init : () -> Mutex
+  | () -> Mutex { handle: mutex_new() }
+
+fn mutex_acquire : *Mutex -> ()
+  | (m) -> mutex_lock(m.handle)
+
+fn mutex_release : *Mutex -> ()
+  | (m) -> mutex_unlock(m.handle)
+
+fn mutex_drop : *Mutex -> ()
+  | (m) -> mutex_free(m.handle)
+
+-- ─── RwLock ──────────────────────────────────────────────────────────────────
+fn rwlock_new    : () -> ptr         #extern("__pride_rwlock_new")    #cc(c)
+fn rwlock_rdlock : ptr -> ()         #extern("__pride_rwlock_rdlock") #cc(c)
+fn rwlock_wrlock : ptr -> ()         #extern("__pride_rwlock_wrlock") #cc(c)
+fn rwlock_unlock : ptr -> ()         #extern("__pride_rwlock_unlock") #cc(c)
+fn rwlock_free   : ptr -> ()         #extern("__pride_rwlock_free")   #cc(c)
+
+struct RwLock
+  handle : ptr
+
+
+fn rwlock_init    : () -> RwLock
+  | () -> RwLock { handle: rwlock_new() }
+fn rwlock_read    : *RwLock -> ()
+  | (r) -> rwlock_rdlock(r.handle)
+fn rwlock_write   : *RwLock -> ()
+  | (r) -> rwlock_wrlock(r.handle)
+fn rwlock_done    : *RwLock -> ()
+  | (r) -> rwlock_unlock(r.handle)
+fn rwlock_drop    : *RwLock -> ()
+  | (r) -> rwlock_free(r.handle)
+
+-- ─── Condvar ─────────────────────────────────────────────────────────────────
+fn condvar_new       : () -> ptr               #extern("__pride_condvar_new")       #cc(c)
+fn condvar_wait_raw  : (ptr, ptr) -> ()        #extern("__pride_condvar_wait")      #cc(c)
+fn condvar_signal    : ptr -> ()               #extern("__pride_condvar_signal")    #cc(c)
+fn condvar_broadcast : ptr -> ()               #extern("__pride_condvar_broadcast") #cc(c)
+fn condvar_free      : ptr -> ()               #extern("__pride_condvar_free")      #cc(c)
+
+struct Condvar
+  handle : ptr
+
+
+fn condvar_init      : () -> Condvar
+  | () -> Condvar { handle: condvar_new() }
+fn condvar_wait      : (*Condvar, *Mutex) -> ()
+  | (cv, mx) -> condvar_wait_raw(cv.handle, mx.handle)
+fn condvar_notify    : *Condvar -> ()
+  | (cv) -> condvar_signal(cv.handle)
+fn condvar_notify_all: *Condvar -> ()
+  | (cv) -> condvar_broadcast(cv.handle)
+fn condvar_drop      : *Condvar -> ()
+  | (cv) -> condvar_free(cv.handle)
+
+-- ─── Semaphore ───────────────────────────────────────────────────────────────
+fn sem_new_raw : i64 -> ptr         #extern("__pride_sem_new")     #cc(c)
+fn sem_wait    : ptr -> ()          #extern("__pride_sem_wait")    #cc(c)
+fn sem_post    : ptr -> ()          #extern("__pride_sem_post")    #cc(c)
+fn sem_trywait : ptr -> bool        #extern("__pride_sem_trywait") #cc(c)
+fn sem_free    : ptr -> ()          #extern("__pride_sem_free")    #cc(c)
+
+struct Semaphore
+  handle : ptr
+
+
+fn semaphore_new  : i64 -> Semaphore
+  | (n) -> Semaphore { handle: sem_new_raw(n) }
+fn semaphore_wait : *Semaphore -> ()
+  | (s) -> sem_wait(s.handle)
+fn semaphore_post : *Semaphore -> ()
+  | (s) -> sem_post(s.handle)
+fn semaphore_drop : *Semaphore -> ()
+  | (s) -> sem_free(s.handle)

@@ -1,0 +1,281 @@
+mod os.uefi.tables.boot_services
+
+use os.uefi
+use os.uefi.status
+
+-- UEFI Boot Services table. Port of Zig's std/os/uefi/tables/boot_services.zig.
+-- The Boot Services table is available until ExitBootServices() is called.
+-- After that, only Runtime Services are available.
+
+-- §1  BOOT SERVICES TABLE STRUCT
+-- Layout matches EFI_BOOT_SERVICES (UEFI spec 2.10, section 4.4)
+
+struct BootServices
+  -- EFI Table Header
+  hdr : os.uefi.EfiTableHeader   -- signature: 0x56524553544f4f42 ("BOOTSERV")
+
+  -- Task Priority Services
+  raise_tpl   : ptr   -- fn(new_tpl: u64) -> u64   #cc(uefi)
+  restore_tpl : ptr   -- fn(old_tpl: u64) -> ()     #cc(uefi)
+
+  -- Memory Services
+  allocate_pages : ptr   -- fn(type_, mem_type, pages, *phys_addr) -> u64  #cc(uefi)
+  free_pages     : ptr   -- fn(memory, pages) -> u64                        #cc(uefi)
+  get_memory_map : ptr   -- fn(*map_size, *desc, *map_key, *desc_size, *desc_version) -> u64  #cc(uefi)
+  allocate_pool  : ptr   -- fn(pool_type, size, **buffer) -> u64            #cc(uefi)
+  free_pool      : ptr   -- fn(*buffer) -> u64                              #cc(uefi)
+
+  -- Event & Timer Services
+  create_event    : ptr  -- fn(type_, tpl, notify_fn, notify_ctx, *event) -> u64  #cc(uefi)
+  set_timer       : ptr  -- fn(event, delay_type, trigger_time) -> u64      #cc(uefi)
+  wait_for_event  : ptr  -- fn(number_of_events, *events, *index) -> u64    #cc(uefi)
+  signal_event    : ptr  -- fn(event) -> u64                                #cc(uefi)
+  close_event     : ptr  -- fn(event) -> u64                                #cc(uefi)
+  check_event     : ptr  -- fn(event) -> u64                                #cc(uefi)
+
+  -- Protocol Handler Services
+  install_protocol_interface   : ptr
+  reinstall_protocol_interface : ptr
+  uninstall_protocol_interface : ptr
+  handle_protocol              : ptr  -- fn(handle, *guid, **interface) -> u64  #cc(uefi)
+  __reserved                   : ptr
+  register_protocol_notify     : ptr
+  locate_handle                : ptr  -- fn(search_type, *guid, key, *buf_size, *handles) -> u64  #cc(uefi)
+  locate_device_path           : ptr
+  install_configuration_table  : ptr
+  uninstall_configuration_table: ptr
+
+  -- Image Services
+  load_image   : ptr   -- fn(boot_policy, parent, *dp, src_buffer, src_size, *image_handle) -> u64
+  start_image  : ptr   -- fn(image_handle, *exit_data_size, **exit_data) -> u64
+  exit_fn      : ptr   -- fn(image_handle, exit_status, exit_data_size, *exit_data) -> u64
+  unload_image : ptr
+  exit_boot_services : ptr   -- fn(image_handle, map_key) -> u64
+
+  -- Miscellaneous Services
+  get_next_monotonic_count : ptr   -- fn(*count) -> u64
+  stall          : ptr             -- fn(microseconds) -> u64
+  set_watchdog_timer : ptr         -- fn(timeout, watchdog_code, data_size, *watchdog_data) -> u64
+
+  -- DriverSupport Services
+  connect_controller    : ptr
+  disconnect_controller : ptr
+
+  -- Open and Close Protocol Services
+  open_protocol          : ptr
+  close_protocol         : ptr
+  open_protocol_information : ptr
+
+  -- Library Services
+  protocols_per_handle     : ptr
+  locate_handle_buffer     : ptr   -- fn(search_type, *guid, key, *no_handles, ***handles) -> u64
+  locate_protocol          : ptr   -- fn(*guid, key, **interface) -> u64
+  install_protocol_interfaces   : ptr
+  uninstall_protocol_interfaces : ptr
+
+  -- 32-bit CRC
+  calculate_crc32 : ptr   -- fn(*data, data_size, *crc32) -> u64
+
+  -- Miscellaneous Services
+  copy_mem  : ptr   -- fn(*dest, *src, length) -> ()
+  set_mem   : ptr   -- fn(*buffer, size, value) -> ()
+  create_event_ex : ptr
+
+-- §2  BOOT SERVICES SIGNATURE
+const EFI_BOOT_SERVICES_SIGNATURE : u64 = 6004249581399842882u64   -- 0x56524553544f4f42 ("BOOTSERV")
+const EFI_BOOT_SERVICES_REVISION  : u32 = 0x00020000u32   -- 2.0
+
+-- §3  HELPER FUNCTIONS
+-- These call through the function pointers in the BootServices table.
+
+fn bs_raise_tpl : (*BootServices, u64) -> u64
+  | (bs, new_tpl) ->
+    let f = bs.raise_tpl as fn(u64) -> u64
+    f(new_tpl)
+
+fn bs_restore_tpl : (*BootServices, u64) -> ()
+  | (bs, old_tpl) ->
+    let f = bs.restore_tpl as fn(u64) -> ()
+    f(old_tpl)
+
+fn bs_allocate_pages : (*BootServices, u32, u32, u64, *u64) -> u64
+  | (bs, alloc_type, mem_type, pages, phys_addr) ->
+    let f = bs.allocate_pages as fn(u32, u32, u64, *u64) -> u64
+    f(alloc_type, mem_type, pages, phys_addr)
+
+fn bs_free_pages : (*BootServices, u64, u64) -> u64
+  | (bs, memory, pages) ->
+    let f = bs.free_pages as fn(u64, u64) -> u64
+    f(memory, pages)
+
+fn bs_allocate_pool : (*BootServices, u32, u64, *ptr) -> u64
+  | (bs, pool_type, size, buf) ->
+    let f = bs.allocate_pool as fn(u32, u64, *ptr) -> u64
+    f(pool_type, size, buf)
+
+fn bs_free_pool : (*BootServices, ptr) -> u64
+  | (bs, buffer) ->
+    let f = bs.free_pool as fn(ptr) -> u64
+    f(buffer)
+
+fn bs_handle_protocol : (*BootServices, ptr, *os.uefi.Guid, *ptr) -> u64
+  | (bs, handle, guid, interface) ->
+    let f = bs.handle_protocol as fn(ptr, *os.uefi.Guid, *ptr) -> u64
+    f(handle, guid, interface)
+
+fn bs_locate_protocol : (*BootServices, *os.uefi.Guid, ptr, *ptr) -> u64
+  | (bs, guid, registration, interface) ->
+    let f = bs.locate_protocol as fn(*os.uefi.Guid, ptr, *ptr) -> u64
+    f(guid, registration, interface)
+
+fn bs_locate_handle : (*BootServices, u32, *os.uefi.Guid, ptr, *u64, *ptr) -> u64
+  | (bs, search_type, guid, key, buf_size, handles) ->
+    let f = bs.locate_handle as fn(u32, *os.uefi.Guid, ptr, *u64, *ptr) -> u64
+    f(search_type, guid, key, buf_size, handles)
+
+fn bs_locate_handle_buffer : (*BootServices, u32, *os.uefi.Guid, ptr, *u64, *ptr) -> u64
+  | (bs, search_type, guid, key, n_handles, handles) ->
+    let f = bs.locate_handle_buffer as fn(u32, *os.uefi.Guid, ptr, *u64, *ptr) -> u64
+    f(search_type, guid, key, n_handles, handles)
+
+fn bs_create_event : (*BootServices, u32, u64, ptr, ptr, *ptr) -> u64
+  | (bs, type_, tpl, notify_fn, notify_ctx, event) ->
+    let f = bs.create_event as fn(u32, u64, ptr, ptr, *ptr) -> u64
+    f(type_, tpl, notify_fn, notify_ctx, event)
+
+fn bs_signal_event : (*BootServices, ptr) -> u64
+  | (bs, event) ->
+    let f = bs.signal_event as fn(ptr) -> u64
+    f(event)
+
+fn bs_close_event : (*BootServices, ptr) -> u64
+  | (bs, event) ->
+    let f = bs.close_event as fn(ptr) -> u64
+    f(event)
+
+fn bs_wait_for_event : (*BootServices, u64, *ptr, *u64) -> u64
+  | (bs, n_events, events, index) ->
+    let f = bs.wait_for_event as fn(u64, *ptr, *u64) -> u64
+    f(n_events, events, index)
+
+fn bs_stall : (*BootServices, u64) -> u64
+  | (bs, microseconds) ->
+    let f = bs.stall as fn(u64) -> u64
+    f(microseconds)
+
+fn bs_set_watchdog_timer : (*BootServices, u64, u64, u64, *u16) -> u64
+  | (bs, timeout, code, data_size, data) ->
+    let f = bs.set_watchdog_timer as fn(u64, u64, u64, *u16) -> u64
+    f(timeout, code, data_size, data)
+
+fn bs_exit_boot_services : (*BootServices, ptr, u64) -> u64
+  | (bs, image_handle, map_key) ->
+    let f = bs.exit_boot_services as fn(ptr, u64) -> u64
+    f(image_handle, map_key)
+
+fn bs_get_next_monotonic_count : (*BootServices, *u64) -> u64
+  | (bs, count) ->
+    let f = bs.get_next_monotonic_count as fn(*u64) -> u64
+    f(count)
+
+fn bs_copy_mem : (*BootServices, ptr, ptr, u64) -> ()
+  | (bs, dest, src, length) ->
+    let f = bs.copy_mem as fn(ptr, ptr, u64) -> ()
+    f(dest, src, length)
+
+fn bs_set_mem : (*BootServices, ptr, u64, u8) -> ()
+  | (bs, buffer, size, value) ->
+    let f = bs.set_mem as fn(ptr, u64, u8) -> ()
+    f(buffer, size, value)
+
+fn bs_open_protocol : (*BootServices, ptr, *os.uefi.Guid, *ptr, ptr, ptr, u32) -> u64
+  | (bs, handle, guid, interface, agent_handle, controller_handle, attrs) ->
+    let f = bs.open_protocol as fn(ptr, *os.uefi.Guid, *ptr, ptr, ptr, u32) -> u64
+    f(handle, guid, interface, agent_handle, controller_handle, attrs)
+
+fn bs_close_protocol : (*BootServices, ptr, *os.uefi.Guid, ptr, ptr) -> u64
+  | (bs, handle, guid, agent_handle, controller_handle) ->
+    let f = bs.close_protocol as fn(ptr, *os.uefi.Guid, ptr, ptr) -> u64
+    f(handle, guid, agent_handle, controller_handle)
+
+fn bs_calculate_crc32 : (*BootServices, ptr, u64, *u32) -> u64
+  | (bs, data, data_size, crc32) ->
+    let f = bs.calculate_crc32 as fn(ptr, u64, *u32) -> u64
+    f(data, data_size, crc32)
+
+fn bs_install_protocol_interface : (*BootServices, *ptr, *os.uefi.Guid, u32, ptr) -> u64
+  | (bs, handle, guid, iface_type, interface) ->
+    let f = bs.install_protocol_interface as fn(*ptr, *os.uefi.Guid, u32, ptr) -> u64
+    f(handle, guid, iface_type, interface)
+
+fn bs_uninstall_protocol_interface : (*BootServices, ptr, *os.uefi.Guid, ptr) -> u64
+  | (bs, handle, guid, interface) ->
+    let f = bs.uninstall_protocol_interface as fn(ptr, *os.uefi.Guid, ptr) -> u64
+    f(handle, guid, interface)
+
+fn bs_load_image : (*BootServices, bool, ptr, ptr, ptr, u64, *ptr) -> u64
+  | (bs, boot_policy, parent, dp, src, src_size, image) ->
+    let f = bs.load_image as fn(bool, ptr, ptr, ptr, u64, *ptr) -> u64
+    f(boot_policy, parent, dp, src, src_size, image)
+
+fn bs_start_image : (*BootServices, ptr, *u64, *ptr) -> u64
+  | (bs, image, exit_data_size, exit_data) ->
+    let f = bs.start_image as fn(ptr, *u64, *ptr) -> u64
+    f(image, exit_data_size, exit_data)
+
+fn bs_exit : (*BootServices, ptr, u64, u64, *u16) -> u64
+  | (bs, image, exit_status, data_size, exit_data) ->
+    let f = bs.exit_fn as fn(ptr, u64, u64, *u16) -> u64
+    f(image, exit_status, data_size, exit_data)
+
+-- §4  MEMORY MAP HELPERS
+
+struct MemoryMapInfo
+  map_size       : u64
+  map_key        : u64
+  desc_size      : u64
+  desc_version   : u32
+
+fn bs_get_memory_map_info : *BootServices -> (MemoryMapInfo, u64)
+  | bs ->
+    let mut map_size : u64 = 0u64
+    let mut map_key  : u64 = 0u64
+    let mut desc_sz  : u64 = 0u64
+    let mut desc_ver : u32 = 0u32
+    let f = bs.get_memory_map as fn(*u64, *os.uefi.EfiMemoryDescriptor, *u64, *u64, *u32) -> u64
+    -- First call with size=0 returns EFI_BUFFER_TOO_SMALL and sets map_size
+    let r = f(&map_size, 0 as *os.uefi.EfiMemoryDescriptor, &map_key, &desc_sz, &desc_ver)
+    (MemoryMapInfo { map_size: map_size, map_key: map_key, desc_size: desc_sz, desc_version: desc_ver }, r)
+
+fn bs_get_memory_map : (*BootServices, *u64, *os.uefi.EfiMemoryDescriptor, *u64, *u64, *u32) -> u64
+  | (bs, map_size, map, map_key, desc_size, desc_version) ->
+    let f = bs.get_memory_map as fn(*u64, *os.uefi.EfiMemoryDescriptor, *u64, *u64, *u32) -> u64
+    f(map_size, map, map_key, desc_size, desc_version)
+
+-- §5  USAGE EXAMPLES
+--
+-- Example 1: Allocate pool memory
+--   let bs = (efi_system_table as *SystemTable).boot_services as *BootServices
+--   let buf_ptr : ptr = 0 as ptr
+--   let r = bs_allocate_pool(bs, EFI_LOADER_DATA, 4096u64, &buf_ptr)
+--   assert(r == EFI_SUCCESS)
+--   assert(buf_ptr as i64 != 0i64)
+--   bs_free_pool(bs, buf_ptr)
+--
+-- Example 2: Locate a protocol
+--   let iface : ptr = 0 as ptr
+--   let guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID
+--   let r2 = bs_locate_protocol(bs, &guid, 0 as ptr, &iface)
+--   if r2 == EFI_SUCCESS
+--     -- iface now points to the GOP protocol
+--
+-- Example 3: Get memory map for ExitBootServices
+--   let (info, _) = bs_get_memory_map_info(bs)
+--   let buf_size = info.map_size + 2u64 * info.desc_size
+--   let buf : ptr = 0 as ptr
+--   bs_allocate_pool(bs, EFI_LOADER_DATA, buf_size, &buf)
+--   let mut sz = buf_size
+--   let mut key : u64 = 0u64; let mut dsz : u64 = 0u64; let mut dver : u32 = 0u32
+--   bs_get_memory_map(bs, &sz, buf as *EfiMemoryDescriptor, &key, &dsz, &dver)
+--   bs_exit_boot_services(bs, efi_handle, key)
+--   -- After this point, boot services are gone. Only runtime services remain.

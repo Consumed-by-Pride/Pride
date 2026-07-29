@@ -1,0 +1,4 @@
+-- EXPECT-CLEAN
+fn fact : i64 -> i64
+  | 0 -> 1
+  | n -> n * fact(n - 1)

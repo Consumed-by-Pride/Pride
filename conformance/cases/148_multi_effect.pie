@@ -1,0 +1,20 @@
+-- EXPECT-CLEAN
+effect Log
+  emit : i64 -> ()
+
+effect Counter
+  inc : () -> ()
+  get : () -> i64
+
+fn count_up : i64 -> () ! [Log, Counter]
+  | n ->
+      let mut i : i64 = 0
+      while i < n
+        Counter.inc()
+        Log.emit(i)
+        i = i + 1
+
+fn effect_row_check : i64 -> i64 ! [Log]
+  | n ->
+      Log.emit(n)
+      n + 1

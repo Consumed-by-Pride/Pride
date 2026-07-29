@@ -1,0 +1,26 @@
+-- EXPECT-CLEAN
+fn ws_frame_is_control : u8 -> bool
+  | op -> op >= 0x08u8
+
+fn ws_frame_is_data : u8 -> bool
+  | op -> op < 0x08u8 && op > 0x00u8
+
+fn ws_mask_byte : (u8, u8) -> u8
+  | (byte, key_byte) -> byte ^ key_byte
+
+fn ws_total_frame_size : (i64, bool) -> i64
+  | (payload_len, masked) ->
+    let mask_bytes : i64 = if masked then 4i64 else 0i64
+    let ext_bytes : i64 =
+      if payload_len < 126i64 then 0i64
+      else if payload_len < 65536i64 then 2i64
+      else 8i64
+    2i64 + ext_bytes + mask_bytes + payload_len
+
+fn ws_needs_masking : bool -> bool
+  | client_side -> client_side
+
+fn ws_close_code : (*u8, i64) -> u16
+  | (payload, len) ->
+    if len < 2i64 then 1000u16
+    else ((payload[0i64] as u16) << 8u16) | (payload[1i64] as u16)

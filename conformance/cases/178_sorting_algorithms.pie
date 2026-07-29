@@ -1,0 +1,36 @@
+-- EXPECT-CLEAN
+fn arr_min_pos : (*i64, i64) -> i64
+  | (arr, n) ->
+    let mut m : i64 = 0i64
+    let mut j : i64 = 1i64
+    while j < n
+      if arr[j] < arr[m] then m = j
+      j = j + 1i64
+    m
+
+fn is_sorted : (*i64, i64) -> bool
+  | (arr, n) ->
+    let mut i : i64 = 0i64
+    let mut ok : bool = true
+    while i < n - 1i64 && ok
+      if arr[i] > arr[i + 1i64] then ok = false
+      i = i + 1i64
+    ok
+
+fn arr_sum : (*i64, i64) -> i64
+  | (arr, n) ->
+    let mut s : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i < n
+      s = s + arr[i]
+      i = i + 1i64
+    s
+
+fn arr_max : (*i64, i64) -> i64
+  | (arr, n) ->
+    let mut m : i64 = arr[0i64]
+    let mut i : i64 = 1i64
+    while i < n
+      if arr[i] > m then m = arr[i]
+      i = i + 1i64
+    m

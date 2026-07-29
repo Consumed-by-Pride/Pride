@@ -1,0 +1,416 @@
+mod fmt.parse_float.decimal
+
+use os.linux
+
+-- Arbitrary-precision decimal for the slow-path float parser.
+
+-- "Simple Decimal Conversion" — Nigel Tao and Ken Thompson.
+-- https://nigeltao.github.io/blog/2020/parse-number-f64-simple.html
+-- Only called when both the fast path and Eisel-Lemire fail (near half-way cases).
+
+-- §1  CONSTANTS (f64 sizing)
+const MAX_DIGITS             : i64 = 768i64
+const MAX_DIGITS_WITHOUT_OVF : i64 = 19i64
+const DECIMAL_POINT_RANGE    : i64 = 2047i64
+const MIN_EXPONENT           : i64 = -324i64
+const MAX_EXPONENT           : i64 = 310i64
+const MAX_DECIMAL_DIGITS     : i64 = 18i64
+
+-- §2  DECIMAL STRUCT
+-- digits[0..num_digits) are the significant decimal digits in [0,9].
+-- decimal_point is the position of the decimal point relative to digits[0].
+--   e.g. "123.45" → digits=[1,2,3,4,5], decimal_point=3
+-- truncated = true if more digits existed beyond MAX_DIGITS (were dropped).
+
+struct Decimal
+  digits        : *u8
+  num_digits    : i64
+  decimal_point : i32
+  truncated     : bool
+
+fn decimal_new : () -> Decimal
+  | () ->
+    let d = os.linux.malloc(MAX_DIGITS) as *u8
+    os.linux.memset(d as ptr, 0i32, MAX_DIGITS as u64)
+    Decimal { digits: d, num_digits: 0i64, decimal_point: 0i32, truncated: false }
+
+fn decimal_free : *Decimal -> ()
+  | d -> if d.digits as i64 != 0i64 then os.linux.free(d.digits as ptr); d.digits = 0 as *u8
+
+-- §3  DIGIT OPERATIONS
+
+fn decimal_try_add_digit : (*Decimal, u8) -> ()
+  | (d, digit) ->
+    if d.num_digits < MAX_DIGITS
+      d.digits[d.num_digits] = digit
+    d.num_digits = d.num_digits + 1i64
+
+fn decimal_trim : *Decimal -> ()
+  | d ->
+    while d.num_digits != 0i64 && d.digits[d.num_digits - 1i64] == 0u8
+      d.num_digits = d.num_digits - 1i64
+
+fn decimal_digit_at : (*Decimal, i64) -> u8
+  | (d, i) ->
+    if i >= 0i64 && i < MAX_DIGITS then d.digits[i] else 0u8
+
+-- §4  ROUND (extract integer mantissa, round-to-nearest-even)
+-- Returns a u64 mantissa rounded at decimal_point digits.
+
+fn decimal_round : *Decimal -> u64
+  | d ->
+    if d.num_digits == 0i64 || d.decimal_point < 0i32 then 0u64
+    else if d.decimal_point > MAX_DECIMAL_DIGITS as i32 then 18446744073709551615u64  -- maxInt(u64)
+    else
+      let dp = d.decimal_point as i64
+      let mut n : u64 = 0u64
+      let mut i : i64 = 0i64
+      while i < dp
+        n = n *% 10u64
+        if i < d.num_digits
+          n = n +% d.digits[i] as u64
+        i = i + 1i64
+      -- round-to-nearest, tie-even
+      let mut round_up = false
+      if dp < d.num_digits
+        round_up = d.digits[dp] >= 5u8
+        if d.digits[dp] == 5u8 && dp + 1i64 == d.num_digits
+          round_up = d.truncated || (dp != 0i64 && (d.digits[dp - 1i64] & 1u8) != 0u8)
+      if round_up then n = n +% 1u64
+      n
+
+-- §5  NUMBER OF NEW DIGITS FROM LEFT SHIFT
+-- Table: pow2_to_pow5[shift] = (delta, cutoff_str)
+-- delta = number of extra decimal digits that 2^shift introduces
+-- cutoff = string representation of 5^shift (leading digits of 1/2^shift)
+-- If the current decimal is >= cutoff, one more digit is introduced.
+
+-- We store the table as two flat arrays: delta_tab[i] and cutoff_tab[i] (pointer to literal)
+-- Covers shifts 0..63 (the maximum shift in the algorithm is 60).
+
+-- delta values for shifts 0..63
+fn shift_delta : i64 -> i32
+  | shift ->
+    if shift == 0i64 then 0i32
+    else if shift == 1i64 then 1i32
+    else if shift == 2i64 then 1i32
+    else if shift == 3i64 then 1i32
+    else if shift == 4i64 then 2i32
+    else if shift == 5i64 then 2i32
+    else if shift == 6i64 then 2i32
+    else if shift == 7i64 then 3i32
+    else if shift == 8i64 then 3i32
+    else if shift == 9i64 then 3i32
+    else if shift == 10i64 then 4i32
+    else if shift == 11i64 then 4i32
+    else if shift == 12i64 then 4i32
+    else if shift == 13i64 then 4i32
+    else if shift == 14i64 then 5i32
+    else if shift == 15i64 then 5i32
+    else if shift == 16i64 then 5i32
+    else if shift == 17i64 then 6i32
+    else if shift == 18i64 then 6i32
+    else if shift == 19i64 then 6i32
+    else if shift == 20i64 then 7i32
+    else if shift == 21i64 then 7i32
+    else if shift == 22i64 then 7i32
+    else if shift == 23i64 then 7i32
+    else if shift == 24i64 then 8i32
+    else if shift == 25i64 then 8i32
+    else if shift == 26i64 then 8i32
+    else if shift == 27i64 then 9i32
+    else if shift == 28i64 then 9i32
+    else if shift == 29i64 then 9i32
+    else if shift == 30i64 then 10i32
+    else if shift == 31i64 then 10i32
+    else if shift == 32i64 then 10i32
+    else if shift == 33i64 then 10i32
+    else if shift == 34i64 then 11i32
+    else if shift == 35i64 then 11i32
+    else if shift == 36i64 then 11i32
+    else if shift == 37i64 then 12i32
+    else if shift == 38i64 then 12i32
+    else if shift == 39i64 then 12i32
+    else if shift == 40i64 then 13i32
+    else if shift == 41i64 then 13i32
+    else if shift == 42i64 then 13i32
+    else if shift == 43i64 then 13i32
+    else if shift == 44i64 then 14i32
+    else if shift == 45i64 then 14i32
+    else if shift == 46i64 then 14i32
+    else if shift == 47i64 then 15i32
+    else if shift == 48i64 then 15i32
+    else if shift == 49i64 then 15i32
+    else if shift == 50i64 then 16i32
+    else if shift == 51i64 then 16i32
+    else if shift == 52i64 then 16i32
+    else if shift == 53i64 then 16i32
+    else if shift == 54i64 then 17i32
+    else if shift == 55i64 then 17i32
+    else if shift == 56i64 then 17i32
+    else if shift == 57i64 then 18i32
+    else if shift == 58i64 then 18i32
+    else if shift == 59i64 then 18i32
+    else if shift == 60i64 then 19i32
+    else if shift == 61i64 then 19i32
+    else if shift == 62i64 then 19i32
+    else 19i32
+
+-- cutoff strings for shifts 0..63 (string representation of 5^shift)
+fn shift_cutoff : i64 -> ptr
+  | shift ->
+    if shift == 0i64 then "" as ptr
+    else if shift == 1i64 then "5" as ptr
+    else if shift == 2i64 then "25" as ptr
+    else if shift == 3i64 then "125" as ptr
+    else if shift == 4i64 then "625" as ptr
+    else if shift == 5i64 then "3125" as ptr
+    else if shift == 6i64 then "15625" as ptr
+    else if shift == 7i64 then "78125" as ptr
+    else if shift == 8i64 then "390625" as ptr
+    else if shift == 9i64 then "1953125" as ptr
+    else if shift == 10i64 then "9765625" as ptr
+    else if shift == 11i64 then "48828125" as ptr
+    else if shift == 12i64 then "244140625" as ptr
+    else if shift == 13i64 then "1220703125" as ptr
+    else if shift == 14i64 then "6103515625" as ptr
+    else if shift == 15i64 then "30517578125" as ptr
+    else if shift == 16i64 then "152587890625" as ptr
+    else if shift == 17i64 then "762939453125" as ptr
+    else if shift == 18i64 then "3814697265625" as ptr
+    else if shift == 19i64 then "19073486328125" as ptr
+    else if shift == 20i64 then "95367431640625" as ptr
+    else if shift == 21i64 then "476837158203125" as ptr
+    else if shift == 22i64 then "2384185791015625" as ptr
+    else if shift == 23i64 then "11920928955078125" as ptr
+    else if shift == 24i64 then "59604644775390625" as ptr
+    else if shift == 25i64 then "298023223876953125" as ptr
+    else if shift == 26i64 then "1490116119384765625" as ptr
+    else if shift == 27i64 then "7450580596923828125" as ptr
+    else if shift == 28i64 then "37252902984619140625" as ptr
+    else if shift == 29i64 then "186264514923095703125" as ptr
+    else if shift == 30i64 then "931322574615478515625" as ptr
+    else if shift == 31i64 then "4656612873077392578125" as ptr
+    else if shift == 32i64 then "23283064365386962890625" as ptr
+    else if shift == 33i64 then "116415321826934814453125" as ptr
+    else if shift == 34i64 then "582076609134674072265625" as ptr
+    else if shift == 35i64 then "2910383045673370361328125" as ptr
+    else if shift == 36i64 then "14551915228366851806640625" as ptr
+    else if shift == 37i64 then "72759576141834259033203125" as ptr
+    else if shift == 38i64 then "363797880709171295166015625" as ptr
+    else if shift == 39i64 then "1818989403545856475830078125" as ptr
+    else if shift == 40i64 then "9094947017729282379150390625" as ptr
+    else if shift == 41i64 then "45474735088646411895751953125" as ptr
+    else if shift == 42i64 then "227373675443232059478759765625" as ptr
+    else if shift == 43i64 then "1136868377216160297393798828125" as ptr
+    else if shift == 44i64 then "5684341886080801486968994140625" as ptr
+    else if shift == 45i64 then "28421709430404007434844970703125" as ptr
+    else if shift == 46i64 then "142108547152020037174224853515625" as ptr
+    else if shift == 47i64 then "710542735760100185871124267578125" as ptr
+    else if shift == 48i64 then "3552713678800500929355621337890625" as ptr
+    else if shift == 49i64 then "17763568394002504646778106689453125" as ptr
+    else if shift == 50i64 then "88817841970012523233890533447265625" as ptr
+    else if shift == 51i64 then "444089209850062616169452667236328125" as ptr
+    else if shift == 52i64 then "2220446049250313080847263336181640625" as ptr
+    else if shift == 53i64 then "11102230246251565404236316680908203125" as ptr
+    else if shift == 54i64 then "55511151231257827021181583404541015625" as ptr
+    else if shift == 55i64 then "277555756156289135105907917022705078125" as ptr
+    else if shift == 56i64 then "1387778780781445675529539585113525390625" as ptr
+    else if shift == 57i64 then "6938893903907228377647697925567626953125" as ptr
+    else if shift == 58i64 then "34694469519536141888238489627838134765625" as ptr
+    else if shift == 59i64 then "173472347597680709441192448139190673828125" as ptr
+    else if shift == 60i64 then "867361737988403547205962240695953369140625" as ptr
+    else if shift == 61i64 then "4336808689942017736029811203479766845703125" as ptr
+    else if shift == 62i64 then "21684043449710088680149056017398834228515625" as ptr
+    else "108420217248550443400745280086994171142578125" as ptr
+
+-- Count how many new decimal digits a left shift of `shift` bits introduces.
+fn num_digits_left_shift : (*Decimal, i64) -> i64
+  | (d, shift) ->
+    let delta = shift_delta(shift) as i64
+    let cutoff = shift_cutoff(shift) as *u8
+    let clen = os.linux.strlen(cutoff as ptr) as i64
+    if clen == 0i64 then delta
+    else
+      -- Compare d.digits[0..min(num_digits,clen)] to cutoff
+      let cmp_len = if d.num_digits < clen then d.num_digits else clen
+      let mut i : i64 = 0i64
+      while i < cmp_len
+        let dd = d.digits[i] + 48u8   -- convert digit to ASCII for comparison
+        let cd = cutoff[i]
+        if dd < cd then delta - 1i64
+        else if dd > cd then delta
+        i = i + 1i64
+      -- tied up to min(num_digits, clen)
+      if d.num_digits < clen then delta - 1i64 else delta
+
+-- §6  LEFT SHIFT: decimal * 2^shift (in-place)
+-- Implements the big-decimal multiply-by-2^shift algorithm.
+
+fn decimal_left_shift : (*Decimal, i64) -> ()
+  | (d, shift) ->
+    if d.num_digits == 0i64 then ()
+    else
+      let num_new_digits = num_digits_left_shift(d, shift)
+      let mut read_index  = d.num_digits
+      let mut write_index = d.num_digits + num_new_digits
+      let mut n : u64 = 0u64
+
+      -- process digits right-to-left
+      while read_index != 0i64
+        read_index  = read_index - 1i64
+        write_index = write_index - 1i64
+        n = n +% (d.digits[read_index] as u64 << shift as u64)
+        let quotient  = n / 10u64
+        let remainder = n - 10u64 *% quotient
+        if write_index < MAX_DIGITS
+          d.digits[write_index] = remainder as u8
+        else if remainder > 0u64
+          d.truncated = true
+        n = quotient
+
+      -- flush remaining carry
+      while n > 0u64
+        write_index = write_index - 1i64
+        let quotient  = n / 10u64
+        let remainder = n - 10u64 *% quotient
+        if write_index < MAX_DIGITS
+          d.digits[write_index] = remainder as u8
+        else if remainder > 0u64
+          d.truncated = true
+        n = quotient
+
+      d.num_digits = d.num_digits + num_new_digits
+      if d.num_digits > MAX_DIGITS then d.num_digits = MAX_DIGITS
+      d.decimal_point = d.decimal_point + num_new_digits as i32
+      decimal_trim(d)
+
+-- §7  RIGHT SHIFT: decimal * 2^-shift (in-place)
+-- Implements the big-decimal divide-by-2^shift algorithm.
+
+fn decimal_right_shift : (*Decimal, i64) -> ()
+  | (d, shift) ->
+    let mut read_index  : i64 = 0i64
+    let mut write_index : i64 = 0i64
+    let mut n : u64 = 0u64
+
+    -- accumulate digits until we have enough to produce output
+    let mask : u64 = (1u64 << shift as u64) -% 1u64
+
+    let mut pre_read = true
+    while pre_read
+      if read_index < d.num_digits
+        n = 10u64 *% n +% d.digits[read_index] as u64
+        read_index = read_index + 1i64
+        if (n >> shift as u64) == 0u64 then ()   -- keep accumulating
+        else pre_read = false
+      else if n == 0u64
+        ()   -- done
+        pre_read = false
+      else
+        -- pad with zeros until we can produce a digit
+        while (n >> shift as u64) == 0u64
+          n = 10u64 *% n
+          read_index = read_index + 1i64
+        pre_read = false
+
+    d.decimal_point = d.decimal_point - (read_index as i32 - 1i32)
+
+    -- clamp to avoid underflow
+    if d.decimal_point < -(DECIMAL_POINT_RANGE as i32)
+      d.num_digits = 0i64; d.decimal_point = 0i32; d.truncated = false
+    else
+      -- produce output digits
+      while read_index < d.num_digits
+        let new_digit = (n >> shift as u64) as u8
+        n = 10u64 *% (n & mask) +% d.digits[read_index] as u64
+        read_index = read_index + 1i64
+        d.digits[write_index] = new_digit
+        write_index = write_index + 1i64
+
+      -- flush remaining
+      while n > 0u64
+        let new_digit = (n >> shift as u64) as u8
+        n = 10u64 *% (n & mask)
+        if write_index < MAX_DIGITS
+          d.digits[write_index] = new_digit
+          write_index = write_index + 1i64
+        else if new_digit > 0u8
+          d.truncated = true
+
+      d.num_digits = write_index
+      decimal_trim(d)
+
+-- §8  PARSE (string → Decimal)
+-- Parses a decimal float string into a Decimal.
+-- Handles: optional sign (ignored — caller handles), digits, decimal point, exponent.
+-- No hex floats (those go through convert_hex.pie).
+
+fn decimal_parse : (*Decimal, ptr, i64) -> ()
+  | (d, s, slen) ->
+    let cs = s as *u8
+    let mut i : i64 = 0i64
+
+    -- skip underscores and leading zeros before the decimal point
+    while i < slen && (cs[i] == 48u8 || cs[i] == 95u8) then i = i + 1i64
+
+    -- integer digits
+    while i < slen && cs[i] >= 48u8 && cs[i] <= 57u8
+      if cs[i] != 95u8   -- skip underscores
+        decimal_try_add_digit(d, cs[i] - 48u8)
+      i = i + 1i64
+
+    -- decimal point
+    if i < slen && cs[i] == 46u8
+      i = i + 1i64
+      let marker = i
+
+      -- skip leading zeros after decimal point when integer part is zero
+      if d.num_digits == 0i64
+        while i < slen && cs[i] == 48u8 then i = i + 1i64
+
+      -- fractional digits (fast 8-at-a-time path skipped — do one-by-one for correctness)
+      while i < slen && cs[i] >= 48u8 && cs[i] <= 57u8
+        if cs[i] != 95u8
+          decimal_try_add_digit(d, cs[i] - 48u8)
+        i = i + 1i64
+
+      d.decimal_point = (marker as i32) - (i as i32)
+
+    -- if no decimal point was seen, all digits are before the point
+    if d.num_digits != 0i64 && d.decimal_point == 0i32
+      d.decimal_point = d.num_digits as i32
+
+    -- adjust for trailing zeros that were skipped
+    
+    if d.num_digits != 0i64
+      -- walk back from end of original string (before exponent) to count trailing zeros
+      let mut n_trail : i64 = 0i64
+      let scan_end = if i < slen && (cs[i] == 101u8 || cs[i] == 69u8) then i else i
+      let mut k = scan_end - 1i64
+      while k >= 0i64
+        if cs[k] == 48u8 then n_trail = n_trail + 1i64
+        else if cs[k] != 46u8 then k = -1i64   -- break
+        k = k - 1i64
+      d.decimal_point = d.decimal_point + n_trail as i32
+      d.num_digits = d.num_digits - n_trail
+      d.decimal_point = d.decimal_point + d.num_digits as i32
+      if d.num_digits > MAX_DIGITS
+        d.truncated = true
+        d.num_digits = MAX_DIGITS
+
+    -- exponent
+    if i < slen && (cs[i] == 101u8 || cs[i] == 69u8)
+      i = i + 1i64
+      let neg_exp = if i < slen && cs[i] == 45u8 then i = i + 1i64; true
+                    else if i < slen && cs[i] == 43u8 then i = i + 1i64; false
+                    else false
+      let mut exp_num : i32 = 0i32
+      while i < slen && cs[i] >= 48u8 && cs[i] <= 57u8
+        if exp_num < 65536i32 then exp_num = 10i32 *% exp_num + cs[i] as i32 - 48i32
+        i = i + 1i64
+      d.decimal_point = d.decimal_point + (if neg_exp then -exp_num else exp_num)
+
+    -- zero-pad to max_digits_without_overflow (required for round() correctness) correctness)
+    let mut pad = d.num_digits
+    while pad < MAX_DIGITS_WITHOUT_OVF then d.digits[pad] = 0u8; pad = pad + 1i64

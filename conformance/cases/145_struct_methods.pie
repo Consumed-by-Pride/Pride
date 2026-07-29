@@ -1,0 +1,43 @@
+-- EXPECT-CLEAN
+type Vec2 = struct
+  x : f64
+  y : f64
+
+fn vec2_add : (Vec2, Vec2) -> Vec2
+  | (a, b) -> Vec2 { x: a.x + b.x, y: a.y + b.y }
+
+fn vec2_scale : (Vec2, f64) -> Vec2
+  | (v, s) -> Vec2 { x: v.x * s, y: v.y * s }
+
+fn vec2_dot : (Vec2, Vec2) -> f64
+  | (a, b) -> a.x * b.x + a.y * b.y
+
+fn vec2_len_sq : Vec2 -> f64
+  | v -> v.x * v.x + v.y * v.y
+
+fn vec2_neg : Vec2 -> Vec2
+  | v -> Vec2 { x: 0.0 - v.x, y: 0.0 - v.y }
+
+type Vec3 = struct
+  x : f64
+  y : f64
+  z : f64
+
+fn vec3_add : (Vec3, Vec3) -> Vec3
+  | (a, b) -> Vec3 { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }
+
+fn vec3_cross : (Vec3, Vec3) -> Vec3
+  | (a, b) -> Vec3 {
+      x: a.y * b.z - a.z * b.y,
+      y: a.z * b.x - a.x * b.z,
+      z: a.x * b.y - a.y * b.x
+    }
+
+fn vec3_dot : (Vec3, Vec3) -> f64
+  | (a, b) -> a.x * b.x + a.y * b.y + a.z * b.z
+
+fn vec3_scale : (Vec3, f64) -> Vec3
+  | (v, s) -> Vec3 { x: v.x * s, y: v.y * s, z: v.z * s }
+
+fn vec3_neg : Vec3 -> Vec3
+  | v -> Vec3 { x: 0.0 - v.x, y: 0.0 - v.y, z: 0.0 - v.z }

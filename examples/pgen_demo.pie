@@ -1,0 +1,25 @@
+-- Pattern-generation rules (pgen): algebraic rewrite templates the
+-- optimizer matches against SSI expressions. `fmaf` is the libc
+-- float fused-multiply-add; declared here like any called name.
+
+fn fmaf : (f32, f32, f32) -> f32 #extern("fmaf") #cc(c)
+
+pgen elim_add_zero<T> ->
+  [x : T]
+  where [x + 0]
+  ↦ x
+
+pgen mul_shift<T> ->
+  [x : T]
+  where [x * 2]
+  ↦ x << 1
+
+pgen fma<T> ->
+  [a : T, b : T, c : T]
+  where [a * b + c]
+  ↦ fmaf(a, b, c)
+
+pgen guard_null<T> ->
+  [p : T]
+  where [p]
+  ↦ p

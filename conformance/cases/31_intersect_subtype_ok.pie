@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+type PosI = i32 ∩ i32
+fn want : i32 -> i32
+  | _x -> 0
+fn caller : PosI -> i32
+  | p -> want(p)

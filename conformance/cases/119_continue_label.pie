@@ -1,0 +1,11 @@
+-- EXPECT-CLEAN
+fn sum_skip : i32 -> i32
+  | n ->
+      let mut s : i32 = 0i32
+      let mut i : i32 = 0i32
+      while i < n
+        i = i + 1i32
+        if i == 3i32
+          continue 'loop
+        s = s + i
+      s

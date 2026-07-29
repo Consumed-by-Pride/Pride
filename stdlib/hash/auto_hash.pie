@@ -1,0 +1,203 @@
+mod hash.auto_hash
+
+use os.linux
+use hash.wyhash
+use hash.fnv
+use hash.siphash
+
+-- Auto-hash dispatch: hash any Pride primitive or composite type.
+
+-- Provides hash_one/hash_many for use by hash_map.pie's default context.
+
+-- §1  HASH STRATEGY ENUM
+-- Determines how composite types are hashed.
+const HASH_STRATEGY_DEEP   : i64 = 0i64  -- hash all fields recursively
+const HASH_STRATEGY_SHALLOW : i64 = 1i64 -- hash as raw bytes
+const HASH_STRATEGY_IDENTITY : i64 = 2i64 -- hash address/value directly
+
+-- §2  PRIMITIVE HASH DISPATCH
+-- All primitive types reduce to a u64 hasher feed.
+
+fn hash_u8  : u8  -> u64 | v -> wyhash.wy_hash_u64(v as u64)
+fn hash_u16 : u16 -> u64 | v -> wyhash.wy_hash_u64(v as u64)
+fn hash_u32 : u32 -> u64 | v -> wyhash.wy_hash_u64(v as u64)
+fn hash_u64 : u64 -> u64 | v -> wyhash.wy_hash_u64(v)
+fn hash_i8  : i8  -> u64 | v -> wyhash.wy_hash_u64(v as u64)
+fn hash_i16 : i16 -> u64 | v -> wyhash.wy_hash_u64(v as u64)
+fn hash_i32 : i32 -> u64 | v -> wyhash.wy_hash_u64(v as u64)
+fn hash_i64 : i64 -> u64 | v -> wyhash.wy_hash_u64(v as u64)
+fn hash_bool : bool -> u64 | v -> if v then 1u64 else 0u64
+fn hash_f32  : f32  -> u64 | v -> wyhash.wy_hash_u64(v as u64)
+fn hash_f64  : f64  -> u64 | v -> wyhash.wy_hash_f64(v)
+fn hash_ptr  : ptr  -> u64 | v -> wyhash.wy_hash_ptr(v)
+
+-- §3  BYTE SLICE HASH (the core primitive)
+
+fn hash_bytes : (ptr, i64) -> u64
+  | (data, len) -> wyhash.wyhash(data, len, 0u64)
+
+fn hash_cstr : ptr -> u64
+  | s -> wyhash.wyhash64(s)
+
+fn hash_bytes_with_seed : (ptr, i64, u64) -> u64
+  | (data, len, seed) -> wyhash.wyhash(data, len, seed)
+
+-- §4  STREAMING HASHER (for hashing multiple fields incrementally)
+-- Wraps wyhash streaming so composite types can feed fields one by one.
+
+struct AutoHasher
+  inner : wyhash.Wyhash
+
+fn autohasher_new : u64 -> AutoHasher
+  | seed -> AutoHasher { inner: wyhash.wyhash_init(seed) }
+
+fn autohasher_new_default : () -> AutoHasher
+  | () -> autohasher_new(0u64)
+
+fn autohasher_destroy : *AutoHasher -> ()
+  | h -> wyhash.wyhash_destroy(&h.inner)
+
+fn autohasher_update : (*AutoHasher, ptr, i64) -> ()
+  | (h, data, len) -> wyhash.wyhash_update(&h.inner, data, len)
+
+fn autohasher_update_u8  : (*AutoHasher, u8)  -> () | (h, v) -> wyhash.wyhash_update_u8(&h.inner, v)
+fn autohasher_update_u16 : (*AutoHasher, u16) -> () | (h, v) -> wyhash.wyhash_update_u32(&h.inner, v as u32)
+fn autohasher_update_u32 : (*AutoHasher, u32) -> () | (h, v) -> wyhash.wyhash_update_u32(&h.inner, v)
+fn autohasher_update_u64 : (*AutoHasher, u64) -> () | (h, v) -> wyhash.wyhash_update_u64(&h.inner, v)
+fn autohasher_update_i64 : (*AutoHasher, i64) -> () | (h, v) -> wyhash.wyhash_update_i64(&h.inner, v)
+fn autohasher_update_bool : (*AutoHasher, bool) -> () | (h, v) -> autohasher_update_u8(h, if v then 1u8 else 0u8)
+fn autohasher_update_ptr  : (*AutoHasher, ptr)  -> () | (h, v) -> autohasher_update_u64(h, v as u64)
+fn autohasher_update_f64  : (*AutoHasher, f64)  -> () | (h, v) -> autohasher_update_u64(h, v as u64)
+
+fn autohasher_update_cstr : (*AutoHasher, ptr) -> ()
+  | (h, s) -> wyhash.wyhash_update_str(&h.inner, s)
+
+fn autohasher_final : *AutoHasher -> u64
+  | h -> wyhash.wyhash_final(&h.inner)
+
+-- §5  HASH COMBINATION UTILITIES
+
+fn hash_combine : (u64, u64) -> u64
+  | (a, b) ->
+    -- Golden-ratio-based combine, avalanche-safe
+    a ^ b +% 0x9e3779b97f4a7c15u64 +% (a << 6u64) +% (a >> 2u64)
+
+fn hash_combine3 : (u64, u64, u64) -> u64
+  | (a, b, c) -> hash_combine(hash_combine(a, b), c)
+
+fn hash_combine4 : (u64, u64, u64, u64) -> u64
+  | (a, b, c, d) -> hash_combine(hash_combine3(a, b, c), d)
+
+fn hash_combine_n : (ptr, i64) -> u64
+  | (hashes, n) ->
+    let h = hashes as *u64
+    let mut acc = 0u64; let mut i : i64 = 0i64
+    while i < n then acc = hash_combine(acc, h[i]); i = i + 1i64
+    acc
+
+-- §6  ARRAY HASH
+
+fn hash_u8_array : (ptr, i64) -> u64
+  | (arr, len) -> hash_bytes(arr, len)
+
+fn hash_u64_array : (ptr, i64) -> u64
+  | (arr, len) -> hash_bytes(arr, len * 8i64)
+
+fn hash_i64_array : (ptr, i64) -> u64
+  | (arr, len) -> hash_bytes(arr, len * 8i64)
+
+fn hash_ptr_array : (ptr, i64) -> u64
+  | (arr, len) -> hash_bytes(arr, len * 8i64)
+
+fn hash_cstr_array : (ptr, i64) -> u64
+  | (arr, n) ->
+    let mut h = autohasher_new_default()
+    let strs = arr as *ptr; let mut i : i64 = 0i64
+    while i < n
+      autohasher_update_cstr(&h, strs[i] as *u8)
+      autohasher_update_u8(&h, 0u8)   -- separator
+      i = i + 1i64
+    let v = autohasher_final(&h)
+    autohasher_destroy(&h); v
+
+-- §7  KEYED HASH (for DoS-resistant table hashing)
+-- Generates a random key at startup, use it for all table hashes.
+
+let auto_key_inited : bool = false
+let auto_key_k0     : u64  = 0u64
+let auto_key_k1     : u64  = 0u64
+
+fn auto_key_init : () -> ()
+  | () ->
+    if !auto_key_inited
+      let k = os.linux.malloc(16i64) as *u64
+      os.linux.getrandom_exact(k as ptr, 16i64)
+      auto_key_k0 = k[0i64]; auto_key_k1 = k[1i64]
+      os.linux.free(k as ptr); auto_key_inited = true
+
+fn hash_keyed_str : ptr -> u64
+  | s ->
+    auto_key_init()
+    siphash.siphash13(s, os.linux.strlen(s) as i64, auto_key_k0, auto_key_k1)
+
+fn hash_keyed_bytes : (ptr, i64) -> u64
+  | (data, len) ->
+    auto_key_init()
+    siphash.siphash13(data, len, auto_key_k0, auto_key_k1)
+
+fn hash_keyed_u64 : u64 -> u64
+  | v ->
+    auto_key_init()
+    wyhash.wy_combine(v, auto_key_k0 ^ auto_key_k1)
+
+fn hash_keyed_i64 : i64 -> u64
+  | v -> hash_keyed_u64(v as u64)
+
+fn hash_keyed_ptr : ptr -> u64
+  | p -> hash_keyed_u64(p as u64)
+
+-- §8  VERIFY UTILITIES (for testing hash quality)
+
+fn hash_verify_distribution : (ptr, i64, i64) -> f64
+  | (keys, n_keys, n_buckets) ->
+    -- Chi-squared test for uniform distribution
+    -- Returns chi-squared statistic (lower = better)
+    let counts = os.linux.malloc(n_buckets * 8i64) as *i64
+    os.linux.memset(counts as ptr, 0i32, (n_buckets * 8i64) as u64)
+    let strs = keys as *ptr; let mut i : i64 = 0i64
+    while i < n_keys
+      let h = hash_cstr(strs[i] as *u8)
+      let bucket = (h as i64 & (n_buckets - 1i64)) as i64
+      counts[bucket] = counts[bucket] + 1i64
+      i = i + 1i64
+    let expected = n_keys as f64 / n_buckets as f64
+    let mut chi2 = 0.0f64; let mut j : i64 = 0i64
+    while j < n_buckets
+      let diff = counts[j] as f64 - expected
+      chi2 = chi2 + diff * diff / expected
+      j = j + 1i64
+    os.linux.free(counts as ptr); chi2
+
+fn hash_avalanche_score : (ptr, i64) -> f64
+  | (data, len) ->
+    -- Measures bit independence: flip each input bit, count output bit changes
+    let base = hash_bytes(data, len)
+    let mut total_flips : i64 = 0i64
+    let mut perfect_flips = len * 8i64 * 32i64  -- expect ~32 output bits to flip per input bit flip
+    let tmp = os.linux.malloc(len) as *u8
+    os.linux.memcpy(tmp as ptr, data, len as u64)
+    let mut bit : i64 = 0i64
+    while bit < len * 8i64
+      let byte_idx = bit / 8i64; let bit_off = bit % 8i64
+      tmp[byte_idx] = tmp[byte_idx] ^ (1u8 << bit_off as u8)
+      let h = hash_bytes(tmp as ptr, len)
+      let xor = h ^ base
+      -- count flipped bits
+      let mut xv = xor; let mut flips : i64 = 0i64
+      while xv != 0u64 then flips = flips + 1i64; xv = xv & (xv - 1u64)
+      total_flips = total_flips + flips
+      -- restore
+      tmp[byte_idx] = tmp[byte_idx] ^ (1u8 << bit_off as u8)
+      bit = bit + 1i64
+    os.linux.free(tmp as ptr)
+    total_flips as f64 / perfect_flips as f64

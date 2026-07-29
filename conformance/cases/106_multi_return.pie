@@ -1,0 +1,5 @@
+-- EXPECT-CLEAN
+fn sign : i32 -> i32
+  | n, n > 0  -> 1i32
+  | n, n < 0  -> 0i32 - 1i32
+  | _         -> 0i32

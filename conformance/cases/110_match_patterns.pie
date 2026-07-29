@@ -1,0 +1,6 @@
+-- Test: match with multiple patterns
+fn describe : i64 -> i64
+  | 0 -> 0i64
+  | 1 -> 1i64
+  | 2 -> 4i64
+  | n -> n * n

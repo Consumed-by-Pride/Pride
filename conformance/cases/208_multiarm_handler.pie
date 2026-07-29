@@ -1,0 +1,18 @@
+-- EXPECT-CLEAN
+effect State
+  get : () -> i64
+  put : i64 -> ()
+
+fn counter : () -> i64 ! [State]
+  | () ->
+    let v : i64 = State.get()
+    State.put(v + 1i64)
+    State.get()
+
+fn sum_n : i64 -> i64 ! [State]
+  | n ->
+    let v : i64 = State.get()
+    if n <= 0i64 then v
+    else
+      State.put(v + n)
+      sum_n(n - 1i64)

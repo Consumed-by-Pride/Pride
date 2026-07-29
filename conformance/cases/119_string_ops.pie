@@ -1,0 +1,9 @@
+-- Test: string literal operations
+fn str_first_byte : *u8 -> u8
+  | s -> s[0i64]
+
+fn str_nth_byte : (*u8, i64) -> u8
+  | (s, n) -> s[n]
+
+fn str_ptr_add : (*u8, i64) -> *u8
+  | (s, n) -> s + n

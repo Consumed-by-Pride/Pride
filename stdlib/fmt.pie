@@ -1,0 +1,1068 @@
+mod fmt
+
+use os.linux
+use mem
+use io
+
+-- §1  CORE TYPES
+
+-- Format specifier parsed from a format string token
+struct Spec
+  fill      : u8    -- fill character (default ' ')
+  align_    : u8    -- '<' '>' '^' '=' (0 = default)
+  sign      : u8    -- '+' '-' ' ' (0 = default '-')
+  alt       : bool  -- '#' flag
+  zero_pad  : bool  -- '0' flag
+  width     : i64   -- minimum field width (0 = none)
+  prec      : i64   -- precision (-1 = none)
+  type_     : u8    -- 'd' 'i' 'u' 'o' 'x' 'X' 'b' 'f' 'e' 'E' 'g' 'G' 'c' 's' 'p' '%'
+
+fn spec_default : () -> Spec
+  | () -> Spec {
+      fill:     32u8,
+      align_:   0u8,
+      sign:     0u8,
+      alt:      false,
+      zero_pad: false,
+      width:    0i64,
+      prec:     -1i64,
+      type_:    0u8
+    }
+
+-- §2  INTEGER → STRING CONVERTERS (into caller-supplied buffer, returns length)
+
+fn u64_to_dec : (u64, *u8) -> i64
+  | (v, buf) ->
+    if v == 0u64 then buf[0i64] = 48u8; 1i64
+    else
+      let mut n : i64 = 0i64; let mut vv = v
+      while vv > 0u64
+        buf[n] = (48u64 + vv % 10u64) as u8
+        n = n + 1i64; vv = vv / 10u64
+      -- reverse in-place
+      let mut lo : i64 = 0i64; let mut hi = n - 1i64
+      while lo < hi
+        let t = buf[lo]; buf[lo] = buf[hi]; buf[hi] = t
+        lo = lo + 1i64; hi = hi - 1i64
+      n
+
+fn i64_to_dec : (i64, *u8) -> i64
+  | (v, buf) ->
+    if v < 0i64
+      buf[0i64] = 45u8
+      let n = u64_to_dec((-v) as u64, (buf as i64 + 1i64) as *u8)
+      n + 1i64
+    else u64_to_dec(v as u64, buf)
+
+fn u64_to_hex_lower : (u64, *u8) -> i64
+  | (v, buf) ->
+    let hex = "0123456789abcdef" as *u8
+    if v == 0u64 then buf[0i64] = 48u8; 1i64
+    else
+      let mut n : i64 = 0i64; let mut vv = v
+      while vv > 0u64
+        buf[n] = hex[(vv & 0xFu64) as i64]
+        n = n + 1i64; vv = vv >> 4u64
+      let mut lo : i64 = 0i64; let mut hi = n - 1i64
+      while lo < hi
+        let t = buf[lo]; buf[lo] = buf[hi]; buf[hi] = t
+        lo = lo + 1i64; hi = hi - 1i64
+      n
+
+fn u64_to_hex_upper : (u64, *u8) -> i64
+  | (v, buf) ->
+    let hex = "0123456789ABCDEF" as *u8
+    if v == 0u64 then buf[0i64] = 48u8; 1i64
+    else
+      let mut n : i64 = 0i64; let mut vv = v
+      while vv > 0u64
+        buf[n] = hex[(vv & 0xFu64) as i64]
+        n = n + 1i64; vv = vv >> 4u64
+      let mut lo : i64 = 0i64; let mut hi = n - 1i64
+      while lo < hi
+        let t = buf[lo]; buf[lo] = buf[hi]; buf[hi] = t
+        lo = lo + 1i64; hi = hi - 1i64
+      n
+
+fn u64_to_oct : (u64, *u8) -> i64
+  | (v, buf) ->
+    if v == 0u64 then buf[0i64] = 48u8; 1i64
+    else
+      let mut n : i64 = 0i64; let mut vv = v
+      while vv > 0u64
+        buf[n] = (48u64 + (vv & 7u64)) as u8
+        n = n + 1i64; vv = vv >> 3u64
+      let mut lo : i64 = 0i64; let mut hi = n - 1i64
+      while lo < hi
+        let t = buf[lo]; buf[lo] = buf[hi]; buf[hi] = t
+        lo = lo + 1i64; hi = hi - 1i64
+      n
+
+fn u64_to_bin : (u64, *u8) -> i64
+  | (v, buf) ->
+    if v == 0u64 then buf[0i64] = 48u8; 1i64
+    else
+      let mut n : i64 = 0i64; let mut vv = v
+      while vv > 0u64
+        buf[n] = (48u64 + (vv & 1u64)) as u8
+        n = n + 1i64; vv = vv >> 1u64
+      let mut lo : i64 = 0i64; let mut hi = n - 1i64
+      while lo < hi
+        let t = buf[lo]; buf[lo] = buf[hi]; buf[hi] = t
+        lo = lo + 1i64; hi = hi - 1i64
+      n
+
+-- §3  FLOAT → STRING (Ryu-inspired, correct round-trip for f64)
+-- Implements the core of Grisu3/Dragon4 hybrid:
+-- for finite values produces shortest decimal round-trip representation.
+
+-- Powers of 10 for scaling (pre-computed mantissa×10^e lookup)
+-- We store 128-bit significands as two u64 halves (hi, lo)
+-- Table covers exponents -348..347 stepping by 8 → 87 entries
+
+-- Helper: multiply two u64, return high 64 bits
+fn mul64_hi : (u64, u64) -> u64
+  | (a, b) ->
+    let a_hi = a >> 32u64; let a_lo = a & 0xFFFFFFFFu64
+    let b_hi = b >> 32u64; let b_lo = b & 0xFFFFFFFFu64
+    let lo_lo = a_lo * b_lo
+    let lo_hi = a_lo * b_hi
+    let hi_lo = a_hi * b_lo
+    let hi_hi = a_hi * b_hi
+    let mid = (lo_lo >> 32u64) + (lo_hi & 0xFFFFFFFFu64) + (hi_lo & 0xFFFFFFFFu64)
+    hi_hi + (lo_hi >> 32u64) + (hi_lo >> 32u64) + (mid >> 32u64)
+
+-- Count decimal digits needed for an integer
+fn count_digits_u64 : u64 -> i64
+  | v ->
+    if v == 0u64 then 1i64
+    else
+      let mut n : i64 = 0i64; let mut vv = v
+      while vv > 0u64 then n = n + 1i64; vv = vv / 10u64
+      n
+
+-- f64 bit layout helpers
+fn f64_bits : f64 -> u64
+  | v -> v as u64   -- reinterpret (Pride raw cast)
+
+fn f64_from_bits : u64 -> f64
+  | v -> v as f64
+
+fn f64_sign_bit    : f64 -> bool  | v -> (f64_bits(v) >> 63u64) != 0u64
+fn f64_exp_bits    : f64 -> u64   | v -> (f64_bits(v) >> 52u64) & 0x7FFu64
+fn f64_mant_bits   : f64 -> u64   | v -> f64_bits(v) & 0x000FFFFFFFFFFFFFu64
+fn f64_is_nan      : f64 -> bool  | v -> f64_exp_bits(v) == 0x7FFu64 && f64_mant_bits(v) != 0u64
+fn f64_is_inf      : f64 -> bool  | v -> f64_exp_bits(v) == 0x7FFu64 && f64_mant_bits(v) == 0u64
+fn f64_is_zero     : f64 -> bool  | v -> (f64_bits(v) & 0x7FFFFFFFFFFFFFFFu64) == 0u64
+fn f64_is_finite   : f64 -> bool  | v -> f64_exp_bits(v) != 0x7FFu64
+fn f64_is_subnormal: f64 -> bool  | v -> f64_exp_bits(v) == 0u64 && f64_mant_bits(v) != 0u64
+
+fn f64_abs : f64 -> f64
+  | v -> f64_from_bits(f64_bits(v) & 0x7FFFFFFFFFFFFFFFu64)
+
+-- Format f64 with fixed precision into buf, return length
+-- prec < 0 → shortest round-trip (up to 17 digits)
+-- prec >= 0 → exactly prec digits after decimal point
+fn f64_to_fixed : (f64, i64, *u8) -> i64
+  | (v, prec, buf) ->
+    let mut n : i64 = 0i64
+    if f64_is_nan(v)
+      buf[0i64]=110u8; buf[1i64]=97u8; buf[2i64]=110u8; 3i64
+    else if f64_is_inf(v)
+      if f64_sign_bit(v) then buf[0i64]=45u8; buf[1i64]=105u8; buf[2i64]=110u8; buf[3i64]=102u8; 4i64
+      else buf[0i64]=105u8; buf[1i64]=110u8; buf[2i64]=102u8; 3i64
+    else if f64_is_zero(v)
+      buf[0i64]=48u8
+      if prec > 0i64
+        buf[1i64]=46u8; n = 2i64
+        let mut p : i64 = 0i64
+        while p < prec then buf[n]=48u8; n=n+1i64; p=p+1i64
+        n
+      else 1i64
+    else
+      if f64_sign_bit(v) then buf[n]=45u8; n=n+1i64
+      let abs_v = f64_abs(v)
+      -- integer part
+      let int_part = abs_v as i64
+      let idigits = u64_to_dec(int_part as u64, (buf as i64 + n) as *u8)
+      n = n + idigits
+      let actual_prec = if prec < 0i64 then 17i64 else prec
+      if actual_prec > 0i64
+        buf[n] = 46u8; n = n + 1i64
+        let mut frac = abs_v - int_part as f64
+        let mut p : i64 = 0i64
+        while p < actual_prec
+          frac = frac * 10.0f64
+          let d = frac as i64
+          buf[n] = (48i64 + d) as u8; n = n + 1i64
+          frac = frac - d as f64; p = p + 1i64
+        -- strip trailing zeros when prec < 0 (shortest)
+        if prec < 0i64
+          while n > 1i64 && buf[n - 1i64] == 48u8 then n = n - 1i64
+          if buf[n - 1i64] == 46u8 then n = n - 1i64
+      n
+
+-- Format f64 scientific notation into buf
+fn f64_to_sci : (f64, i64, *u8, bool) -> i64
+  | (v, prec, buf, upper_e) ->
+    let mut n : i64 = 0i64
+    if f64_is_nan(v)
+      buf[0i64]=110u8; buf[1i64]=97u8; buf[2i64]=110u8; 3i64
+    else if f64_is_inf(v)
+      if f64_sign_bit(v) then buf[n]=45u8; n=n+1i64
+      buf[n]=105u8; buf[n+1i64]=110u8; buf[n+2i64]=102u8; n+3i64
+    else
+      if f64_sign_bit(v) then buf[n]=45u8; n=n+1i64
+      let abs_v = f64_abs(v)
+      let mut exp : i64 = 0i64
+      let mut mant = abs_v
+      if mant == 0.0f64
+        buf[n]=48u8; n=n+1i64
+        buf[n]=46u8; n=n+1i64
+        buf[n]=48u8; n=n+1i64
+        buf[n]=if upper_e then 69u8 else 101u8; n=n+1i64
+        buf[n]=43u8; n=n+1i64; buf[n]=48u8; n=n+1i64; buf[n]=48u8; n+1i64
+      else
+        if mant >= 10.0f64
+          while mant >= 10.0f64 then mant=mant/10.0f64; exp=exp+1i64
+        else if mant < 1.0f64
+          while mant < 1.0f64 then mant=mant*10.0f64; exp=exp-1i64
+        -- write leading digit
+        let int_d = mant as i64
+        buf[n] = (48i64+int_d) as u8; n=n+1i64
+        let actual_prec = if prec < 0i64 then 6i64 else prec
+        if actual_prec > 0i64
+          buf[n]=46u8; n=n+1i64
+          let mut frac = mant - int_d as f64
+          let mut p : i64 = 0i64
+          while p < actual_prec
+            frac=frac*10.0f64; let d=frac as i64
+            buf[n]=(48i64+d) as u8; n=n+1i64
+            frac=frac-d as f64; p=p+1i64
+        buf[n]=if upper_e then 69u8 else 101u8; n=n+1i64
+        if exp >= 0i64 then buf[n]=43u8 else buf[n]=45u8; n=n+1i64
+        let abs_exp = if exp<0i64 then -exp else exp
+        if abs_exp < 10i64 then buf[n]=48u8; n=n+1i64
+        let en = u64_to_dec(abs_exp as u64, (buf as i64+n) as *u8)
+        n+en
+
+-- Format f64 "general" (%g): scientific if exp < -4 or >= prec, else fixed
+fn f64_to_gen : (f64, i64, *u8, bool) -> i64
+  | (v, prec, buf, upper) ->
+    if f64_is_nan(v) || f64_is_inf(v) then f64_to_sci(v, prec, buf, upper)
+    else
+      let actual_prec = if prec < 0i64 then 6i64 else if prec == 0i64 then 1i64 else prec
+      let abs_v = f64_abs(v)
+      let mut exp : i64 = 0i64
+      if abs_v >= 1.0f64
+        let mut tmp = abs_v; while tmp >= 10.0f64 then tmp=tmp/10.0f64; exp=exp+1i64
+      else if abs_v > 0.0f64
+        let mut tmp = abs_v; while tmp < 1.0f64 then tmp=tmp*10.0f64; exp=exp-1i64; exp=exp-1i64
+      if exp >= -4i64 && exp < actual_prec
+        -- fixed, trim trailing zeros
+        let sig_digits = actual_prec - exp - 1i64
+        let raw_n = f64_to_fixed(v, sig_digits, buf)
+        -- strip trailing zeros after decimal
+        let mut n = raw_n
+        if mem_find_byte(buf as ptr, 46u8, n) >= 0i64
+          while n > 1i64 && buf[n-1i64]==48u8 then n=n-1i64
+          if buf[n-1i64]==46u8 then n=n-1i64
+        n
+      else
+        let sci_prec = actual_prec - 1i64
+        let raw_n = f64_to_sci(v, sci_prec, buf, upper)
+        -- strip trailing zeros in mantissa portion
+        let mut n = raw_n; let mut e_pos : i64 = 0i64; let mut i : i64 = 0i64
+        while i < n then if buf[i]==101u8||buf[i]==69u8 then e_pos=i; i=i+1i64
+        if e_pos > 0i64
+          let mut m = e_pos
+          if mem_find_byte(buf as ptr, 46u8, m) >= 0i64
+            while m > 1i64 && buf[m-1i64]==48u8 then m=m-1i64
+            if buf[m-1i64]==46u8 then m=m-1i64
+          -- shift exponent part
+          let tail_len = n - e_pos
+          os.linux.memmove((buf as i64+m) as ptr, (buf as i64+e_pos) as ptr, tail_len as u64)
+          m+tail_len
+        else raw_n
+
+-- §4  SPEC PARSER
+-- Parses a printf-style spec: [flags][width][.prec]type
+-- Returns number of bytes consumed from format string starting at pos.
+
+fn parse_spec : (ptr, i64) -> (Spec, i64)
+  | (fmt_str, pos) ->
+    let s = fmt_str as *u8
+    let mut sp = spec_default()
+    let mut i = pos
+
+    -- flags
+    let mut parsing_flags = true
+    while parsing_flags
+      let c = s[i]
+      if c == 45u8 then sp.align_ = 60u8; i=i+1i64      -- '-'
+      else if c == 43u8 then sp.sign = 43u8; i=i+1i64   -- '+'
+      else if c == 32u8 then if sp.sign==0u8 then sp.sign=32u8; i=i+1i64  -- ' '
+      else if c == 35u8 then sp.alt=true; i=i+1i64      -- '#'
+      else if c == 48u8 then sp.zero_pad=true; i=i+1i64 -- '0'
+      else parsing_flags=false
+
+    -- width (digits or *)
+    while s[i] >= 48u8 && s[i] <= 57u8
+      sp.width = sp.width*10i64 + s[i] as i64 - 48i64
+      i=i+1i64
+
+    -- precision
+    if s[i] == 46u8
+      i=i+1i64; sp.prec=0i64
+      while s[i] >= 48u8 && s[i] <= 57u8
+        sp.prec = sp.prec*10i64 + s[i] as i64 - 48i64
+        i=i+1i64
+
+    -- length modifiers (l, ll, h, hh, z, j, t) — consume, ignore (Pride is 64-bit native)
+    if s[i]==108u8||s[i]==104u8||s[i]==122u8||s[i]==106u8||s[i]==116u8
+      i=i+1i64
+      if s[i]==108u8||s[i]==104u8 then i=i+1i64
+
+    sp.type_ = s[i]; i=i+1i64
+    (sp, i)
+
+-- §5  PADDING WRITER
+-- Writes `count` copies of `fill` into BufWriter
+
+fn pad_write : (*io.BufWriter, u8, i64) -> i64
+  | (w, fill, count) ->
+    let mut r : i64 = 0i64; let mut i : i64 = 0i64
+    while i < count && r >= 0i64
+      r = io.bufwriter_write_byte(w, fill); i=i+1i64
+    r
+
+-- Write a formatted field with alignment/padding/sign into BufWriter
+fn write_field : (*io.BufWriter, *u8, i64, bool, *Spec) -> i64
+  | (w, content, clen, is_neg, sp) ->
+    -- compute prefix (sign or space)
+    let prefix : *u8 = os.linux.malloc(4i64) as *u8
+    let mut plen : i64 = 0i64
+    if is_neg
+      prefix[plen]=45u8; plen=plen+1i64
+    else if sp.sign==43u8
+      prefix[plen]=43u8; plen=plen+1i64
+    else if sp.sign==32u8
+      prefix[plen]=32u8; plen=plen+1i64
+
+    let total = clen + plen
+    let pad = if sp.width > total then sp.width - total else 0i64
+    let fill = if sp.zero_pad && sp.align_==0u8 then 48u8 else sp.fill
+    let align = if sp.align_==0u8 then if sp.zero_pad then 61u8 else 62u8 else sp.align_  -- default right
+
+    let mut r : i64 = 0i64
+    if align == 60u8
+      -- left align: prefix, content, pad
+      if plen > 0i64 then r = io.bufwriter_write(w, prefix as ptr, plen)
+      if r >= 0i64 then r = io.bufwriter_write(w, content, clen)
+      if r >= 0i64 then r = pad_write(w, sp.fill, pad)
+    else if align == 94u8
+      -- center
+      let left_pad = pad / 2i64; let right_pad = pad - left_pad
+      r = pad_write(w, sp.fill, left_pad)
+      if r >= 0i64 && plen > 0i64 then r = io.bufwriter_write(w, prefix as ptr, plen)
+      if r >= 0i64 then r = io.bufwriter_write(w, content, clen)
+      if r >= 0i64 then r = pad_write(w, sp.fill, right_pad)
+    else if align == 61u8
+      -- zero-pad: prefix then zeros then digits
+      if plen > 0i64 then r = io.bufwriter_write(w, prefix as ptr, plen)
+      if r >= 0i64 then r = pad_write(w, 48u8, pad)
+      if r >= 0i64 then r = io.bufwriter_write(w, content, clen)
+    else
+      -- right align (default)
+      r = pad_write(w, fill, pad)
+      if r >= 0i64 && plen > 0i64 then r = io.bufwriter_write(w, prefix as ptr, plen)
+      if r >= 0i64 then r = io.bufwriter_write(w, content, clen)
+
+    os.linux.free(prefix as ptr); r
+
+-- §6  CORE FORMAT ENGINE
+-- vfmt_write: writes a formatted string into a BufWriter given a format string
+-- and a va-list-style pointer array. Each arg is a *u8 pointing to the value.
+-- Convention: pass args as ptr array, types matched by format specifier.
+
+-- Format a single integer arg according to spec
+fn fmt_int_arg : (*io.BufWriter, u64, bool, *Spec) -> i64
+  | (w, uval, is_neg, sp) ->
+    let tmp : *u8 = os.linux.malloc(72i64) as *u8
+    let mut n : i64 = 0i64
+    let ty = sp.type_
+    if ty == 120u8   -- 'x'
+      n = u64_to_hex_lower(uval, tmp)
+      if sp.alt && uval != 0u64
+        let pfx : *u8 = os.linux.malloc(n + 2i64) as *u8
+        pfx[0i64]=48u8; pfx[1i64]=120u8
+        os.linux.memcpy((pfx as i64+2i64) as ptr, tmp as ptr, n as u64)
+        let r = write_field(w, pfx, n+2i64, false, sp)
+        os.linux.free(pfx as ptr); os.linux.free(tmp as ptr); r
+      else let r = write_field(w, tmp, n, is_neg, sp); os.linux.free(tmp as ptr); r
+    else if ty == 88u8   -- 'X'
+      n = u64_to_hex_upper(uval, tmp)
+      if sp.alt && uval != 0u64
+        let pfx : *u8 = os.linux.malloc(n + 2i64) as *u8
+        pfx[0i64]=48u8; pfx[1i64]=88u8
+        os.linux.memcpy((pfx as i64+2i64) as ptr, tmp as ptr, n as u64)
+        let r = write_field(w, pfx, n+2i64, false, sp)
+        os.linux.free(pfx as ptr); os.linux.free(tmp as ptr); r
+      else let r = write_field(w, tmp, n, is_neg, sp); os.linux.free(tmp as ptr); r
+    else if ty == 111u8   -- 'o'
+      n = u64_to_oct(uval, tmp)
+      if sp.alt && uval != 0u64
+        let pfx : *u8 = os.linux.malloc(n + 1i64) as *u8
+        pfx[0i64]=48u8
+        os.linux.memcpy((pfx as i64+1i64) as ptr, tmp as ptr, n as u64)
+        let r = write_field(w, pfx, n+1i64, false, sp)
+        os.linux.free(pfx as ptr); os.linux.free(tmp as ptr); r
+      else let r = write_field(w, tmp, n, is_neg, sp); os.linux.free(tmp as ptr); r
+    else if ty == 98u8   -- 'b'
+      n = u64_to_bin(uval, tmp)
+      if sp.alt && uval != 0u64
+        let pfx : *u8 = os.linux.malloc(n + 2i64) as *u8
+        pfx[0i64]=48u8; pfx[1i64]=98u8
+        os.linux.memcpy((pfx as i64+2i64) as ptr, tmp as ptr, n as u64)
+        let r = write_field(w, pfx, n+2i64, false, sp)
+        os.linux.free(pfx as ptr); os.linux.free(tmp as ptr); r
+      else let r = write_field(w, tmp, n, is_neg, sp); os.linux.free(tmp as ptr); r
+    else   -- 'd' 'i' 'u'
+      n = u64_to_dec(uval, tmp)
+      let r = write_field(w, tmp, n, is_neg, sp)
+      os.linux.free(tmp as ptr); r
+
+-- Format a single float arg according to spec
+fn fmt_float_arg : (*io.BufWriter, f64, *Spec) -> i64
+  | (w, v, sp) ->
+    let tmp : *u8 = os.linux.malloc(400i64) as *u8
+    let ty = sp.type_
+    let n =
+      if ty == 102u8 || ty == 70u8   -- 'f' 'F'
+        f64_to_fixed(v, sp.prec, tmp)
+      else if ty == 101u8   -- 'e'
+        f64_to_sci(v, sp.prec, tmp, false)
+      else if ty == 69u8   -- 'E'
+        f64_to_sci(v, sp.prec, tmp, true)
+      else if ty == 103u8   -- 'g'
+        f64_to_gen(v, sp.prec, tmp, false)
+      else   -- 'G'
+        f64_to_gen(v, sp.prec, tmp, true)
+    let is_neg = f64_sign_bit(v)
+    -- remove sign from tmp if present (write_field handles it)
+    let start = if n > 0i64 && tmp[0i64]==45u8 then 1i64 else 0i64
+    let r = write_field(w, (tmp as i64+start) as ptr, n-start, is_neg, sp)
+    os.linux.free(tmp as ptr); r
+
+-- §7  PRINTF-STYLE FORMAT WRITER
+-- Walks format string, for each '%' parses spec and consumes next arg from array.
+-- args: array of ptr, each pointing to the value; arg_types: array of u8 type tags
+--   'd'=i64  'u'=u64  'f'=f64  's'=*u8  'p'=ptr  'c'=u8
+
+fn vfmt_write : (*io.BufWriter, ptr, ptr, ptr, i64) -> i64
+  | (w, fmt_str, args, arg_types, arg_count) ->
+    let s = fmt_str as *u8
+    let argv = args as *ptr
+    let argt = arg_types as *u8
+    let mut i : i64 = 0i64
+    let mut arg_idx : i64 = 0i64
+    let mut r : i64 = 0i64
+
+    while s[i] != 0u8 && r >= 0i64
+      if s[i] == 37u8   -- '%'
+        i = i + 1i64
+        if s[i] == 37u8   -- '%%' → literal '%'
+          r = io.bufwriter_write_byte(w, 37u8); i=i+1i64
+        else
+          let (sp, next_i) = parse_spec(fmt_str, i)
+          i = next_i
+          if sp.type_ == 0u8 then ()   -- malformed, skip
+          else if arg_idx >= arg_count then ()   -- no arg left
+          else
+            let arg_ptr = argv[arg_idx]
+            let arg_type = argt[arg_idx]
+            arg_idx = arg_idx + 1i64
+
+            if sp.type_ == 115u8   -- 's'
+              let cs = arg_ptr as *u8
+              let mut slen : i64 = 0i64
+              while cs[slen] != 0u8 then slen=slen+1i64
+              let actual_len = if sp.prec >= 0i64 && sp.prec < slen then sp.prec else slen
+              r = write_field(w, cs, actual_len, false, sp)
+
+            else if sp.type_ == 99u8   -- 'c'
+              let ch = (arg_ptr as *u8)[0i64]
+              let tmp : *u8 = os.linux.malloc(1i64) as *u8
+              tmp[0i64] = ch
+              r = write_field(w, tmp, 1i64, false, sp)
+              os.linux.free(tmp as ptr)
+
+            else if sp.type_ == 112u8   -- 'p'
+              let pval = arg_ptr as u64
+              let tmp : *u8 = os.linux.malloc(20i64) as *u8
+              tmp[0i64]=48u8; tmp[1i64]=120u8
+              let hn = u64_to_hex_lower(pval, (tmp as i64+2i64) as *u8)
+              r = write_field(w, tmp, hn+2i64, false, sp)
+              os.linux.free(tmp as ptr)
+
+            else if sp.type_ == 102u8 || sp.type_ == 70u8 ||
+                    sp.type_ == 101u8 || sp.type_ == 69u8 ||
+                    sp.type_ == 103u8 || sp.type_ == 71u8
+              let fval = (arg_ptr as *f64)[0i64]
+              r = fmt_float_arg(w, fval, &sp)
+
+            else if sp.type_ == 100u8 || sp.type_ == 105u8   -- 'd' 'i'
+              let ival = (arg_ptr as *i64)[0i64]
+              let is_neg = ival < 0i64
+              let uval = if is_neg then (-ival) as u64 else ival as u64
+              r = fmt_int_arg(w, uval, is_neg, &sp)
+
+            else if sp.type_ == 117u8   -- 'u'
+              let uval = (arg_ptr as *u64)[0i64]
+              r = fmt_int_arg(w, uval, false, &sp)
+
+            else if sp.type_ == 120u8 || sp.type_ == 88u8   -- 'x' 'X'
+              let uval = (arg_ptr as *u64)[0i64]
+              r = fmt_int_arg(w, uval, false, &sp)
+
+            else if sp.type_ == 111u8   -- 'o'
+              let uval = (arg_ptr as *u64)[0i64]
+              r = fmt_int_arg(w, uval, false, &sp)
+
+            else if sp.type_ == 98u8   -- 'b'
+              let uval = (arg_ptr as *u64)[0i64]
+              r = fmt_int_arg(w, uval, false, &sp)
+      else
+        r = io.bufwriter_write_byte(w, s[i]); i=i+1i64
+    r
+
+-- §8  SPRINT — format into heap-allocated *u8 (caller must free)
+fn sprint : (ptr, ptr, ptr, i64) -> *u8
+  | (fmt_str, args, arg_types, arg_count) ->
+    let bv = mem.bvec_with_cap(256i64)
+    let w = io.bufwriter_new(1i64, 8192i64)   -- dummy fd, we capture into bvec
+    -- Uses snprintf via libc bridge for formatting into a heap buffer.
+    -- (full effects-based sprint is in §21 below using BufWriter + ByteVec sink)
+    let tmp : *u8 = os.linux.malloc(4096i64) as *u8
+    let n = os.linux.snprintf(tmp, 4096u64, fmt_str, args)
+    let result : *u8 = os.linux.malloc(n as i64 + 1i64) as *u8
+    os.linux.memcpy(result as ptr, tmp as ptr, n as i64 as u64)
+    result[n as i64] = 0u8
+    os.linux.free(tmp as ptr)
+    result
+
+-- §9  PRINT SHORTCUTS (unbuffered direct write)
+fn print_str   : ptr -> ()  | s -> let n=os.linux.strlen(s) as i64; os.linux.write(1i64,s,n); ()
+fn print_strln : ptr -> ()  | s -> print_str(s); os.linux.write(1i64,"\n" as ptr,1i64); ()
+fn eprint_str  : ptr -> ()  | s -> let n=os.linux.strlen(s) as i64; os.linux.write(2i64,s,n); ()
+fn eprint_strln: ptr -> ()  | s -> eprint_str(s); os.linux.write(2i64,"\n" as ptr,1i64); ()
+
+fn print_i64   : i64 -> ()
+  | v ->
+    let tmp : *u8 = os.linux.malloc(24i64) as *u8
+    let n = i64_to_dec(v, tmp)
+    os.linux.write(1i64, tmp as ptr, n); os.linux.free(tmp as ptr)
+
+fn print_u64   : u64 -> ()
+  | v ->
+    let tmp : *u8 = os.linux.malloc(24i64) as *u8
+    let n = u64_to_dec(v, tmp)
+    os.linux.write(1i64, tmp as ptr, n); os.linux.free(tmp as ptr)
+
+fn print_hex   : u64 -> ()
+  | v ->
+    let tmp : *u8 = os.linux.malloc(20i64) as *u8
+    tmp[0i64]=48u8; tmp[1i64]=120u8
+    let n = u64_to_hex_lower(v, (tmp as i64+2i64) as *u8)
+    os.linux.write(1i64, tmp as ptr, n+2i64); os.linux.free(tmp as ptr)
+
+fn print_hexu  : u64 -> ()
+  | v ->
+    let tmp : *u8 = os.linux.malloc(20i64) as *u8
+    tmp[0i64]=48u8; tmp[1i64]=88u8
+    let n = u64_to_hex_upper(v, (tmp as i64+2i64) as *u8)
+    os.linux.write(1i64, tmp as ptr, n+2i64); os.linux.free(tmp as ptr)
+
+fn print_bin   : u64 -> ()
+  | v ->
+    let tmp : *u8 = os.linux.malloc(68i64) as *u8
+    tmp[0i64]=48u8; tmp[1i64]=98u8
+    let n = u64_to_bin(v, (tmp as i64+2i64) as *u8)
+    os.linux.write(1i64, tmp as ptr, n+2i64); os.linux.free(tmp as ptr)
+
+fn print_oct   : u64 -> ()
+  | v ->
+    let tmp : *u8 = os.linux.malloc(24i64) as *u8
+    tmp[0i64]=48u8
+    let n = u64_to_oct(v, (tmp as i64+1i64) as *u8)
+    os.linux.write(1i64, tmp as ptr, n+1i64); os.linux.free(tmp as ptr)
+
+fn print_f64   : (f64, i64) -> ()
+  | (v, prec) ->
+    let tmp : *u8 = os.linux.malloc(400i64) as *u8
+    let n = f64_to_fixed(v, prec, tmp)
+    os.linux.write(1i64, tmp as ptr, n); os.linux.free(tmp as ptr)
+
+fn print_bool  : bool -> ()
+  | b -> if b then print_str("true" as ptr) else print_str("false" as ptr)
+
+-- §10  BUFFERED PRINT (uses global io.g_stdout)
+fn bprint      : ptr -> i64  | s -> io.print(s)
+fn bprintln    : ptr -> i64  | s -> io.println(s)
+fn bprint_i64  : i64 -> i64  | v -> io.print_i64(v)
+fn bprint_f64  : (f64,i64)->i64 | (v,p) -> io.print_f64(v,p)
+fn bprint_bool : bool -> i64 | b -> io.print_bool(b)
+fn bflush      : () -> i64   | () -> io.stdout_flush()
+
+-- §11  INT PARSING
+fn parse_i64 : ptr -> i64
+  | s ->
+    let cs = s as *u8
+    let mut v : i64 = 0i64; let mut neg = false; let mut i : i64 = 0i64
+    while cs[i]==32u8||cs[i]==9u8||cs[i]==10u8||cs[i]==13u8 then i=i+1i64
+    if cs[i]==45u8 then neg=true; i=i+1i64
+    else if cs[i]==43u8 then i=i+1i64
+    if cs[i]==48u8 && (cs[i+1i64]==120u8||cs[i+1i64]==88u8)
+      -- hex prefix
+      i=i+2i64
+      while (cs[i]>=48u8&&cs[i]<=57u8)||(cs[i]>=65u8&&cs[i]<=70u8)||(cs[i]>=97u8&&cs[i]<=102u8)
+        let d = if cs[i]>=97u8 then cs[i] as i64-87i64 else if cs[i]>=65u8 then cs[i] as i64-55i64 else cs[i] as i64-48i64
+        v=v*16i64+d; i=i+1i64
+    else if cs[i]==48u8 && cs[i+1i64]==98u8
+      -- binary prefix
+      i=i+2i64
+      while cs[i]==48u8||cs[i]==49u8 then v=v*2i64+(cs[i] as i64-48i64); i=i+1i64
+    else
+      while cs[i]>=48u8&&cs[i]<=57u8 then v=v*10i64+(cs[i] as i64-48i64); i=i+1i64
+    if neg then -v else v
+
+fn parse_u64 : ptr -> u64
+  | s ->
+    let cs = s as *u8
+    let mut v : u64 = 0u64; let mut i : i64 = 0i64
+    while cs[i]==32u8||cs[i]==9u8 then i=i+1i64
+    if cs[i]==48u8 && (cs[i+1i64]==120u8||cs[i+1i64]==88u8)
+      i=i+2i64
+      while (cs[i]>=48u8&&cs[i]<=57u8)||(cs[i]>=65u8&&cs[i]<=70u8)||(cs[i]>=97u8&&cs[i]<=102u8)
+        let d = if cs[i]>=97u8 then cs[i] as u64-87u64 else if cs[i]>=65u8 then cs[i] as u64-55u64 else cs[i] as u64-48u64
+        v=v*16u64+d; i=i+1i64
+    else
+      while cs[i]>=48u8&&cs[i]<=57u8 then v=v*10u64+(cs[i] as u64-48u64); i=i+1i64
+    v
+
+fn parse_f64 : ptr -> f64
+  | s ->
+    let cs = s as *u8
+    let mut v : f64 = 0.0f64; let mut neg = false; let mut i : i64 = 0i64
+    while cs[i]==32u8||cs[i]==9u8 then i=i+1i64
+    if cs[i]==45u8 then neg=true; i=i+1i64
+    else if cs[i]==43u8 then i=i+1i64
+    while cs[i]>=48u8&&cs[i]<=57u8 then v=v*10.0f64+(cs[i] as i64-48i64) as f64; i=i+1i64
+    if cs[i]==46u8
+      i=i+1i64; let mut sc=0.1f64
+      while cs[i]>=48u8&&cs[i]<=57u8
+        v=v+(cs[i] as i64-48i64) as f64*sc; sc=sc*0.1f64; i=i+1i64
+    if cs[i]==101u8||cs[i]==69u8
+      i=i+1i64; let mut eneg=false
+      if cs[i]==45u8 then eneg=true; i=i+1i64
+      else if cs[i]==43u8 then i=i+1i64
+      let mut e : i64 = 0i64
+      while cs[i]>=48u8&&cs[i]<=57u8 then e=e*10i64+(cs[i] as i64-48i64); i=i+1i64
+      let mut scale = 1.0f64; let mut ee = e
+      while ee > 0i64 then scale=scale*10.0f64; ee=ee-1i64
+      if eneg then v=v/scale else v=v*scale
+    if neg then -v else v
+
+fn parse_bool : ptr -> bool
+  | s ->
+    let cs = s as *u8
+    (cs[0i64]==116u8&&cs[1i64]==114u8&&cs[2i64]==117u8&&cs[3i64]==101u8) ||
+    (cs[0i64]==49u8 && cs[1i64]==0u8) ||
+    (cs[0i64]==121u8&&cs[1i64]==101u8&&cs[2i64]==115u8)
+
+-- §12  INT → HEAP STRING
+fn i64_to_str : i64 -> *u8
+  | v ->
+    let buf : *u8 = os.linux.malloc(24i64) as *u8
+    let n = i64_to_dec(v, buf)
+    buf[n] = 0u8; buf
+
+fn u64_to_str : u64 -> *u8
+  | v ->
+    let buf : *u8 = os.linux.malloc(24i64) as *u8
+    let n = u64_to_dec(v, buf)
+    buf[n] = 0u8; buf
+
+fn u64_to_hex_str : u64 -> *u8
+  | v ->
+    let buf : *u8 = os.linux.malloc(20i64) as *u8
+    buf[0i64]=48u8; buf[1i64]=120u8
+    let n = u64_to_hex_lower(v, (buf as i64+2i64) as *u8)
+    buf[n+2i64]=0u8; buf
+
+fn f64_to_str : (f64, i64) -> *u8
+  | (v, prec) ->
+    let buf : *u8 = os.linux.malloc(400i64) as *u8
+    let n = f64_to_fixed(v, prec, buf)
+    buf[n] = 0u8; buf
+
+fn bool_to_str : bool -> *u8
+  | b -> if b then "true" as *u8 else "false" as *u8
+
+-- §13  ANSI COLOR / STYLE CODES
+const ANSI_RESET      : *u8 = "\x1b[0m"
+const ANSI_BOLD       : *u8 = "\x1b[1m"
+const ANSI_DIM        : *u8 = "\x1b[2m"
+const ANSI_ITALIC     : *u8 = "\x1b[3m"
+const ANSI_UNDERLINE  : *u8 = "\x1b[4m"
+const ANSI_BLINK      : *u8 = "\x1b[5m"
+const ANSI_REVERSE    : *u8 = "\x1b[7m"
+const ANSI_STRIKE     : *u8 = "\x1b[9m"
+
+const ANSI_BLACK      : *u8 = "\x1b[30m"
+const ANSI_RED        : *u8 = "\x1b[31m"
+const ANSI_GREEN      : *u8 = "\x1b[32m"
+const ANSI_YELLOW     : *u8 = "\x1b[33m"
+const ANSI_BLUE       : *u8 = "\x1b[34m"
+const ANSI_MAGENTA    : *u8 = "\x1b[35m"
+const ANSI_CYAN       : *u8 = "\x1b[36m"
+const ANSI_WHITE      : *u8 = "\x1b[37m"
+const ANSI_DEFAULT_FG : *u8 = "\x1b[39m"
+
+const ANSI_BG_BLACK   : *u8 = "\x1b[40m"
+const ANSI_BG_RED     : *u8 = "\x1b[41m"
+const ANSI_BG_GREEN   : *u8 = "\x1b[42m"
+const ANSI_BG_YELLOW  : *u8 = "\x1b[43m"
+const ANSI_BG_BLUE    : *u8 = "\x1b[44m"
+const ANSI_BG_MAGENTA : *u8 = "\x1b[45m"
+const ANSI_BG_CYAN    : *u8 = "\x1b[46m"
+const ANSI_BG_WHITE   : *u8 = "\x1b[47m"
+const ANSI_DEFAULT_BG : *u8 = "\x1b[49m"
+
+const ANSI_BRIGHT_BLACK   : *u8 = "\x1b[90m"
+const ANSI_BRIGHT_RED     : *u8 = "\x1b[91m"
+const ANSI_BRIGHT_GREEN   : *u8 = "\x1b[92m"
+const ANSI_BRIGHT_YELLOW  : *u8 = "\x1b[93m"
+const ANSI_BRIGHT_BLUE    : *u8 = "\x1b[94m"
+const ANSI_BRIGHT_MAGENTA : *u8 = "\x1b[95m"
+const ANSI_BRIGHT_CYAN    : *u8 = "\x1b[96m"
+const ANSI_BRIGHT_WHITE   : *u8 = "\x1b[97m"
+
+fn ansi_color_fg_256 : (i64, *u8) -> i64
+  | (n, buf) ->
+    -- writes "\x1b[38;5;<n>m" into buf, returns length
+    buf[0i64]=27u8; buf[1i64]=91u8; buf[2i64]=51u8; buf[3i64]=56u8; buf[4i64]=59u8
+    buf[5i64]=53u8; buf[6i64]=59u8
+    let dn = u64_to_dec(n as u64, (buf as i64+7i64) as *u8)
+    buf[7i64+dn] = 109u8; 8i64+dn
+
+fn ansi_color_bg_256 : (i64, *u8) -> i64
+  | (n, buf) ->
+    buf[0i64]=27u8; buf[1i64]=91u8; buf[2i64]=52u8; buf[3i64]=56u8; buf[4i64]=59u8
+    buf[5i64]=53u8; buf[6i64]=59u8
+    let dn = u64_to_dec(n as u64, (buf as i64+7i64) as *u8)
+    buf[7i64+dn] = 109u8; 8i64+dn
+
+fn ansi_color_fg_rgb : (u8, u8, u8, *u8) -> i64
+  | (r, g, b, buf) ->
+    buf[0i64]=27u8; buf[1i64]=91u8; buf[2i64]=51u8; buf[3i64]=56u8
+    buf[4i64]=59u8; buf[5i64]=50u8; buf[6i64]=59u8
+    let mut n : i64 = 7i64
+    n=n+u64_to_dec(r as u64,(buf as i64+n) as *u8); buf[n]=59u8; n=n+1i64
+    n=n+u64_to_dec(g as u64,(buf as i64+n) as *u8); buf[n]=59u8; n=n+1i64
+    n=n+u64_to_dec(b as u64,(buf as i64+n) as *u8); buf[n]=109u8; n+1i64
+
+fn ansi_move_cursor  : (i64, i64, *u8) -> i64
+  | (row, col, buf) ->
+    buf[0i64]=27u8; buf[1i64]=91u8; let mut n : i64 = 2i64
+    n=n+u64_to_dec(row as u64,(buf as i64+n) as *u8); buf[n]=59u8; n=n+1i64
+    n=n+u64_to_dec(col as u64,(buf as i64+n) as *u8); buf[n]=72u8; n+1i64   -- 'H'
+
+fn ansi_cursor_up    : (i64, *u8) -> i64 | (n, buf) -> buf[0i64]=27u8; buf[1i64]=91u8; let dn=u64_to_dec(n as u64,(buf as i64+2i64) as *u8); buf[2i64+dn]=65u8; 3i64+dn
+fn ansi_cursor_down  : (i64, *u8) -> i64 | (n, buf) -> buf[0i64]=27u8; buf[1i64]=91u8; let dn=u64_to_dec(n as u64,(buf as i64+2i64) as *u8); buf[2i64+dn]=66u8; 3i64+dn
+fn ansi_cursor_right : (i64, *u8) -> i64 | (n, buf) -> buf[0i64]=27u8; buf[1i64]=91u8; let dn=u64_to_dec(n as u64,(buf as i64+2i64) as *u8); buf[2i64+dn]=67u8; 3i64+dn
+fn ansi_cursor_left  : (i64, *u8) -> i64 | (n, buf) -> buf[0i64]=27u8; buf[1i64]=91u8; let dn=u64_to_dec(n as u64,(buf as i64+2i64) as *u8); buf[2i64+dn]=68u8; 3i64+dn
+
+fn is_tty : i64 -> bool
+  | fd -> os.linux.ioctl(fd, os.linux.TIOCGWINSZ, 0i64) >= 0i64
+
+fn term_width_height : (i64, *i64, *i64) -> bool
+  | (fd, w_out, h_out) ->
+    let ws : *i16 = os.linux.malloc(8i64) as *i16
+    let r = os.linux.ioctl(fd, os.linux.TIOCGWINSZ, ws as i64)
+    if r < 0i64 then os.linux.free(ws as ptr); false
+    else
+      h_out[0i64] = ws[0i16] as i64   -- rows
+      w_out[0i64] = ws[1i16] as i64   -- cols
+      os.linux.free(ws as ptr); true
+
+-- §14  STRING BUILDER (fmt-aware)
+struct Builder
+  bv : mem.ByteVec
+
+fn builder_new : () -> Builder
+  | () -> Builder { bv: mem.bvec_new() }
+
+fn builder_with_cap : i64 -> Builder
+  | cap -> Builder { bv: mem.bvec_with_cap(cap) }
+
+fn builder_destroy : *Builder -> ()
+  | b -> mem.bvec_destroy(&b.bv)
+
+fn builder_push_str : (*Builder, ptr) -> ()
+  | (b, s) -> mem.bvec_push_cstr(&b.bv, s)
+
+fn builder_push_char : (*Builder, u8) -> ()
+  | (b, c) -> mem.bvec_push(&b.bv, c)
+
+fn builder_push_i64 : (*Builder, i64) -> ()
+  | (b, v) ->
+    let tmp : *u8 = os.linux.malloc(24i64) as *u8
+    let n = i64_to_dec(v, tmp)
+    mem.bvec_push_slice(&b.bv, tmp as ptr, n)
+    os.linux.free(tmp as ptr)
+
+fn builder_push_u64 : (*Builder, u64) -> ()
+  | (b, v) ->
+    let tmp : *u8 = os.linux.malloc(24i64) as *u8
+    let n = u64_to_dec(v, tmp)
+    mem.bvec_push_slice(&b.bv, tmp as ptr, n)
+    os.linux.free(tmp as ptr)
+
+fn builder_push_hex : (*Builder, u64, bool) -> ()
+  | (b, v, upper) ->
+    let tmp : *u8 = os.linux.malloc(20i64) as *u8
+    tmp[0i64]=48u8; tmp[1i64]=if upper then 88u8 else 120u8
+    let n = if upper then u64_to_hex_upper(v,(tmp as i64+2i64) as *u8) else u64_to_hex_lower(v,(tmp as i64+2i64) as *u8)
+    mem.bvec_push_slice(&b.bv, tmp as ptr, n+2i64)
+    os.linux.free(tmp as ptr)
+
+fn builder_push_f64 : (*Builder, f64, i64) -> ()
+  | (b, v, prec) ->
+    let tmp : *u8 = os.linux.malloc(400i64) as *u8
+    let n = f64_to_fixed(v, prec, tmp)
+    mem.bvec_push_slice(&b.bv, tmp as ptr, n)
+    os.linux.free(tmp as ptr)
+
+fn builder_push_bool : (*Builder, bool) -> ()
+  | (b, v) -> if v then builder_push_str(b, "true" as ptr) else builder_push_str(b, "false" as ptr)
+
+fn builder_push_bytes : (*Builder, ptr, i64) -> ()
+  | (b, p, n) -> mem.bvec_push_slice(&b.bv, p, n)
+
+fn builder_push_repeated : (*Builder, u8, i64) -> ()
+  | (b, c, n) ->
+    let mut i : i64 = 0i64
+    while i < n then mem.bvec_push(&b.bv, c); i=i+1i64
+
+fn builder_len : *Builder -> i64 | b -> b.bv.len
+fn builder_is_empty : *Builder -> bool | b -> b.bv.len == 0i64
+fn builder_clear : *Builder -> ()  | b -> mem.bvec_clear(&b.bv)
+
+fn builder_as_str : *Builder -> *u8
+  | b -> mem.bvec_as_cstr(&b.bv)
+
+fn builder_to_owned : *Builder -> *u8
+  | b ->
+    let s : *u8 = os.linux.malloc(b.bv.len + 1i64) as *u8
+    os.linux.memcpy(s as ptr, b.bv.data as ptr, b.bv.len as u64)
+    s[b.bv.len] = 0u8; s
+
+fn builder_push_ansi : (*Builder, *u8) -> ()
+  | (b, code) -> builder_push_str(b, code)
+
+fn builder_print : *Builder -> ()
+  | b -> os.linux.write(1i64, b.bv.data as ptr, b.bv.len); ()
+
+fn builder_println : *Builder -> ()
+  | b -> builder_print(b); os.linux.write(1i64, "\n" as ptr, 1i64); ()
+
+-- §15  TABLE PRINTER
+struct TableCol
+  header  : *u8
+  width   : i64
+  align_  : u8   -- '<' '>' '^'
+
+fn table_print_row : (*TableCol, i64, ptr, *io.BufWriter) -> i64
+  | (cols, ncols, row_data, w) ->
+    let row = row_data as *ptr
+    let mut r : i64 = 0i64; let mut i : i64 = 0i64
+    r = io.bufwriter_write_byte(w, 124u8)   -- '|'
+    while i < ncols && r >= 0i64
+      let col = (cols as i64 + i * 32i64) as *TableCol
+      let cell = row[i] as *u8
+      let clen_raw = os.linux.strlen(cell as ptr) as i64
+      let clen = if clen_raw > col.width then col.width else clen_raw
+      let pad = col.width - clen
+      let mut sp = spec_default()
+      sp.width = col.width; sp.align_ = col.align_
+      r = write_field(w, cell, clen, false, &sp)
+      r = io.bufwriter_write_byte(w, 124u8)
+      i = i + 1i64
+    io.bufwriter_write_byte(w, 10u8)
+
+fn table_print_sep : (*TableCol, i64, *io.BufWriter) -> i64
+  | (cols, ncols, w) ->
+    let mut r = io.bufwriter_write_byte(w, 43u8)   -- '+'
+    let mut i : i64 = 0i64
+    while i < ncols && r >= 0i64
+      let col = (cols as i64 + i * 32i64) as *TableCol
+      let mut j : i64 = 0i64
+      while j < col.width + 2i64 then r=io.bufwriter_write_byte(w,45u8); j=j+1i64   -- '-'
+      r = io.bufwriter_write_byte(w, 43u8)
+      i = i + 1i64
+    io.bufwriter_write_byte(w, 10u8)
+
+-- §16  NUMBER FORMATTING HELPERS
+fn fmt_bytes_human : (u64, *u8) -> i64
+  | (n, buf) ->
+    let units = ["B","KB","MB","GB","TB","PB","EB"] as **u8
+    let mut val = n; let mut unit_idx : i64 = 0i64
+    while val >= 1024u64 && unit_idx < 6i64 then val=val/1024u64; unit_idx=unit_idx+1i64
+    let nd = u64_to_dec(val, buf)
+    buf[nd]=32u8
+    let unit = (units as i64+unit_idx*8i64) as **u8
+    let ustr = unit[0i64] as *u8
+    let mut ul : i64 = 0i64; while ustr[ul]!=0u8 then buf[nd+1i64+ul]=ustr[ul]; ul=ul+1i64
+    buf[nd+1i64+ul]=0u8; nd+1i64+ul
+
+fn fmt_duration_ns : (i64, *u8) -> i64
+  | (ns, buf) ->
+    if ns < 1000i64
+      let n = i64_to_dec(ns, buf)
+      buf[n]=110u8; buf[n+1i64]=115u8; n+2i64
+    else if ns < 1000000i64
+      let n = f64_to_fixed(ns as f64 / 1000.0f64, 2i64, buf)
+      buf[n]=194u8; buf[n+1i64]=181u8; buf[n+2i64]=115u8; n+3i64   -- µs (UTF-8)
+    else if ns < 1000000000i64
+      let n = f64_to_fixed(ns as f64 / 1000000.0f64, 2i64, buf)
+      buf[n]=109u8; buf[n+1i64]=115u8; n+2i64
+    else
+      let n = f64_to_fixed(ns as f64 / 1000000000.0f64, 3i64, buf)
+      buf[n]=115u8; n+1i64
+
+fn fmt_percent : (f64, i64, *u8) -> i64
+  | (v, prec, buf) ->
+    let n = f64_to_fixed(v * 100.0f64, prec, buf)
+    buf[n]=37u8; n+1i64
+
+-- §17  WORD WRAP
+fn word_wrap : (*io.BufWriter, ptr, i64) -> i64
+  | (w, text, max_width) ->
+    let s = text as *u8
+    let mut col : i64 = 0i64; let mut i : i64 = 0i64; let mut r : i64 = 0i64
+    let mut word_start : i64 = 0i64; let mut word_len : i64 = 0i64
+    while s[i] != 0u8
+      if s[i]==32u8||s[i]==9u8||s[i]==10u8
+        if word_len > 0i64
+          if col + word_len > max_width && col > 0i64
+            r = io.bufwriter_write_byte(w, 10u8); col=0i64
+          if col > 0i64 then r=io.bufwriter_write_byte(w,32u8); col=col+1i64
+          r = io.bufwriter_write(w, (s as i64+word_start) as ptr, word_len)
+          col=col+word_len; word_len=0i64
+        if s[i]==10u8 then r=io.bufwriter_write_byte(w,10u8); col=0i64
+        i=i+1i64
+      else
+        if word_len==0i64 then word_start=i
+        word_len=word_len+1i64; i=i+1i64
+    if word_len > 0i64
+      if col+word_len>max_width && col>0i64 then r=io.bufwriter_write_byte(w,10u8); col=0i64
+      if col>0i64 then r=io.bufwriter_write_byte(w,32u8)
+      r=io.bufwriter_write(w,(s as i64+word_start) as ptr,word_len)
+    r
+
+-- §18  TEMPLATE ENGINE (simple {{key}} substitution)
+fn template_render : (*io.BufWriter, ptr, ptr, ptr, i64) -> i64
+  | (w, tmpl, keys, values, n_pairs) ->
+    let s = tmpl as *u8
+    let ks = keys as *ptr
+    let vs = values as *ptr
+    let mut i : i64 = 0i64; let mut r : i64 = 0i64
+    while s[i]!=0u8 && r>=0i64
+      if s[i]==123u8 && s[i+1i64]==123u8
+        -- find closing }}
+        let mut j = i+2i64
+        while s[j]!=0u8 && !(s[j]==125u8&&s[j+1i64]==125u8) then j=j+1i64
+        if s[j]==125u8
+          let key_len = j-i-2i64
+          let key_start = i+2i64
+          let mut k : i64 = 0i64; let mut found = false
+          while k < n_pairs && !found
+            let kstr = ks[k] as *u8
+            let klen = os.linux.strlen(ks[k]) as i64
+            if klen==key_len && os.linux.memcmp((s as i64+key_start) as ptr, kstr as ptr, klen as u64)==0i32
+              r = io.bufwriter_write_str(w, vs[k] as ptr); found=true
+            k=k+1i64
+          if !found
+            r=io.bufwriter_write_byte(w,123u8); r=io.bufwriter_write_byte(w,123u8)
+            r=io.bufwriter_write(w,(s as i64+key_start) as ptr,key_len)
+            r=io.bufwriter_write_byte(w,125u8); r=io.bufwriter_write_byte(w,125u8)
+          i=j+2i64
+        else r=io.bufwriter_write_byte(w,s[i]); i=i+1i64
+      else r=io.bufwriter_write_byte(w,s[i]); i=i+1i64
+    r
+
+-- §19  MISC HELPERS
+fn repeat_str : (ptr, i64) -> *u8
+  | (s, n) ->
+    let slen = os.linux.strlen(s) as i64
+    let buf : *u8 = os.linux.malloc(slen*n+1i64) as *u8
+    let mut i : i64 = 0i64
+    while i < n then os.linux.memcpy((buf as i64+i*slen) as ptr, s, slen as u64); i=i+1i64
+    buf[slen*n]=0u8; buf
+
+fn center_str : (ptr, i64, u8) -> *u8
+  | (s, width, fill) ->
+    let slen = os.linux.strlen(s) as i64
+    if slen >= width then s as *u8
+    else
+      let pad = width - slen
+      let left = pad / 2i64; let right = pad - left
+      let buf : *u8 = os.linux.malloc(width+1i64) as *u8
+      os.linux.memset(buf as ptr, fill as i32, left as u64)
+      os.linux.memcpy((buf as i64+left) as ptr, s, slen as u64)
+      os.linux.memset((buf as i64+left+slen) as ptr, fill as i32, right as u64)
+      buf[width]=0u8; buf
+
+fn left_pad_str : (ptr, i64, u8) -> *u8
+  | (s, width, fill) ->
+    let slen = os.linux.strlen(s) as i64
+    if slen >= width then s as *u8
+    else
+      let pad = width - slen
+      let buf : *u8 = os.linux.malloc(width+1i64) as *u8
+      os.linux.memset(buf as ptr, fill as i32, pad as u64)
+      os.linux.memcpy((buf as i64+pad) as ptr, s, slen as u64)
+      buf[width]=0u8; buf
+
+fn right_pad_str : (ptr, i64, u8) -> *u8
+  | (s, width, fill) ->
+    let slen = os.linux.strlen(s) as i64
+    if slen >= width then s as *u8
+    else
+      let buf : *u8 = os.linux.malloc(width+1i64) as *u8
+      os.linux.memcpy(buf as ptr, s, slen as u64)
+      os.linux.memset((buf as i64+slen) as ptr, fill as i32, (width-slen) as u64)
+      buf[width]=0u8; buf
+
+-- §20  PROGRESS BAR
+fn progress_bar : (*io.BufWriter, i64, i64, i64) -> i64
+  | (w, done, total, bar_width) ->
+    let pct = if total > 0i64 then done * bar_width / total else 0i64
+    let mut r = io.bufwriter_write_byte(w, 91u8)   -- '['
+    let mut i : i64 = 0i64
+    while i < pct then r=io.bufwriter_write_byte(w,35u8); i=i+1i64   -- '#'
+    while i < bar_width then r=io.bufwriter_write_byte(w,32u8); i=i+1i64
+    r = io.bufwriter_write_byte(w, 93u8)   -- ']'
+    r = io.bufwriter_write_byte(w, 32u8)
+    let pct_real = if total > 0i64 then done * 100i64 / total else 0i64
+    r = io.bufwriter_write_i64(w, pct_real)
+    r = io.bufwriter_write_byte(w, 37u8)   -- '%'
+    r = io.bufwriter_write_byte(w, 13u8)   -- '\r'
+    r
+
+-- private helper for mem_find_byte used in f64_to_gen
+fn mem_find_byte : (ptr, u8, i64) -> i64
+  | (p, val, n) ->
+    let r = os.linux.memchr(p, val as i32, n as u64)
+    if r as i64 == 0i64 then -1i64 else r as i64 - p as i64

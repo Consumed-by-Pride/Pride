@@ -1,0 +1,2748 @@
+mod os.linux
+
+use os.linux.syscalls
+
+-- §1  RAW SYSCALL BRIDGE
+fn syscall0 : i64 -> i64                                    #extern("syscall") #cc(c)
+fn syscall1 : (i64, i64) -> i64                             #extern("syscall") #cc(c)
+fn syscall2 : (i64, i64, i64) -> i64                        #extern("syscall") #cc(c)
+fn syscall3 : (i64, i64, i64, i64) -> i64                   #extern("syscall") #cc(c)
+fn syscall4 : (i64, i64, i64, i64, i64) -> i64              #extern("syscall") #cc(c)
+fn syscall5 : (i64, i64, i64, i64, i64, i64) -> i64         #extern("syscall") #cc(c)
+fn syscall6 : (i64, i64, i64, i64, i64, i64, i64) -> i64    #extern("syscall") #cc(c)
+
+-- §2  ERRNO VALUES (include/uapi/asm-generic/errno-base.h + errno.h)
+const EPERM           : i64 = 1i64
+const ENOENT          : i64 = 2i64
+const ESRCH           : i64 = 3i64
+const EINTR           : i64 = 4i64
+const EIO             : i64 = 5i64
+const ENXIO           : i64 = 6i64
+const E2BIG           : i64 = 7i64
+const ENOEXEC         : i64 = 8i64
+const EBADF           : i64 = 9i64
+const ECHILD          : i64 = 10i64
+const EAGAIN          : i64 = 11i64
+const EWOULDBLOCK     : i64 = 11i64
+const ENOMEM          : i64 = 12i64
+const EACCES          : i64 = 13i64
+const EFAULT          : i64 = 14i64
+const ENOTBLK         : i64 = 15i64
+const EBUSY           : i64 = 16i64
+const EEXIST          : i64 = 17i64
+const EXDEV           : i64 = 18i64
+const ENODEV          : i64 = 19i64
+const ENOTDIR         : i64 = 20i64
+const EISDIR          : i64 = 21i64
+const EINVAL          : i64 = 22i64
+const ENFILE          : i64 = 23i64
+const EMFILE          : i64 = 24i64
+const ENOTTY          : i64 = 25i64
+const ETXTBSY         : i64 = 26i64
+const EFBIG           : i64 = 27i64
+const ENOSPC          : i64 = 28i64
+const ESPIPE          : i64 = 29i64
+const EROFS           : i64 = 30i64
+const EMLINK          : i64 = 31i64
+const EPIPE           : i64 = 32i64
+const EDOM            : i64 = 33i64
+const ERANGE          : i64 = 34i64
+const EDEADLK         : i64 = 35i64
+const EDEADLOCK       : i64 = 35i64
+const ENAMETOOLONG    : i64 = 36i64
+const ENOLCK          : i64 = 37i64
+const ENOSYS          : i64 = 38i64
+const ENOTEMPTY       : i64 = 39i64
+const ELOOP           : i64 = 40i64
+const ENOMSG          : i64 = 42i64
+const EIDRM           : i64 = 43i64
+const ECHRNG          : i64 = 44i64
+const EL2NSYNC        : i64 = 45i64
+const EL3HLT          : i64 = 46i64
+const EL3RST          : i64 = 47i64
+const ELNRNG          : i64 = 48i64
+const EUNATCH         : i64 = 49i64
+const ENOCSI          : i64 = 50i64
+const EL2HLT          : i64 = 51i64
+const EBADE           : i64 = 52i64
+const EBADR           : i64 = 53i64
+const EXFULL          : i64 = 54i64
+const ENOANO          : i64 = 55i64
+const EBADRQC         : i64 = 56i64
+const EBADSLT         : i64 = 57i64
+const EBFONT          : i64 = 59i64
+const ENOSTR          : i64 = 60i64
+const ENODATA         : i64 = 61i64
+const ETIME           : i64 = 62i64
+const ENOSR           : i64 = 63i64
+const ENONET          : i64 = 64i64
+const ENOPKG          : i64 = 65i64
+const EREMOTE         : i64 = 66i64
+const ENOLINK         : i64 = 67i64
+const EADV            : i64 = 68i64
+const ESRMNT          : i64 = 69i64
+const ECOMM           : i64 = 70i64
+const EPROTO          : i64 = 71i64
+const EMULTIHOP       : i64 = 72i64
+const EDOTDOT         : i64 = 73i64
+const EBADMSG         : i64 = 74i64
+const EOVERFLOW       : i64 = 75i64
+const ENOTUNIQ        : i64 = 76i64
+const EBADFD          : i64 = 77i64
+const EREMCHG         : i64 = 78i64
+const ELIBACC         : i64 = 79i64
+const ELIBBAD         : i64 = 80i64
+const ELIBSCN         : i64 = 81i64
+const ELIBMAX         : i64 = 82i64
+const ELIBEXEC        : i64 = 83i64
+const EILSEQ          : i64 = 84i64
+const ERESTART        : i64 = 85i64
+const ESTRPIPE        : i64 = 86i64
+const EUSERS          : i64 = 87i64
+const ENOTSOCK        : i64 = 88i64
+const EDESTADDRREQ    : i64 = 89i64
+const EMSGSIZE        : i64 = 90i64
+const EPROTOTYPE      : i64 = 91i64
+const ENOPROTOOPT     : i64 = 92i64
+const EPROTONOSUPPORT : i64 = 93i64
+const ESOCKTNOSUPPORT : i64 = 94i64
+const EOPNOTSUPP      : i64 = 95i64
+const ENOTSUP         : i64 = 95i64
+const EPFNOSUPPORT    : i64 = 96i64
+const EAFNOSUPPORT    : i64 = 97i64
+const EADDRINUSE      : i64 = 98i64
+const EADDRNOTAVAIL   : i64 = 99i64
+const ENETDOWN        : i64 = 100i64
+const ENETUNREACH     : i64 = 101i64
+const ENETRESET       : i64 = 102i64
+const ECONNABORTED    : i64 = 103i64
+const ECONNRESET      : i64 = 104i64
+const ENOBUFS         : i64 = 105i64
+const EISCONN         : i64 = 106i64
+const ENOTCONN        : i64 = 107i64
+const ESHUTDOWN       : i64 = 108i64
+const ETOOMANYREFS    : i64 = 109i64
+const ETIMEDOUT       : i64 = 110i64
+const ECONNREFUSED    : i64 = 111i64
+const EHOSTDOWN       : i64 = 112i64
+const EHOSTUNREACH    : i64 = 113i64
+const EALREADY        : i64 = 114i64
+const EINPROGRESS     : i64 = 115i64
+const ESTALE          : i64 = 116i64
+const EUCLEAN         : i64 = 117i64
+const ENOTNAM         : i64 = 118i64
+const ENAVAIL         : i64 = 119i64
+const EISNAM          : i64 = 120i64
+const EREMOTEIO       : i64 = 121i64
+const EDQUOT          : i64 = 122i64
+const ENOMEDIUM       : i64 = 123i64
+const EMEDIUMTYPE     : i64 = 124i64
+const ECANCELED       : i64 = 125i64
+const ENOKEY          : i64 = 126i64
+const EKEYEXPIRED     : i64 = 127i64
+const EKEYREVOKED     : i64 = 128i64
+const EKEYREJECTED    : i64 = 129i64
+const EOWNERDEAD      : i64 = 130i64
+const ENOTRECOVERABLE : i64 = 131i64
+const ERFKILL         : i64 = 132i64
+const EHWPOISON       : i64 = 133i64
+
+-- §3  OPEN/FCNTL FLAGS (include/uapi/asm-generic/fcntl.h)
+const O_RDONLY    : i64 = 0i64
+const O_WRONLY    : i64 = 1i64
+const O_RDWR      : i64 = 2i64
+const O_CREAT     : i64 = 64i64
+const O_EXCL      : i64 = 128i64
+const O_NOCTTY    : i64 = 256i64
+const O_TRUNC     : i64 = 512i64
+const O_APPEND    : i64 = 1024i64
+const O_NONBLOCK  : i64 = 2048i64
+const O_DSYNC     : i64 = 4096i64
+const O_ASYNC     : i64 = 8192i64
+const O_DIRECT    : i64 = 16384i64
+const O_LARGEFILE : i64 = 32768i64
+const O_DIRECTORY : i64 = 65536i64
+const O_NOFOLLOW  : i64 = 131072i64
+const O_NOATIME   : i64 = 262144i64
+const O_CLOEXEC   : i64 = 524288i64
+const O_SYNC      : i64 = 1052672i64
+const O_PATH      : i64 = 2097152i64
+const O_TMPFILE   : i64 = 4259840i64
+
+const F_DUPFD         : i64 = 0i64
+const F_GETFD         : i64 = 1i64
+const F_SETFD         : i64 = 2i64
+const F_GETFL         : i64 = 3i64
+const F_SETFL         : i64 = 4i64
+const F_GETLK         : i64 = 5i64
+const F_SETLK         : i64 = 6i64
+const F_SETLKW        : i64 = 7i64
+const F_SETOWN        : i64 = 8i64
+const F_GETOWN        : i64 = 9i64
+const F_SETSIG        : i64 = 10i64
+const F_GETSIG        : i64 = 11i64
+const F_GETLK64       : i64 = 12i64
+const F_SETLK64       : i64 = 13i64
+const F_SETLKW64      : i64 = 14i64
+const F_SETOWN_EX     : i64 = 15i64
+const F_GETOWN_EX     : i64 = 16i64
+const F_GETOWNER_UIDS : i64 = 17i64
+const F_OFD_GETLK     : i64 = 36i64
+const F_OFD_SETLK     : i64 = 37i64
+const F_OFD_SETLKW    : i64 = 38i64
+const F_DUPFD_CLOEXEC : i64 = 1030i64
+const FD_CLOEXEC      : i64 = 1i64
+
+const AT_FDCWD           : i64 = -100i64
+const AT_SYMLINK_NOFOLLOW : i64 = 256i64
+const AT_REMOVEDIR       : i64 = 512i64
+const AT_SYMLINK_FOLLOW  : i64 = 1024i64
+const AT_NO_AUTOMOUNT    : i64 = 2048i64
+const AT_EMPTY_PATH      : i64 = 4096i64
+const AT_STATX_SYNC_TYPE : i64 = 24576i64
+const AT_STATX_SYNC_AS_STAT : i64 = 0i64
+const AT_STATX_FORCE_SYNC : i64 = 8192i64
+const AT_STATX_DONT_SYNC : i64 = 16384i64
+const AT_RECURSIVE       : i64 = 32768i64
+
+-- §4  MMAP / MEMORY FLAGS
+const PROT_NONE    : i64 = 0i64
+const PROT_READ    : i64 = 1i64
+const PROT_WRITE   : i64 = 2i64
+const PROT_EXEC    : i64 = 4i64
+const PROT_SEM     : i64 = 8i64
+const PROT_GROWSDOWN : i64 = 16777216i64
+const PROT_GROWSUP : i64 = 33554432i64
+
+const MAP_SHARED          : i64 = 1i64
+const MAP_PRIVATE         : i64 = 2i64
+const MAP_SHARED_VALIDATE : i64 = 3i64
+const MAP_FIXED           : i64 = 16i64
+const MAP_ANONYMOUS       : i64 = 32i64
+const MAP_ANON            : i64 = 32i64
+const MAP_32BIT           : i64 = 64i64
+const MAP_GROWSDOWN       : i64 = 256i64
+const MAP_DENYWRITE       : i64 = 2048i64
+const MAP_EXECUTABLE      : i64 = 4096i64
+const MAP_LOCKED          : i64 = 8192i64
+const MAP_NORESERVE       : i64 = 16384i64
+const MAP_POPULATE        : i64 = 32768i64
+const MAP_NONBLOCK        : i64 = 65536i64
+const MAP_STACK           : i64 = 131072i64
+const MAP_HUGETLB         : i64 = 262144i64
+const MAP_SYNC            : i64 = 524288i64
+const MAP_FIXED_NOREPLACE : i64 = 1048576i64
+const MAP_UNINITIALIZED   : i64 = 67108864i64
+const MAP_FAILED          : i64 = -1i64
+
+const MREMAP_MAYMOVE    : i64 = 1i64
+const MREMAP_FIXED      : i64 = 2i64
+const MREMAP_DONTUNMAP  : i64 = 4i64
+
+const MADV_NORMAL       : i64 = 0i64
+const MADV_RANDOM       : i64 = 1i64
+const MADV_SEQUENTIAL   : i64 = 2i64
+const MADV_WILLNEED     : i64 = 3i64
+const MADV_DONTNEED     : i64 = 4i64
+const MADV_FREE         : i64 = 8i64
+const MADV_REMOVE       : i64 = 9i64
+const MADV_DONTFORK     : i64 = 10i64
+const MADV_DOFORK       : i64 = 11i64
+const MADV_MERGEABLE    : i64 = 12i64
+const MADV_UNMERGEABLE  : i64 = 13i64
+const MADV_HUGEPAGE     : i64 = 14i64
+const MADV_NOHUGEPAGE   : i64 = 15i64
+const MADV_DONTDUMP     : i64 = 16i64
+const MADV_DODUMP       : i64 = 17i64
+const MADV_WIPEONFORK   : i64 = 18i64
+const MADV_KEEPONFORK   : i64 = 19i64
+const MADV_COLD         : i64 = 20i64
+const MADV_PAGEOUT      : i64 = 21i64
+const MADV_POPULATE_READ  : i64 = 22i64
+const MADV_POPULATE_WRITE : i64 = 23i64
+const MADV_DONTNEED_LOCKED : i64 = 24i64
+const MADV_COLLAPSE     : i64 = 25i64
+const MADV_HWPOISON     : i64 = 100i64
+const MADV_SOFT_OFFLINE : i64 = 101i64
+
+const MS_ASYNC      : i64 = 1i64
+const MS_INVALIDATE : i64 = 2i64
+const MS_SYNC       : i64 = 4i64
+
+const MCL_CURRENT   : i64 = 1i64
+const MCL_FUTURE    : i64 = 2i64
+const MCL_ONFAULT   : i64 = 4i64
+
+-- §5  SIGNALS (include/uapi/asm-generic/signal.h)
+const SIGHUP    : i64 = 1i64
+const SIGINT    : i64 = 2i64
+const SIGQUIT   : i64 = 3i64
+const SIGILL    : i64 = 4i64
+const SIGTRAP   : i64 = 5i64
+const SIGABRT   : i64 = 6i64
+const SIGIOT    : i64 = 6i64
+const SIGBUS    : i64 = 7i64
+const SIGFPE    : i64 = 8i64
+const SIGKILL   : i64 = 9i64
+const SIGUSR1   : i64 = 10i64
+const SIGSEGV   : i64 = 11i64
+const SIGUSR2   : i64 = 12i64
+const SIGPIPE   : i64 = 13i64
+const SIGALRM   : i64 = 14i64
+const SIGTERM   : i64 = 15i64
+const SIGSTKFLT : i64 = 16i64
+const SIGCHLD   : i64 = 17i64
+const SIGCONT   : i64 = 18i64
+const SIGSTOP   : i64 = 19i64
+const SIGTSTP   : i64 = 20i64
+const SIGTTIN   : i64 = 21i64
+const SIGTTOU   : i64 = 22i64
+const SIGURG    : i64 = 23i64
+const SIGXCPU   : i64 = 24i64
+const SIGXFSZ   : i64 = 25i64
+const SIGVTALRM : i64 = 26i64
+const SIGPROF   : i64 = 27i64
+const SIGWINCH  : i64 = 28i64
+const SIGIO     : i64 = 29i64
+const SIGPOLL   : i64 = 29i64
+const SIGPWR    : i64 = 30i64
+const SIGSYS    : i64 = 31i64
+const NSIG      : i64 = 65i64
+const SIGRTMIN  : i64 = 34i64
+const SIGRTMAX  : i64 = 64i64
+
+const SA_NOCLDSTOP  : i64 = 1i64
+const SA_NOCLDWAIT  : i64 = 2i64
+const SA_SIGINFO    : i64 = 4i64
+const SA_ONSTACK    : i64 = 134217728i64
+const SA_RESTART    : i64 = 268435456i64
+const SA_NODEFER    : i64 = 1073741824i64
+const SA_RESETHAND  : i64 = -2147483648i64
+const SA_NOMASK     : i64 = 1073741824i64
+const SA_ONESHOT    : i64 = -2147483648i64
+const SA_RESTORER   : i64 = 67108864i64
+
+const SIG_DFL : i64 = 0i64
+const SIG_IGN : i64 = 1i64
+const SIG_ERR : i64 = -1i64
+
+const SIG_BLOCK   : i64 = 0i64
+const SIG_UNBLOCK : i64 = 1i64
+const SIG_SETMASK : i64 = 2i64
+
+-- §6  SOCKET FAMILIES (include/linux/socket.h)
+const AF_UNSPEC     : i64 = 0i64
+const AF_UNIX       : i64 = 1i64
+const AF_LOCAL      : i64 = 1i64
+const AF_INET       : i64 = 2i64
+const AF_AX25       : i64 = 3i64
+const AF_IPX        : i64 = 4i64
+const AF_APPLETALK  : i64 = 5i64
+const AF_NETROM     : i64 = 6i64
+const AF_BRIDGE     : i64 = 7i64
+const AF_ATMPVC     : i64 = 8i64
+const AF_X25        : i64 = 9i64
+const AF_INET6      : i64 = 10i64
+const AF_ROSE       : i64 = 11i64
+const AF_DECnet     : i64 = 12i64
+const AF_NETBEUI    : i64 = 13i64
+const AF_SECURITY   : i64 = 14i64
+const AF_KEY        : i64 = 15i64
+const AF_NETLINK    : i64 = 16i64
+const AF_ROUTE      : i64 = 16i64
+const AF_PACKET     : i64 = 17i64
+const AF_ASH        : i64 = 18i64
+const AF_ECONET     : i64 = 19i64
+const AF_ATMSVC     : i64 = 20i64
+const AF_RDS        : i64 = 21i64
+const AF_SNA        : i64 = 22i64
+const AF_IRDA       : i64 = 23i64
+const AF_PPPOX      : i64 = 24i64
+const AF_WANPIPE    : i64 = 25i64
+const AF_LLC        : i64 = 26i64
+const AF_IB         : i64 = 27i64
+const AF_MPLS       : i64 = 28i64
+const AF_CAN        : i64 = 29i64
+const AF_TIPC       : i64 = 30i64
+const AF_BLUETOOTH  : i64 = 31i64
+const AF_IUCV       : i64 = 32i64
+const AF_RXRPC      : i64 = 33i64
+const AF_ISDN       : i64 = 34i64
+const AF_PHONET     : i64 = 35i64
+const AF_IEEE802154 : i64 = 36i64
+const AF_CAIF       : i64 = 37i64
+const AF_ALG        : i64 = 38i64
+const AF_NFC        : i64 = 39i64
+const AF_VSOCK      : i64 = 40i64
+const AF_KCM        : i64 = 41i64
+const AF_QIPCRTR    : i64 = 42i64
+const AF_SMC        : i64 = 43i64
+const AF_XDP        : i64 = 44i64
+const AF_MCTP       : i64 = 45i64
+const AF_MAX        : i64 = 46i64
+
+const PF_UNSPEC     : i64 = 0i64
+const PF_UNIX       : i64 = 1i64
+const PF_LOCAL      : i64 = 1i64
+const PF_INET       : i64 = 2i64
+const PF_INET6      : i64 = 10i64
+const PF_NETLINK    : i64 = 16i64
+const PF_PACKET     : i64 = 17i64
+const PF_BLUETOOTH  : i64 = 31i64
+const PF_VSOCK      : i64 = 40i64
+const PF_XDP        : i64 = 44i64
+
+const SOCK_STREAM    : i64 = 1i64
+const SOCK_DGRAM     : i64 = 2i64
+const SOCK_RAW       : i64 = 3i64
+const SOCK_RDM       : i64 = 4i64
+const SOCK_SEQPACKET : i64 = 5i64
+const SOCK_DCCP      : i64 = 6i64
+const SOCK_PACKET    : i64 = 10i64
+const SOCK_CLOEXEC   : i64 = 524288i64
+const SOCK_NONBLOCK  : i64 = 2048i64
+
+const IPPROTO_IP      : i64 = 0i64
+const IPPROTO_ICMP    : i64 = 1i64
+const IPPROTO_IGMP    : i64 = 2i64
+const IPPROTO_IPIP    : i64 = 4i64
+const IPPROTO_TCP     : i64 = 6i64
+const IPPROTO_EGP     : i64 = 8i64
+const IPPROTO_PUP     : i64 = 12i64
+const IPPROTO_UDP     : i64 = 17i64
+const IPPROTO_IDP     : i64 = 22i64
+const IPPROTO_TP      : i64 = 29i64
+const IPPROTO_DCCP    : i64 = 33i64
+const IPPROTO_IPV6    : i64 = 41i64
+const IPPROTO_RSVP    : i64 = 46i64
+const IPPROTO_GRE     : i64 = 47i64
+const IPPROTO_ESP     : i64 = 50i64
+const IPPROTO_AH      : i64 = 51i64
+const IPPROTO_MTP     : i64 = 92i64
+const IPPROTO_BEETPH  : i64 = 94i64
+const IPPROTO_ENCAP   : i64 = 98i64
+const IPPROTO_PIM     : i64 = 103i64
+const IPPROTO_COMP    : i64 = 108i64
+const IPPROTO_L2TP    : i64 = 115i64
+const IPPROTO_SCTP    : i64 = 132i64
+const IPPROTO_UDPLITE : i64 = 136i64
+const IPPROTO_MPLS    : i64 = 137i64
+const IPPROTO_ETHERNET : i64 = 143i64
+const IPPROTO_RAW     : i64 = 255i64
+const IPPROTO_MPTCP   : i64 = 262i64
+
+const SOL_SOCKET   : i64 = 1i64
+const SOL_IP       : i64 = 0i64
+const SOL_IPV6     : i64 = 41i64
+const SOL_TCP      : i64 = 6i64
+const SOL_UDP      : i64 = 17i64
+
+const SO_DEBUG          : i64 = 1i64
+const SO_REUSEADDR      : i64 = 2i64
+const SO_TYPE           : i64 = 3i64
+const SO_ERROR          : i64 = 4i64
+const SO_DONTROUTE      : i64 = 5i64
+const SO_BROADCAST      : i64 = 6i64
+const SO_SNDBUF         : i64 = 7i64
+const SO_RCVBUF         : i64 = 8i64
+const SO_SNDBUFFORCE    : i64 = 32i64
+const SO_RCVBUFFORCE    : i64 = 33i64
+const SO_KEEPALIVE      : i64 = 9i64
+const SO_OOBINLINE      : i64 = 10i64
+const SO_NO_CHECK       : i64 = 11i64
+const SO_PRIORITY       : i64 = 12i64
+const SO_LINGER         : i64 = 13i64
+const SO_BSDCOMPAT      : i64 = 14i64
+const SO_REUSEPORT      : i64 = 15i64
+const SO_PASSCRED       : i64 = 16i64
+const SO_PEERCRED       : i64 = 17i64
+const SO_RCVLOWAT       : i64 = 18i64
+const SO_SNDLOWAT       : i64 = 19i64
+const SO_RCVTIMEO       : i64 = 20i64
+const SO_SNDTIMEO       : i64 = 21i64
+const SO_RCVTIMEO_OLD   : i64 = 20i64
+const SO_SNDTIMEO_OLD   : i64 = 21i64
+const SO_SECURITY_AUTHENTICATION       : i64 = 22i64
+const SO_SECURITY_ENCRYPTION_TRANSPORT : i64 = 23i64
+const SO_SECURITY_ENCRYPTION_NETWORK   : i64 = 24i64
+const SO_BINDTODEVICE   : i64 = 25i64
+const SO_ATTACH_FILTER  : i64 = 26i64
+const SO_DETACH_FILTER  : i64 = 27i64
+const SO_GET_FILTER     : i64 = 26i64
+const SO_PEERNAME       : i64 = 28i64
+const SO_ACCEPTCONN     : i64 = 30i64
+const SO_PEERSEC        : i64 = 31i64
+const SO_PASSSEC        : i64 = 34i64
+const SO_MARK           : i64 = 36i64
+const SO_PROTOCOL       : i64 = 38i64
+const SO_DOMAIN         : i64 = 39i64
+const SO_RXQ_OVFL       : i64 = 40i64
+const SO_WIFI_STATUS    : i64 = 41i64
+const SO_PEEK_OFF       : i64 = 42i64
+const SO_NOFCS          : i64 = 43i64
+const SO_LOCK_FILTER    : i64 = 44i64
+const SO_SELECT_ERR_QUEUE : i64 = 45i64
+const SO_BUSY_POLL      : i64 = 46i64
+const SO_MAX_PACING_RATE : i64 = 47i64
+const SO_BPF_EXTENSIONS : i64 = 48i64
+const SO_INCOMING_CPU   : i64 = 49i64
+const SO_ATTACH_BPF     : i64 = 50i64
+const SO_DETACH_BPF     : i64 = 27i64
+const SO_ATTACH_REUSEPORT_CBPF  : i64 = 51i64
+const SO_ATTACH_REUSEPORT_EBPF  : i64 = 52i64
+const SO_CNX_ADVICE     : i64 = 53i64
+const SO_MEMINFO        : i64 = 55i64
+const SO_INCOMING_NAPI_ID : i64 = 56i64
+const SO_COOKIE         : i64 = 57i64
+const SO_PEERGROUPS     : i64 = 59i64
+const SO_ZEROCOPY       : i64 = 60i64
+const SO_TXTIME         : i64 = 61i64
+const SO_BINDTOIFINDEX  : i64 = 62i64
+const SO_TIMESTAMP      : i64 = 29i64
+const SO_TIMESTAMPNS    : i64 = 35i64
+const SO_TIMESTAMPING   : i64 = 37i64
+const SO_RCVLOWAT_NEW   : i64 = 63i64
+const SO_SNDLOWAT_NEW   : i64 = 64i64
+const SO_RCVTIMEO_NEW   : i64 = 66i64
+const SO_SNDTIMEO_NEW   : i64 = 67i64
+const SO_DETACH_REUSEPORT_BPF : i64 = 68i64
+const SO_PREFER_BUSY_POLL : i64 = 69i64
+const SO_BUSY_POLL_BUDGET : i64 = 70i64
+const SO_NETNS_COOKIE   : i64 = 71i64
+const SO_BUF_LOCK       : i64 = 72i64
+const SO_RESERVE_MEM    : i64 = 73i64
+const SO_TXREHASH       : i64 = 74i64
+const SO_RCVMARK        : i64 = 75i64
+
+const TCP_NODELAY              : i64 = 1i64
+const TCP_MAXSEG               : i64 = 2i64
+const TCP_CORK                 : i64 = 3i64
+const TCP_KEEPIDLE             : i64 = 4i64
+const TCP_KEEPINTVL            : i64 = 5i64
+const TCP_KEEPCNT              : i64 = 6i64
+const TCP_SYNCNT               : i64 = 7i64
+const TCP_LINGER2              : i64 = 8i64
+const TCP_DEFER_ACCEPT         : i64 = 9i64
+const TCP_WINDOW_CLAMP         : i64 = 10i64
+const TCP_INFO                 : i64 = 11i64
+const TCP_QUICKACK             : i64 = 12i64
+const TCP_CONGESTION           : i64 = 13i64
+const TCP_MD5SIG               : i64 = 14i64
+const TCP_THIN_LINEAR_TIMEOUTS : i64 = 16i64
+const TCP_THIN_DUPACK          : i64 = 17i64
+const TCP_USER_TIMEOUT         : i64 = 18i64
+const TCP_REPAIR               : i64 = 19i64
+const TCP_REPAIR_QUEUE         : i64 = 20i64
+const TCP_QUEUE_SEQ            : i64 = 21i64
+const TCP_REPAIR_OPTIONS       : i64 = 22i64
+const TCP_FASTOPEN             : i64 = 23i64
+const TCP_TIMESTAMP            : i64 = 24i64
+const TCP_NOTSENT_LOWAT        : i64 = 25i64
+const TCP_CC_INFO              : i64 = 26i64
+const TCP_SAVE_SYN             : i64 = 27i64
+const TCP_SAVED_SYN            : i64 = 28i64
+const TCP_REPAIR_WINDOW        : i64 = 29i64
+const TCP_FASTOPEN_CONNECT     : i64 = 30i64
+const TCP_ULP                  : i64 = 31i64
+const TCP_MD5SIG_EXT           : i64 = 32i64
+const TCP_FASTOPEN_KEY         : i64 = 33i64
+const TCP_FASTOPEN_NO_COOKIE   : i64 = 34i64
+const TCP_ZEROCOPY_RECEIVE     : i64 = 35i64
+const TCP_INQ                  : i64 = 36i64
+const TCP_TX_DELAY             : i64 = 37i64
+
+const UDP_CORK          : i64 = 1i64
+const UDP_ENCAP         : i64 = 100i64
+const UDP_NO_CHECK6_TX  : i64 = 101i64
+const UDP_NO_CHECK6_RX  : i64 = 102i64
+const UDP_GRO           : i64 = 104i64
+
+const SHUT_RD   : i64 = 0i64
+const SHUT_WR   : i64 = 1i64
+const SHUT_RDWR : i64 = 2i64
+
+const MSG_OOB         : i64 = 1i64
+const MSG_PEEK        : i64 = 2i64
+const MSG_DONTROUTE   : i64 = 4i64
+const MSG_TRYHARD     : i64 = 4i64
+const MSG_CTRUNC      : i64 = 8i64
+const MSG_PROBE       : i64 = 16i64
+const MSG_TRUNC       : i64 = 32i64
+const MSG_DONTWAIT    : i64 = 64i64
+const MSG_EOR         : i64 = 128i64
+const MSG_WAITALL     : i64 = 256i64
+const MSG_FIN         : i64 = 512i64
+const MSG_SYN         : i64 = 1024i64
+const MSG_CONFIRM     : i64 = 2048i64
+const MSG_RST         : i64 = 4096i64
+const MSG_ERRQUEUE    : i64 = 8192i64
+const MSG_NOSIGNAL    : i64 = 16384i64
+const MSG_MORE        : i64 = 32768i64
+const MSG_WAITFORONE  : i64 = 65536i64
+const MSG_SENDPAGE_NOTLAST : i64 = 134217728i64
+const MSG_ZEROCOPY    : i64 = 67108864i64
+const MSG_FASTOPEN    : i64 = 536870912i64
+const MSG_CMSG_CLOEXEC : i64 = -2147483648i64
+
+-- §7  POLL / EPOLL / SELECT
+const POLLIN    : i64 = 1i64
+const POLLPRI   : i64 = 2i64
+const POLLOUT   : i64 = 4i64
+const POLLERR   : i64 = 8i64
+const POLLHUP   : i64 = 16i64
+const POLLNVAL  : i64 = 32i64
+const POLLRDNORM : i64 = 64i64
+const POLLRDBAND : i64 = 128i64
+const POLLWRNORM : i64 = 256i64
+const POLLWRBAND : i64 = 512i64
+const POLLMSG   : i64 = 1024i64
+const POLLREMOVE : i64 = 4096i64
+const POLLRDHUP : i64 = 8192i64
+
+const EPOLLIN        : i64 = 1i64
+const EPOLLPRI       : i64 = 2i64
+const EPOLLOUT       : i64 = 4i64
+const EPOLLERR       : i64 = 8i64
+const EPOLLHUP       : i64 = 16i64
+const EPOLLRDNORM    : i64 = 64i64
+const EPOLLRDBAND    : i64 = 128i64
+const EPOLLWRNORM    : i64 = 256i64
+const EPOLLWRBAND    : i64 = 512i64
+const EPOLLMSG       : i64 = 1024i64
+const EPOLLRDHUP     : i64 = 8192i64
+const EPOLLEXCLUSIVE : i64 = 268435456i64
+const EPOLLWAKEUP    : i64 = 536870912i64
+const EPOLLONESHOT   : i64 = 1073741824i64
+const EPOLLET        : i64 = -2147483648i64
+
+const EPOLL_CTL_ADD : i64 = 1i64
+const EPOLL_CTL_DEL : i64 = 2i64
+const EPOLL_CTL_MOD : i64 = 3i64
+
+const EPOLL_CLOEXEC : i64 = 524288i64
+
+-- §8  CLOCK IDs (include/uapi/linux/time.h)
+const CLOCK_REALTIME            : i64 = 0i64
+const CLOCK_MONOTONIC           : i64 = 1i64
+const CLOCK_PROCESS_CPUTIME_ID  : i64 = 2i64
+const CLOCK_THREAD_CPUTIME_ID   : i64 = 3i64
+const CLOCK_MONOTONIC_RAW       : i64 = 4i64
+const CLOCK_REALTIME_COARSE     : i64 = 5i64
+const CLOCK_MONOTONIC_COARSE    : i64 = 6i64
+const CLOCK_BOOTTIME            : i64 = 7i64
+const CLOCK_REALTIME_ALARM      : i64 = 8i64
+const CLOCK_BOOTTIME_ALARM      : i64 = 9i64
+const CLOCK_SGI_CYCLE           : i64 = 10i64
+const CLOCK_TAI                 : i64 = 11i64
+const TIMER_ABSTIME             : i64 = 1i64
+
+-- §9  RLIMIT RESOURCES
+const RLIMIT_CPU        : i64 = 0i64
+const RLIMIT_FSIZE      : i64 = 1i64
+const RLIMIT_DATA       : i64 = 2i64
+const RLIMIT_STACK      : i64 = 3i64
+const RLIMIT_CORE       : i64 = 4i64
+const RLIMIT_RSS        : i64 = 5i64
+const RLIMIT_NPROC      : i64 = 6i64
+const RLIMIT_NOFILE     : i64 = 7i64
+const RLIMIT_MEMLOCK    : i64 = 8i64
+const RLIMIT_AS         : i64 = 9i64
+const RLIMIT_LOCKS      : i64 = 10i64
+const RLIMIT_SIGPENDING : i64 = 11i64
+const RLIMIT_MSGQUEUE   : i64 = 12i64
+const RLIMIT_NICE       : i64 = 13i64
+const RLIMIT_RTPRIO     : i64 = 14i64
+const RLIMIT_RTTIME     : i64 = 15i64
+const RLIMIT_NLIMITS    : i64 = 16i64
+const RLIM_INFINITY     : i64 = -1i64
+
+-- §10  CLONE FLAGS
+const CLONE_VM              : i64 = 256i64
+const CLONE_FS              : i64 = 512i64
+const CLONE_FILES           : i64 = 1024i64
+const CLONE_SIGHAND         : i64 = 2048i64
+const CLONE_PIDFD           : i64 = 4096i64
+const CLONE_PTRACE          : i64 = 8192i64
+const CLONE_VFORK           : i64 = 16384i64
+const CLONE_PARENT          : i64 = 32768i64
+const CLONE_THREAD          : i64 = 65536i64
+const CLONE_NEWNS           : i64 = 131072i64
+const CLONE_SYSVSEM         : i64 = 262144i64
+const CLONE_SETTLS          : i64 = 524288i64
+const CLONE_PARENT_SETTID   : i64 = 1048576i64
+const CLONE_CHILD_CLEARTID  : i64 = 2097152i64
+const CLONE_DETACHED        : i64 = 4194304i64
+const CLONE_UNTRACED        : i64 = 8388608i64
+const CLONE_CHILD_SETTID    : i64 = 16777216i64
+const CLONE_NEWCGROUP       : i64 = 33554432i64
+const CLONE_NEWUTS          : i64 = 67108864i64
+const CLONE_NEWIPC          : i64 = 134217728i64
+const CLONE_NEWUSER         : i64 = 268435456i64
+const CLONE_NEWPID          : i64 = 536870912i64
+const CLONE_NEWNET          : i64 = 1073741824i64
+const CLONE_IO              : i64 = -2147483648i64
+const CLONE_NEWTIME         : i64 = 128i64
+
+-- §11  WAIT / WAITPID FLAGS
+const WNOHANG    : i64 = 1i64
+const WUNTRACED  : i64 = 2i64
+const WSTOPPED   : i64 = 2i64
+const WEXITED    : i64 = 4i64
+const WCONTINUED : i64 = 8i64
+const WNOWAIT    : i64 = 16777216i64
+const WNOTHREAD  : i64 = 536870912i64
+const WALL       : i64 = 1073741824i64
+const WCLONE     : i64 = -2147483648i64
+
+-- §12  PRCTL OPTIONS (include/uapi/linux/prctl.h)
+const PR_SET_PDEATHSIG         : i64 = 1i64
+const PR_GET_PDEATHSIG         : i64 = 2i64
+const PR_GET_DUMPABLE          : i64 = 3i64
+const PR_SET_DUMPABLE          : i64 = 4i64
+const PR_GET_UNALIGN           : i64 = 5i64
+const PR_SET_UNALIGN           : i64 = 6i64
+const PR_GET_KEEPCAPS          : i64 = 7i64
+const PR_SET_KEEPCAPS          : i64 = 8i64
+const PR_GET_FPEMU             : i64 = 9i64
+const PR_SET_FPEMU             : i64 = 10i64
+const PR_GET_FPEXC             : i64 = 11i64
+const PR_SET_FPEXC             : i64 = 12i64
+const PR_GET_TIMING            : i64 = 13i64
+const PR_SET_TIMING            : i64 = 14i64
+const PR_TIMING_STATISTICAL    : i64 = 0i64
+const PR_TIMING_TIMESTAMP      : i64 = 1i64
+const PR_SET_NAME              : i64 = 15i64
+const PR_GET_NAME              : i64 = 16i64
+const PR_GET_ENDIAN            : i64 = 19i64
+const PR_SET_ENDIAN            : i64 = 20i64
+const PR_GET_SECCOMP           : i64 = 21i64
+const PR_SET_SECCOMP           : i64 = 22i64
+const PR_CAPBSET_READ          : i64 = 23i64
+const PR_CAPBSET_DROP          : i64 = 24i64
+const PR_GET_TSC               : i64 = 25i64
+const PR_SET_TSC               : i64 = 26i64
+const PR_GET_SECUREBITS        : i64 = 27i64
+const PR_SET_SECUREBITS        : i64 = 28i64
+const PR_SET_TIMERSLACK        : i64 = 29i64
+const PR_GET_TIMERSLACK        : i64 = 30i64
+const PR_TASK_PERF_EVENTS_DISABLE : i64 = 31i64
+const PR_TASK_PERF_EVENTS_ENABLE  : i64 = 32i64
+const PR_MCE_KILL              : i64 = 33i64
+const PR_MCE_KILL_GET          : i64 = 34i64
+const PR_SET_MM                : i64 = 35i64
+const PR_SET_CHILD_SUBREAPER   : i64 = 36i64
+const PR_GET_CHILD_SUBREAPER   : i64 = 37i64
+const PR_SET_NO_NEW_PRIVS      : i64 = 38i64
+const PR_GET_NO_NEW_PRIVS      : i64 = 39i64
+const PR_GET_TID_ADDRESS       : i64 = 40i64
+const PR_SET_THP_DISABLE       : i64 = 41i64
+const PR_GET_THP_DISABLE       : i64 = 42i64
+const PR_MPX_ENABLE_MANAGEMENT : i64 = 43i64
+const PR_MPX_DISABLE_MANAGEMENT : i64 = 44i64
+const PR_SET_FP_MODE           : i64 = 45i64
+const PR_GET_FP_MODE           : i64 = 46i64
+const PR_CAP_AMBIENT           : i64 = 47i64
+const PR_SVE_SET_VL            : i64 = 50i64
+const PR_SVE_GET_VL            : i64 = 51i64
+const PR_GET_SPECULATION_CTRL  : i64 = 52i64
+const PR_SET_SPECULATION_CTRL  : i64 = 53i64
+const PR_PAC_RESET_KEYS        : i64 = 54i64
+const PR_SET_TAGGED_ADDR_CTRL  : i64 = 55i64
+const PR_GET_TAGGED_ADDR_CTRL  : i64 = 56i64
+const PR_SET_IO_FLUSHER        : i64 = 57i64
+const PR_GET_IO_FLUSHER        : i64 = 58i64
+const PR_SET_SYSCALL_USER_DISPATCH : i64 = 59i64
+const PR_PAC_SET_ENABLED_KEYS  : i64 = 60i64
+const PR_PAC_GET_ENABLED_KEYS  : i64 = 61i64
+const PR_SCHED_CORE            : i64 = 62i64
+const PR_SME_SET_VL            : i64 = 63i64
+const PR_SME_GET_VL            : i64 = 64i64
+const PR_SET_MDWE              : i64 = 65i64
+const PR_GET_MDWE              : i64 = 66i64
+const PR_SET_VMA               : i64 = 1398164801i64
+const PR_RISCV_SET_ICACHE_FLUSH_CTX : i64 = 71i64
+
+-- §13  IOCTL CONSTANTS (include/uapi/asm-generic/ioctl.h, termios)
+const TCGETS    : i64 = 21505i64
+const TCSETS    : i64 = 21506i64
+const TCSETSW   : i64 = 21507i64
+const TCSETSF   : i64 = 21508i64
+const TCGETA    : i64 = 21509i64
+const TCSETA    : i64 = 21510i64
+const TCSETAW   : i64 = 21511i64
+const TCSETAF   : i64 = 21512i64
+const TCSBRK    : i64 = 21513i64
+const TCXONC    : i64 = 21514i64
+const TCFLSH    : i64 = 21515i64
+const TIOCEXCL  : i64 = 21516i64
+const TIOCNXCL  : i64 = 21517i64
+const TIOCSCTTY : i64 = 21518i64
+const TIOCGPGRP : i64 = 21519i64
+const TIOCSPGRP : i64 = 21520i64
+const TIOCOUTQ  : i64 = 21521i64
+const TIOCSTI   : i64 = 21522i64
+const TIOCGWINSZ : i64 = 21523i64
+const TIOCSWINSZ : i64 = 21524i64
+const TIOCMGET  : i64 = 21525i64
+const TIOCMBIS  : i64 = 21526i64
+const TIOCMBIC  : i64 = 21527i64
+const TIOCMSET  : i64 = 21528i64
+const TIOCGSOFTCAR : i64 = 21529i64
+const TIOCSSOFTCAR : i64 = 21530i64
+const FIONREAD  : i64 = 21531i64
+const TIOCINQ   : i64 = 21531i64
+const TIOCLINUX : i64 = 21532i64
+const TIOCCONS  : i64 = 21533i64
+const TIOCGSERIAL : i64 = 21534i64
+const TIOCSSERIAL : i64 = 21535i64
+const TIOCPKT   : i64 = 21536i64
+const FIONBIO   : i64 = 21537i64
+const TIOCNOTTY : i64 = 21538i64
+const TIOCSETD  : i64 = 21539i64
+const TIOCGETD  : i64 = 21540i64
+const TCSBRKP   : i64 = 21541i64
+const TIOCSBRK  : i64 = 21543i64
+const TIOCCBRK  : i64 = 21544i64
+const TIOCGSID  : i64 = 21545i64
+const TIOCGRS485 : i64 = 21550i64
+const TIOCSRS485 : i64 = 21551i64
+const TIOCGPTN  : i64 = -2147199741i64
+const TIOCSPTLCK : i64 = 1074025722i64
+const TIOCGDEV  : i64 = -2147199738i64
+const TCGETX    : i64 = 21554i64
+const TCSETX    : i64 = 21555i64
+const TCSETXF   : i64 = 21556i64
+const TCSETXW   : i64 = 21557i64
+const TIOCSIG   : i64 = 1074025736i64
+const TIOCVHANGUP : i64 = 21559i64
+const TIOCGPKT  : i64 = -2147199735i64
+const TIOCGPTLCK : i64 = -2147199734i64
+const TIOCGEXCL : i64 = -2147199732i64
+const TIOCGPTPEER : i64 = 21569i64
+const TIOCGISO7816 : i64 = -2143996671i64
+const TIOCSISO7816 : i64 = -1070249215i64
+const FIOCLEX   : i64 = 21585i64
+const FIONCLEX  : i64 = 21584i64
+const FIOASYNC  : i64 = 21586i64
+const TIOCSERCONFIG : i64 = 21587i64
+const TIOCSERGWILD  : i64 = 21588i64
+const TIOCSERSWILD  : i64 = 21589i64
+const TIOCGLCKTRMIOS : i64 = 21590i64
+const TIOCSLCKTRMIOS : i64 = 21591i64
+const TIOCSERGSTRUCT : i64 = 21592i64
+const TIOCSERGETLSR  : i64 = 21593i64
+const TIOCSERGETMULTI : i64 = 21594i64
+const TIOCSERSETMULTI : i64 = 21595i64
+const TIOCMIWAIT    : i64 = 21596i64
+const TIOCGICOUNT   : i64 = 21597i64
+const TIOCGHAYESESP : i64 = 21673i64
+const TIOCSHAYESESP : i64 = 21674i64
+const FIOQSIZE  : i64 = 21680i64
+
+-- block device ioctls
+const BLKROSET  : i64 = 4701i64
+const BLKROGET  : i64 = 4702i64
+const BLKRRPART : i64 = 4703i64
+const BLKGETSIZE : i64 = 4704i64
+const BLKFLSBUF : i64 = 4705i64
+const BLKRASET  : i64 = 4706i64
+const BLKRAGET  : i64 = 4707i64
+const BLKFRASET : i64 = 4708i64
+const BLKFRAGET : i64 = 4709i64
+const BLKSECTSET : i64 = 4710i64
+const BLKSECTGET : i64 = 4711i64
+const BLKSSZGET  : i64 = 4712i64
+const BLKBSZGET  : i64 = -2146928635i64
+const BLKBSZSET  : i64 = 1074270981i64
+const BLKGETSIZE64 : i64 = -2146928632i64
+
+-- §14  FUTEX OPERATIONS (include/uapi/linux/futex.h)
+const FUTEX_WAIT              : i64 = 0i64
+const FUTEX_WAKE              : i64 = 1i64
+const FUTEX_FD                : i64 = 2i64
+const FUTEX_REQUEUE           : i64 = 3i64
+const FUTEX_CMP_REQUEUE       : i64 = 4i64
+const FUTEX_WAKE_OP           : i64 = 5i64
+const FUTEX_LOCK_PI           : i64 = 6i64
+const FUTEX_UNLOCK_PI         : i64 = 7i64
+const FUTEX_TRYLOCK_PI        : i64 = 8i64
+const FUTEX_WAIT_BITSET       : i64 = 9i64
+const FUTEX_WAKE_BITSET       : i64 = 10i64
+const FUTEX_WAIT_REQUEUE_PI   : i64 = 11i64
+const FUTEX_CMP_REQUEUE_PI    : i64 = 12i64
+const FUTEX_LOCK_PI2          : i64 = 13i64
+const FUTEX_PRIVATE_FLAG      : i64 = 128i64
+const FUTEX_CLOCK_REALTIME    : i64 = 256i64
+const FUTEX_WAIT_PRIVATE      : i64 = 128i64
+const FUTEX_WAKE_PRIVATE      : i64 = 129i64
+const FUTEX_REQUEUE_PRIVATE   : i64 = 131i64
+const FUTEX_CMP_REQUEUE_PRIVATE : i64 = 132i64
+const FUTEX_BITSET_MATCH_ANY  : i64 = -1i64
+
+-- §15  INOTIFY (include/uapi/linux/inotify.h)
+const IN_ACCESS        : i64 = 1i64
+const IN_MODIFY        : i64 = 2i64
+const IN_ATTRIB        : i64 = 4i64
+const IN_CLOSE_WRITE   : i64 = 8i64
+const IN_CLOSE_NOWRITE : i64 = 16i64
+const IN_CLOSE         : i64 = 24i64
+const IN_OPEN          : i64 = 32i64
+const IN_MOVED_FROM    : i64 = 64i64
+const IN_MOVED_TO      : i64 = 128i64
+const IN_MOVE          : i64 = 192i64
+const IN_CREATE        : i64 = 256i64
+const IN_DELETE        : i64 = 512i64
+const IN_DELETE_SELF   : i64 = 1024i64
+const IN_MOVE_SELF     : i64 = 2048i64
+const IN_UNMOUNT       : i64 = 8192i64
+const IN_Q_OVERFLOW    : i64 = 16384i64
+const IN_IGNORED       : i64 = 32768i64
+const IN_ONLYDIR       : i64 = 16777216i64
+const IN_DONT_FOLLOW   : i64 = 33554432i64
+const IN_EXCL_UNLINK   : i64 = 67108864i64
+const IN_MASK_CREATE   : i64 = 268435456i64
+const IN_MASK_ADD      : i64 = 536870912i64
+const IN_ISDIR         : i64 = 1073741824i64
+const IN_ONESHOT       : i64 = -2147483648i64
+const IN_ALL_EVENTS    : i64 = 4095i64
+const IN_CLOEXEC       : i64 = 524288i64
+const IN_NONBLOCK      : i64 = 2048i64
+
+-- §16  SECCOMP (include/uapi/linux/seccomp.h)
+const SECCOMP_MODE_DISABLED : i64 = 0i64
+const SECCOMP_MODE_STRICT   : i64 = 1i64
+const SECCOMP_MODE_FILTER   : i64 = 2i64
+const SECCOMP_SET_MODE_STRICT  : i64 = 0i64
+const SECCOMP_SET_MODE_FILTER  : i64 = 1i64
+const SECCOMP_GET_ACTION_AVAIL : i64 = 2i64
+const SECCOMP_GET_NOTIF_SIZES  : i64 = 3i64
+const SECCOMP_FILTER_FLAG_TSYNC         : i64 = 1i64
+const SECCOMP_FILTER_FLAG_LOG           : i64 = 2i64
+const SECCOMP_FILTER_FLAG_SPEC_ALLOW    : i64 = 4i64
+const SECCOMP_FILTER_FLAG_NEW_LISTENER  : i64 = 8i64
+const SECCOMP_FILTER_FLAG_TSYNC_ESRCH   : i64 = 16i64
+const SECCOMP_RET_KILL_PROCESS : i64 = 2147418112i64
+const SECCOMP_RET_KILL_THREAD  : i64 = 0i64
+const SECCOMP_RET_KILL         : i64 = 0i64
+const SECCOMP_RET_TRAP         : i64 = 196608i64
+const SECCOMP_RET_ERRNO        : i64 = 327680i64
+const SECCOMP_RET_USER_NOTIF   : i64 = 1073741824i64
+const SECCOMP_RET_TRACE        : i64 = 1879048192i64
+const SECCOMP_RET_LOG          : i64 = 2130706432i64
+const SECCOMP_RET_ALLOW        : i64 = 2147418112i64
+const SECCOMP_RET_ACTION_FULL  : i64 = -65536i64
+const SECCOMP_RET_DATA         : i64 = 65535i64
+
+-- §17  IO_URING (include/uapi/linux/io_uring.h)
+const IORING_SETUP_IOPOLL      : i64 = 1i64
+const IORING_SETUP_SQPOLL      : i64 = 2i64
+const IORING_SETUP_SQ_AFF      : i64 = 4i64
+const IORING_SETUP_CQSIZE      : i64 = 8i64
+const IORING_SETUP_CLAMP       : i64 = 16i64
+const IORING_SETUP_ATTACH_WQ   : i64 = 32i64
+const IORING_SETUP_R_DISABLED   : i64 = 64i64
+const IORING_SETUP_SUBMIT_ALL  : i64 = 128i64
+const IORING_SETUP_COOP_TASKRUN : i64 = 256i64
+const IORING_SETUP_TASKRUN_FLAG : i64 = 512i64
+const IORING_SETUP_SQE128      : i64 = 1024i64
+const IORING_SETUP_CQE32       : i64 = 2048i64
+const IORING_SETUP_SINGLE_ISSUER : i64 = 4096i64
+const IORING_SETUP_DEFER_TASKRUN : i64 = 8192i64
+const IORING_SETUP_NO_MMAP     : i64 = 16384i64
+const IORING_SETUP_REGISTERED_FD_ONLY : i64 = 32768i64
+const IORING_SETUP_NO_SQARRAY  : i64 = 65536i64
+
+const IORING_OP_NOP             : i64 = 0i64
+const IORING_OP_READV           : i64 = 1i64
+const IORING_OP_WRITEV          : i64 = 2i64
+const IORING_OP_FSYNC           : i64 = 3i64
+const IORING_OP_READ_FIXED      : i64 = 4i64
+const IORING_OP_WRITE_FIXED     : i64 = 5i64
+const IORING_OP_POLL_ADD        : i64 = 6i64
+const IORING_OP_POLL_REMOVE     : i64 = 7i64
+const IORING_OP_SYNC_FILE_RANGE : i64 = 8i64
+const IORING_OP_SENDMSG         : i64 = 9i64
+const IORING_OP_RECVMSG         : i64 = 10i64
+const IORING_OP_TIMEOUT         : i64 = 11i64
+const IORING_OP_TIMEOUT_REMOVE  : i64 = 12i64
+const IORING_OP_ACCEPT          : i64 = 13i64
+const IORING_OP_ASYNC_CANCEL    : i64 = 14i64
+const IORING_OP_LINK_TIMEOUT    : i64 = 15i64
+const IORING_OP_CONNECT         : i64 = 16i64
+const IORING_OP_FALLOCATE       : i64 = 17i64
+const IORING_OP_OPENAT          : i64 = 18i64
+const IORING_OP_CLOSE           : i64 = 19i64
+const IORING_OP_FILES_UPDATE    : i64 = 20i64
+const IORING_OP_STATX           : i64 = 21i64
+const IORING_OP_READ            : i64 = 22i64
+const IORING_OP_WRITE           : i64 = 23i64
+const IORING_OP_FADVISE         : i64 = 24i64
+const IORING_OP_MADVISE         : i64 = 25i64
+const IORING_OP_SEND            : i64 = 26i64
+const IORING_OP_RECV            : i64 = 27i64
+const IORING_OP_OPENAT2         : i64 = 28i64
+const IORING_OP_EPOLL_CTL       : i64 = 29i64
+const IORING_OP_SPLICE          : i64 = 30i64
+const IORING_OP_PROVIDE_BUFFERS : i64 = 31i64
+const IORING_OP_REMOVE_BUFFERS  : i64 = 32i64
+const IORING_OP_TEE             : i64 = 33i64
+const IORING_OP_SHUTDOWN        : i64 = 34i64
+const IORING_OP_RENAMEAT        : i64 = 35i64
+const IORING_OP_UNLINKAT        : i64 = 36i64
+const IORING_OP_MKDIRAT         : i64 = 37i64
+const IORING_OP_SYMLINKAT       : i64 = 38i64
+const IORING_OP_LINKAT          : i64 = 39i64
+const IORING_OP_MSG_RING        : i64 = 40i64
+const IORING_OP_FSETXATTR       : i64 = 41i64
+const IORING_OP_SETXATTR        : i64 = 42i64
+const IORING_OP_FGETXATTR       : i64 = 43i64
+const IORING_OP_GETXATTR        : i64 = 44i64
+const IORING_OP_SOCKET          : i64 = 45i64
+const IORING_OP_URING_CMD       : i64 = 46i64
+const IORING_OP_SEND_ZC         : i64 = 47i64
+const IORING_OP_SENDMSG_ZC      : i64 = 48i64
+const IORING_OP_READ_MULTISHOT  : i64 = 49i64
+const IORING_OP_WAITID          : i64 = 50i64
+const IORING_OP_FUTEX_WAIT      : i64 = 51i64
+const IORING_OP_FUTEX_WAKE      : i64 = 52i64
+const IORING_OP_FUTEX_WAITV     : i64 = 53i64
+const IORING_OP_FIXED_FD_INSTALL : i64 = 54i64
+const IORING_OP_FTRUNCATE       : i64 = 55i64
+const IORING_OP_BIND            : i64 = 56i64
+const IORING_OP_LISTEN          : i64 = 57i64
+const IORING_OP_LAST            : i64 = 58i64
+
+const IORING_ENTER_GETEVENTS    : i64 = 1i64
+const IORING_ENTER_SQ_WAKEUP    : i64 = 2i64
+const IORING_ENTER_SQ_WAIT      : i64 = 4i64
+const IORING_ENTER_EXT_ARG      : i64 = 8i64
+const IORING_ENTER_REGISTERED_RING : i64 = 16i64
+
+const IORING_FEAT_SINGLE_MMAP       : i64 = 1i64
+const IORING_FEAT_NODROP            : i64 = 2i64
+const IORING_FEAT_SUBMIT_STABLE     : i64 = 4i64
+const IORING_FEAT_RW_CUR_POS        : i64 = 8i64
+const IORING_FEAT_CUR_PERSONALITY   : i64 = 16i64
+const IORING_FEAT_FAST_POLL         : i64 = 32i64
+const IORING_FEAT_POLL_32BITS       : i64 = 64i64
+const IORING_FEAT_SQPOLL_NONFIXED   : i64 = 128i64
+const IORING_FEAT_EXT_ARG           : i64 = 256i64
+const IORING_FEAT_NATIVE_WORKERS    : i64 = 512i64
+const IORING_FEAT_RSRC_TAGS         : i64 = 1024i64
+const IORING_FEAT_CQE_SKIP          : i64 = 2048i64
+const IORING_FEAT_LINKED_FILE       : i64 = 4096i64
+const IORING_FEAT_REG_REG_RING      : i64 = 8192i64
+
+const IORING_REGISTER_BUFFERS           : i64 = 0i64
+const IORING_UNREGISTER_BUFFERS         : i64 = 1i64
+const IORING_REGISTER_FILES             : i64 = 2i64
+const IORING_UNREGISTER_FILES           : i64 = 3i64
+const IORING_REGISTER_EVENTFD           : i64 = 4i64
+const IORING_UNREGISTER_EVENTFD         : i64 = 5i64
+const IORING_REGISTER_FILES_UPDATE      : i64 = 6i64
+const IORING_REGISTER_EVENTFD_ASYNC     : i64 = 7i64
+const IORING_REGISTER_PROBE             : i64 = 8i64
+const IORING_REGISTER_PERSONALITY       : i64 = 9i64
+const IORING_UNREGISTER_PERSONALITY     : i64 = 10i64
+const IORING_REGISTER_RESTRICTIONS      : i64 = 11i64
+const IORING_REGISTER_ENABLE_RINGS      : i64 = 12i64
+const IORING_REGISTER_FILES2            : i64 = 13i64
+const IORING_REGISTER_FILES_UPDATE2     : i64 = 14i64
+const IORING_REGISTER_BUFFERS2          : i64 = 15i64
+const IORING_REGISTER_BUFFERS_UPDATE    : i64 = 16i64
+const IORING_REGISTER_IOWQ_AFF          : i64 = 17i64
+const IORING_UNREGISTER_IOWQ_AFF        : i64 = 18i64
+const IORING_REGISTER_IOWQ_MAX_WORKERS  : i64 = 19i64
+const IORING_REGISTER_RING_FDS          : i64 = 20i64
+const IORING_UNREGISTER_RING_FDS        : i64 = 21i64
+const IORING_REGISTER_PBUF_RING         : i64 = 22i64
+const IORING_UNREGISTER_PBUF_RING       : i64 = 23i64
+const IORING_REGISTER_SYNC_CANCEL       : i64 = 24i64
+const IORING_REGISTER_FILE_ALLOC_RANGE  : i64 = 25i64
+const IORING_REGISTER_PBUF_STATUS       : i64 = 26i64
+const IORING_REGISTER_NAPI              : i64 = 27i64
+const IORING_UNREGISTER_NAPI            : i64 = 28i64
+const IORING_REGISTER_LAST              : i64 = 29i64
+
+-- §18  PTRACE (include/uapi/linux/ptrace.h)
+const PTRACE_TRACEME        : i64 = 0i64
+const PTRACE_PEEKTEXT       : i64 = 1i64
+const PTRACE_PEEKDATA       : i64 = 2i64
+const PTRACE_PEEKUSR        : i64 = 3i64
+const PTRACE_POKETEXT       : i64 = 4i64
+const PTRACE_POKEDATA       : i64 = 5i64
+const PTRACE_POKEUSR        : i64 = 6i64
+const PTRACE_CONT           : i64 = 7i64
+const PTRACE_KILL           : i64 = 8i64
+const PTRACE_SINGLESTEP     : i64 = 9i64
+const PTRACE_GETREGS        : i64 = 12i64
+const PTRACE_SETREGS        : i64 = 13i64
+const PTRACE_GETFPREGS      : i64 = 14i64
+const PTRACE_SETFPREGS      : i64 = 15i64
+const PTRACE_ATTACH         : i64 = 16i64
+const PTRACE_DETACH         : i64 = 17i64
+const PTRACE_GETFPXREGS     : i64 = 18i64
+const PTRACE_SETFPXREGS     : i64 = 19i64
+const PTRACE_SYSCALL        : i64 = 24i64
+const PTRACE_GET_THREAD_AREA  : i64 = 25i64
+const PTRACE_SET_THREAD_AREA  : i64 = 26i64
+const PTRACE_ARCH_PRCTL     : i64 = 30i64
+const PTRACE_SYSEMU         : i64 = 31i64
+const PTRACE_SYSEMU_SINGLESTEP : i64 = 32i64
+const PTRACE_SINGLEBLOCK    : i64 = 33i64
+const PTRACE_SETOPTIONS     : i64 = 16896i64
+const PTRACE_GETEVENTMSG    : i64 = 16897i64
+const PTRACE_GETSIGINFO     : i64 = 16898i64
+const PTRACE_SETSIGINFO     : i64 = 16899i64
+const PTRACE_GETREGSET      : i64 = 16900i64
+const PTRACE_SETREGSET      : i64 = 16901i64
+const PTRACE_SEIZE          : i64 = 16902i64
+const PTRACE_INTERRUPT      : i64 = 16903i64
+const PTRACE_LISTEN         : i64 = 16904i64
+const PTRACE_PEEKSIGINFO    : i64 = 16905i64
+const PTRACE_GETSIGMASK     : i64 = 16906i64
+const PTRACE_SETSIGMASK     : i64 = 16907i64
+const PTRACE_SECCOMP_GET_FILTER : i64 = 16908i64
+const PTRACE_SECCOMP_GET_METADATA : i64 = 16909i64
+const PTRACE_GET_SYSCALL_INFO : i64 = 16910i64
+const PTRACE_GET_RSEQ_CONFIGURATION : i64 = 16911i64
+const PTRACE_SET_SYSCALL_USER_DISPATCH_CONFIG : i64 = 16912i64
+const PTRACE_GET_SYSCALL_USER_DISPATCH_CONFIG : i64 = 16913i64
+
+const PTRACE_O_TRACESYSGOOD   : i64 = 1i64
+const PTRACE_O_TRACEFORK      : i64 = 2i64
+const PTRACE_O_TRACEVFORK     : i64 = 4i64
+const PTRACE_O_TRACECLONE     : i64 = 8i64
+const PTRACE_O_TRACEEXEC      : i64 = 16i64
+const PTRACE_O_TRACEVFORKDONE : i64 = 32i64
+const PTRACE_O_TRACEEXIT      : i64 = 64i64
+const PTRACE_O_TRACESECCOMP   : i64 = 128i64
+const PTRACE_O_EXITKILL       : i64 = 1048576i64
+const PTRACE_O_SUSPEND_SECCOMP : i64 = 2097152i64
+
+-- §19  STATX FLAGS + MASK (include/uapi/linux/stat.h)
+const STATX_TYPE        : i64 = 1i64
+const STATX_MODE        : i64 = 2i64
+const STATX_NLINK       : i64 = 4i64
+const STATX_UID         : i64 = 8i64
+const STATX_GID         : i64 = 16i64
+const STATX_ATIME       : i64 = 32i64
+const STATX_MTIME       : i64 = 64i64
+const STATX_CTIME       : i64 = 128i64
+const STATX_INO         : i64 = 256i64
+const STATX_SIZE        : i64 = 512i64
+const STATX_BLOCKS      : i64 = 1024i64
+const STATX_BASIC_STATS : i64 = 2047i64
+const STATX_BTIME       : i64 = 2048i64
+const STATX_MNT_ID      : i64 = 4096i64
+const STATX_DIOALIGN    : i64 = 8192i64
+const STATX_MNT_ID_UNIQUE : i64 = 16384i64
+const STATX_SUBVOL      : i64 = 32768i64
+const STATX__RESERVED   : i64 = 2147483648i64
+const STATX_ALL         : i64 = 4095i64
+
+const S_IFMT   : i64 = 61440i64
+const S_IFSOCK : i64 = 49152i64
+const S_IFLNK  : i64 = 40960i64
+const S_IFREG  : i64 = 32768i64
+const S_IFBLK  : i64 = 24576i64
+const S_IFDIR  : i64 = 16384i64
+const S_IFCHR  : i64 = 8192i64
+const S_IFIFO  : i64 = 4096i64
+const S_ISUID  : i64 = 2048i64
+const S_ISGID  : i64 = 1024i64
+const S_ISVTX  : i64 = 512i64
+const S_IRWXU  : i64 = 448i64
+const S_IRUSR  : i64 = 256i64
+const S_IWUSR  : i64 = 128i64
+const S_IXUSR  : i64 = 64i64
+const S_IRWXG  : i64 = 56i64
+const S_IRGRP  : i64 = 32i64
+const S_IWGRP  : i64 = 16i64
+const S_IXGRP  : i64 = 8i64
+const S_IRWXO  : i64 = 7i64
+const S_IROTH  : i64 = 4i64
+const S_IWOTH  : i64 = 2i64
+const S_IXOTH  : i64 = 1i64
+
+-- §20  GETRANDOM FLAGS
+const GRND_NONBLOCK : i64 = 1i64
+const GRND_RANDOM   : i64 = 2i64
+const GRND_INSECURE : i64 = 4i64
+
+-- §21  EVENTFD FLAGS
+const EFD_SEMAPHORE : i64 = 1i64
+const EFD_CLOEXEC   : i64 = 524288i64
+const EFD_NONBLOCK  : i64 = 2048i64
+
+-- §22  TIMERFD FLAGS
+const TFD_CLOEXEC   : i64 = 524288i64
+const TFD_NONBLOCK  : i64 = 2048i64
+const TFD_TIMER_ABSTIME    : i64 = 1i64
+const TFD_TIMER_CANCEL_ON_SET : i64 = 2i64
+
+-- §23  SIGNALFD FLAGS
+const SFD_CLOEXEC  : i64 = 524288i64
+const SFD_NONBLOCK : i64 = 2048i64
+
+-- §24  MEMFD FLAGS
+const MFD_CLOEXEC          : i64 = 1i64
+const MFD_ALLOW_SEALING    : i64 = 2i64
+const MFD_HUGETLB          : i64 = 4i64
+const MFD_NOEXEC_SEAL      : i64 = 8i64
+const MFD_EXEC             : i64 = 16i64
+const MFD_HUGE_64KB        : i64 = 1073741824i64
+const MFD_HUGE_512KB       : i64 = -2013265920i64
+const MFD_HUGE_1MB         : i64 = -1879048192i64
+const MFD_HUGE_2MB         : i64 = -1744830464i64
+const MFD_HUGE_8MB         : i64 = -1476395008i64
+const MFD_HUGE_16MB        : i64 = -1342177280i64
+const MFD_HUGE_32MB        : i64 = -1207959552i64
+const MFD_HUGE_256MB       : i64 = -939524096i64
+const MFD_HUGE_512MB       : i64 = -872415232i64
+const MFD_HUGE_1GB         : i64 = -738197504i64
+const MFD_HUGE_2GB         : i64 = -603979776i64
+const MFD_HUGE_16GB        : i64 = -201326592i64
+
+-- §25  SCHED POLICIES
+const SCHED_NORMAL   : i64 = 0i64
+const SCHED_OTHER    : i64 = 0i64
+const SCHED_FIFO     : i64 = 1i64
+const SCHED_RR       : i64 = 2i64
+const SCHED_BATCH    : i64 = 3i64
+const SCHED_ISO      : i64 = 4i64
+const SCHED_IDLE     : i64 = 5i64
+const SCHED_DEADLINE : i64 = 6i64
+const SCHED_RESET_ON_FORK : i64 = 1073741824i64
+
+-- §26  LSEEK WHENCE
+const SEEK_SET  : i64 = 0i64
+const SEEK_CUR  : i64 = 1i64
+const SEEK_END  : i64 = 2i64
+const SEEK_DATA : i64 = 3i64
+const SEEK_HOLE : i64 = 4i64
+
+-- §27  ACCESS MODE FLAGS
+const F_OK : i64 = 0i64
+const X_OK : i64 = 1i64
+const W_OK : i64 = 2i64
+const R_OK : i64 = 4i64
+
+-- §28  LIBC BRIDGE — memory
+fn malloc   : i64 -> ptr                              #extern("malloc")  #cc(c)
+fn calloc   : (i64, i64) -> ptr                       #extern("calloc")  #cc(c)
+fn realloc  : (ptr, i64) -> ptr                       #extern("realloc") #cc(c)
+fn free     : ptr -> ()                               #extern("free")    #cc(c)
+fn memset   : (ptr, i32, u64) -> ptr                  #extern("memset")  #cc(c)
+fn memcpy   : (ptr, ptr, u64) -> ptr                  #extern("memcpy")  #cc(c)
+fn memmove  : (ptr, ptr, u64) -> ptr                  #extern("memmove") #cc(c)
+fn memcmp   : (ptr, ptr, u64) -> i32                  #extern("memcmp")  #cc(c)
+fn memchr   : (ptr, i32, u64) -> ptr                  #extern("memchr")  #cc(c)
+
+-- §29  LIBC BRIDGE — strings
+fn strlen   : ptr -> u64                              #extern("strlen")   #cc(c)
+fn strnlen  : (ptr, u64) -> u64                       #extern("strnlen")  #cc(c)
+fn strcmp   : (ptr, ptr) -> i32                       #extern("strcmp")   #cc(c)
+fn strncmp  : (ptr, ptr, u64) -> i32                  #extern("strncmp")  #cc(c)
+fn strcpy   : (ptr, ptr) -> ptr                       #extern("strcpy")   #cc(c)
+fn strncpy  : (ptr, ptr, u64) -> ptr                  #extern("strncpy")  #cc(c)
+fn strcat   : (ptr, ptr) -> ptr                       #extern("strcat")   #cc(c)
+fn strncat  : (ptr, ptr, u64) -> ptr                  #extern("strncat")  #cc(c)
+fn strchr   : (ptr, i32) -> ptr                       #extern("strchr")   #cc(c)
+fn strrchr  : (ptr, i32) -> ptr                       #extern("strrchr")  #cc(c)
+fn strstr   : (ptr, ptr) -> ptr                       #extern("strstr")   #cc(c)
+fn strnstr  : (ptr, ptr, u64) -> ptr                  #extern("strnstr")  #cc(c)
+fn strdup   : ptr -> ptr                              #extern("strdup")   #cc(c)
+fn strndup  : (ptr, u64) -> ptr                       #extern("strndup")  #cc(c)
+fn strtol   : (ptr, ptr, i32) -> i64                  #extern("strtol")   #cc(c)
+fn strtoul  : (ptr, ptr, i32) -> u64                  #extern("strtoul")  #cc(c)
+fn strtoll  : (ptr, ptr, i32) -> i64                  #extern("strtoll")  #cc(c)
+fn strtoull : (ptr, ptr, i32) -> u64                  #extern("strtoull") #cc(c)
+fn strtof   : (ptr, ptr) -> f32                       #extern("strtof")   #cc(c)
+fn strtod   : (ptr, ptr) -> f64                       #extern("strtod")   #cc(c)
+fn strerror : i32 -> ptr                              #extern("strerror") #cc(c)
+fn strsignal : i32 -> ptr                             #extern("strsignal") #cc(c)
+fn strtok   : (ptr, ptr) -> ptr                       #extern("strtok")   #cc(c)
+fn strtok_r : (ptr, ptr, ptr) -> ptr                  #extern("strtok_r") #cc(c)
+fn sprintf  : (ptr, ptr, ...) -> i32                  #extern("sprintf")  #cc(c)
+fn snprintf : (ptr, u64, ptr, ...) -> i32             #extern("snprintf") #cc(c)
+fn sscanf   : (ptr, ptr, ...) -> i32                  #extern("sscanf")   #cc(c)
+
+-- §30  LIBC BRIDGE — env/process
+fn getenv   : ptr -> ptr                              #extern("getenv")   #cc(c)
+fn setenv   : (ptr, ptr, i32) -> i32                  #extern("setenv")   #cc(c)
+fn unsetenv : ptr -> i32                              #extern("unsetenv") #cc(c)
+fn putenv   : ptr -> i32                              #extern("putenv")   #cc(c)
+fn system   : ptr -> i32                              #extern("system")   #cc(c)
+fn exit     : i32 -> ⊥                               #extern("exit")     #cc(c)
+fn abort    : () -> ⊥                                #extern("abort")    #cc(c)
+fn atexit   : ptr -> i32                              #extern("atexit")   #cc(c)
+
+-- §31  LIBC BRIDGE — I/O
+fn fopen    : (ptr, ptr) -> ptr                       #extern("fopen")    #cc(c)
+fn fclose   : ptr -> i32                              #extern("fclose")   #cc(c)
+fn fread    : (ptr, u64, u64, ptr) -> u64             #extern("fread")    #cc(c)
+fn fwrite   : (ptr, u64, u64, ptr) -> u64             #extern("fwrite")   #cc(c)
+fn fflush   : ptr -> i32                              #extern("fflush")   #cc(c)
+fn fseek    : (ptr, i64, i32) -> i32                  #extern("fseek")    #cc(c)
+fn ftell    : ptr -> i64                              #extern("ftell")    #cc(c)
+fn feof     : ptr -> i32                              #extern("feof")     #cc(c)
+fn ferror   : ptr -> i32                              #extern("ferror")   #cc(c)
+fn fgets    : (ptr, i32, ptr) -> ptr                  #extern("fgets")    #cc(c)
+fn fputs    : (ptr, ptr) -> i32                       #extern("fputs")    #cc(c)
+fn fputc    : (i32, ptr) -> i32                       #extern("fputc")    #cc(c)
+fn fgetc    : ptr -> i32                              #extern("fgetc")    #cc(c)
+fn fileno   : ptr -> i32                              #extern("fileno")   #cc(c)
+
+-- §32  LIBC BRIDGE — user/group/host
+fn getuid   : () -> u32                               #extern("getuid")   #cc(c)
+fn getgid   : () -> u32                               #extern("getgid")   #cc(c)
+fn geteuid  : () -> u32                               #extern("geteuid")  #cc(c)
+fn getegid  : () -> u32                               #extern("getegid")  #cc(c)
+fn getpid   : () -> i32                               #extern("getpid")   #cc(c)
+fn getppid  : () -> i32                               #extern("getppid")  #cc(c)
+fn gettid   : () -> i32                               #extern("gettid")   #cc(c)
+fn getpwuid : u32 -> ptr                              #extern("getpwuid") #cc(c)
+fn getpwnam : ptr -> ptr                              #extern("getpwnam") #cc(c)
+fn getgrnam : ptr -> ptr                              #extern("getgrnam") #cc(c)
+fn gethostname : (ptr, u64) -> i32                    #extern("gethostname") #cc(c)
+fn sethostname : (ptr, u64) -> i32                    #extern("sethostname") #cc(c)
+
+-- §33  LIBC BRIDGE — networking
+fn getaddrinfo  : (ptr, ptr, ptr, ptr) -> i32         #extern("getaddrinfo")  #cc(c)
+fn freeaddrinfo : ptr -> ()                           #extern("freeaddrinfo") #cc(c)
+fn getnameinfo  : (ptr, u32, ptr, u32, ptr, u32, i32) -> i32  #extern("getnameinfo") #cc(c)
+fn gai_strerror : i32 -> ptr                          #extern("gai_strerror") #cc(c)
+fn inet_pton    : (i32, ptr, ptr) -> i32              #extern("inet_pton")    #cc(c)
+fn inet_ntop    : (i32, ptr, ptr, u32) -> ptr         #extern("inet_ntop")    #cc(c)
+fn if_nametoindex : ptr -> u32                        #extern("if_nametoindex") #cc(c)
+fn if_indextoname : (u32, ptr) -> ptr                 #extern("if_indextoname") #cc(c)
+fn htons        : u16 -> u16                          #extern("htons")        #cc(c)
+fn htonl        : u32 -> u32                          #extern("htonl")        #cc(c)
+fn ntohs        : u16 -> u16                          #extern("ntohs")        #cc(c)
+fn ntohl        : u32 -> u32                          #extern("ntohl")        #cc(c)
+
+-- §34  LIBM BRIDGE — f64
+fn sin    : f64 -> f64   #extern("sin")    #cc(c)
+fn cos    : f64 -> f64   #extern("cos")    #cc(c)
+fn tan    : f64 -> f64   #extern("tan")    #cc(c)
+fn asin   : f64 -> f64   #extern("asin")   #cc(c)
+fn acos   : f64 -> f64   #extern("acos")   #cc(c)
+fn atan   : f64 -> f64   #extern("atan")   #cc(c)
+fn atan2  : (f64, f64) -> f64  #extern("atan2")  #cc(c)
+fn sinh   : f64 -> f64   #extern("sinh")   #cc(c)
+fn cosh   : f64 -> f64   #extern("cosh")   #cc(c)
+fn tanh   : f64 -> f64   #extern("tanh")   #cc(c)
+fn asinh  : f64 -> f64   #extern("asinh")  #cc(c)
+fn acosh  : f64 -> f64   #extern("acosh")  #cc(c)
+fn atanh  : f64 -> f64   #extern("atanh")  #cc(c)
+fn exp    : f64 -> f64   #extern("exp")    #cc(c)
+fn exp2   : f64 -> f64   #extern("exp2")   #cc(c)
+fn expm1  : f64 -> f64   #extern("expm1")  #cc(c)
+fn log    : f64 -> f64   #extern("log")    #cc(c)
+fn log2   : f64 -> f64   #extern("log2")   #cc(c)
+fn log10  : f64 -> f64   #extern("log10")  #cc(c)
+fn log1p  : f64 -> f64   #extern("log1p")  #cc(c)
+fn pow    : (f64, f64) -> f64  #extern("pow")    #cc(c)
+fn sqrt   : f64 -> f64   #extern("sqrt")   #cc(c)
+fn cbrt   : f64 -> f64   #extern("cbrt")   #cc(c)
+fn hypot  : (f64, f64) -> f64  #extern("hypot")  #cc(c)
+fn fabs   : f64 -> f64   #extern("fabs")   #cc(c)
+fn ceil   : f64 -> f64   #extern("ceil")   #cc(c)
+fn floor  : f64 -> f64   #extern("floor")  #cc(c)
+fn round  : f64 -> f64   #extern("round")  #cc(c)
+fn trunc  : f64 -> f64   #extern("trunc")  #cc(c)
+fn rint   : f64 -> f64   #extern("rint")   #cc(c)
+fn nearbyint : f64 -> f64  #extern("nearbyint") #cc(c)
+fn fmod   : (f64, f64) -> f64  #extern("fmod")   #cc(c)
+fn remainder : (f64, f64) -> f64  #extern("remainder") #cc(c)
+fn fma    : (f64, f64, f64) -> f64  #extern("fma")  #cc(c)
+fn fmax   : (f64, f64) -> f64  #extern("fmax")   #cc(c)
+fn fmin   : (f64, f64) -> f64  #extern("fmin")   #cc(c)
+fn fdim   : (f64, f64) -> f64  #extern("fdim")   #cc(c)
+fn copysign : (f64, f64) -> f64  #extern("copysign") #cc(c)
+fn nextafter : (f64, f64) -> f64  #extern("nextafter") #cc(c)
+fn nexttoward : (f64, f64) -> f64  #extern("nexttoward") #cc(c)
+fn scalbn  : (f64, i32) -> f64  #extern("scalbn")  #cc(c)
+fn scalbln : (f64, i64) -> f64  #extern("scalbln") #cc(c)
+fn ldexp   : (f64, i32) -> f64  #extern("ldexp")   #cc(c)
+fn frexp   : (f64, ptr) -> f64  #extern("frexp")   #cc(c)
+fn modf    : (f64, ptr) -> f64  #extern("modf")    #cc(c)
+fn ilogb   : f64 -> i32         #extern("ilogb")   #cc(c)
+fn logb    : f64 -> f64         #extern("logb")    #cc(c)
+fn erf     : f64 -> f64         #extern("erf")     #cc(c)
+fn erfc    : f64 -> f64         #extern("erfc")    #cc(c)
+fn tgamma  : f64 -> f64         #extern("tgamma")  #cc(c)
+fn lgamma  : f64 -> f64         #extern("lgamma")  #cc(c)
+fn j0      : f64 -> f64         #extern("j0")      #cc(c)
+fn j1      : f64 -> f64         #extern("j1")      #cc(c)
+fn jn      : (i32, f64) -> f64  #extern("jn")      #cc(c)
+fn y0      : f64 -> f64         #extern("y0")      #cc(c)
+fn y1      : f64 -> f64         #extern("y1")      #cc(c)
+fn yn      : (i32, f64) -> f64  #extern("yn")      #cc(c)
+
+-- §35  LIBM BRIDGE — f32
+fn sinf    : f32 -> f32   #extern("sinf")    #cc(c)
+fn cosf    : f32 -> f32   #extern("cosf")    #cc(c)
+fn tanf    : f32 -> f32   #extern("tanf")    #cc(c)
+fn asinf   : f32 -> f32   #extern("asinf")   #cc(c)
+fn acosf   : f32 -> f32   #extern("acosf")   #cc(c)
+fn atanf   : f32 -> f32   #extern("atanf")   #cc(c)
+fn atan2f  : (f32, f32) -> f32  #extern("atan2f")  #cc(c)
+fn sinhf   : f32 -> f32   #extern("sinhf")   #cc(c)
+fn coshf   : f32 -> f32   #extern("coshf")   #cc(c)
+fn tanhf   : f32 -> f32   #extern("tanhf")   #cc(c)
+fn asinhf  : f32 -> f32   #extern("asinhf")  #cc(c)
+fn acoshf  : f32 -> f32   #extern("acoshf")  #cc(c)
+fn atanhf  : f32 -> f32   #extern("atanhf")  #cc(c)
+fn expf    : f32 -> f32   #extern("expf")    #cc(c)
+fn exp2f   : f32 -> f32   #extern("exp2f")   #cc(c)
+fn expm1f  : f32 -> f32   #extern("expm1f")  #cc(c)
+fn logf    : f32 -> f32   #extern("logf")    #cc(c)
+fn log2f   : f32 -> f32   #extern("log2f")   #cc(c)
+fn log10f  : f32 -> f32   #extern("log10f")  #cc(c)
+fn log1pf  : f32 -> f32   #extern("log1pf")  #cc(c)
+fn powf    : (f32, f32) -> f32  #extern("powf")    #cc(c)
+fn sqrtf   : f32 -> f32   #extern("sqrtf")   #cc(c)
+fn cbrtf   : f32 -> f32   #extern("cbrtf")   #cc(c)
+fn hypotf  : (f32, f32) -> f32  #extern("hypotf")  #cc(c)
+fn fabsf   : f32 -> f32   #extern("fabsf")   #cc(c)
+fn ceilf   : f32 -> f32   #extern("ceilf")   #cc(c)
+fn floorf  : f32 -> f32   #extern("floorf")  #cc(c)
+fn roundf  : f32 -> f32   #extern("roundf")  #cc(c)
+fn truncf  : f32 -> f32   #extern("truncf")  #cc(c)
+fn rintf   : f32 -> f32   #extern("rintf")   #cc(c)
+fn nearbyintf : f32 -> f32  #extern("nearbyintf") #cc(c)
+fn fmodf   : (f32, f32) -> f32  #extern("fmodf")   #cc(c)
+fn remainderf : (f32, f32) -> f32  #extern("remainderf") #cc(c)
+fn fmaf    : (f32, f32, f32) -> f32  #extern("fmaf")  #cc(c)
+fn fmaxf   : (f32, f32) -> f32  #extern("fmaxf")   #cc(c)
+fn fminf   : (f32, f32) -> f32  #extern("fminf")   #cc(c)
+fn copysignf : (f32, f32) -> f32  #extern("copysignf") #cc(c)
+fn nextafterf : (f32, f32) -> f32  #extern("nextafterf") #cc(c)
+fn scalbnf  : (f32, i32) -> f32  #extern("scalbnf")  #cc(c)
+fn ldexpf   : (f32, i32) -> f32  #extern("ldexpf")   #cc(c)
+fn erff     : f32 -> f32         #extern("erff")     #cc(c)
+fn erfcf    : f32 -> f32         #extern("erfcf")    #cc(c)
+fn tgammaf  : f32 -> f32         #extern("tgammaf")  #cc(c)
+fn lgammaf  : f32 -> f32         #extern("lgammaf")  #cc(c)
+
+-- §36  PTHREAD BRIDGE
+fn pthread_create          : (ptr, ptr, ptr, ptr) -> i32  #extern("pthread_create")          #cc(c)
+fn pthread_join            : (u64, ptr) -> i32            #extern("pthread_join")            #cc(c)
+fn pthread_detach          : u64 -> i32                   #extern("pthread_detach")          #cc(c)
+fn pthread_self            : () -> u64                    #extern("pthread_self")            #cc(c)
+fn pthread_equal           : (u64, u64) -> i32            #extern("pthread_equal")           #cc(c)
+fn pthread_exit            : ptr -> ⊥                    #extern("pthread_exit")            #cc(c)
+fn pthread_cancel          : u64 -> i32                   #extern("pthread_cancel")          #cc(c)
+fn pthread_setcancelstate  : (i32, ptr) -> i32            #extern("pthread_setcancelstate")  #cc(c)
+fn pthread_setcanceltype   : (i32, ptr) -> i32            #extern("pthread_setcanceltype")   #cc(c)
+fn pthread_testcancel      : () -> ()                     #extern("pthread_testcancel")      #cc(c)
+fn pthread_once            : (ptr, ptr) -> i32            #extern("pthread_once")            #cc(c)
+fn pthread_key_create      : (ptr, ptr) -> i32            #extern("pthread_key_create")      #cc(c)
+fn pthread_key_delete      : u64 -> i32                   #extern("pthread_key_delete")      #cc(c)
+fn pthread_getspecific     : u64 -> ptr                   #extern("pthread_getspecific")     #cc(c)
+fn pthread_setspecific     : (u64, ptr) -> i32            #extern("pthread_setspecific")     #cc(c)
+fn pthread_attr_init       : ptr -> i32                   #extern("pthread_attr_init")       #cc(c)
+fn pthread_attr_destroy    : ptr -> i32                   #extern("pthread_attr_destroy")    #cc(c)
+fn pthread_attr_setstacksize  : (ptr, u64) -> i32         #extern("pthread_attr_setstacksize")  #cc(c)
+fn pthread_attr_getstacksize  : (ptr, ptr) -> i32         #extern("pthread_attr_getstacksize")  #cc(c)
+fn pthread_attr_setdetachstate : (ptr, i32) -> i32        #extern("pthread_attr_setdetachstate") #cc(c)
+fn pthread_attr_getdetachstate : (ptr, ptr) -> i32        #extern("pthread_attr_getdetachstate") #cc(c)
+fn pthread_attr_setschedpolicy : (ptr, i32) -> i32        #extern("pthread_attr_setschedpolicy") #cc(c)
+fn pthread_attr_getschedpolicy : (ptr, ptr) -> i32        #extern("pthread_attr_getschedpolicy") #cc(c)
+fn pthread_attr_setschedparam  : (ptr, ptr) -> i32        #extern("pthread_attr_setschedparam")  #cc(c)
+fn pthread_attr_getschedparam  : (ptr, ptr) -> i32        #extern("pthread_attr_getschedparam")  #cc(c)
+fn pthread_attr_setinheritsched : (ptr, i32) -> i32       #extern("pthread_attr_setinheritsched") #cc(c)
+fn pthread_attr_getinheritsched : (ptr, ptr) -> i32       #extern("pthread_attr_getinheritsched") #cc(c)
+fn pthread_attr_setguardsize   : (ptr, u64) -> i32        #extern("pthread_attr_setguardsize")   #cc(c)
+fn pthread_attr_getguardsize   : (ptr, ptr) -> i32        #extern("pthread_attr_getguardsize")   #cc(c)
+fn pthread_attr_setaffinity_np : (ptr, u64, ptr) -> i32   #extern("pthread_attr_setaffinity_np") #cc(c)
+fn pthread_attr_getaffinity_np : (ptr, u64, ptr) -> i32   #extern("pthread_attr_getaffinity_np") #cc(c)
+fn pthread_setaffinity_np  : (u64, u64, ptr) -> i32       #extern("pthread_setaffinity_np")      #cc(c)
+fn pthread_getaffinity_np  : (u64, u64, ptr) -> i32       #extern("pthread_getaffinity_np")      #cc(c)
+fn pthread_setname_np      : (u64, ptr) -> i32            #extern("pthread_setname_np")          #cc(c)
+fn pthread_getname_np      : (u64, ptr, u64) -> i32       #extern("pthread_getname_np")          #cc(c)
+fn pthread_mutex_init      : (ptr, ptr) -> i32            #extern("pthread_mutex_init")          #cc(c)
+fn pthread_mutex_destroy   : ptr -> i32                   #extern("pthread_mutex_destroy")       #cc(c)
+fn pthread_mutex_lock      : ptr -> i32                   #extern("pthread_mutex_lock")          #cc(c)
+fn pthread_mutex_trylock   : ptr -> i32                   #extern("pthread_mutex_trylock")       #cc(c)
+fn pthread_mutex_unlock    : ptr -> i32                   #extern("pthread_mutex_unlock")        #cc(c)
+fn pthread_mutex_timedlock : (ptr, ptr) -> i32            #extern("pthread_mutex_timedlock")     #cc(c)
+fn pthread_mutexattr_init       : ptr -> i32              #extern("pthread_mutexattr_init")       #cc(c)
+fn pthread_mutexattr_destroy    : ptr -> i32              #extern("pthread_mutexattr_destroy")    #cc(c)
+fn pthread_mutexattr_settype    : (ptr, i32) -> i32       #extern("pthread_mutexattr_settype")    #cc(c)
+fn pthread_mutexattr_gettype    : (ptr, ptr) -> i32       #extern("pthread_mutexattr_gettype")    #cc(c)
+fn pthread_mutexattr_setrobust  : (ptr, i32) -> i32       #extern("pthread_mutexattr_setrobust")  #cc(c)
+fn pthread_mutexattr_getrobust  : (ptr, ptr) -> i32       #extern("pthread_mutexattr_getrobust")  #cc(c)
+fn pthread_cond_init       : (ptr, ptr) -> i32            #extern("pthread_cond_init")           #cc(c)
+fn pthread_cond_destroy    : ptr -> i32                   #extern("pthread_cond_destroy")        #cc(c)
+fn pthread_cond_wait       : (ptr, ptr) -> i32            #extern("pthread_cond_wait")           #cc(c)
+fn pthread_cond_timedwait  : (ptr, ptr, ptr) -> i32       #extern("pthread_cond_timedwait")      #cc(c)
+fn pthread_cond_signal     : ptr -> i32                   #extern("pthread_cond_signal")         #cc(c)
+fn pthread_cond_broadcast  : ptr -> i32                   #extern("pthread_cond_broadcast")      #cc(c)
+fn pthread_condattr_init        : ptr -> i32              #extern("pthread_condattr_init")        #cc(c)
+fn pthread_condattr_destroy     : ptr -> i32              #extern("pthread_condattr_destroy")     #cc(c)
+fn pthread_condattr_setclock    : (ptr, i32) -> i32       #extern("pthread_condattr_setclock")    #cc(c)
+fn pthread_condattr_getclock    : (ptr, ptr) -> i32       #extern("pthread_condattr_getclock")    #cc(c)
+fn pthread_rwlock_init     : (ptr, ptr) -> i32            #extern("pthread_rwlock_init")         #cc(c)
+fn pthread_rwlock_destroy  : ptr -> i32                   #extern("pthread_rwlock_destroy")      #cc(c)
+fn pthread_rwlock_rdlock   : ptr -> i32                   #extern("pthread_rwlock_rdlock")       #cc(c)
+fn pthread_rwlock_tryrdlock : ptr -> i32                  #extern("pthread_rwlock_tryrdlock")    #cc(c)
+fn pthread_rwlock_wrlock   : ptr -> i32                   #extern("pthread_rwlock_wrlock")       #cc(c)
+fn pthread_rwlock_trywrlock : ptr -> i32                  #extern("pthread_rwlock_trywrlock")    #cc(c)
+fn pthread_rwlock_unlock   : ptr -> i32                   #extern("pthread_rwlock_unlock")       #cc(c)
+fn pthread_rwlock_timedrdlock : (ptr, ptr) -> i32         #extern("pthread_rwlock_timedrdlock")  #cc(c)
+fn pthread_rwlock_timedwrlock : (ptr, ptr) -> i32         #extern("pthread_rwlock_timedwrlock")  #cc(c)
+fn pthread_barrier_init    : (ptr, ptr, u32) -> i32       #extern("pthread_barrier_init")        #cc(c)
+fn pthread_barrier_destroy : ptr -> i32                   #extern("pthread_barrier_destroy")     #cc(c)
+fn pthread_barrier_wait    : ptr -> i32                   #extern("pthread_barrier_wait")        #cc(c)
+fn pthread_spin_init       : (ptr, i32) -> i32            #extern("pthread_spin_init")           #cc(c)
+fn pthread_spin_destroy    : ptr -> i32                   #extern("pthread_spin_destroy")        #cc(c)
+fn pthread_spin_lock       : ptr -> i32                   #extern("pthread_spin_lock")           #cc(c)
+fn pthread_spin_trylock    : ptr -> i32                   #extern("pthread_spin_trylock")        #cc(c)
+fn pthread_spin_unlock     : ptr -> i32                   #extern("pthread_spin_unlock")         #cc(c)
+
+-- POSIX semaphores
+fn sem_init    : (ptr, i32, u32) -> i32    #extern("sem_init")    #cc(c)
+fn sem_destroy : ptr -> i32                #extern("sem_destroy")  #cc(c)
+fn sem_wait    : ptr -> i32                #extern("sem_wait")     #cc(c)
+fn sem_trywait : ptr -> i32                #extern("sem_trywait")  #cc(c)
+fn sem_timedwait : (ptr, ptr) -> i32       #extern("sem_timedwait") #cc(c)
+fn sem_post    : ptr -> i32                #extern("sem_post")     #cc(c)
+fn sem_getvalue : (ptr, ptr) -> i32        #extern("sem_getvalue") #cc(c)
+fn sem_open    : (ptr, i32, ...) -> ptr    #extern("sem_open")    #cc(c)
+fn sem_close   : ptr -> i32                #extern("sem_close")   #cc(c)
+fn sem_unlink  : ptr -> i32                #extern("sem_unlink")  #cc(c)
+
+-- pthread constants
+const PTHREAD_CREATE_JOINABLE   : i64 = 0i64
+const PTHREAD_CREATE_DETACHED   : i64 = 1i64
+const PTHREAD_MUTEX_TIMED_NP    : i64 = 0i64
+const PTHREAD_MUTEX_RECURSIVE_NP : i64 = 1i64
+const PTHREAD_MUTEX_ERRORCHECK_NP : i64 = 2i64
+const PTHREAD_MUTEX_ADAPTIVE_NP : i64 = 3i64
+const PTHREAD_MUTEX_NORMAL      : i64 = 0i64
+const PTHREAD_MUTEX_RECURSIVE   : i64 = 1i64
+const PTHREAD_MUTEX_ERRORCHECK  : i64 = 2i64
+const PTHREAD_MUTEX_DEFAULT     : i64 = 0i64
+const PTHREAD_MUTEX_STALLED     : i64 = 0i64
+const PTHREAD_MUTEX_ROBUST      : i64 = 1i64
+const PTHREAD_CANCEL_ENABLE     : i64 = 0i64
+const PTHREAD_CANCEL_DISABLE    : i64 = 1i64
+const PTHREAD_CANCEL_DEFERRED   : i64 = 0i64
+const PTHREAD_CANCEL_ASYNCHRONOUS : i64 = 1i64
+const PTHREAD_CANCELED          : i64 = -1i64
+const PTHREAD_SCOPE_SYSTEM      : i64 = 0i64
+const PTHREAD_SCOPE_PROCESS     : i64 = 1i64
+const PTHREAD_INHERIT_SCHED     : i64 = 0i64
+const PTHREAD_EXPLICIT_SCHED    : i64 = 1i64
+const PTHREAD_PROCESS_PRIVATE   : i64 = 0i64
+const PTHREAD_PROCESS_SHARED    : i64 = 1i64
+const PTHREAD_BARRIER_SERIAL_THREAD : i64 = -1i64
+
+-- §37  DIRECT SYSCALL WRAPPERS — I/O
+fn read     : (i64, ptr, i64) -> i64
+  | (fd, buf, n) -> syscall3(syscalls.NR_READ, fd, buf as i64, n)
+
+fn write    : (i64, ptr, i64) -> i64
+  | (fd, buf, n) -> syscall3(syscalls.NR_WRITE, fd, buf as i64, n)
+
+fn open     : (ptr, i64, i64) -> i64
+  | (path, flags, mode) -> syscall3(syscalls.NR_OPEN, path as i64, flags, mode)
+
+fn openat   : (i64, ptr, i64, i64) -> i64
+  | (dirfd, path, flags, mode) -> syscall4(syscalls.NR_OPENAT, dirfd, path as i64, flags, mode)
+
+fn close    : i64 -> i64
+  | fd -> syscall1(syscalls.NR_CLOSE, fd)
+
+fn close_range : (i64, i64, i64) -> i64
+  | (first, last, flags) -> syscall3(syscalls.NR_CLOSE_RANGE, first, last, flags)
+
+fn lseek    : (i64, i64, i64) -> i64
+  | (fd, off, whence) -> syscall3(syscalls.NR_LSEEK, fd, off, whence)
+
+fn pread64  : (i64, ptr, i64, i64) -> i64
+  | (fd, buf, n, off) -> syscall4(syscalls.NR_PREAD64, fd, buf as i64, n, off)
+
+fn pwrite64 : (i64, ptr, i64, i64) -> i64
+  | (fd, buf, n, off) -> syscall4(syscalls.NR_PWRITE64, fd, buf as i64, n, off)
+
+fn readv    : (i64, ptr, i64) -> i64
+  | (fd, iov, iovcnt) -> syscall3(syscalls.NR_READV, fd, iov as i64, iovcnt)
+
+fn writev   : (i64, ptr, i64) -> i64
+  | (fd, iov, iovcnt) -> syscall3(syscalls.NR_WRITEV, fd, iov as i64, iovcnt)
+
+fn preadv   : (i64, ptr, i64, i64) -> i64
+  | (fd, iov, iovcnt, off) -> syscall4(syscalls.NR_PREADV, fd, iov as i64, iovcnt, off)
+
+fn pwritev  : (i64, ptr, i64, i64) -> i64
+  | (fd, iov, iovcnt, off) -> syscall4(syscalls.NR_PWRITEV, fd, iov as i64, iovcnt, off)
+
+fn preadv2  : (i64, ptr, i64, i64, i64) -> i64
+  | (fd, iov, iovcnt, off, flags) -> syscall5(syscalls.NR_PREADV2, fd, iov as i64, iovcnt, off, flags)
+
+fn pwritev2 : (i64, ptr, i64, i64, i64) -> i64
+  | (fd, iov, iovcnt, off, flags) -> syscall5(syscalls.NR_PWRITEV2, fd, iov as i64, iovcnt, off, flags)
+
+fn sendfile : (i64, i64, ptr, i64) -> i64
+  | (out_fd, in_fd, offset, count) -> syscall4(syscalls.NR_SENDFILE, out_fd, in_fd, offset as i64, count)
+
+fn splice   : (i64, ptr, i64, ptr, i64, i64) -> i64
+  | (fd_in, off_in, fd_out, off_out, len, flags) -> syscall6(syscalls.NR_SPLICE, fd_in, off_in as i64, fd_out, off_out as i64, len, flags)
+
+fn tee      : (i64, i64, i64, i64) -> i64
+  | (fd_in, fd_out, len, flags) -> syscall4(syscalls.NR_TEE, fd_in, fd_out, len, flags)
+
+fn copy_file_range : (i64, ptr, i64, ptr, i64, i64) -> i64
+  | (fd_in, off_in, fd_out, off_out, len, flags) -> syscall6(syscalls.NR_COPY_FILE_RANGE, fd_in, off_in as i64, fd_out, off_out as i64, len, flags)
+
+fn ioctl    : (i64, i64, i64) -> i64
+  | (fd, req, arg) -> syscall3(syscalls.NR_IOCTL, fd, req, arg)
+
+fn fcntl    : (i64, i64, i64) -> i64
+  | (fd, cmd, arg) -> syscall3(syscalls.NR_FCNTL, fd, cmd, arg)
+
+fn dup      : i64 -> i64
+  | fd -> syscall1(syscalls.NR_DUP, fd)
+
+fn dup2     : (i64, i64) -> i64
+  | (old, new) -> syscall2(syscalls.NR_DUP2, old, new)
+
+fn dup3     : (i64, i64, i64) -> i64
+  | (old, new, flags) -> syscall3(syscalls.NR_DUP3, old, new, flags)
+
+fn pipe     : ptr -> i64
+  | fds -> syscall1(syscalls.NR_PIPE, fds as i64)
+
+fn pipe2    : (ptr, i64) -> i64
+  | (fds, flags) -> syscall2(syscalls.NR_PIPE2, fds as i64, flags)
+
+fn fsync    : i64 -> i64
+  | fd -> syscall1(syscalls.NR_FSYNC, fd)
+
+fn fdatasync : i64 -> i64
+  | fd -> syscall1(syscalls.NR_FDATASYNC, fd)
+
+fn sync      : () -> i64  | () -> syscall0(syscalls.NR_SYNC)
+fn syncfs    : i64 -> i64 | fd -> syscall1(syscalls.NR_SYNCFS, fd)
+
+fn fallocate : (i64, i64, i64, i64) -> i64
+  | (fd, mode, off, len) -> syscall4(syscalls.NR_FALLOCATE, fd, mode, off, len)
+
+fn fadvise64 : (i64, i64, i64, i64) -> i64
+  | (fd, off, len, advice) -> syscall4(syscalls.NR_FADVISE64, fd, off, len, advice)
+
+fn readahead : (i64, i64, i64) -> i64
+  | (fd, off, count) -> syscall3(syscalls.NR_READAHEAD, fd, off, count)
+
+-- §38  DIRECT SYSCALL WRAPPERS — filesystem
+fn stat     : (ptr, ptr) -> i64
+  | (path, buf) -> syscall2(syscalls.NR_STAT, path as i64, buf as i64)
+
+fn fstat    : (i64, ptr) -> i64
+  | (fd, buf) -> syscall2(syscalls.NR_FSTAT, fd, buf as i64)
+
+fn lstat    : (ptr, ptr) -> i64
+  | (path, buf) -> syscall2(syscalls.NR_LSTAT, path as i64, buf as i64)
+
+fn statx    : (i64, ptr, i64, i64, ptr) -> i64
+  | (dirfd, path, flags, mask, buf) -> syscall5(syscalls.NR_STATX, dirfd, path as i64, flags, mask, buf as i64)
+
+fn newfstatat : (i64, ptr, ptr, i64) -> i64
+  | (dirfd, path, buf, flags) -> syscall4(syscalls.NR_NEWFSTATAT, dirfd, path as i64, buf as i64, flags)
+
+fn statfs   : (ptr, ptr) -> i64
+  | (path, buf) -> syscall2(syscalls.NR_STATFS, path as i64, buf as i64)
+
+fn fstatfs  : (i64, ptr) -> i64
+  | (fd, buf) -> syscall2(syscalls.NR_FSTATFS, fd, buf as i64)
+
+fn access   : (ptr, i64) -> i64
+  | (path, mode) -> syscall2(syscalls.NR_ACCESS, path as i64, mode)
+
+fn faccessat : (i64, ptr, i64, i64) -> i64
+  | (dirfd, path, mode, flags) -> syscall4(syscalls.NR_FACCESSAT, dirfd, path as i64, mode, flags)
+
+fn faccessat2 : (i64, ptr, i64, i64) -> i64
+  | (dirfd, path, mode, flags) -> syscall4(syscalls.NR_FACCESSAT2, dirfd, path as i64, mode, flags)
+
+fn mkdir    : (ptr, i64) -> i64
+  | (path, mode) -> syscall2(syscalls.NR_MKDIR, path as i64, mode)
+
+fn mkdirat  : (i64, ptr, i64) -> i64
+  | (dirfd, path, mode) -> syscall3(syscalls.NR_MKDIRAT, dirfd, path as i64, mode)
+
+fn rmdir    : ptr -> i64
+  | path -> syscall1(syscalls.NR_RMDIR, path as i64)
+
+fn unlink   : ptr -> i64
+  | path -> syscall1(syscalls.NR_UNLINK, path as i64)
+
+fn unlinkat : (i64, ptr, i64) -> i64
+  | (dirfd, path, flags) -> syscall3(syscalls.NR_UNLINKAT, dirfd, path as i64, flags)
+
+fn rename   : (ptr, ptr) -> i64
+  | (old, new) -> syscall2(syscalls.NR_RENAME, old as i64, new as i64)
+
+fn renameat : (i64, ptr, i64, ptr) -> i64
+  | (old_dir, old, new_dir, new) -> syscall4(syscalls.NR_RENAMEAT, old_dir, old as i64, new_dir, new as i64)
+
+fn renameat2 : (i64, ptr, i64, ptr, i64) -> i64
+  | (old_dir, old, new_dir, new, flags) -> syscall5(syscalls.NR_RENAMEAT2, old_dir, old as i64, new_dir, new as i64, flags)
+
+fn link     : (ptr, ptr) -> i64
+  | (old, new) -> syscall2(syscalls.NR_LINK, old as i64, new as i64)
+
+fn linkat   : (i64, ptr, i64, ptr, i64) -> i64
+  | (old_dir, old, new_dir, new, flags) -> syscall5(syscalls.NR_LINKAT, old_dir, old as i64, new_dir, new as i64, flags)
+
+fn symlink  : (ptr, ptr) -> i64
+  | (target, link) -> syscall2(syscalls.NR_SYMLINK, target as i64, link as i64)
+
+fn symlinkat : (ptr, i64, ptr) -> i64
+  | (target, dirfd, link) -> syscall3(syscalls.NR_SYMLINKAT, target as i64, dirfd, link as i64)
+
+fn readlink : (ptr, ptr, i64) -> i64
+  | (path, buf, n) -> syscall3(syscalls.NR_READLINK, path as i64, buf as i64, n)
+
+fn readlinkat : (i64, ptr, ptr, i64) -> i64
+  | (dirfd, path, buf, n) -> syscall4(syscalls.NR_READLINKAT, dirfd, path as i64, buf as i64, n)
+
+fn chmod    : (ptr, i64) -> i64
+  | (path, mode) -> syscall2(syscalls.NR_CHMOD, path as i64, mode)
+
+fn fchmod   : (i64, i64) -> i64
+  | (fd, mode) -> syscall2(syscalls.NR_FCHMOD, fd, mode)
+
+fn fchmodat : (i64, ptr, i64, i64) -> i64
+  | (dirfd, path, mode, flags) -> syscall4(syscalls.NR_FCHMODAT, dirfd, path as i64, mode, flags)
+
+fn fchmodat2 : (i64, ptr, i64, i64) -> i64
+  | (dirfd, path, mode, flags) -> syscall4(syscalls.NR_FCHMODAT2, dirfd, path as i64, mode, flags)
+
+fn chown    : (ptr, i64, i64) -> i64
+  | (path, uid, gid) -> syscall3(syscalls.NR_CHOWN, path as i64, uid, gid)
+
+fn fchown   : (i64, i64, i64) -> i64
+  | (fd, uid, gid) -> syscall3(syscalls.NR_FCHOWN, fd, uid, gid)
+
+fn lchown   : (ptr, i64, i64) -> i64
+  | (path, uid, gid) -> syscall3(syscalls.NR_LCHOWN, path as i64, uid, gid)
+
+fn fchownat : (i64, ptr, i64, i64, i64) -> i64
+  | (dirfd, path, uid, gid, flags) -> syscall5(syscalls.NR_FCHOWNAT, dirfd, path as i64, uid, gid, flags)
+
+fn truncate : (ptr, i64) -> i64
+  | (path, len) -> syscall2(syscalls.NR_TRUNCATE, path as i64, len)
+
+fn ftruncate : (i64, i64) -> i64
+  | (fd, len) -> syscall2(syscalls.NR_FTRUNCATE, fd, len)
+
+fn getcwd   : (ptr, i64) -> i64
+  | (buf, n) -> syscall2(syscalls.NR_GETCWD, buf as i64, n)
+
+fn chdir    : ptr -> i64
+  | path -> syscall1(syscalls.NR_CHDIR, path as i64)
+
+fn fchdir   : i64 -> i64
+  | fd -> syscall1(syscalls.NR_FCHDIR, fd)
+
+fn chroot   : ptr -> i64
+  | path -> syscall1(syscalls.NR_CHROOT, path as i64)
+
+fn creat    : (ptr, i64) -> i64
+  | (path, mode) -> syscall2(syscalls.NR_CREAT, path as i64, mode)
+
+fn mknod    : (ptr, i64, i64) -> i64
+  | (path, mode, dev) -> syscall3(syscalls.NR_MKNOD, path as i64, mode, dev)
+
+fn mknodat  : (i64, ptr, i64, i64) -> i64
+  | (dirfd, path, mode, dev) -> syscall4(syscalls.NR_MKNODAT, dirfd, path as i64, mode, dev)
+
+fn getdents64 : (i64, ptr, i64) -> i64
+  | (fd, buf, count) -> syscall3(syscalls.NR_GETDENTS64, fd, buf as i64, count)
+
+fn umask    : i64 -> i64
+  | mask -> syscall1(syscalls.NR_UMASK, mask)
+
+fn utimensat : (i64, ptr, ptr, i64) -> i64
+  | (dirfd, path, times, flags) -> syscall4(syscalls.NR_UTIMENSAT, dirfd, path as i64, times as i64, flags)
+
+fn utime    : (ptr, ptr) -> i64
+  | (path, times) -> syscall2(syscalls.NR_UTIME, path as i64, times as i64)
+
+fn pivot_root : (ptr, ptr) -> i64
+  | (new_root, put_old) -> syscall2(syscalls.NR_PIVOT_ROOT, new_root as i64, put_old as i64)
+
+fn mount    : (ptr, ptr, ptr, i64, ptr) -> i64
+  | (src, tgt, fs, flags, data) -> syscall5(syscalls.NR_MOUNT, src as i64, tgt as i64, fs as i64, flags, data as i64)
+
+fn umount2  : (ptr, i64) -> i64
+  | (tgt, flags) -> syscall2(syscalls.NR_UMOUNT2, tgt as i64, flags)
+
+fn setxattr : (ptr, ptr, ptr, i64, i64) -> i64
+  | (path, name, value, size, flags) -> syscall5(syscalls.NR_SETXATTR, path as i64, name as i64, value as i64, size, flags)
+
+fn lsetxattr : (ptr, ptr, ptr, i64, i64) -> i64
+  | (path, name, value, size, flags) -> syscall5(syscalls.NR_LSETXATTR, path as i64, name as i64, value as i64, size, flags)
+
+fn fsetxattr : (i64, ptr, ptr, i64, i64) -> i64
+  | (fd, name, value, size, flags) -> syscall5(syscalls.NR_FSETXATTR, fd, name as i64, value as i64, size, flags)
+
+fn getxattr : (ptr, ptr, ptr, i64) -> i64
+  | (path, name, value, size) -> syscall4(syscalls.NR_GETXATTR, path as i64, name as i64, value as i64, size)
+
+fn lgetxattr : (ptr, ptr, ptr, i64) -> i64
+  | (path, name, value, size) -> syscall4(syscalls.NR_LGETXATTR, path as i64, name as i64, value as i64, size)
+
+fn fgetxattr : (i64, ptr, ptr, i64) -> i64
+  | (fd, name, value, size) -> syscall4(syscalls.NR_FGETXATTR, fd, name as i64, value as i64, size)
+
+fn listxattr : (ptr, ptr, i64) -> i64
+  | (path, list, size) -> syscall3(syscalls.NR_LISTXATTR, path as i64, list as i64, size)
+
+fn llistxattr : (ptr, ptr, i64) -> i64
+  | (path, list, size) -> syscall3(syscalls.NR_LLISTXATTR, path as i64, list as i64, size)
+
+fn flistxattr : (i64, ptr, i64) -> i64
+  | (fd, list, size) -> syscall3(syscalls.NR_FLISTXATTR, fd, list as i64, size)
+
+fn removexattr : (ptr, ptr) -> i64
+  | (path, name) -> syscall2(syscalls.NR_REMOVEXATTR, path as i64, name as i64)
+
+fn lremovexattr : (ptr, ptr) -> i64
+  | (path, name) -> syscall2(syscalls.NR_LREMOVEXATTR, path as i64, name as i64)
+
+fn fremovexattr : (i64, ptr) -> i64
+  | (fd, name) -> syscall2(syscalls.NR_FREMOVEXATTR, fd, name as i64)
+
+fn memfd_create : (ptr, i64) -> i64
+  | (name, flags) -> syscall2(syscalls.NR_MEMFD_CREATE, name as i64, flags)
+
+fn openat2  : (i64, ptr, ptr, i64) -> i64
+  | (dirfd, path, how, size) -> syscall4(syscalls.NR_OPENAT2, dirfd, path as i64, how as i64, size)
+
+-- §39  DIRECT SYSCALL WRAPPERS — memory
+fn mmap     : (ptr, i64, i64, i64, i64, i64) -> ptr
+  | (addr, len, prot, flags, fd, off) ->
+    syscall6(syscalls.NR_MMAP, addr as i64, len, prot, flags, fd, off) as ptr
+
+fn munmap   : (ptr, i64) -> i64
+  | (addr, len) -> syscall2(syscalls.NR_MUNMAP, addr as i64, len)
+
+fn mprotect : (ptr, i64, i64) -> i64
+  | (addr, len, prot) -> syscall3(syscalls.NR_MPROTECT, addr as i64, len, prot)
+
+fn mremap   : (ptr, i64, i64, i64, ptr) -> ptr
+  | (addr, old_len, new_len, flags, new_addr) ->
+    syscall5(syscalls.NR_MREMAP, addr as i64, old_len, new_len, flags, new_addr as i64) as ptr
+
+fn madvise  : (ptr, i64, i64) -> i64
+  | (addr, len, advice) -> syscall3(syscalls.NR_MADVISE, addr as i64, len, advice)
+
+fn msync    : (ptr, i64, i64) -> i64
+  | (addr, len, flags) -> syscall3(syscalls.NR_MSYNC, addr as i64, len, flags)
+
+fn mincore  : (ptr, i64, ptr) -> i64
+  | (addr, len, vec) -> syscall3(syscalls.NR_MINCORE, addr as i64, len, vec as i64)
+
+fn mlock    : (ptr, i64) -> i64
+  | (addr, len) -> syscall2(syscalls.NR_MLOCK, addr as i64, len)
+
+fn mlock2   : (ptr, i64, i64) -> i64
+  | (addr, len, flags) -> syscall3(syscalls.NR_MLOCK2, addr as i64, len, flags)
+
+fn munlock  : (ptr, i64) -> i64
+  | (addr, len) -> syscall2(syscalls.NR_MUNLOCK, addr as i64, len)
+
+fn mlockall : i64 -> i64
+  | flags -> syscall1(syscalls.NR_MLOCKALL, flags)
+
+fn munlockall : () -> i64
+  | () -> syscall0(syscalls.NR_MUNLOCKALL)
+
+fn brk      : ptr -> ptr
+  | addr -> syscall1(syscalls.NR_BRK, addr as i64) as ptr
+
+fn pkey_alloc : (i64, i64) -> i64
+  | (flags, access_rights) -> syscall2(syscalls.NR_PKEY_ALLOC, flags, access_rights)
+
+fn pkey_free : i64 -> i64
+  | pkey -> syscall1(syscalls.NR_PKEY_FREE, pkey)
+
+fn pkey_mprotect : (ptr, i64, i64, i64) -> i64
+  | (addr, len, prot, pkey) -> syscall4(syscalls.NR_PKEY_MPROTECT, addr as i64, len, prot, pkey)
+
+fn mseal     : (ptr, i64, i64) -> i64
+  | (addr, len, flags) -> syscall3(syscalls.NR_MSEAL, addr as i64, len, flags)
+
+fn process_madvise : (i64, ptr, i64, i64, i64) -> i64
+  | (pidfd, iov, vlen, advice, flags) -> syscall5(syscalls.NR_PROCESS_MADVISE, pidfd, iov as i64, vlen, advice, flags)
+
+fn process_vm_readv  : (i64, ptr, i64, ptr, i64, i64) -> i64
+  | (pid, lvec, liovcnt, rvec, riovcnt, flags) -> syscall6(syscalls.NR_PROCESS_VM_READV, pid, lvec as i64, liovcnt, rvec as i64, riovcnt, flags)
+
+fn process_vm_writev : (i64, ptr, i64, ptr, i64, i64) -> i64
+  | (pid, lvec, liovcnt, rvec, riovcnt, flags) -> syscall6(syscalls.NR_PROCESS_VM_WRITEV, pid, lvec as i64, liovcnt, rvec as i64, riovcnt, flags)
+
+-- §40  DIRECT SYSCALL WRAPPERS — process
+fn fork     : () -> i64  | () -> syscall0(syscalls.NR_FORK)
+fn vfork    : () -> i64  | () -> syscall0(syscalls.NR_VFORK)
+
+fn clone    : (i64, ptr, ptr, ptr, ptr) -> i64
+  | (flags, stack, parent_tid, child_tid, tls) ->
+    syscall5(syscalls.NR_CLONE, flags, stack as i64, parent_tid as i64, child_tid as i64, tls as i64)
+
+fn clone3   : (ptr, i64) -> i64
+  | (args, size) -> syscall2(syscalls.NR_CLONE3, args as i64, size)
+
+fn execve   : (ptr, ptr, ptr) -> i64
+  | (path, argv, envp) -> syscall3(syscalls.NR_EXECVE, path as i64, argv as i64, envp as i64)
+
+fn execveat : (i64, ptr, ptr, ptr, i64) -> i64
+  | (dirfd, path, argv, envp, flags) -> syscall5(syscalls.NR_EXECVEAT, dirfd, path as i64, argv as i64, envp as i64, flags)
+
+fn exit_group : i64 -> ⊥
+  | code -> syscall1(syscalls.NR_EXIT_GROUP, code); unreachable
+
+fn _exit    : i64 -> ⊥
+  | code -> syscall1(syscalls.NR_EXIT, code); unreachable
+
+fn wait4    : (i64, ptr, i64, ptr) -> i64
+  | (pid, status, options, rusage) -> syscall4(syscalls.NR_WAIT4, pid, status as i64, options, rusage as i64)
+
+fn waitid   : (i64, i64, ptr, i64, ptr) -> i64
+  | (which, pid, infop, options, rusage) -> syscall5(syscalls.NR_WAITID, which, pid, infop as i64, options, rusage as i64)
+
+fn kill     : (i64, i64) -> i64
+  | (pid, sig) -> syscall2(syscalls.NR_KILL, pid, sig)
+
+fn tkill    : (i64, i64) -> i64
+  | (tid, sig) -> syscall2(syscalls.NR_TKILL, tid, sig)
+
+fn tgkill   : (i64, i64, i64) -> i64
+  | (tgid, tid, sig) -> syscall3(syscalls.NR_TGKILL, tgid, tid, sig)
+
+fn getpid   : () -> i64  | () -> syscall0(syscalls.NR_GETPID)
+fn getppid  : () -> i64  | () -> syscall0(syscalls.NR_GETPPID)
+fn gettid   : () -> i64  | () -> syscall0(syscalls.NR_GETTID)
+fn getuid   : () -> i64  | () -> syscall0(syscalls.NR_GETUID)
+fn getgid   : () -> i64  | () -> syscall0(syscalls.NR_GETGID)
+fn geteuid  : () -> i64  | () -> syscall0(syscalls.NR_GETEUID)
+fn getegid  : () -> i64  | () -> syscall0(syscalls.NR_GETEGID)
+fn getpgid  : i64 -> i64 | pid -> syscall1(syscalls.NR_GETPGID, pid)
+fn getpgrp  : () -> i64  | () -> syscall0(syscalls.NR_GETPGRP)
+fn getsid   : i64 -> i64 | pid -> syscall1(syscalls.NR_GETSID, pid)
+fn setuid   : i64 -> i64 | uid -> syscall1(syscalls.NR_SETUID, uid)
+fn setgid   : i64 -> i64 | gid -> syscall1(syscalls.NR_SETGID, gid)
+fn setpgid  : (i64, i64) -> i64 | (pid, pgid) -> syscall2(syscalls.NR_SETPGID, pid, pgid)
+fn setsid   : () -> i64  | () -> syscall0(syscalls.NR_SETSID)
+fn setreuid : (i64, i64) -> i64 | (ruid, euid) -> syscall2(syscalls.NR_SETREUID, ruid, euid)
+fn setregid : (i64, i64) -> i64 | (rgid, egid) -> syscall2(syscalls.NR_SETREGID, rgid, egid)
+fn setresuid : (i64, i64, i64) -> i64 | (r,e,s) -> syscall3(syscalls.NR_SETRESUID, r, e, s)
+fn setresgid : (i64, i64, i64) -> i64 | (r,e,s) -> syscall3(syscalls.NR_SETRESGID, r, e, s)
+fn getresuid : (ptr, ptr, ptr) -> i64 | (r,e,s) -> syscall3(syscalls.NR_GETRESUID, r as i64, e as i64, s as i64)
+fn getresgid : (ptr, ptr, ptr) -> i64 | (r,e,s) -> syscall3(syscalls.NR_GETRESGID, r as i64, e as i64, s as i64)
+fn setfsuid : i64 -> i64 | uid -> syscall1(syscalls.NR_SETFSUID, uid)
+fn setfsgid : i64 -> i64 | gid -> syscall1(syscalls.NR_SETFSGID, gid)
+fn getgroups : (i64, ptr) -> i64 | (size, list) -> syscall2(syscalls.NR_GETGROUPS, size, list as i64)
+fn setgroups : (i64, ptr) -> i64 | (size, list) -> syscall2(syscalls.NR_SETGROUPS, size, list as i64)
+
+fn prctl    : (i64, i64, i64, i64, i64) -> i64
+  | (op, a2, a3, a4, a5) -> syscall5(syscalls.NR_PRCTL, op, a2, a3, a4, a5)
+
+fn arch_prctl : (i64, i64) -> i64
+  | (code, addr) -> syscall2(syscalls.NR_ARCH_PRCTL, code, addr)
+
+fn ptrace   : (i64, i64, ptr, ptr) -> i64
+  | (req, pid, addr, data) -> syscall4(syscalls.NR_PTRACE, req, pid, addr as i64, data as i64)
+
+fn capget   : (ptr, ptr) -> i64
+  | (hdrp, datap) -> syscall2(syscalls.NR_CAPGET, hdrp as i64, datap as i64)
+
+fn capset   : (ptr, ptr) -> i64
+  | (hdrp, datap) -> syscall2(syscalls.NR_CAPSET, hdrp as i64, datap as i64)
+
+fn prlimit64 : (i64, i64, ptr, ptr) -> i64
+  | (pid, resource, new_lim, old_lim) -> syscall4(syscalls.NR_PRLIMIT64, pid, resource, new_lim as i64, old_lim as i64)
+
+fn getrlimit : (i64, ptr) -> i64
+  | (resource, rlim) -> syscall2(syscalls.NR_GETRLIMIT, resource, rlim as i64)
+
+fn setrlimit : (i64, ptr) -> i64
+  | (resource, rlim) -> syscall2(syscalls.NR_SETRLIMIT, resource, rlim as i64)
+
+fn getrusage : (i64, ptr) -> i64
+  | (who, usage) -> syscall2(syscalls.NR_GETRUSAGE, who, usage as i64)
+
+fn sched_yield : () -> i64  | () -> syscall0(syscalls.NR_SCHED_YIELD)
+
+fn sched_setaffinity : (i64, i64, ptr) -> i64
+  | (pid, len, mask) -> syscall3(syscalls.NR_SCHED_SETAFFINITY, pid, len, mask as i64)
+
+fn sched_getaffinity : (i64, i64, ptr) -> i64
+  | (pid, len, mask) -> syscall3(syscalls.NR_SCHED_GETAFFINITY, pid, len, mask as i64)
+
+fn sched_setscheduler : (i64, i64, ptr) -> i64
+  | (pid, policy, param) -> syscall3(syscalls.NR_SCHED_SETSCHEDULER, pid, policy, param as i64)
+
+fn sched_getscheduler : i64 -> i64
+  | pid -> syscall1(syscalls.NR_SCHED_GETSCHEDULER, pid)
+
+fn sched_setparam : (i64, ptr) -> i64
+  | (pid, param) -> syscall2(syscalls.NR_SCHED_SETPARAM, pid, param as i64)
+
+fn sched_getparam : (i64, ptr) -> i64
+  | (pid, param) -> syscall2(syscalls.NR_SCHED_GETPARAM, pid, param as i64)
+
+fn sched_setattr : (i64, ptr, i64) -> i64
+  | (pid, attr, flags) -> syscall3(syscalls.NR_SCHED_SETATTR, pid, attr as i64, flags)
+
+fn sched_getattr : (i64, ptr, i64, i64) -> i64
+  | (pid, attr, size, flags) -> syscall4(syscalls.NR_SCHED_GETATTR, pid, attr as i64, size, flags)
+
+fn sched_get_priority_max : i64 -> i64
+  | policy -> syscall1(syscalls.NR_SCHED_GET_PRIORITY_MAX, policy)
+
+fn sched_get_priority_min : i64 -> i64
+  | policy -> syscall1(syscalls.NR_SCHED_GET_PRIORITY_MIN, policy)
+
+fn sched_rr_get_interval : (i64, ptr) -> i64
+  | (pid, tp) -> syscall2(syscalls.NR_SCHED_RR_GET_INTERVAL, pid, tp as i64)
+
+fn getcpu   : (ptr, ptr, ptr) -> i64
+  | (cpu, node, cache) -> syscall3(syscalls.NR_GETCPU, cpu as i64, node as i64, cache as i64)
+
+fn pidfd_open : (i64, i64) -> i64
+  | (pid, flags) -> syscall2(syscalls.NR_PIDFD_OPEN, pid, flags)
+
+fn pidfd_getfd : (i64, i64, i64) -> i64
+  | (pidfd, targetfd, flags) -> syscall3(syscalls.NR_PIDFD_GETFD, pidfd, targetfd, flags)
+
+fn setns    : (i64, i64) -> i64
+  | (fd, nstype) -> syscall2(syscalls.NR_SETNS, fd, nstype)
+
+fn unshare  : i64 -> i64
+  | flags -> syscall1(syscalls.NR_UNSHARE, flags)
+
+fn personality : i64 -> i64
+  | persona -> syscall1(syscalls.NR_PERSONALITY, persona)
+
+fn reboot   : (i64, i64, i64, ptr) -> i64
+  | (magic, magic2, cmd, arg) -> syscall4(syscalls.NR_REBOOT, magic, magic2, cmd, arg as i64)
+
+fn kexec_load : (i64, i64, ptr, i64) -> i64
+  | (entry, nr_segs, segs, flags) -> syscall4(syscalls.NR_KEXEC_LOAD, entry, nr_segs, segs as i64, flags)
+
+fn init_module : (ptr, i64, ptr) -> i64
+  | (mod_image, len, param_values) -> syscall3(syscalls.NR_INIT_MODULE, mod_image as i64, len, param_values as i64)
+
+fn finit_module : (i64, ptr, i64) -> i64
+  | (fd, param_values, flags) -> syscall3(syscalls.NR_FINIT_MODULE, fd, param_values as i64, flags)
+
+fn delete_module : (ptr, i64) -> i64
+  | (name, flags) -> syscall2(syscalls.NR_DELETE_MODULE, name as i64, flags)
+
+fn kcmp     : (i64, i64, i64, i64, i64) -> i64
+  | (pid1, pid2, type_, idx1, idx2) -> syscall5(syscalls.NR_KCMP, pid1, pid2, type_, idx1, idx2)
+
+-- §41  DIRECT SYSCALL WRAPPERS — networking
+fn socket   : (i64, i64, i64) -> i64
+  | (domain, type_, proto) -> syscall3(syscalls.NR_SOCKET, domain, type_, proto)
+
+fn socketpair : (i64, i64, i64, ptr) -> i64
+  | (domain, type_, proto, sv) -> syscall4(syscalls.NR_SOCKETPAIR, domain, type_, proto, sv as i64)
+
+fn bind     : (i64, ptr, i64) -> i64
+  | (fd, addr, addrlen) -> syscall3(syscalls.NR_BIND, fd, addr as i64, addrlen)
+
+fn listen   : (i64, i64) -> i64
+  | (fd, backlog) -> syscall2(syscalls.NR_LISTEN, fd, backlog)
+
+fn accept   : (i64, ptr, ptr) -> i64
+  | (fd, addr, addrlen) -> syscall3(syscalls.NR_ACCEPT, fd, addr as i64, addrlen as i64)
+
+fn accept4  : (i64, ptr, ptr, i64) -> i64
+  | (fd, addr, addrlen, flags) -> syscall4(syscalls.NR_ACCEPT4, fd, addr as i64, addrlen as i64, flags)
+
+fn connect  : (i64, ptr, i64) -> i64
+  | (fd, addr, addrlen) -> syscall3(syscalls.NR_CONNECT, fd, addr as i64, addrlen)
+
+fn shutdown : (i64, i64) -> i64
+  | (fd, how) -> syscall2(syscalls.NR_SHUTDOWN, fd, how)
+
+fn getsockname : (i64, ptr, ptr) -> i64
+  | (fd, addr, addrlen) -> syscall3(syscalls.NR_GETSOCKNAME, fd, addr as i64, addrlen as i64)
+
+fn getpeername : (i64, ptr, ptr) -> i64
+  | (fd, addr, addrlen) -> syscall3(syscalls.NR_GETPEERNAME, fd, addr as i64, addrlen as i64)
+
+fn setsockopt : (i64, i64, i64, ptr, i64) -> i64
+  | (fd, level, optname, optval, optlen) -> syscall5(syscalls.NR_SETSOCKOPT, fd, level, optname, optval as i64, optlen)
+
+fn getsockopt : (i64, i64, i64, ptr, ptr) -> i64
+  | (fd, level, optname, optval, optlen) -> syscall5(syscalls.NR_GETSOCKOPT, fd, level, optname, optval as i64, optlen as i64)
+
+fn sendto   : (i64, ptr, i64, i64, ptr, i64) -> i64
+  | (fd, buf, len, flags, addr, addrlen) -> syscall6(syscalls.NR_SENDTO, fd, buf as i64, len, flags, addr as i64, addrlen)
+
+fn recvfrom : (i64, ptr, i64, i64, ptr, ptr) -> i64
+  | (fd, buf, len, flags, addr, addrlen) -> syscall6(syscalls.NR_RECVFROM, fd, buf as i64, len, flags, addr as i64, addrlen as i64)
+
+fn sendmsg  : (i64, ptr, i64) -> i64
+  | (fd, msg, flags) -> syscall3(syscalls.NR_SENDMSG, fd, msg as i64, flags)
+
+fn recvmsg  : (i64, ptr, i64) -> i64
+  | (fd, msg, flags) -> syscall3(syscalls.NR_RECVMSG, fd, msg as i64, flags)
+
+fn sendmmsg : (i64, ptr, i64, i64) -> i64
+  | (fd, mmsg, vlen, flags) -> syscall4(syscalls.NR_SENDMMSG, fd, mmsg as i64, vlen, flags)
+
+fn recvmmsg : (i64, ptr, i64, i64, ptr) -> i64
+  | (fd, mmsg, vlen, flags, timeout) -> syscall5(syscalls.NR_RECVMMSG, fd, mmsg as i64, vlen, flags, timeout as i64)
+
+-- §42  DIRECT SYSCALL WRAPPERS — time
+fn clock_gettime  : (i64, ptr) -> i64
+  | (clk, tp) -> syscall2(syscalls.NR_CLOCK_GETTIME, clk, tp as i64)
+
+fn clock_settime  : (i64, ptr) -> i64
+  | (clk, tp) -> syscall2(syscalls.NR_CLOCK_SETTIME, clk, tp as i64)
+
+fn clock_getres   : (i64, ptr) -> i64
+  | (clk, res) -> syscall2(syscalls.NR_CLOCK_GETRES, clk, res as i64)
+
+fn clock_nanosleep : (i64, i64, ptr, ptr) -> i64
+  | (clk, flags, req, rem) -> syscall4(syscalls.NR_CLOCK_NANOSLEEP, clk, flags, req as i64, rem as i64)
+
+fn nanosleep : (ptr, ptr) -> i64
+  | (req, rem) -> syscall2(syscalls.NR_NANOSLEEP, req as i64, rem as i64)
+
+fn gettimeofday : (ptr, ptr) -> i64
+  | (tv, tz) -> syscall2(syscalls.NR_GETTIMEOFDAY, tv as i64, tz as i64)
+
+fn settimeofday : (ptr, ptr) -> i64
+  | (tv, tz) -> syscall2(syscalls.NR_SETTIMEOFDAY, tv as i64, tz as i64)
+
+fn adjtimex : ptr -> i64
+  | buf -> syscall1(syscalls.NR_ADJTIMEX, buf as i64)
+
+fn timer_create   : (i64, ptr, ptr) -> i64
+  | (clk, event, timerid) -> syscall3(syscalls.NR_TIMER_CREATE, clk, event as i64, timerid as i64)
+
+fn timer_settime  : (i64, i64, ptr, ptr) -> i64
+  | (timerid, flags, new_value, old_value) -> syscall4(syscalls.NR_TIMER_SETTIME, timerid, flags, new_value as i64, old_value as i64)
+
+fn timer_gettime  : (i64, ptr) -> i64
+  | (timerid, curr_value) -> syscall2(syscalls.NR_TIMER_GETTIME, timerid, curr_value as i64)
+
+fn timer_getoverrun : i64 -> i64
+  | timerid -> syscall1(syscalls.NR_TIMER_GETOVERRUN, timerid)
+
+fn timer_delete   : i64 -> i64
+  | timerid -> syscall1(syscalls.NR_TIMER_DELETE, timerid)
+
+fn getitimer : (i64, ptr) -> i64
+  | (which, value) -> syscall2(syscalls.NR_GETITIMER, which, value as i64)
+
+fn setitimer : (i64, ptr, ptr) -> i64
+  | (which, new_value, old_value) -> syscall3(syscalls.NR_SETITIMER, which, new_value as i64, old_value as i64)
+
+fn alarm     : i64 -> i64
+  | seconds -> syscall1(syscalls.NR_ALARM, seconds)
+
+fn times     : ptr -> i64
+  | buf -> syscall1(syscalls.NR_TIMES, buf as i64)
+
+fn sysinfo   : ptr -> i64
+  | info -> syscall1(syscalls.NR_SYSINFO, info as i64)
+
+fn uname     : ptr -> i64
+  | buf -> syscall1(syscalls.NR_UNAME, buf as i64)
+
+-- §43  DIRECT SYSCALL WRAPPERS — signals
+fn rt_sigaction : (i64, ptr, ptr, i64) -> i64
+  | (sig, act, oact, sigsetsize) -> syscall4(syscalls.NR_RT_SIGACTION, sig, act as i64, oact as i64, sigsetsize)
+
+fn rt_sigprocmask : (i64, ptr, ptr, i64) -> i64
+  | (how, set, oset, sigsetsize) -> syscall4(syscalls.NR_RT_SIGPROCMASK, how, set as i64, oset as i64, sigsetsize)
+
+fn rt_sigpending : (ptr, i64) -> i64
+  | (set, sigsetsize) -> syscall2(syscalls.NR_RT_SIGPENDING, set as i64, sigsetsize)
+
+fn rt_sigsuspend : (ptr, i64) -> i64
+  | (set, sigsetsize) -> syscall2(syscalls.NR_RT_SIGSUSPEND, set as i64, sigsetsize)
+
+fn rt_sigtimedwait : (ptr, ptr, ptr, i64) -> i64
+  | (set, info, timeout, sigsetsize) -> syscall4(syscalls.NR_RT_SIGTIMEDWAIT, set as i64, info as i64, timeout as i64, sigsetsize)
+
+fn rt_sigqueueinfo : (i64, i64, ptr) -> i64
+  | (pid, sig, info) -> syscall3(syscalls.NR_RT_SIGQUEUEINFO, pid, sig, info as i64)
+
+fn rt_tgsigqueueinfo : (i64, i64, i64, ptr) -> i64
+  | (tgid, tid, sig, info) -> syscall4(syscalls.NR_RT_TGSIGQUEUEINFO, tgid, tid, sig, info as i64)
+
+fn sigaltstack : (ptr, ptr) -> i64
+  | (ss, oss) -> syscall2(syscalls.NR_SIGALTSTACK, ss as i64, oss as i64)
+
+fn pause    : () -> i64  | () -> syscall0(syscalls.NR_PAUSE)
+
+-- §44  DIRECT SYSCALL WRAPPERS — poll/epoll/select
+fn poll     : (ptr, i64, i64) -> i64
+  | (fds, nfds, timeout) -> syscall3(syscalls.NR_POLL, fds as i64, nfds, timeout)
+
+fn ppoll    : (ptr, i64, ptr, ptr, i64) -> i64
+  | (fds, nfds, tmo, sigmask, sigsetsize) -> syscall5(syscalls.NR_PPOLL, fds as i64, nfds, tmo as i64, sigmask as i64, sigsetsize)
+
+fn select   : (i64, ptr, ptr, ptr, ptr) -> i64
+  | (nfds, readfds, writefds, exceptfds, timeout) -> syscall5(syscalls.NR_SELECT, nfds, readfds as i64, writefds as i64, exceptfds as i64, timeout as i64)
+
+fn pselect6 : (i64, ptr, ptr, ptr, ptr, ptr) -> i64
+  | (nfds, readfds, writefds, exceptfds, timeout, sigmask) -> syscall6(syscalls.NR_PSELECT6, nfds, readfds as i64, writefds as i64, exceptfds as i64, timeout as i64, sigmask as i64)
+
+fn epoll_create1 : i64 -> i64
+  | flags -> syscall1(syscalls.NR_EPOLL_CREATE1, flags)
+
+fn epoll_ctl : (i64, i64, i64, ptr) -> i64
+  | (epfd, op, fd, event) -> syscall4(syscalls.NR_EPOLL_CTL, epfd, op, fd, event as i64)
+
+fn epoll_wait : (i64, ptr, i64, i64) -> i64
+  | (epfd, events, maxevents, timeout) -> syscall4(syscalls.NR_EPOLL_WAIT, epfd, events as i64, maxevents, timeout)
+
+fn epoll_pwait : (i64, ptr, i64, i64, ptr, i64) -> i64
+  | (epfd, events, maxevents, timeout, sigmask, sigsetsize) ->
+    syscall6(syscalls.NR_EPOLL_PWAIT, epfd, events as i64, maxevents, timeout, sigmask as i64, sigsetsize)
+
+fn epoll_pwait2 : (i64, ptr, i64, ptr, ptr, i64) -> i64
+  | (epfd, events, maxevents, timeout, sigmask, sigsetsize) ->
+    syscall6(syscalls.NR_EPOLL_PWAIT2, epfd, events as i64, maxevents, timeout as i64, sigmask as i64, sigsetsize)
+
+-- §45  DIRECT SYSCALL WRAPPERS — eventfd/timerfd/signalfd/inotify
+fn eventfd2 : (i64, i64) -> i64
+  | (initval, flags) -> syscall2(syscalls.NR_EVENTFD2, initval, flags)
+
+fn timerfd_create : (i64, i64) -> i64
+  | (clkid, flags) -> syscall2(syscalls.NR_TIMERFD_CREATE, clkid, flags)
+
+fn timerfd_settime : (i64, i64, ptr, ptr) -> i64
+  | (fd, flags, new_value, old_value) -> syscall4(syscalls.NR_TIMERFD_SETTIME, fd, flags, new_value as i64, old_value as i64)
+
+fn timerfd_gettime : (i64, ptr) -> i64
+  | (fd, curr_value) -> syscall2(syscalls.NR_TIMERFD_GETTIME, fd, curr_value as i64)
+
+fn signalfd4 : (i64, ptr, i64, i64) -> i64
+  | (fd, mask, sizemask, flags) -> syscall4(syscalls.NR_SIGNALFD4, fd, mask as i64, sizemask, flags)
+
+fn inotify_init1 : i64 -> i64
+  | flags -> syscall1(syscalls.NR_INOTIFY_INIT1, flags)
+
+fn inotify_add_watch : (i64, ptr, i64) -> i64
+  | (fd, path, mask) -> syscall3(syscalls.NR_INOTIFY_ADD_WATCH, fd, path as i64, mask)
+
+fn inotify_rm_watch : (i64, i64) -> i64
+  | (fd, wd) -> syscall2(syscalls.NR_INOTIFY_RM_WATCH, fd, wd)
+
+fn fanotify_init : (i64, i64) -> i64
+  | (flags, event_f_flags) -> syscall2(syscalls.NR_FANOTIFY_INIT, flags, event_f_flags)
+
+fn fanotify_mark : (i64, i64, i64, i64, ptr) -> i64
+  | (fanotify_fd, flags, mask, dirfd, pathname) ->
+    syscall5(syscalls.NR_FANOTIFY_MARK, fanotify_fd, flags, mask, dirfd, pathname as i64)
+
+-- §46  DIRECT SYSCALL WRAPPERS — futex
+fn futex    : (ptr, i64, i64, ptr, ptr, i64) -> i64
+  | (uaddr, op, val, timeout, uaddr2, val3) ->
+    syscall6(syscalls.NR_FUTEX, uaddr as i64, op, val, timeout as i64, uaddr2 as i64, val3)
+
+fn futex_waitv : (ptr, i64, i64, ptr, i64) -> i64
+  | (waiters, nr_futexes, flags, timeout, clockid) ->
+    syscall5(syscalls.NR_FUTEX_WAITV, waiters as i64, nr_futexes, flags, timeout as i64, clockid)
+
+-- §47  DIRECT SYSCALL WRAPPERS — io_uring
+fn io_uring_setup    : (i64, ptr) -> i64
+  | (entries, params) -> syscall2(syscalls.NR_IO_URING_SETUP, entries, params as i64)
+
+fn io_uring_enter    : (i64, i64, i64, i64, ptr, i64) -> i64
+  | (fd, to_submit, min_complete, flags, sig, sz) ->
+    syscall6(syscalls.NR_IO_URING_ENTER, fd, to_submit, min_complete, flags, sig as i64, sz)
+
+fn io_uring_register : (i64, i64, ptr, i64) -> i64
+  | (fd, opcode, arg, nr_args) -> syscall4(syscalls.NR_IO_URING_REGISTER, fd, opcode, arg as i64, nr_args)
+
+-- §48  DIRECT SYSCALL WRAPPERS — BPF
+fn bpf      : (i64, ptr, i64) -> i64
+  | (cmd, attr, size) -> syscall3(syscalls.NR_BPF, cmd, attr as i64, size)
+
+fn perf_event_open : (ptr, i64, i64, i64, i64) -> i64
+  | (attr, pid, cpu, group_fd, flags) -> syscall5(syscalls.NR_PERF_EVENT_OPEN, attr as i64, pid, cpu, group_fd, flags)
+
+-- §49  DIRECT SYSCALL WRAPPERS — misc
+fn getrandom : (ptr, i64, i64) -> i64
+  | (buf, buflen, flags) -> syscall3(syscalls.NR_GETRANDOM, buf as i64, buflen, flags)
+
+fn seccomp  : (i64, i64, ptr) -> i64
+  | (op, flags, args) -> syscall3(syscalls.NR_SECCOMP, op, flags, args as i64)
+
+fn ioprio_set : (i64, i64, i64) -> i64
+  | (which, who, ioprio) -> syscall3(syscalls.NR_IOPRIO_SET, which, who, ioprio)
+
+fn ioprio_get : (i64, i64) -> i64
+  | (which, who) -> syscall2(syscalls.NR_IOPRIO_GET, which, who)
+
+fn add_key  : (ptr, ptr, ptr, i64, i64) -> i64
+  | (type_, description, payload, plen, keyring) ->
+    syscall5(syscalls.NR_ADD_KEY, type_ as i64, description as i64, payload as i64, plen, keyring)
+
+fn request_key : (ptr, ptr, ptr, i64) -> i64
+  | (type_, description, callout_info, dest_keyring) ->
+    syscall4(syscalls.NR_REQUEST_KEY, type_ as i64, description as i64, callout_info as i64, dest_keyring)
+
+fn keyctl   : (i64, i64, i64, i64, i64) -> i64
+  | (op, a2, a3, a4, a5) -> syscall5(syscalls.NR_KEYCTL, op, a2, a3, a4, a5)
+
+fn quotactl : (i64, ptr, i64, ptr) -> i64
+  | (cmd, special, id, addr) -> syscall4(syscalls.NR_QUOTACTL, cmd, special as i64, id, addr as i64)
+
+fn quotactl_fd : (i64, i64, i64, ptr) -> i64
+  | (fd, cmd, id, addr) -> syscall4(syscalls.NR_QUOTACTL_FD, fd, cmd, id, addr as i64)
+
+fn landlock_create_ruleset : (ptr, i64, i64) -> i64
+  | (attr, size, flags) -> syscall3(syscalls.NR_LANDLOCK_CREATE_RULESET, attr as i64, size, flags)
+
+fn landlock_add_rule : (i64, i64, ptr, i64) -> i64
+  | (ruleset_fd, rule_type, rule_attr, flags) -> syscall4(syscalls.NR_LANDLOCK_ADD_RULE, ruleset_fd, rule_type, rule_attr as i64, flags)
+
+fn landlock_restrict_self : (i64, i64) -> i64
+  | (ruleset_fd, flags) -> syscall2(syscalls.NR_LANDLOCK_RESTRICT_SELF, ruleset_fd, flags)
+
+fn userfaultfd : i64 -> i64
+  | flags -> syscall1(syscalls.NR_USERFAULTFD, flags)
+
+fn membarrier : (i64, i64, i64) -> i64
+  | (cmd, flags, cpu_id) -> syscall3(syscalls.NR_MEMBARRIER, cmd, flags, cpu_id)
+
+fn rseq     : (ptr, i64, i64, i64) -> i64
+  | (rseq_ptr, rseq_len, flags, sig) -> syscall4(syscalls.NR_RSEQ, rseq_ptr as i64, rseq_len, flags, sig)
+
+fn set_tid_address : ptr -> i64
+  | tidptr -> syscall1(syscalls.NR_SET_TID_ADDRESS, tidptr as i64)
+
+fn set_robust_list : (ptr, i64) -> i64
+  | (head, len) -> syscall2(syscalls.NR_SET_ROBUST_LIST, head as i64, len)
+
+fn get_robust_list : (i64, ptr, ptr) -> i64
+  | (pid, head_ptr, len_ptr) -> syscall3(syscalls.NR_GET_ROBUST_LIST, pid, head_ptr as i64, len_ptr as i64)
+
+fn syslog   : (i64, ptr, i64) -> i64
+  | (type_, buf, len) -> syscall3(syscalls.NR_SYSLOG, type_, buf as i64, len)
+
+fn acct     : ptr -> i64
+  | path -> syscall1(syscalls.NR_ACCT, path as i64)
+
+fn migrate_pages : (i64, i64, ptr, ptr) -> i64
+  | (pid, maxnode, old_nodes, new_nodes) -> syscall4(syscalls.NR_MIGRATE_PAGES, pid, maxnode, old_nodes as i64, new_nodes as i64)
+
+fn move_pages : (i64, i64, ptr, ptr, ptr, i64) -> i64
+  | (pid, count, pages, nodes, status, flags) ->
+    syscall6(syscalls.NR_MOVE_PAGES, pid, count, pages as i64, nodes as i64, status as i64, flags)
+
+fn mbind    : (ptr, i64, i64, ptr, i64, i64) -> i64
+  | (addr, len, mode, nodemask, maxnode, flags) ->
+    syscall6(syscalls.NR_MBIND, addr as i64, len, mode, nodemask as i64, maxnode, flags)
+
+fn set_mempolicy : (i64, ptr, i64) -> i64
+  | (mode, nodemask, maxnode) -> syscall3(syscalls.NR_SET_MEMPOLICY, mode, nodemask as i64, maxnode)
+
+fn get_mempolicy : (ptr, ptr, i64, ptr, i64) -> i64
+  | (mode, nodemask, maxnode, addr, flags) ->
+    syscall5(syscalls.NR_GET_MEMPOLICY, mode as i64, nodemask as i64, maxnode, addr as i64, flags)
+
+fn cachestat : (i64, ptr, ptr, i64) -> i64
+  | (fd, cstat_range, cstat, flags) -> syscall4(syscalls.NR_CACHESTAT, fd, cstat_range as i64, cstat as i64, flags)
+
+fn lsm_get_self_attr : (i64, ptr, ptr, i64) -> i64
+  | (attr, ctx, size, flags) -> syscall4(syscalls.NR_LSM_GET_SELF_ATTR, attr, ctx as i64, size as i64, flags)
+
+fn lsm_set_self_attr : (i64, ptr, i64, i64) -> i64
+  | (attr, ctx, size, flags) -> syscall4(syscalls.NR_LSM_SET_SELF_ATTR, attr, ctx as i64, size, flags)
+
+fn lsm_list_modules : (ptr, ptr, i64) -> i64
+  | (ids, size, flags) -> syscall3(syscalls.NR_LSM_LIST_MODULES, ids as i64, size as i64, flags)
+
+-- §50  SYSV IPC
+fn semget   : (i64, i64, i64) -> i64
+  | (key, nsems, semflg) -> syscall3(syscalls.NR_SEMGET, key, nsems, semflg)
+
+fn semop    : (i64, ptr, i64) -> i64
+  | (semid, sops, nsops) -> syscall3(syscalls.NR_SEMOP, semid, sops as i64, nsops)
+
+fn semtimedop : (i64, ptr, i64, ptr) -> i64
+  | (semid, sops, nsops, timeout) -> syscall4(syscalls.NR_SEMTIMEDOP, semid, sops as i64, nsops, timeout as i64)
+
+fn semctl   : (i64, i64, i64, i64) -> i64
+  | (semid, semnum, cmd, arg) -> syscall4(syscalls.NR_SEMCTL, semid, semnum, cmd, arg)
+
+fn shmget   : (i64, i64, i64) -> i64
+  | (key, size, shmflg) -> syscall3(syscalls.NR_SHMGET, key, size, shmflg)
+
+fn shmat    : (i64, ptr, i64) -> ptr
+  | (shmid, shmaddr, shmflg) -> syscall3(syscalls.NR_SHMAT, shmid, shmaddr as i64, shmflg) as ptr
+
+fn shmdt    : ptr -> i64
+  | shmaddr -> syscall1(syscalls.NR_SHMDT, shmaddr as i64)
+
+fn shmctl   : (i64, i64, ptr) -> i64
+  | (shmid, cmd, buf) -> syscall3(syscalls.NR_SHMCTL, shmid, cmd, buf as i64)
+
+fn msgget   : (i64, i64) -> i64
+  | (key, msgflg) -> syscall2(syscalls.NR_MSGGET, key, msgflg)
+
+fn msgsnd   : (i64, ptr, i64, i64) -> i64
+  | (msqid, msgp, msgsz, msgflg) -> syscall4(syscalls.NR_MSGSND, msqid, msgp as i64, msgsz, msgflg)
+
+fn msgrcv   : (i64, ptr, i64, i64, i64) -> i64
+  | (msqid, msgp, msgsz, msgtyp, msgflg) -> syscall5(syscalls.NR_MSGRCV, msqid, msgp as i64, msgsz, msgtyp, msgflg)
+
+fn msgctl   : (i64, i64, ptr) -> i64
+  | (msqid, cmd, buf) -> syscall3(syscalls.NR_MSGCTL, msqid, cmd, buf as i64)
+
+fn mq_open  : (ptr, i64, i64, ptr) -> i64
+  | (name, oflag, mode, attr) -> syscall4(syscalls.NR_MQ_OPEN, name as i64, oflag, mode, attr as i64)
+
+fn mq_unlink : ptr -> i64
+  | name -> syscall1(syscalls.NR_MQ_UNLINK, name as i64)
+
+fn mq_timedsend : (i64, ptr, i64, i64, ptr) -> i64
+  | (mqdes, msg_ptr, msg_len, msg_prio, abs_timeout) ->
+    syscall5(syscalls.NR_MQ_TIMEDSEND, mqdes, msg_ptr as i64, msg_len, msg_prio, abs_timeout as i64)
+
+fn mq_timedreceive : (i64, ptr, i64, ptr, ptr) -> i64
+  | (mqdes, msg_ptr, msg_len, msg_prio, abs_timeout) ->
+    syscall5(syscalls.NR_MQ_TIMEDRECEIVE, mqdes, msg_ptr as i64, msg_len, msg_prio as i64, abs_timeout as i64)
+
+fn mq_notify : (i64, ptr) -> i64
+  | (mqdes, sevp) -> syscall2(syscalls.NR_MQ_NOTIFY, mqdes, sevp as i64)
+
+fn mq_getsetattr : (i64, ptr, ptr) -> i64
+  | (mqdes, mqstat, omqstat) -> syscall3(syscalls.NR_MQ_GETSETATTR, mqdes, mqstat as i64, omqstat as i64)
+
+-- §51  DERIVED HELPERS — byte-exact I/O
+fn write_all : (i64, ptr, i64) -> i64
+  | (fd, buf, n) ->
+    let mut off : i64 = 0i64
+    while off < n
+      let r = write(fd, (buf as i64 + off) as ptr, n - off)
+      if r < 0i64 then r
+      off = off + r
+    n
+
+fn read_all : (i64, ptr, i64) -> i64
+  | (fd, buf, n) ->
+    let mut off : i64 = 0i64
+    while off < n
+      let r = read(fd, (buf as i64 + off) as ptr, n - off)
+      if r <= 0i64 then off
+      off = off + r
+    off
+
+fn read_file : (ptr, ptr, i64) -> i64
+  | (path, buf, cap) ->
+    let fd = open(path, O_RDONLY, 0i64)
+    if fd < 0i64 then fd
+    let n = read_all(fd, buf, cap)
+    close(fd)
+    n
+
+fn write_file : (ptr, ptr, i64) -> i64
+  | (path, buf, n) ->
+    let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 493i64)
+    if fd < 0i64 then fd
+    let written = write_all(fd, buf, n)
+    close(fd)
+    written
+
+-- §52  DERIVED HELPERS — filesystem
+fn mkdir_p : (ptr, i64) -> i64
+  | (path, mode) ->
+    let buf : *u8 = malloc(4096i64) as *u8
+    let mut i : i64 = 0i64
+    let mut plen : i64 = 0i64
+    while (path as *u8)[plen] != 0u8 then plen = plen + 1i64
+    memcpy(buf as ptr, path as ptr, plen as u64)
+    buf[plen] = 0u8
+    while i <= plen
+      if buf[i] == 47u8 && i > 0i64
+        buf[i] = 0u8
+        mkdir(buf as ptr, mode)
+        buf[i] = 47u8
+      i = i + 1i64
+    let r = mkdir(path, mode)
+    free(buf as ptr)
+    r
+
+fn file_exists : ptr -> bool
+  | path ->
+    let r = access(path, F_OK)
+    r == 0i64
+
+fn file_size : ptr -> i64
+  | path ->
+    let buf : *u8 = malloc(144i64) as *u8
+    let r = stat(path, buf as ptr)
+    if r < 0i64
+      free(buf as ptr)
+      -1i64
+    else
+      let sz = (buf as *i64)[6i64]
+      free(buf as ptr)
+      sz
+
+fn is_dir : ptr -> bool
+  | path ->
+    let buf : *u8 = malloc(144i64) as *u8
+    let r = stat(path, buf as ptr)
+    if r < 0i64
+      free(buf as ptr)
+      false
+    else
+      let mode = (buf as *i64)[3i64] as i64
+      free(buf as ptr)
+      (mode & S_IFMT) == S_IFDIR
+
+-- §53  DERIVED HELPERS — fd flags
+fn set_nonblocking : i64 -> i64
+  | fd ->
+    let flags = fcntl(fd, F_GETFL, 0i64)
+    if flags < 0i64 then flags
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+
+fn set_blocking : i64 -> i64
+  | fd ->
+    let flags = fcntl(fd, F_GETFL, 0i64)
+    if flags < 0i64 then flags
+    fcntl(fd, F_SETFL, flags & (-1i64 ^ O_NONBLOCK))
+
+fn set_cloexec : i64 -> i64
+  | fd ->
+    let flags = fcntl(fd, F_GETFD, 0i64)
+    if flags < 0i64 then flags
+    fcntl(fd, F_SETFD, flags | FD_CLOEXEC)
+
+fn clear_cloexec : i64 -> i64
+  | fd ->
+    let flags = fcntl(fd, F_GETFD, 0i64)
+    if flags < 0i64 then flags
+    fcntl(fd, F_SETFD, flags & (-1i64 ^ FD_CLOEXEC))
+
+-- §54  DERIVED HELPERS — socket options
+fn set_reuseaddr : i64 -> i64
+  | fd ->
+    let val : *i32 = malloc(4i64) as *i32; val[0i32] = 1i32
+    let r = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, val as ptr, 4i64)
+    free(val as ptr); r
+
+fn set_reuseport : i64 -> i64
+  | fd ->
+    let val : *i32 = malloc(4i64) as *i32; val[0i32] = 1i32
+    let r = setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, val as ptr, 4i64)
+    free(val as ptr); r
+
+fn set_nodelay : i64 -> i64
+  | fd ->
+    let val : *i32 = malloc(4i64) as *i32; val[0i32] = 1i32
+    let r = setsockopt(fd, SOL_TCP, TCP_NODELAY, val as ptr, 4i64)
+    free(val as ptr); r
+
+fn set_keepalive : i64 -> i64
+  | fd ->
+    let val : *i32 = malloc(4i64) as *i32; val[0i32] = 1i32
+    let r = setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, val as ptr, 4i64)
+    free(val as ptr); r
+
+fn set_keepidle : (i64, i32) -> i64
+  | (fd, secs) ->
+    let val : *i32 = malloc(4i64) as *i32; val[0i32] = secs
+    let r = setsockopt(fd, SOL_TCP, TCP_KEEPIDLE, val as ptr, 4i64)
+    free(val as ptr); r
+
+fn set_keepintvl : (i64, i32) -> i64
+  | (fd, secs) ->
+    let val : *i32 = malloc(4i64) as *i32; val[0i32] = secs
+    let r = setsockopt(fd, SOL_TCP, TCP_KEEPINTVL, val as ptr, 4i64)
+    free(val as ptr); r
+
+fn set_keepcnt : (i64, i32) -> i64
+  | (fd, cnt) ->
+    let val : *i32 = malloc(4i64) as *i32; val[0i32] = cnt
+    let r = setsockopt(fd, SOL_TCP, TCP_KEEPCNT, val as ptr, 4i64)
+    free(val as ptr); r
+
+fn set_sndbuf : (i64, i32) -> i64
+  | (fd, size) ->
+    let val : *i32 = malloc(4i64) as *i32; val[0i32] = size
+    let r = setsockopt(fd, SOL_SOCKET, SO_SNDBUF, val as ptr, 4i64)
+    free(val as ptr); r
+
+fn set_rcvbuf : (i64, i32) -> i64
+  | (fd, size) ->
+    let val : *i32 = malloc(4i64) as *i32; val[0i32] = size
+    let r = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, val as ptr, 4i64)
+    free(val as ptr); r
+
+fn set_recv_timeout : (i64, i64, i64) -> i64
+  | (fd, sec, usec) ->
+    let tv : *i64 = malloc(16i64) as *i64; tv[0i64] = sec; tv[1i64] = usec
+    let r = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, tv as ptr, 16i64)
+    free(tv as ptr); r
+
+fn set_send_timeout : (i64, i64, i64) -> i64
+  | (fd, sec, usec) ->
+    let tv : *i64 = malloc(16i64) as *i64; tv[0i64] = sec; tv[1i64] = usec
+    let r = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, tv as ptr, 16i64)
+    free(tv as ptr); r
+
+fn get_sock_error : i64 -> i32
+  | fd ->
+    let val : *i32 = malloc(4i64) as *i32
+    let len : *i32 = malloc(4i64) as *i32; len[0i32] = 4i32
+    getsockopt(fd, SOL_SOCKET, SO_ERROR, val as ptr, len as ptr)
+    let e = val[0i32]; free(val as ptr); free(len as ptr); e
+
+-- §55  DERIVED HELPERS — byte order
+fn htonll : u64 -> u64
+  | v ->
+    let hi = htonl((v >> 32u64) as u32) as u64
+    let lo = htonl((v & 0xFFFFFFFFu64) as u32) as u64
+    (lo << 32u64) | hi
+
+fn ntohll : u64 -> u64
+  | v -> htonll(v)
+
+-- §56  DERIVED HELPERS — random
+fn getrandom_exact : (ptr, i64) -> i64
+  | (buf, n) ->
+    let mut off : i64 = 0i64
+    while off < n
+      let r = getrandom((buf as i64 + off) as ptr, n - off, 0i64)
+      if r < 0i64 then r
+      off = off + r
+    n
+
+fn random_u64 : () -> u64
+  | () ->
+    let val : *u64 = malloc(8i64) as *u64
+    getrandom_exact(val as ptr, 8i64)
+    let v = val[0i64]; free(val as ptr); v
+
+fn random_u32 : () -> u32
+  | () -> (random_u64() & 0xFFFFFFFFu64) as u32
+
+fn random_range : (i64, i64) -> i64
+  | (lo, hi) ->
+    if lo >= hi then lo
+    let range = (hi - lo) as u64
+    let v = random_u64() % range
+    lo + v as i64
+
+-- §57  DERIVED HELPERS — system info
+fn cpu_count : () -> i64
+  | () ->
+    let buf : *u8 = malloc(4096i64) as *u8
+    let n = read_file("/sys/devices/system/cpu/online" as ptr, buf as ptr, 4095i64)
+    if n <= 0i64
+      free(buf as ptr); 1i64
+    else
+      buf[n] = 0u8
+      let mut count : i64 = 0i64
+      let mut i : i64 = 0i64
+      while i < n
+        if buf[i] == 44u8 then count = count + 1i64
+        if buf[i] == 45u8
+          -- range: parse end
+          let mut j = i + 1i64; let mut end_val : i64 = 0i64
+          while buf[j] >= 48u8 && buf[j] <= 57u8
+            end_val = end_val * 10i64 + buf[j] as i64 - 48i64; j = j + 1i64
+          let mut start_val : i64 = 0i64; let mut k = i - 1i64
+          while k >= 0i64 && buf[k] >= 48u8 && buf[k] <= 57u8 then k = k - 1i64
+          k = k + 1i64
+          while buf[k] >= 48u8 && buf[k] <= 57u8
+            start_val = start_val * 10i64 + buf[k] as i64 - 48i64; k = k + 1i64
+          count = count + end_val - start_val
+        i = i + 1i64
+      free(buf as ptr); count + 1i64
+
+fn hostname : (ptr, i64) -> i64
+  | (buf, n) ->
+    let uts : *u8 = malloc(390i64) as *u8
+    let r = uname(uts as ptr)
+    if r < 0i64 then free(uts as ptr); r
+    let hlen = strlen((uts as i64 + 65i64) as ptr) as i64
+    let copy_n = if hlen < n - 1i64 then hlen else n - 1i64
+    memcpy(buf, (uts as i64 + 65i64) as ptr, copy_n as u64)
+    (buf as *u8)[copy_n] = 0u8
+    free(uts as ptr); copy_n
+
+fn sleep_ns : i64 -> ()
+  | ns ->
+    let ts : *i64 = malloc(16i64) as *i64
+    ts[0i64] = ns / 1000000000i64; ts[1i64] = ns % 1000000000i64
+    nanosleep(ts as ptr, 0 as ptr); free(ts as ptr)
+
+fn sleep_ms : i64 -> ()  | ms -> sleep_ns(ms * 1000000i64)
+fn sleep_sec : i64 -> () | s  -> sleep_ns(s * 1000000000i64)
+
+fn monotonic_ns : () -> i64
+  | () ->
+    let ts : *i64 = malloc(16i64) as *i64
+    clock_gettime(CLOCK_MONOTONIC, ts as ptr)
+    let v = ts[0i64] * 1000000000i64 + ts[1i64]
+    free(ts as ptr); v
+
+fn realtime_ns : () -> i64
+  | () ->
+    let ts : *i64 = malloc(16i64) as *i64
+    clock_gettime(CLOCK_REALTIME, ts as ptr)
+    let v = ts[0i64] * 1000000000i64 + ts[1i64]
+    free(ts as ptr); v
+
+-- §58  PROC HELPERS
+fn proc_read : (ptr, ptr, i64) -> i64
+  | (procpath, buf, cap) -> read_file(procpath, buf, cap)
+
+fn proc_self_exe : (ptr, i64) -> i64
+  | (buf, cap) -> readlink("/proc/self/exe" as ptr, buf, cap)
+
+fn proc_self_maps : (ptr, i64) -> i64
+  | (buf, cap) -> read_file("/proc/self/maps" as ptr, buf, cap)
+
+fn proc_self_status : (ptr, i64) -> i64
+  | (buf, cap) -> read_file("/proc/self/status" as ptr, buf, cap)
+
+fn proc_self_cwd : (ptr, i64) -> i64
+  | (buf, cap) -> readlink("/proc/self/cwd" as ptr, buf, cap)
+
+fn proc_self_fd : (i64, ptr, i64) -> i64
+  | (fd, buf, cap) ->
+    let path : *u8 = malloc(64i64) as *u8
+    snprintf(path as ptr, 64u64, "/proc/self/fd/%ld" as ptr, fd)
+    let r = readlink(path as ptr, buf, cap)
+    free(path as ptr); r
+
+fn proc_pid_exists : i64 -> bool
+  | pid ->
+    let path : *u8 = malloc(32i64) as *u8
+    snprintf(path as ptr, 32u64, "/proc/%ld" as ptr, pid)
+    let r = access(path as ptr, F_OK)
+    free(path as ptr); r == 0i64
+
+-- §59  ERRNO HELPERS
+fn errno_str : i64 -> *u8
+  | e -> strerror(e as i32) as *u8
+
+fn is_err : i64 -> bool
+  | v -> v < 0i64 && v >= -4095i64
+
+fn errno_from : i64 -> i64
+  | v -> if is_err(v) then -v else 0i64

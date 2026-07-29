@@ -1,0 +1,3 @@
+-- EXPECT: type-warn 3:17 ordering operators are not defined for bool
+fn bad : (bool, bool) -> bool
+  | (a, b) -> a < b

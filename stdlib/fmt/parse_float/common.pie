@@ -1,0 +1,99 @@
+mod fmt.parse_float.common
+
+-- Shared types for the Eisel-Lemire / Dragon4 parse_float pipeline.
+
+-- A float value decomposed into a binary significand and a biased binary exponent.
+-- f = significand * 2^exponent  (significand is NOT normalized here)
+-- Used as an intermediate representation before final IEEE-754 assembly.
+struct BiasedFp
+  f : u64   -- significand bits
+  e : i32   -- biased binary exponent
+
+fn biasedfp_zero : () -> BiasedFp
+  | () -> BiasedFp { f: 0u64, e: 0i32 }
+
+fn biasedfp_inf_f32 : () -> BiasedFp
+  | () -> BiasedFp { f: 0u64, e: 0xFFi32 }   -- exponent all-ones for f32
+
+fn biasedfp_inf_f64 : () -> BiasedFp
+  | () -> BiasedFp { f: 0u64, e: 0x7FFi32 }  -- exponent all-ones for f64
+
+fn biasedfp_is_zero : *BiasedFp -> bool
+  | b -> b.f == 0u64 && b.e == 0i32
+
+-- Parsed decimal number: sign, integer digits, fractional digits, exponent
+struct Number
+  sign          : bool   -- true = negative
+  mantissa      : u64    -- up to 19 significant decimal digits
+  exponent      : i64    -- decimal exponent
+  many_digits   : bool   -- true if more than 19 digits present (may need slow path)
+  hex           : bool   -- true if 0x prefix (hex float literal)
+
+fn number_zero : () -> Number
+  | () -> Number { sign: false, mantissa: 0u64, exponent: 0i64, many_digits: false, hex: false }
+
+-- 128-bit product type used in Eisel-Lemire
+struct U128
+  lo : u64
+  hi : u64
+
+fn u128_new : (u64, u64) -> U128
+  | (lo, hi) -> U128 { lo: lo, hi: hi }
+
+-- Full 128-bit multiply of two u64 values.
+-- Returns the 128-bit product as (lo, hi).
+fn u128_mul : (u64, u64) -> U128
+  | (a, b) ->
+    -- Split into 32-bit halves to avoid overflow
+    let a_lo = a & 0xFFFFFFFFu64
+    let a_hi = a >> 32u64
+    let b_lo = b & 0xFFFFFFFFu64
+    let b_hi = b >> 32u64
+    let ll = a_lo *% b_lo
+    let lh = a_lo *% b_hi
+    let hl = a_hi *% b_lo
+    let hh = a_hi *% b_hi
+    let mid = (ll >> 32u64) +% (lh & 0xFFFFFFFFu64) +% (hl & 0xFFFFFFFFu64)
+    let lo  = (ll & 0xFFFFFFFFu64) | (mid << 32u64)
+    let hi  = hh +% (lh >> 32u64) +% (hl >> 32u64) +% (mid >> 32u64)
+    U128 { lo: lo, hi: hi }
+
+-- Count leading zeros in a u64
+fn clz64 : u64 -> i32
+  | v ->
+    if v == 0u64 then 64i32
+    else
+      let mut n : i32 = 0i32; let mut vv = v
+      if vv & 0xFFFFFFFF00000000u64 == 0u64 then n = n + 32i32; vv = vv << 32u64
+      if vv & 0xFFFF000000000000u64 == 0u64 then n = n + 16i32; vv = vv << 16u64
+      if vv & 0xFF00000000000000u64 == 0u64 then n =  n + 8i32; vv = vv <<  8u64
+      if vv & 0xF000000000000000u64 == 0u64 then n =  n + 4i32; vv = vv <<  4u64
+      if vv & 0xC000000000000000u64 == 0u64 then n =  n + 2i32; vv = vv <<  2u64
+      if vv & 0x8000000000000000u64 == 0u64 then n =  n + 1i32
+      n
+
+-- Shift left u64, clamp to 0 if shift >= 64
+fn shl64 : (u64, i32) -> u64
+  | (v, n) -> if n >= 64i32 || n < 0i32 then 0u64 else v << n as u64
+
+-- Shift right u64, clamp to 0 if shift >= 64
+fn shr64 : (u64, i32) -> u64
+  | (v, n) -> if n >= 64i32 || n < 0i32 then 0u64 else v >> n as u64
+
+-- Assemble a final IEEE-754 f64 from sign, biased exponent, and mantissa bits
+fn assemble_f64 : (bool, i32, u64) -> f64
+  | (neg, exp, mant) ->
+    let sign_bit : u64 = if neg then 0x8000000000000000u64 else 0u64
+    let exp_bits : u64 = ((exp as u64) & 0x7FFu64) << 52u64
+    let mant_bits : u64 = mant & 0x000FFFFFFFFFFFFu64
+    let bits = sign_bit | exp_bits | mant_bits
+    bits as f64   -- reinterpret cast
+
+-- Assemble a final IEEE-754 f32 from sign, biased exponent, and mantissa bits
+fn assemble_f32 : (bool, i32, u32) -> f32
+  | (neg, exp, mant) ->
+    let sign_bit : u32 = if neg then 0x80000000u32 else 0u32
+    let exp_bits : u32 = ((exp as u32) & 0xFFu32) << 23u32
+    let mant_bits : u32 = mant & 0x007FFFFFu32
+    let bits = sign_bit | exp_bits | mant_bits
+    bits as f32

@@ -1,0 +1,33 @@
+-- EXPECT-CLEAN
+fn u8_to_i64 : u8 -> i64
+  | x -> x as i64
+
+fn u32_to_i64 : u32 -> i64
+  | x -> x as i64
+
+fn f64_to_i64 : f64 -> i64
+  | x -> x as i64
+
+fn i64_to_f64 : i64 -> f64
+  | x -> x as f64
+
+fn i64_to_u64 : i64 -> u64
+  | x -> x as u64
+
+fn saturate_u8 : i64 -> u8
+  | x ->
+    if x < 0i64 then 0u8
+    else if x > 255i64 then 255u8
+    else x as u8
+
+fn clamp_u64 : (u64, u64, u64) -> u64
+  | (x, lo, hi) ->
+    if x < lo then lo
+    else if x > hi then hi
+    else x
+
+fn wrapping_add_u32 : (u32, u32) -> u32
+  | (a, b) -> a + b
+
+fn to_bool : i64 -> bool
+  | x -> x != 0i64

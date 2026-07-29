@@ -1,0 +1,24 @@
+-- Pass-2 checks: call arity, mutability, duplicate binders. Self-contained;
+-- everything here is CORRECT, so it should report 0 type/resolve errors.
+
+fn add3 : (i32, i32, i32) -> i32
+  | (a, b, c) -> a + b + c
+
+-- correct arity
+fn use_add : i32 -> i32
+  | n -> add3(n, n, n)
+
+-- mutable binding written multiple times
+fn counter : () -> i32
+  | () ->
+      let mut total : i32 = 0
+      total = total + 1
+      total = total + 2
+      total
+
+-- unit-returning call with no args
+fn noop : () -> ()
+  | () -> ()
+
+fn run : () -> ()
+  | () -> noop()

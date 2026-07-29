@@ -1,0 +1,162 @@
+-- stdlib/collections.pie — VecDeque and BinaryHeap
+-- Pride standard library.
+
+fn malloc_coll : usize -> ptr #extern("malloc") #cc(c)
+fn free_coll   : ptr   -> ()  #extern("free")   #cc(c)
+fn memcpy_coll : (ptr, ptr, usize) -> ptr #extern("memcpy") #cc(c)
+
+-- ─── VecDeque: ring-buffer double-ended queue of i64 ─────────────────────────
+
+struct VecDeque
+  buf  : ptr
+  head : usize
+  len  : usize
+  cap  : usize
+
+fn vd_new : () -> VecDeque
+  | () -> VecDeque { buf: 0 as ptr, head: 0, len: 0, cap: 0 }
+
+fn vd_at : (ptr, usize) -> *i64
+  | (p, i) -> ((p as usize) + i * 8) as *i64
+
+fn vd_grow : *VecDeque -> ()
+  | (q) ->
+      let nc  = if q.cap == 0 then 8 else q.cap * 2
+      let nb  = malloc_coll(nc * 8)
+      if q.len > 0
+        let tail_space = q.cap - q.head
+        if tail_space >= q.len
+          memcpy_coll(nb, ((q.buf as usize) + q.head * 8) as ptr, q.len * 8)
+        else
+          memcpy_coll(nb, ((q.buf as usize) + q.head * 8) as ptr, tail_space * 8)
+          memcpy_coll(((nb as usize) + tail_space * 8) as ptr, q.buf, (q.len - tail_space) * 8)
+      if q.cap > 0 then free_coll(q.buf)
+      q.buf  = nb
+      q.head = 0
+      q.cap  = nc
+
+fn vd_push_back : (*VecDeque, i64) -> ()
+  | (q, x) ->
+      if q.len >= q.cap then vd_grow(q)
+      let slot = (q.head + q.len) % q.cap
+      *vd_at(q.buf, slot) = x
+      q.len = q.len + 1
+
+fn vd_push_front : (*VecDeque, i64) -> ()
+  | (q, x) ->
+      if q.len >= q.cap then vd_grow(q)
+      q.head = (q.head + q.cap - 1) % q.cap
+      *vd_at(q.buf, q.head) = x
+      q.len = q.len + 1
+
+fn vd_pop_back : *VecDeque -> (bool, i64)
+  | (q) ->
+      if q.len == 0 then (false, 0i64)
+      else
+        q.len = q.len - 1
+        let slot = (q.head + q.len) % q.cap
+        (true, *vd_at(q.buf, slot))
+
+fn vd_pop_front : *VecDeque -> (bool, i64)
+  | (q) ->
+      if q.len == 0 then (false, 0i64)
+      else
+        let v  = *vd_at(q.buf, q.head)
+        q.head = (q.head + 1) % q.cap
+        q.len  = q.len - 1
+        (true, v)
+
+fn vd_len : *VecDeque -> usize
+  | (q) -> q.len
+
+fn vd_free : *VecDeque -> ()
+  | (q) ->
+      if q.cap > 0 then free_coll(q.buf)
+      q.buf = 0 as ptr
+      q.head = 0
+      q.len  = 0
+      q.cap  = 0
+
+-- ─── BinaryHeap: max-heap of i64 ────────────────────────────────────────────
+
+struct BinaryHeap
+  data : ptr
+  len  : usize
+  cap  : usize
+
+fn heap_new : () -> BinaryHeap
+  | () -> BinaryHeap { data: 0 as ptr, len: 0, cap: 0 }
+
+fn heap_at : (ptr, usize) -> *i64
+  | (p, i) -> ((p as usize) + i * 8) as *i64
+
+fn heap_swap : (ptr, usize, usize) -> ()
+  | (p, i, j) ->
+      let a = heap_at(p, i)
+      let b = heap_at(p, j)
+      let t = *a
+      *a = *b
+      *b = t
+
+fn heap_grow : *BinaryHeap -> ()
+  | (h) ->
+      let nc = if h.cap == 0 then 8 else h.cap * 2
+      let nb = malloc_coll(nc * 8)
+      if h.len > 0 then memcpy_coll(nb, h.data, h.len * 8)
+      if h.cap > 0 then free_coll(h.data)
+      h.data = nb
+      h.cap  = nc
+
+fn heap_push : (*BinaryHeap, i64) -> ()
+  | (h, x) ->
+      if h.len >= h.cap then heap_grow(h)
+      *heap_at(h.data, h.len) = x
+      let mut i : usize = h.len
+      h.len = h.len + 1
+      while i > 0
+        let parent = (i - 1) / 2
+        if *heap_at(h.data, i) > *heap_at(h.data, parent)
+          heap_swap(h.data, i, parent)
+          i = parent
+        else
+          i = 0
+
+fn heap_pop : *BinaryHeap -> (bool, i64)
+  | (h) ->
+      if h.len == 0 then (false, 0i64)
+      else
+        let top = *heap_at(h.data, 0)
+        h.len = h.len - 1
+        if h.len > 0
+          *heap_at(h.data, 0) = *heap_at(h.data, h.len)
+          let mut i       : usize = 0
+          let mut sifting : bool  = true
+          while sifting
+            let l = i * 2 + 1
+            let r = i * 2 + 2
+            let mut largest : usize = i
+            if l < h.len && *heap_at(h.data, l) > *heap_at(h.data, largest)
+              largest = l
+            if r < h.len && *heap_at(h.data, r) > *heap_at(h.data, largest)
+              largest = r
+            if largest != i
+              heap_swap(h.data, i, largest)
+              i = largest
+            else
+              sifting = false
+        (true, top)
+
+fn heap_peek : *BinaryHeap -> (bool, i64)
+  | (h) ->
+      if h.len == 0 then (false, 0i64)
+      else (true, *heap_at(h.data, 0))
+
+fn heap_len  : *BinaryHeap -> usize
+  | (h) -> h.len
+
+fn heap_free : *BinaryHeap -> ()
+  | (h) ->
+      if h.cap > 0 then free_coll(h.data)
+      h.data = 0 as ptr
+      h.len  = 0
+      h.cap  = 0

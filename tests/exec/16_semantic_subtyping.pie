@@ -1,0 +1,37 @@
+-- EXPECT: 0\n3\n7
+type IorL = i32 ∪ i64
+fn to_int : IorL -> i64 | x -> x as i64
+type SameInt = i32 ∩ i32
+fn as_i32 : SameInt -> i32 | x -> x
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      let v1 : i32 = 0i32
+      print_i64_nl(to_int(v1))
+      print_i64_nl(to_int(3i32))
+      let v3 : SameInt = 7i32
+      print_i64_nl(as_i32(v3) as i64)
+      syscall(231, 0)

@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+fn offset : (*i32, i64) -> *i32
+  | (p, n) -> p + n
+
+fn index_ptr : (*i32, i64) -> i32
+  | (p, i) -> p[i]

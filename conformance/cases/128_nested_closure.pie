@@ -1,0 +1,6 @@
+-- EXPECT-CLEAN
+fn compose : i64 -> i64
+  | n ->
+      let f = fn | (x) -> x + 1i64
+      let g = fn | (x) -> x * 2i64
+      g(f(n))

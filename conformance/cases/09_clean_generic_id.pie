@@ -1,0 +1,5 @@
+-- EXPECT-CLEAN
+fn id<T> : T -> T
+  | x -> x
+fn apply : i32 -> i32
+  | n -> id(n)

@@ -1,0 +1,967 @@
+mod mem
+
+use os.linux
+
+-- §1  ALIGNMENT HELPERS
+fn align_up   : (i64, i64) -> i64 | (n, a) -> (n + a - 1i64) & (-a)
+fn align_down : (i64, i64) -> i64 | (n, a) -> n & (-a)
+fn is_aligned : (i64, i64) -> bool | (n, a) -> (n & (a - 1i64)) == 0i64
+fn is_pow2    : i64 -> bool         | n     -> n > 0i64 && (n & (n - 1i64)) == 0i64
+
+fn align_ptr_up   : (ptr, i64) -> ptr
+  | (p, a) -> align_up(p as i64, a) as ptr
+
+fn align_ptr_down : (ptr, i64) -> ptr
+  | (p, a) -> align_down(p as i64, a) as ptr
+
+const PAGE_SIZE   : i64 = 4096i64
+const CACHE_LINE  : i64 = 64i64
+const DEFAULT_ALIGN : i64 = 16i64
+
+-- §2  RAW PAGE ALLOCATOR — mmap/munmap backed, no libc
+fn page_alloc : i64 -> ptr
+  | n ->
+    let sz = align_up(n, PAGE_SIZE)
+    let p = os.linux.mmap(
+      0 as ptr, sz,
+      os.linux.PROT_READ | os.linux.PROT_WRITE,
+      os.linux.MAP_PRIVATE | os.linux.MAP_ANONYMOUS,
+      -1i64, 0i64)
+    if p as i64 == os.linux.MAP_FAILED then 0 as ptr else p
+
+fn page_free : (ptr, i64) -> ()
+  | (p, n) ->
+    let sz = align_up(n, PAGE_SIZE)
+    os.linux.munmap(p, sz)
+    ()
+
+fn page_realloc : (ptr, i64, i64) -> ptr
+  | (old_ptr, old_sz, new_sz) ->
+    let new_ptr = page_alloc(new_sz)
+    if new_ptr as i64 == 0i64 then 0 as ptr
+    else
+      let copy_n = if old_sz < new_sz then old_sz else new_sz
+      os.linux.memcpy(new_ptr, old_ptr, copy_n as u64)
+      page_free(old_ptr, old_sz)
+      new_ptr
+
+-- §3  ARENA ALLOCATOR
+-- Linear bump allocator. Free all at once with arena_reset/arena_destroy.
+-- Zero allocation overhead per object. Thread-unsafe by design — use one per thread.
+
+struct Arena
+  base    : ptr    -- mmap'd backing memory
+  cap     : i64    -- total capacity in bytes
+  pos     : i64    -- current bump pointer offset
+  prev    : ptr    -- linked list of overflow chunks (ptr to Arena)
+
+fn arena_new : i64 -> Arena
+  | cap ->
+    let base = page_alloc(cap)
+    Arena { base: base, cap: cap, pos: 0i64, prev: 0 as ptr }
+
+fn arena_destroy : *Arena -> ()
+  | a ->
+    -- walk and free all overflow chunks first
+    let mut chunk = a.prev
+    while chunk as i64 != 0i64
+      let next = (chunk as *Arena).prev
+      page_free((chunk as *Arena).base, (chunk as *Arena).cap)
+      page_free(chunk, 64i64)
+      chunk = next
+    page_free(a.base, a.cap)
+    a.base = 0 as ptr; a.cap = 0i64; a.pos = 0i64; a.prev = 0 as ptr
+
+fn arena_alloc : (*Arena, i64, i64) -> ptr
+  | (a, size, alignment) ->
+    let aligned_pos = align_up(a.pos, alignment)
+    let new_pos = aligned_pos + size
+    if new_pos <= a.cap
+      a.pos = new_pos
+      (a.base as i64 + aligned_pos) as ptr
+    else
+      -- overflow: allocate a new chunk at least as large
+      let chunk_cap = if size * 2i64 > 65536i64 then size * 2i64 else 65536i64
+      let chunk_meta : *Arena = page_alloc(64i64) as *Arena
+      chunk_meta.base = page_alloc(chunk_cap)
+      chunk_meta.cap  = chunk_cap
+      chunk_meta.pos  = size
+      chunk_meta.prev = a.prev
+      a.prev = chunk_meta as ptr
+      chunk_meta.base
+
+fn arena_alloc_zeroed : (*Arena, i64, i64) -> ptr
+  | (a, size, alignment) ->
+    let p = arena_alloc(a, size, alignment)
+    if p as i64 != 0i64 then os.linux.memset(p, 0i32, size as u64)
+    p
+
+fn arena_reset : *Arena -> ()
+  | a ->
+    -- free overflow chunks, keep primary slab
+    let mut chunk = a.prev
+    while chunk as i64 != 0i64
+      let next = (chunk as *Arena).prev
+      page_free((chunk as *Arena).base, (chunk as *Arena).cap)
+      page_free(chunk, 64i64)
+      chunk = next
+    a.prev = 0 as ptr; a.pos = 0i64
+
+fn arena_push_str : (*Arena, ptr, i64) -> ptr
+  | (a, s, n) ->
+    let dst = arena_alloc(a, n + 1i64, 1i64)
+    os.linux.memcpy(dst, s, n as u64)
+    (dst as *u8)[n] = 0u8
+    dst
+
+fn arena_strdup : (*Arena, ptr) -> ptr
+  | (a, s) ->
+    let n = os.linux.strlen(s) as i64
+    arena_push_str(a, s, n)
+
+fn arena_save : *Arena -> i64
+  | a -> a.pos
+
+fn arena_restore : (*Arena, i64) -> ()
+  | (a, saved_pos) -> a.pos = saved_pos
+
+-- §4  POOL ALLOCATOR
+-- Fixed-size object pool. O(1) alloc/free. Free-list backed.
+-- Objects must be >= sizeof(ptr). Backed by a single slab.
+
+struct Pool
+  slab      : ptr   -- raw backing memory
+  slab_sz   : i64   -- bytes in slab
+  obj_sz    : i64   -- padded object size (>= DEFAULT_ALIGN)
+  cap       : i64   -- max objects
+  freelist  : ptr   -- head of free list (NULL = empty)
+  live      : i64   -- currently allocated count
+
+fn pool_new : (i64, i64) -> Pool
+  | (obj_sz, cap) ->
+    let padded = align_up(obj_sz, DEFAULT_ALIGN)
+    let slab_sz = padded * cap
+    let slab = page_alloc(slab_sz)
+    -- initialise freelist: each slot points to the next
+    let mut i : i64 = 0i64
+    while i < cap - 1i64
+      let cur  = (slab as i64 + i * padded) as *ptr
+      let next = (slab as i64 + (i + 1i64) * padded) as ptr
+      cur[0i64] = next
+      i = i + 1i64
+    -- last slot -> null
+    let last = (slab as i64 + (cap - 1i64) * padded) as *ptr
+    last[0i64] = 0 as ptr
+    Pool { slab: slab, slab_sz: slab_sz, obj_sz: padded, cap: cap, freelist: slab, live: 0i64 }
+
+fn pool_destroy : *Pool -> ()
+  | p -> page_free(p.slab, p.slab_sz); p.slab = 0 as ptr; p.live = 0i64
+
+fn pool_alloc : *Pool -> ptr
+  | p ->
+    if p.freelist as i64 == 0i64 then 0 as ptr
+    else
+      let obj = p.freelist
+      p.freelist = (p.freelist as *ptr)[0i64]
+      p.live = p.live + 1i64
+      obj
+
+fn pool_alloc_zeroed : *Pool -> ptr
+  | p ->
+    let obj = pool_alloc(p)
+    if obj as i64 != 0i64 then os.linux.memset(obj, 0i32, p.obj_sz as u64)
+    obj
+
+fn pool_free : (*Pool, ptr) -> ()
+  | (p, obj) ->
+    (obj as *ptr)[0i64] = p.freelist
+    p.freelist = obj
+    p.live = p.live - 1i64
+
+fn pool_reset : *Pool -> ()
+  | p ->
+    let mut i : i64 = 0i64
+    while i < p.cap - 1i64
+      let cur  = (p.slab as i64 + i * p.obj_sz) as *ptr
+      cur[0i64] = (p.slab as i64 + (i + 1i64) * p.obj_sz) as ptr
+      i = i + 1i64
+    let last = (p.slab as i64 + (p.cap - 1i64) * p.obj_sz) as *ptr
+    last[0i64] = 0 as ptr
+    p.freelist = p.slab; p.live = 0i64
+
+fn pool_contains : (*Pool, ptr) -> bool
+  | (p, obj) ->
+    let off = obj as i64 - p.slab as i64
+    off >= 0i64 && off < p.slab_sz && (off % p.obj_sz) == 0i64
+
+-- §5  SLAB ALLOCATOR
+-- Multi-size slab: 8 size classes from 8B to 1KB, falls back to page_alloc.
+-- Thread-unsafe. One per thread or guarded externally.
+
+struct SlabClass
+  pool : Pool
+  size : i64
+
+struct Slab
+  classes  : ptr   -- *SlabClass[8]
+  n_classes : i64
+
+const SLAB_SIZES_0 : i64 = 8i64
+const SLAB_SIZES_1 : i64 = 16i64
+const SLAB_SIZES_2 : i64 = 32i64
+const SLAB_SIZES_3 : i64 = 64i64
+const SLAB_SIZES_4 : i64 = 128i64
+const SLAB_SIZES_5 : i64 = 256i64
+const SLAB_SIZES_6 : i64 = 512i64
+const SLAB_SIZES_7 : i64 = 1024i64
+const SLAB_N_CLASSES : i64 = 8i64
+const SLAB_CLASS_CAP : i64 = 1024i64   -- objects per class slab
+
+fn slab_new : () -> Slab
+  | () ->
+    let classes = page_alloc(SLAB_N_CLASSES * 128i64) as *SlabClass
+    let sizes : *i64 = page_alloc(SLAB_N_CLASSES * 8i64) as *i64
+    sizes[0i64] = SLAB_SIZES_0; sizes[1i64] = SLAB_SIZES_1
+    sizes[2i64] = SLAB_SIZES_2; sizes[3i64] = SLAB_SIZES_3
+    sizes[4i64] = SLAB_SIZES_4; sizes[5i64] = SLAB_SIZES_5
+    sizes[6i64] = SLAB_SIZES_6; sizes[7i64] = SLAB_SIZES_7
+    let mut i : i64 = 0i64
+    while i < SLAB_N_CLASSES
+      let cls : *SlabClass = (classes as i64 + i * 128i64) as *SlabClass
+      cls.size = sizes[i]
+      cls.pool = pool_new(sizes[i], SLAB_CLASS_CAP)
+      i = i + 1i64
+    page_free(sizes as ptr, SLAB_N_CLASSES * 8i64)
+    Slab { classes: classes as ptr, n_classes: SLAB_N_CLASSES }
+
+fn slab_destroy : *Slab -> ()
+  | s ->
+    let mut i : i64 = 0i64
+    while i < s.n_classes
+      let cls : *SlabClass = (s.classes as i64 + i * 128i64) as *SlabClass
+      pool_destroy(&cls.pool)
+      i = i + 1i64
+    page_free(s.classes, s.n_classes * 128i64)
+    s.classes = 0 as ptr
+
+fn slab_alloc : (*Slab, i64) -> ptr
+  | (s, size) ->
+    let mut i : i64 = 0i64
+    while i < s.n_classes
+      let cls : *SlabClass = (s.classes as i64 + i * 128i64) as *SlabClass
+      if cls.size >= size
+        let obj = pool_alloc(&cls.pool)
+        if obj as i64 != 0i64 then obj
+        else page_alloc(size)   -- class full, fall back
+      i = i + 1i64
+    page_alloc(size)   -- too large for any class
+
+fn slab_alloc_zeroed : (*Slab, i64) -> ptr
+  | (s, size) ->
+    let p = slab_alloc(s, size)
+    if p as i64 != 0i64 then os.linux.memset(p, 0i32, size as u64)
+    p
+
+fn slab_free : (*Slab, ptr, i64) -> ()
+  | (s, obj, size) ->
+    let mut i : i64 = 0i64
+    while i < s.n_classes
+      let cls : *SlabClass = (s.classes as i64 + i * 128i64) as *SlabClass
+      if cls.size >= size && pool_contains(&cls.pool, obj)
+        pool_free(&cls.pool, obj)
+      i = i + 1i64
+    page_free(obj, size)   -- was a large direct alloc
+
+-- §6  SCRATCH ALLOCATOR
+-- Temporary per-call bump buffer, stack-allocated backing.
+-- Pattern: let scratch = scratch_begin(&arena); ... scratch_end(&scratch)
+
+struct Scratch
+  arena    : *Arena
+  saved_pos : i64
+
+fn scratch_begin : *Arena -> Scratch
+  | a -> Scratch { arena: a, saved_pos: arena_save(a) }
+
+fn scratch_end : *Scratch -> ()
+  | s -> arena_restore(s.arena, s.saved_pos)
+
+fn scratch_alloc : (*Scratch, i64) -> ptr
+  | (s, size) -> arena_alloc(s.arena, size, DEFAULT_ALIGN)
+
+-- §7  RING BUFFER (power-of-2 size, lockless single-producer single-consumer)
+struct RingBuf
+  data  : ptr
+  mask  : i64   -- cap - 1, cap must be power of 2
+  read  : i64   -- consumer index
+  write : i64   -- producer index
+
+fn ringbuf_new : i64 -> RingBuf
+  | cap ->
+    -- round up to next power of 2
+    let mut c = cap
+    c = c - 1i64
+    c = c | (c >> 1i64); c = c | (c >> 2i64); c = c | (c >> 4i64)
+    c = c | (c >> 8i64); c = c | (c >> 16i64); c = c | (c >> 32i64)
+    c = c + 1i64
+    RingBuf { data: page_alloc(c), mask: c - 1i64, read: 0i64, write: 0i64 }
+
+fn ringbuf_destroy : *RingBuf -> ()
+  | r -> page_free(r.data, r.mask + 1i64); r.data = 0 as ptr
+
+fn ringbuf_cap  : *RingBuf -> i64  | r -> r.mask + 1i64
+fn ringbuf_len  : *RingBuf -> i64  | r -> r.write - r.read
+fn ringbuf_free : *RingBuf -> i64  | r -> r.mask + 1i64 - (r.write - r.read)
+fn ringbuf_is_empty : *RingBuf -> bool | r -> r.read == r.write
+fn ringbuf_is_full  : *RingBuf -> bool | r -> (r.write - r.read) == r.mask + 1i64
+
+fn ringbuf_push_byte : (*RingBuf, u8) -> bool
+  | (r, b) ->
+    if ringbuf_is_full(r) then false
+    else
+      (r.data as *u8)[r.write & r.mask] = b
+      r.write = r.write + 1i64; true
+
+fn ringbuf_pop_byte : *RingBuf -> i64
+  | r ->
+    if ringbuf_is_empty(r) then -1i64
+    else
+      let b = (r.data as *u8)[r.read & r.mask] as i64
+      r.read = r.read + 1i64; b
+
+fn ringbuf_push : (*RingBuf, ptr, i64) -> i64
+  | (r, src, n) ->
+    let avail = ringbuf_free(r)
+    let write_n = if n < avail then n else avail
+    let cap = r.mask + 1i64
+    let write_off = r.write & r.mask
+    let first = if write_n < cap - write_off then write_n else cap - write_off
+    os.linux.memcpy((r.data as i64 + write_off) as ptr, src, first as u64)
+    if write_n > first
+      os.linux.memcpy(r.data, (src as i64 + first) as ptr, (write_n - first) as u64)
+    r.write = r.write + write_n; write_n
+
+fn ringbuf_pop : (*RingBuf, ptr, i64) -> i64
+  | (r, dst, n) ->
+    let avail = ringbuf_len(r)
+    let read_n = if n < avail then n else avail
+    let cap = r.mask + 1i64
+    let read_off = r.read & r.mask
+    let first = if read_n < cap - read_off then read_n else cap - read_off
+    os.linux.memcpy(dst, (r.data as i64 + read_off) as ptr, first as u64)
+    if read_n > first
+      os.linux.memcpy((dst as i64 + first) as ptr, r.data, (read_n - first) as u64)
+    r.read = r.read + read_n; read_n
+
+fn ringbuf_peek : (*RingBuf, ptr, i64) -> i64
+  | (r, dst, n) ->
+    let avail = ringbuf_len(r)
+    let peek_n = if n < avail then n else avail
+    let cap = r.mask + 1i64
+    let read_off = r.read & r.mask
+    let first = if peek_n < cap - read_off then peek_n else cap - read_off
+    os.linux.memcpy(dst, (r.data as i64 + read_off) as ptr, first as u64)
+    if peek_n > first
+      os.linux.memcpy((dst as i64 + first) as ptr, r.data, (peek_n - first) as u64)
+    peek_n
+
+fn ringbuf_discard : (*RingBuf, i64) -> i64
+  | (r, n) ->
+    let avail = ringbuf_len(r)
+    let skip = if n < avail then n else avail
+    r.read = r.read + skip; skip
+
+fn ringbuf_reset : *RingBuf -> ()
+  | r -> r.read = 0i64; r.write = 0i64
+
+-- §8  MEMORY UTILITIES
+fn mem_zero : (ptr, i64) -> ()
+  | (p, n) -> os.linux.memset(p, 0i32, n as u64); ()
+
+fn mem_fill : (ptr, u8, i64) -> ()
+  | (p, val, n) -> os.linux.memset(p, val as i32, n as u64); ()
+
+fn mem_copy : (ptr, ptr, i64) -> ()
+  | (dst, src, n) -> os.linux.memcpy(dst, src, n as u64); ()
+
+fn mem_move : (ptr, ptr, i64) -> ()
+  | (dst, src, n) -> os.linux.memmove(dst, src, n as u64); ()
+
+fn mem_eq : (ptr, ptr, i64) -> bool
+  | (a, b, n) -> os.linux.memcmp(a, b, n as u64) == 0i32
+
+fn mem_find_byte : (ptr, u8, i64) -> i64
+  | (p, val, n) ->
+    let r = os.linux.memchr(p, val as i32, n as u64)
+    if r as i64 == 0i64 then -1i64 else r as i64 - p as i64
+
+fn mem_find_pattern : (ptr, i64, ptr, i64) -> i64
+  | (hay, hay_len, needle, needle_len) ->
+    if needle_len > hay_len then -1i64
+    else if needle_len == 0i64 then 0i64
+    else
+      let mut i : i64 = 0i64
+      while i <= hay_len - needle_len
+        if os.linux.memcmp((hay as i64 + i) as ptr, needle, needle_len as u64) == 0i32 then i
+        i = i + 1i64
+      -1i64
+
+fn mem_rfind_byte : (ptr, u8, i64) -> i64
+  | (p, val, n) ->
+    let mut i = n - 1i64
+    while i >= 0i64
+      if (p as *u8)[i] == val then i
+      i = i - 1i64
+    -1i64
+
+fn mem_count_byte : (ptr, u8, i64) -> i64
+  | (p, val, n) ->
+    let mut count : i64 = 0i64; let mut i : i64 = 0i64
+    while i < n
+      if (p as *u8)[i] == val then count = count + 1i64
+      i = i + 1i64
+    count
+
+fn mem_reverse : (ptr, i64) -> ()
+  | (p, n) ->
+    let mut lo : i64 = 0i64; let mut hi = n - 1i64
+    let b = p as *u8
+    while lo < hi
+      let t = b[lo]; b[lo] = b[hi]; b[hi] = t
+      lo = lo + 1i64; hi = hi - 1i64
+
+fn mem_swap : (ptr, ptr, i64) -> ()
+  | (a, b, n) ->
+    let mut i : i64 = 0i64
+    let ba = a as *u8; let bb = b as *u8
+    while i < n
+      let t = ba[i]; ba[i] = bb[i]; bb[i] = t
+      i = i + 1i64
+
+-- §9  COPY-ON-WRITE BYTE SLICE
+struct CowSlice
+  ptr  : ptr
+  len  : i64
+  cap  : i64
+  owned : bool
+
+fn cow_from_static : (ptr, i64) -> CowSlice
+  | (p, n) -> CowSlice { ptr: p, len: n, cap: n, owned: false }
+
+fn cow_from_owned : (ptr, i64) -> CowSlice
+  | (p, n) -> CowSlice { ptr: p, len: n, cap: n, owned: true }
+
+fn cow_make_owned : *CowSlice -> ()
+  | c ->
+    if c.owned then ()
+    else
+      let new_ptr = os.linux.malloc(c.len + 1i64)
+      os.linux.memcpy(new_ptr, c.ptr, c.len as u64)
+      (new_ptr as *u8)[c.len] = 0u8
+      c.ptr = new_ptr; c.cap = c.len; c.owned = true
+
+fn cow_destroy : *CowSlice -> ()
+  | c -> if c.owned then os.linux.free(c.ptr); c.ptr = 0 as ptr; c.len = 0i64; c.cap = 0i64
+
+fn cow_write : (*CowSlice, i64, u8) -> ()
+  | (c, idx, val) ->
+    cow_make_owned(c)
+    (c.ptr as *u8)[idx] = val
+
+-- §10  SMART POINTER — reference counted
+struct Rc
+  ptr      : ptr   -- points to payload (header is just before this)
+  -- header at ptr - 8: i64 refcount, i64 size
+
+fn rc_header_of : ptr -> ptr
+  | p -> (p as i64 - 16i64) as ptr
+
+fn rc_refcount : ptr -> *i64
+  | p -> (p as i64 - 16i64) as *i64
+
+fn rc_size : ptr -> *i64
+  | p -> (p as i64 - 8i64) as *i64
+
+fn rc_new : i64 -> Rc
+  | size ->
+    let raw = os.linux.malloc(size + 16i64)
+    let hdr = raw as *i64
+    hdr[0i64] = 1i64   -- refcount
+    hdr[1i64] = size   -- size
+    Rc { ptr: (raw as i64 + 16i64) as ptr }
+
+fn rc_new_zeroed : i64 -> Rc
+  | size ->
+    let rc = rc_new(size)
+    os.linux.memset(rc.ptr, 0i32, size as u64)
+    rc
+
+fn rc_clone : *Rc -> Rc
+  | r ->
+    let cnt = rc_refcount(r.ptr)
+    cnt[0i64] = cnt[0i64] + 1i64
+    Rc { ptr: r.ptr }
+
+fn rc_drop : *Rc -> ()
+  | r ->
+    let cnt = rc_refcount(r.ptr)
+    cnt[0i64] = cnt[0i64] - 1i64
+    if cnt[0i64] == 0i64
+      os.linux.free(rc_header_of(r.ptr))
+      r.ptr = 0 as ptr
+
+fn rc_refcount_val : *Rc -> i64
+  | r -> (rc_refcount(r.ptr))[0i64]
+
+fn rc_size_val : *Rc -> i64
+  | r -> (rc_size(r.ptr))[0i64]
+
+fn rc_is_unique : *Rc -> bool
+  | r -> rc_refcount_val(r) == 1i64
+
+-- §11  BOUNDED STACK (heap-backed)
+struct Stack
+  data : ptr
+  top  : i64
+  cap  : i64
+  elem : i64   -- element size in bytes
+
+fn stack_new : (i64, i64) -> Stack
+  | (elem_sz, cap) ->
+    Stack { data: page_alloc(elem_sz * cap), top: 0i64, cap: cap, elem: elem_sz }
+
+fn stack_destroy : *Stack -> ()
+  | s -> page_free(s.data, s.elem * s.cap); s.data = 0 as ptr; s.top = 0i64
+
+fn stack_push : (*Stack, ptr) -> bool
+  | (s, val) ->
+    if s.top >= s.cap then false
+    else
+      os.linux.memcpy((s.data as i64 + s.top * s.elem) as ptr, val, s.elem as u64)
+      s.top = s.top + 1i64; true
+
+fn stack_pop : (*Stack, ptr) -> bool
+  | (s, out) ->
+    if s.top == 0i64 then false
+    else
+      s.top = s.top - 1i64
+      os.linux.memcpy(out, (s.data as i64 + s.top * s.elem) as ptr, s.elem as u64)
+      true
+
+fn stack_peek : (*Stack, ptr) -> bool
+  | (s, out) ->
+    if s.top == 0i64 then false
+    else
+      os.linux.memcpy(out, (s.data as i64 + (s.top - 1i64) * s.elem) as ptr, s.elem as u64)
+      true
+
+fn stack_len     : *Stack -> i64  | s -> s.top
+fn stack_is_empty : *Stack -> bool | s -> s.top == 0i64
+fn stack_is_full  : *Stack -> bool | s -> s.top >= s.cap
+fn stack_reset    : *Stack -> ()   | s -> s.top = 0i64
+
+-- §12  DYNAMIC ARRAY (Vec)
+struct Vec
+  data  : ptr
+  len   : i64
+  cap   : i64
+  elem  : i64   -- element size in bytes
+
+fn vec_new : i64 -> Vec
+  | elem_sz -> Vec { data: 0 as ptr, len: 0i64, cap: 0i64, elem: elem_sz }
+
+fn vec_with_cap : (i64, i64) -> Vec
+  | (elem_sz, cap) ->
+    Vec { data: os.linux.malloc(elem_sz * cap), len: 0i64, cap: cap, elem: elem_sz }
+
+fn vec_destroy : *Vec -> ()
+  | v ->
+    if v.cap > 0i64 then os.linux.free(v.data)
+    v.data = 0 as ptr; v.len = 0i64; v.cap = 0i64
+
+fn vec_grow : (*Vec, i64) -> ()
+  | (v, min_cap) ->
+    let new_cap = if v.cap == 0i64 then if min_cap < 8i64 then 8i64 else min_cap
+                  else if v.cap * 2i64 < min_cap then min_cap else v.cap * 2i64
+    let new_data = os.linux.realloc(v.data, new_cap * v.elem)
+    v.data = new_data; v.cap = new_cap
+
+fn vec_reserve : (*Vec, i64) -> ()
+  | (v, additional) ->
+    let needed = v.len + additional
+    if needed > v.cap then vec_grow(v, needed)
+
+fn vec_push : (*Vec, ptr) -> ()
+  | (v, elem) ->
+    vec_reserve(v, 1i64)
+    os.linux.memcpy((v.data as i64 + v.len * v.elem) as ptr, elem, v.elem as u64)
+    v.len = v.len + 1i64
+
+fn vec_pop : (*Vec, ptr) -> bool
+  | (v, out) ->
+    if v.len == 0i64 then false
+    else
+      v.len = v.len - 1i64
+      if out as i64 != 0i64
+        os.linux.memcpy(out, (v.data as i64 + v.len * v.elem) as ptr, v.elem as u64)
+      true
+
+fn vec_get : (*Vec, i64) -> ptr
+  | (v, i) ->
+    if i < 0i64 || i >= v.len then 0 as ptr
+    else (v.data as i64 + i * v.elem) as ptr
+
+fn vec_set : (*Vec, i64, ptr) -> bool
+  | (v, i, elem) ->
+    if i < 0i64 || i >= v.len then false
+    else
+      os.linux.memcpy((v.data as i64 + i * v.elem) as ptr, elem, v.elem as u64)
+      true
+
+fn vec_insert : (*Vec, i64, ptr) -> ()
+  | (v, i, elem) ->
+    vec_reserve(v, 1i64)
+    let move_n = v.len - i
+    if move_n > 0i64
+      os.linux.memmove(
+        (v.data as i64 + (i + 1i64) * v.elem) as ptr,
+        (v.data as i64 + i * v.elem) as ptr,
+        (move_n * v.elem) as u64)
+    os.linux.memcpy((v.data as i64 + i * v.elem) as ptr, elem, v.elem as u64)
+    v.len = v.len + 1i64
+
+fn vec_remove : (*Vec, i64, ptr) -> bool
+  | (v, i, out) ->
+    if i < 0i64 || i >= v.len then false
+    else
+      if out as i64 != 0i64
+        os.linux.memcpy(out, (v.data as i64 + i * v.elem) as ptr, v.elem as u64)
+      let move_n = v.len - i - 1i64
+      if move_n > 0i64
+        os.linux.memmove(
+          (v.data as i64 + i * v.elem) as ptr,
+          (v.data as i64 + (i + 1i64) * v.elem) as ptr,
+          (move_n * v.elem) as u64)
+      v.len = v.len - 1i64; true
+
+fn vec_swap_remove : (*Vec, i64, ptr) -> bool
+  | (v, i, out) ->
+    if i < 0i64 || i >= v.len then false
+    else
+      if out as i64 != 0i64
+        os.linux.memcpy(out, (v.data as i64 + i * v.elem) as ptr, v.elem as u64)
+      v.len = v.len - 1i64
+      if i != v.len
+        os.linux.memcpy(
+          (v.data as i64 + i * v.elem) as ptr,
+          (v.data as i64 + v.len * v.elem) as ptr,
+          v.elem as u64)
+      true
+
+fn vec_clear : *Vec -> ()   | v -> v.len = 0i64
+fn vec_len   : *Vec -> i64  | v -> v.len
+fn vec_is_empty : *Vec -> bool | v -> v.len == 0i64
+
+fn vec_shrink_to_fit : *Vec -> ()
+  | v ->
+    if v.len < v.cap
+      if v.len == 0i64
+        os.linux.free(v.data); v.data = 0 as ptr; v.cap = 0i64
+      else
+        let new_data = os.linux.realloc(v.data, v.len * v.elem)
+        v.data = new_data; v.cap = v.len
+
+fn vec_extend : (*Vec, ptr, i64) -> ()
+  | (v, src, count) ->
+    vec_reserve(v, count)
+    os.linux.memcpy((v.data as i64 + v.len * v.elem) as ptr, src, (count * v.elem) as u64)
+    v.len = v.len + count
+
+fn vec_clone : *Vec -> Vec
+  | v ->
+    let new_data = os.linux.malloc(v.cap * v.elem)
+    os.linux.memcpy(new_data, v.data, (v.len * v.elem) as u64)
+    Vec { data: new_data, len: v.len, cap: v.cap, elem: v.elem }
+
+fn vec_as_slice : *Vec -> ptr  | v -> v.data
+fn vec_last : *Vec -> ptr
+  | v ->
+    if v.len == 0i64 then 0 as ptr
+    else (v.data as i64 + (v.len - 1i64) * v.elem) as ptr
+
+-- §13  BYTE VECTOR (specialised Vec for u8 — no elem overhead)
+struct ByteVec
+  data : *u8
+  len  : i64
+  cap  : i64
+
+fn bvec_new : () -> ByteVec
+  | () -> ByteVec { data: 0 as *u8, len: 0i64, cap: 0i64 }
+
+fn bvec_with_cap : i64 -> ByteVec
+  | cap ->
+    ByteVec { data: os.linux.malloc(cap + 1i64) as *u8, len: 0i64, cap: cap }
+
+fn bvec_destroy : *ByteVec -> ()
+  | v ->
+    if v.cap > 0i64 then os.linux.free(v.data as ptr)
+    v.data = 0 as *u8; v.len = 0i64; v.cap = 0i64
+
+fn bvec_grow : (*ByteVec, i64) -> ()
+  | (v, min_cap) ->
+    let new_cap = if v.cap == 0i64 then if min_cap < 16i64 then 16i64 else min_cap
+                  else if v.cap * 2i64 < min_cap then min_cap else v.cap * 2i64
+    v.data = os.linux.realloc(v.data as ptr, new_cap + 1i64) as *u8
+    v.cap = new_cap
+
+fn bvec_reserve : (*ByteVec, i64) -> ()
+  | (v, n) -> if v.len + n > v.cap then bvec_grow(v, v.len + n)
+
+fn bvec_push : (*ByteVec, u8) -> ()
+  | (v, b) -> bvec_reserve(v, 1i64); v.data[v.len] = b; v.len = v.len + 1i64
+
+fn bvec_push_slice : (*ByteVec, ptr, i64) -> ()
+  | (v, src, n) ->
+    bvec_reserve(v, n)
+    os.linux.memcpy((v.data as i64 + v.len) as ptr, src, n as u64)
+    v.len = v.len + n
+
+fn bvec_push_cstr : (*ByteVec, ptr) -> ()
+  | (v, s) ->
+    let n = os.linux.strlen(s) as i64
+    bvec_push_slice(v, s, n)
+
+fn bvec_pop : *ByteVec -> i64
+  | v ->
+    if v.len == 0i64 then -1i64
+    else
+      v.len = v.len - 1i64
+      v.data[v.len] as i64
+
+fn bvec_clear    : *ByteVec -> ()   | v -> v.len = 0i64
+fn bvec_len      : *ByteVec -> i64  | v -> v.len
+fn bvec_is_empty : *ByteVec -> bool | v -> v.len == 0i64
+fn bvec_as_cstr  : *ByteVec -> *u8  | v -> v.data[v.len] = 0u8; v.data
+fn bvec_as_ptr   : *ByteVec -> ptr  | v -> v.data as ptr
+
+fn bvec_clone : *ByteVec -> ByteVec
+  | v ->
+    let new_data = os.linux.malloc(v.cap + 1i64) as *u8
+    os.linux.memcpy(new_data as ptr, v.data as ptr, v.len as u64)
+    ByteVec { data: new_data, len: v.len, cap: v.cap }
+
+fn bvec_truncate : (*ByteVec, i64) -> ()
+  | (v, new_len) -> if new_len < v.len then v.len = new_len
+
+fn bvec_trim_start : *ByteVec -> ()
+  | v ->
+    let mut i : i64 = 0i64
+    while i < v.len && (v.data[i] == 32u8 || v.data[i] == 9u8 || v.data[i] == 10u8 || v.data[i] == 13u8)
+      i = i + 1i64
+    if i > 0i64
+      os.linux.memmove(v.data as ptr, (v.data as i64 + i) as ptr, (v.len - i) as u64)
+      v.len = v.len - i
+
+fn bvec_trim_end : *ByteVec -> ()
+  | v ->
+    while v.len > 0i64
+      let c = v.data[v.len - 1i64]
+      if c == 32u8 || c == 9u8 || c == 10u8 || c == 13u8 then v.len = v.len - 1i64
+      else v.len   -- break
+
+fn bvec_trim : *ByteVec -> ()
+  | v -> bvec_trim_start(v); bvec_trim_end(v)
+
+fn bvec_eq : (*ByteVec, *ByteVec) -> bool
+  | (a, b) ->
+    a.len == b.len && os.linux.memcmp(a.data as ptr, b.data as ptr, a.len as u64) == 0i32
+
+fn bvec_eq_slice : (*ByteVec, ptr, i64) -> bool
+  | (v, p, n) ->
+    v.len == n && os.linux.memcmp(v.data as ptr, p, n as u64) == 0i32
+
+-- §14  MMAP FILE VIEW (read-only memory-mapped file)
+struct MmapView
+  ptr  : ptr
+  size : i64
+  fd   : i64
+
+fn mmap_open : ptr -> MmapView
+  | path ->
+    let fd = os.linux.open(path, os.linux.O_RDONLY, 0i64)
+    if fd < 0i64 then MmapView { ptr: 0 as ptr, size: 0i64, fd: -1i64 }
+    else
+      let buf : *i64 = os.linux.malloc(144i64) as *i64
+      os.linux.fstat(fd, buf as ptr)
+      let size = buf[6i64]
+      os.linux.free(buf as ptr)
+      if size == 0i64 then MmapView { ptr: 0 as ptr, size: 0i64, fd: fd }
+      else
+        let ptr = os.linux.mmap(0 as ptr, size, os.linux.PROT_READ,
+                                os.linux.MAP_PRIVATE, fd, 0i64)
+        MmapView { ptr: ptr, size: size, fd: fd }
+
+fn mmap_close : *MmapView -> ()
+  | m ->
+    if m.ptr as i64 != 0i64 && m.ptr as i64 != os.linux.MAP_FAILED
+      os.linux.munmap(m.ptr, m.size)
+    if m.fd >= 0i64 then os.linux.close(m.fd)
+    m.ptr = 0 as ptr; m.size = 0i64; m.fd = -1i64
+
+fn mmap_valid : *MmapView -> bool
+  | m -> m.ptr as i64 != 0i64 && m.ptr as i64 != os.linux.MAP_FAILED
+
+fn mmap_as_slice : *MmapView -> (*u8, i64)
+  | m -> (m.ptr as *u8, m.size)
+
+fn mmap_advise : (*MmapView, i64) -> ()
+  | (m, advice) -> os.linux.madvise(m.ptr, m.size, advice); ()
+
+fn mmap_prefault : *MmapView -> ()
+  | m -> mmap_advise(m, os.linux.MADV_WILLNEED)
+
+fn mmap_sequential : *MmapView -> ()
+  | m -> mmap_advise(m, os.linux.MADV_SEQUENTIAL)
+
+-- §15  SPAN (non-owning view into contiguous memory)
+struct Span
+  ptr : ptr
+  len : i64
+
+fn span_of : (ptr, i64) -> Span
+  | (p, n) -> Span { ptr: p, len: n }
+
+fn span_empty : () -> Span
+  | () -> Span { ptr: 0 as ptr, len: 0i64 }
+
+fn span_is_empty : *Span -> bool | s -> s.len == 0i64
+fn span_byte_at  : (*Span, i64) -> u8 | (s, i) -> (s.ptr as *u8)[i]
+fn span_slice    : (*Span, i64, i64) -> Span
+  | (s, start, end_) ->
+    Span { ptr: (s.ptr as i64 + start) as ptr, len: end_ - start }
+
+fn span_eq : (*Span, *Span) -> bool
+  | (a, b) ->
+    a.len == b.len && os.linux.memcmp(a.ptr, b.ptr, a.len as u64) == 0i32
+
+fn span_starts_with : (*Span, ptr, i64) -> bool
+  | (s, pre, plen) ->
+    s.len >= plen && os.linux.memcmp(s.ptr, pre, plen as u64) == 0i32
+
+fn span_ends_with : (*Span, ptr, i64) -> bool
+  | (s, suf, slen) ->
+    s.len >= slen && os.linux.memcmp((s.ptr as i64 + s.len - slen) as ptr, suf, slen as u64) == 0i32
+
+fn span_find_byte : (*Span, u8) -> i64
+  | (s, b) -> mem_find_byte(s.ptr, b, s.len)
+
+fn span_copy_to : (*Span, ptr) -> ()
+  | (s, dst) -> os.linux.memcpy(dst, s.ptr, s.len as u64); ()
+
+-- §16  FIXED-SIZE ALLOCATOR TABLE (for embedding, no libc)
+-- Maps size classes to page-backed free lists; designed for no-libc contexts.
+const FIX_MAX_CLASSES : i64 = 16i64
+
+struct FixAlloc
+  classes   : ptr   -- *Pool[FIX_MAX_CLASSES]
+  n_classes : i64
+
+fn fixalloc_new : (ptr, i64, i64) -> FixAlloc
+  | (sizes, n, cap_per_class) ->
+    let classes = page_alloc(n * 128i64) as *Pool
+    let sz = sizes as *i64
+    let mut i : i64 = 0i64
+    while i < n
+      let cls : *Pool = (classes as i64 + i * 128i64) as *Pool
+      cls[0i64] = pool_new(sz[i], cap_per_class)
+      i = i + 1i64
+    FixAlloc { classes: classes as ptr, n_classes: n }
+
+fn fixalloc_alloc : (*FixAlloc, i64) -> ptr
+  | (fa, size) ->
+    let mut i : i64 = 0i64
+    while i < fa.n_classes
+      let cls : *Pool = (fa.classes as i64 + i * 128i64) as *Pool
+      if cls.obj_sz >= size
+        let p = pool_alloc(cls)
+        if p as i64 != 0i64 then p
+        else page_alloc(size)
+      i = i + 1i64
+    page_alloc(size)
+
+fn fixalloc_free : (*FixAlloc, ptr, i64) -> ()
+  | (fa, p, size) ->
+    let mut i : i64 = 0i64
+    while i < fa.n_classes
+      let cls : *Pool = (fa.classes as i64 + i * 128i64) as *Pool
+      if cls.obj_sz >= size && pool_contains(cls, p)
+        pool_free(cls, p)
+      i = i + 1i64
+    page_free(p, size)
+
+-- §17  MEMORY STATS
+struct MemStats
+  arena_bytes  : i64
+  pool_live    : i64
+  slab_allocs  : i64
+  page_bytes   : i64
+  rc_live      : i64
+
+fn memstats_zero : () -> MemStats
+  | () -> MemStats { arena_bytes: 0i64, pool_live: 0i64, slab_allocs: 0i64, page_bytes: 0i64, rc_live: 0i64 }
+
+fn arena_stats : (*Arena, *MemStats) -> ()
+  | (a, s) ->
+    s.arena_bytes = s.arena_bytes + a.pos
+    let mut chunk = a.prev
+    while chunk as i64 != 0i64
+      let ca = chunk as *Arena
+      s.arena_bytes = s.arena_bytes + ca.pos
+      chunk = ca.prev
+
+fn pool_stats : (*Pool, *MemStats) -> ()
+  | (p, s) -> s.pool_live = s.pool_live + p.live
+
+-- §18  UTILITY — integer ops often needed alongside memory
+fn next_pow2_i64 : i64 -> i64
+  | n ->
+    if n <= 1i64 then 1i64
+    else
+      let mut v = n - 1i64
+      v = v | (v >> 1i64); v = v | (v >> 2i64); v = v | (v >> 4i64)
+      v = v | (v >> 8i64); v = v | (v >> 16i64); v = v | (v >> 32i64)
+      v + 1i64
+
+fn clz64 : u64 -> i64
+  | v ->
+    if v == 0u64 then 64i64
+    else
+      let mut n : i64 = 0i64; let mut vv = v
+      if vv <= 0x00000000FFFFFFFFu64 then n = n + 32i64; vv = vv << 32u64
+      if vv <= 0x0000FFFFFFFFFFFFu64 then n = n + 16i64; vv = vv << 16u64
+      if vv <= 0x00FFFFFFFFFFFFFFu64 then n = n +  8i64; vv = vv <<  8u64
+      if vv <= 0x0FFFFFFFFFFFFFFFu64 then n = n +  4i64; vv = vv <<  4u64
+      if vv <= 0x3FFFFFFFFFFFFFFFu64 then n = n +  2i64; vv = vv <<  2u64
+      if vv <= 0x7FFFFFFFFFFFFFFFu64 then n = n +  1i64
+      n
+
+fn ctz64 : u64 -> i64
+  | v ->
+    if v == 0u64 then 64i64
+    else clz64(v & (0u64 -% v))
+
+fn popcount64 : u64 -> i64
+  | v ->
+    let mut vv = v
+    vv = vv - ((vv >> 1u64) & 0x5555555555555555u64)
+    vv = (vv & 0x3333333333333333u64) + ((vv >> 2u64) & 0x3333333333333333u64)
+    vv = (vv + (vv >> 4u64)) & 0x0F0F0F0F0F0F0F0Fu64
+    ((vv * 0x0101010101010101u64) >> 56u64) as i64
+
+fn log2_floor_i64 : i64 -> i64
+  | n -> if n <= 0i64 then -1i64 else 63i64 - clz64(n as u64)
+
+fn log2_ceil_i64 : i64 -> i64
+  | n ->
+    if n <= 1i64 then 0i64
+    else log2_floor_i64(n - 1i64) + 1i64

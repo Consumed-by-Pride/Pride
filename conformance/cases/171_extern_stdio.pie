@@ -1,0 +1,17 @@
+-- EXPECT-CLEAN
+fn fopen  #[extern("fopen")]  : (ptr, ptr) -> ptr
+fn fclose #[extern("fclose")] : ptr -> i32
+fn fread  #[extern("fread")]  : (ptr, i64, i64, ptr) -> i64
+fn fwrite #[extern("fwrite")] : (ptr, i64, i64, ptr) -> i64
+fn fseek  #[extern("fseek")]  : (ptr, i64, i32) -> i32
+fn ftell  #[extern("ftell")]  : ptr -> i64
+fn rewind #[extern("rewind")] : ptr -> ()
+fn feof   #[extern("feof")]   : ptr -> i32
+fn ferror #[extern("ferror")] : ptr -> i32
+
+fn file_size : ptr -> i64
+  | fp ->
+    let _ : i32 = fseek(fp, 0i64, 2i32)   -- SEEK_END=2
+    let sz : i64 = ftell(fp)
+    let _ : i32 = fseek(fp, 0i64, 0i32)   -- SEEK_SET=0
+    sz

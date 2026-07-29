@@ -1,0 +1,5 @@
+-- EXPECT: effect-warn 4:1 IO
+fn sink : i32 -> () ! [IO]
+  | x -> ()
+fn caller : i32 -> ()
+  | x -> sink(x)

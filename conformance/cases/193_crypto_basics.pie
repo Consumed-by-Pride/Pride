@@ -1,0 +1,27 @@
+-- EXPECT-CLEAN
+fn sha256_ch : (u32, u32, u32) -> u32
+  | (x, y, z) -> (x & y) ^ (~x & z)
+
+fn sha256_maj : (u32, u32, u32) -> u32
+  | (x, y, z) -> (x & y) ^ (x & z) ^ (y & z)
+
+fn sha256_rotr : (u32, u32) -> u32
+  | (x, n) -> (x >> n) | (x << (32u32 - n))
+
+fn sha256_Sigma0 : u32 -> u32
+  | x -> sha256_rotr(x, 2u32) ^ sha256_rotr(x, 13u32) ^ sha256_rotr(x, 22u32)
+
+fn sha256_Sigma1 : u32 -> u32
+  | x -> sha256_rotr(x, 6u32) ^ sha256_rotr(x, 11u32) ^ sha256_rotr(x, 25u32)
+
+fn sha256_sigma0 : u32 -> u32
+  | x -> sha256_rotr(x, 7u32) ^ sha256_rotr(x, 18u32) ^ (x >> 3u32)
+
+fn sha256_sigma1 : u32 -> u32
+  | x -> sha256_rotr(x, 17u32) ^ sha256_rotr(x, 19u32) ^ (x >> 10u32)
+
+fn siphash_round : (u64, u64, u64, u64) -> u64
+  | (v0, v1, v2, v3) ->
+    let a : u64 = v0 + v1
+    let b : u64 = v2 + v3
+    a ^ b

@@ -1,0 +1,22 @@
+-- EXPECT-CLEAN
+struct Point
+    x : i64
+    y : i64
+
+struct Rect
+    x    : i64
+    y    : i64
+    w    : i64
+    h    : i64
+
+fn point_with_x : (Point, i64) -> Point
+  | (p, nx) -> p { x: nx }
+
+fn point_with_y : (Point, i64) -> Point
+  | (p, ny) -> p { y: ny }
+
+fn rect_move : (Rect, i64, i64) -> Rect
+  | (r, dx, dy) -> r { x: r.x + dx, y: r.y + dy }
+
+fn rect_resize : (Rect, i64, i64) -> Rect
+  | (r, nw, nh) -> r { w: nw, h: nh }

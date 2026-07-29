@@ -1,0 +1,9 @@
+-- EXPECT-CLEAN
+fn sum_to : i32 -> i32
+  | n ->
+    let mut acc : i32 = 0
+    let mut i : i32 = 0
+    while i < n
+      acc = acc + i
+      i = i + 1
+    acc

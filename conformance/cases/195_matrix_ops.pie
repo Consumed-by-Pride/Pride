@@ -1,0 +1,40 @@
+-- EXPECT-CLEAN
+fn mat_at : (*f64, i64, i64, i64) -> f64
+  | (data, cols, r, c) -> data[r * cols + c]
+
+fn mat_set : (*f64, i64, i64, i64, f64) -> ()
+  | (data, cols, r, c, v) -> data[r * cols + c] = v
+
+fn mat_row_dot : (*f64, *f64, i64, i64) -> f64
+  | (row_a, col_b, k_max, stride_b) ->
+    let mut sum : f64 = 0.0
+    let mut k   : i64 = 0i64
+    while k < k_max
+      sum = sum + row_a[k] * col_b[k * stride_b]
+      k = k + 1i64
+    sum
+
+fn mat_frobenius_sq : (*f64, i64) -> f64
+  | (data, n) ->
+    let mut s : f64 = 0.0
+    let mut i : i64 = 0i64
+    while i < n
+      s = s + data[i] * data[i]
+      i = i + 1i64
+    s
+
+fn vec_scale : (*f64, f64, i64) -> ()
+  | (v, alpha, n) ->
+    let mut i : i64 = 0i64
+    while i < n
+      v[i] = v[i] * alpha
+      i = i + 1i64
+
+fn vec_dot : (*f64, *f64, i64) -> f64
+  | (a, b, n) ->
+    let mut s : f64 = 0.0
+    let mut i : i64 = 0i64
+    while i < n
+      s = s + a[i] * b[i]
+      i = i + 1i64
+    s

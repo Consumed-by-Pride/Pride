@@ -1,0 +1,21 @@
+-- EXPECT-CLEAN
+struct Vec3
+    x : f64
+    y : f64
+    z : f64
+
+struct Header
+    magic   : u32
+    version : u32
+    size    : i64
+    flags   : i64
+
+fn vec3_offsets : () -> (i64, i64, i64)
+  | () ->
+    let ox : i64 = offset_of(Vec3, x)
+    let oy : i64 = offset_of(Vec3, y)
+    let oz : i64 = offset_of(Vec3, z)
+    (ox, oy, oz)
+
+fn header_flag_offset : () -> i64
+  | () -> offset_of(Header, flags)

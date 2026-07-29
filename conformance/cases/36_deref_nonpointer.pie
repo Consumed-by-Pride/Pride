@@ -1,0 +1,3 @@
+-- EXPECT: type-warn 3:10 dereference of a non-pointer
+fn f : i32 -> i32
+  | n -> *n

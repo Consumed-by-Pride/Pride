@@ -1,0 +1,880 @@
+mod os.linux.io_uring_sqe
+
+use os.linux
+use os.linux.structs
+
+-- Full io_uring SQE (Submission Queue Entry) type with all operation prep methods.
+
+-- Each prep_* function zeroes the SQE then fills in the fields for a specific op.
+-- Reference: include/uapi/linux/io_uring.h
+
+-- §1  SQE STRUCT (64 bytes, matches kernel ABI exactly)
+
+struct IoUringSqe
+  opcode           : u8    -- IORING_OP_*
+  flags            : u8    -- IOSQE_* flags
+  ioprio           : u16   -- I/O priority (IOPRIO_CLASS_*, IOPRIO_PRIO_VALUE)
+  fd               : i32   -- file descriptor (-1 for ops that don't use one)
+  off              : u64   -- offset (file offset for read/write, addr2 for some ops)
+  addr             : u64   -- pointer to data buffer / other address
+  len              : u32   -- buffer length / number of iovecs / other length
+  rw_flags         : u32   -- per-op flags union (RWF_*, MSG_*, etc.)
+  user_data        : u64   -- application tag, returned verbatim in CQE
+  buf_index        : u16   -- index into registered buffers (IORING_OP_READ_FIXED etc.)
+  personality      : u16   -- registered personality (credentials)
+  splice_fd_in     : i32   -- splice: source fd / file_index for fixed file
+  addr3            : u64   -- additional address (e.g. path for renameat)
+  resv             : u64   -- reserved, must be zero
+
+-- §2  IOSQE FLAGS (sqe.flags)
+const IOSQE_FIXED_FILE         : u8 = 1u8   -- use registered file (buf_index as fd)
+const IOSQE_IO_DRAIN           : u8 = 2u8   -- drain all pending I/O before issuing
+const IOSQE_IO_LINK            : u8 = 4u8   -- link to next SQE (soft linkage)
+const IOSQE_IO_HARDLINK        : u8 = 8u8   -- link to next SQE (hard — ignores errors)
+const IOSQE_ASYNC              : u8 = 16u8  -- always issue asynchronously
+const IOSQE_BUFFER_SELECT      : u8 = 32u8  -- select buffer from registered buffer group
+const IOSQE_CQE_SKIP_SUCCESS   : u8 = 64u8  -- skip CQE on success (only post on error)
+
+-- §3  IORING_OP VALUES (opcode)
+const IORING_OP_NOP              : u8 = 0u8
+const IORING_OP_READV            : u8 = 1u8
+const IORING_OP_WRITEV           : u8 = 2u8
+const IORING_OP_FSYNC            : u8 = 3u8
+const IORING_OP_READ_FIXED       : u8 = 4u8
+const IORING_OP_WRITE_FIXED      : u8 = 5u8
+const IORING_OP_POLL_ADD         : u8 = 6u8
+const IORING_OP_POLL_REMOVE      : u8 = 7u8
+const IORING_OP_SYNC_FILE_RANGE  : u8 = 8u8
+const IORING_OP_SENDMSG          : u8 = 9u8
+const IORING_OP_RECVMSG          : u8 = 10u8
+const IORING_OP_TIMEOUT          : u8 = 11u8
+const IORING_OP_TIMEOUT_REMOVE   : u8 = 12u8
+const IORING_OP_ACCEPT           : u8 = 13u8
+const IORING_OP_ASYNC_CANCEL     : u8 = 14u8
+const IORING_OP_LINK_TIMEOUT     : u8 = 15u8
+const IORING_OP_CONNECT          : u8 = 16u8
+const IORING_OP_FALLOCATE        : u8 = 17u8
+const IORING_OP_OPENAT           : u8 = 18u8
+const IORING_OP_CLOSE            : u8 = 19u8
+const IORING_OP_FILES_UPDATE     : u8 = 20u8
+const IORING_OP_STATX            : u8 = 21u8
+const IORING_OP_READ             : u8 = 22u8
+const IORING_OP_WRITE            : u8 = 23u8
+const IORING_OP_FADVISE          : u8 = 24u8
+const IORING_OP_MADVISE          : u8 = 25u8
+const IORING_OP_SEND             : u8 = 26u8
+const IORING_OP_RECV             : u8 = 27u8
+const IORING_OP_OPENAT2          : u8 = 28u8
+const IORING_OP_EPOLL_CTL        : u8 = 29u8
+const IORING_OP_SPLICE           : u8 = 30u8
+const IORING_OP_PROVIDE_BUFFERS  : u8 = 31u8
+const IORING_OP_REMOVE_BUFFERS   : u8 = 32u8
+const IORING_OP_TEE              : u8 = 33u8
+const IORING_OP_SHUTDOWN         : u8 = 34u8
+const IORING_OP_RENAMEAT         : u8 = 35u8
+const IORING_OP_UNLINKAT         : u8 = 36u8
+const IORING_OP_MKDIRAT          : u8 = 37u8
+const IORING_OP_SYMLINKAT        : u8 = 38u8
+const IORING_OP_LINKAT           : u8 = 39u8
+const IORING_OP_MSG_RING         : u8 = 40u8
+const IORING_OP_FSETXATTR        : u8 = 41u8
+const IORING_OP_SETXATTR         : u8 = 42u8
+const IORING_OP_FGETXATTR        : u8 = 43u8
+const IORING_OP_GETXATTR         : u8 = 44u8
+const IORING_OP_SOCKET           : u8 = 45u8
+const IORING_OP_URING_CMD        : u8 = 46u8
+const IORING_OP_SEND_ZC          : u8 = 47u8
+const IORING_OP_SENDMSG_ZC       : u8 = 48u8
+const IORING_OP_READ_MULTISHOT   : u8 = 49u8
+const IORING_OP_WAITID           : u8 = 50u8
+const IORING_OP_FUTEX_WAIT       : u8 = 51u8
+const IORING_OP_FUTEX_WAKE       : u8 = 52u8
+const IORING_OP_FUTEX_WAITV      : u8 = 53u8
+const IORING_OP_FIXED_FD_INSTALL : u8 = 54u8
+const IORING_OP_FTRUNCATE        : u8 = 55u8
+const IORING_OP_BIND             : u8 = 56u8
+const IORING_OP_LISTEN           : u8 = 57u8
+const IORING_OP_LAST             : u8 = 58u8
+
+-- §4  PER-OP FLAGS
+
+-- FSYNC flags (rw_flags for FSYNC op)
+const IORING_FSYNC_DATASYNC : u32 = 1u32
+
+-- TIMEOUT flags
+const IORING_TIMEOUT_ABS           : u32 = 1u32
+const IORING_TIMEOUT_UPDATE        : u32 = 2u32
+const IORING_TIMEOUT_BOOTTIME      : u32 = 4u32
+const IORING_TIMEOUT_REALTIME      : u32 = 8u32
+const IORING_LINK_TIMEOUT_UPDATE   : u32 = 16u32
+const IORING_TIMEOUT_ETIME_SUCCESS : u32 = 32u32
+const IORING_TIMEOUT_MULTISHOT     : u32 = 64u32
+const IORING_TIMEOUT_CLOCK_MASK    : u32 = 12u32
+
+-- POLL flags
+const IORING_POLL_ADD_MULTI        : u32 = 1u32
+const IORING_POLL_UPDATE_EVENTS    : u32 = 2u32
+const IORING_POLL_UPDATE_USER_DATA : u32 = 4u32
+const IORING_POLL_ADD_LEVEL        : u32 = 8u32
+
+-- SPLICE flags
+const SPLICE_F_FD_IN_FIXED : u32 = 2147483648u32   -- 1 << 31
+
+-- MSG_RING commands
+const IORING_MSG_RING_DATA    : u32 = 0u32
+const IORING_MSG_RING_CQE_SKIP : u32 = 2u32
+
+-- ASYNC_CANCEL flags
+const IORING_ASYNC_CANCEL_ALL    : u32 = 1u32
+const IORING_ASYNC_CANCEL_FD     : u32 = 2u32
+const IORING_ASYNC_CANCEL_ANY    : u32 = 4u32
+const IORING_ASYNC_CANCEL_FD_FIXED : u32 = 8u32
+const IORING_ASYNC_CANCEL_USERDATA : u32 = 16u32
+const IORING_ASYNC_CANCEL_OP     : u32 = 32u32
+
+-- SEND/RECV flags
+const IORING_RECVSEND_POLL_FIRST  : u32 = 1u32
+const IORING_RECV_MULTISHOT       : u32 = 2u32
+const IORING_RECVSEND_FIXED_BUF   : u32 = 4u32
+const IORING_SEND_ZC_REPORT_USAGE : u32 = 8u32
+
+-- ACCEPT flags
+const IORING_ACCEPT_MULTISHOT     : u32 = 1u32
+const IORING_ACCEPT_DONTWAIT      : u32 = 2u32
+const IORING_ACCEPT_POLL_FIRST    : u32 = 4u32
+
+-- FIXED_FD_INSTALL flags
+const IORING_FIXED_FD_NO_CLOEXEC  : u32 = 1u32
+
+-- §5  VALIDATION HELPERS
+
+fn sqe_validate_fd : (*IoUringSqe) -> bool
+  | sqe ->
+    -- fd must be >= 0 OR -1 (for ops that don't need a real fd)
+    -- IOSQE_FIXED_FILE: fd is an index (can be 0)
+    if sqe.flags & IOSQE_FIXED_FILE != 0u8
+      sqe.fd >= 0i32
+    else
+      sqe.fd >= -1i32
+
+fn sqe_validate_addr : (*IoUringSqe) -> bool
+  | sqe -> true   -- NULL addr is valid for some ops; validated per-op
+
+fn sqe_validate_len : (*IoUringSqe) -> bool
+  | sqe -> true   -- len = 0 is valid for NOP, etc.
+
+fn sqe_validate_resv : (*IoUringSqe) -> bool
+  | sqe -> sqe.resv == 0u64   -- reserved must always be zero
+
+fn sqe_validate : (*IoUringSqe) -> bool
+  | sqe ->
+    sqe_validate_resv(sqe) && sqe.opcode < IORING_OP_LAST
+
+-- §6  SQE ZEROING HELPER
+-- Every prep_* function must start by zeroing the SQE.
+
+fn sqe_zero : *IoUringSqe -> ()
+  | sqe -> os.linux.memset(sqe as ptr, 0i32, 64u64)
+
+-- §7  PREP FUNCTIONS
+-- Each prep_* zeros the SQE then sets exactly the fields needed.
+-- All other fields are explicitly 0 (safe defaults per kernel ABI).
+
+fn prep_nop : (*IoUringSqe, u64) -> ()
+  | (sqe, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_NOP
+    sqe.user_data = user_data
+
+fn prep_read : (*IoUringSqe, i32, ptr, u32, u64, u64) -> ()
+  | (sqe, fd, buf, len, offset, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_READ
+    sqe.fd        = fd
+    sqe.addr      = buf as u64
+    sqe.len       = len
+    sqe.off       = offset
+    sqe.user_data = user_data
+
+fn prep_write : (*IoUringSqe, i32, ptr, u32, u64, u64) -> ()
+  | (sqe, fd, buf, len, offset, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_WRITE
+    sqe.fd        = fd
+    sqe.addr      = buf as u64
+    sqe.len       = len
+    sqe.off       = offset
+    sqe.user_data = user_data
+
+fn prep_readv : (*IoUringSqe, i32, ptr, u32, u64, u64) -> ()
+  | (sqe, fd, iov, iovcnt, offset, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_READV
+    sqe.fd        = fd
+    sqe.addr      = iov as u64
+    sqe.len       = iovcnt
+    sqe.off       = offset
+    sqe.user_data = user_data
+
+fn prep_writev : (*IoUringSqe, i32, ptr, u32, u64, u64) -> ()
+  | (sqe, fd, iov, iovcnt, offset, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_WRITEV
+    sqe.fd        = fd
+    sqe.addr      = iov as u64
+    sqe.len       = iovcnt
+    sqe.off       = offset
+    sqe.user_data = user_data
+
+fn prep_read_fixed : (*IoUringSqe, i32, ptr, u32, u64, u16, u64) -> ()
+  | (sqe, fd, buf, len, offset, buf_index, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_READ_FIXED
+    sqe.fd        = fd
+    sqe.addr      = buf as u64
+    sqe.len       = len
+    sqe.off       = offset
+    sqe.buf_index = buf_index
+    sqe.user_data = user_data
+
+fn prep_write_fixed : (*IoUringSqe, i32, ptr, u32, u64, u16, u64) -> ()
+  | (sqe, fd, buf, len, offset, buf_index, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_WRITE_FIXED
+    sqe.fd        = fd
+    sqe.addr      = buf as u64
+    sqe.len       = len
+    sqe.off       = offset
+    sqe.buf_index = buf_index
+    sqe.user_data = user_data
+
+fn prep_fsync : (*IoUringSqe, i32, u32, u64) -> ()
+  | (sqe, fd, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_FSYNC
+    sqe.fd        = fd
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_poll_add : (*IoUringSqe, i32, u32, u64) -> ()
+  | (sqe, fd, poll_mask, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_POLL_ADD
+    sqe.fd        = fd
+    sqe.rw_flags  = poll_mask
+    sqe.user_data = user_data
+
+fn prep_poll_multishot : (*IoUringSqe, i32, u32, u64) -> ()
+  | (sqe, fd, poll_mask, user_data) ->
+    prep_poll_add(sqe, fd, poll_mask, user_data)
+    sqe.len = IORING_POLL_ADD_MULTI
+
+fn prep_poll_remove : (*IoUringSqe, u64, u64) -> ()
+  | (sqe, target_user_data, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_POLL_REMOVE
+    sqe.addr      = target_user_data
+    sqe.user_data = user_data
+
+fn prep_poll_update : (*IoUringSqe, u64, u64, u32, u32, u64) -> ()
+  | (sqe, old_user_data, new_user_data, poll_mask, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_POLL_REMOVE
+    sqe.addr      = old_user_data
+    sqe.len       = new_user_data as u32
+    sqe.off       = new_user_data >> 32u64
+    sqe.rw_flags  = poll_mask
+    sqe.len       = flags
+    sqe.user_data = user_data
+
+fn prep_sync_file_range : (*IoUringSqe, i32, u32, u64, u32, u64) -> ()
+  | (sqe, fd, len, offset, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_SYNC_FILE_RANGE
+    sqe.fd        = fd
+    sqe.len       = len
+    sqe.off       = offset
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_sendmsg : (*IoUringSqe, i32, ptr, u32, u64) -> ()
+  | (sqe, fd, msg, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_SENDMSG
+    sqe.fd        = fd
+    sqe.addr      = msg as u64
+    sqe.len       = 1u32
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_recvmsg : (*IoUringSqe, i32, ptr, u32, u64) -> ()
+  | (sqe, fd, msg, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_RECVMSG
+    sqe.fd        = fd
+    sqe.addr      = msg as u64
+    sqe.len       = 1u32
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_recvmsg_multishot : (*IoUringSqe, i32, ptr, u32, u64) -> ()
+  | (sqe, fd, msg, flags, user_data) ->
+    prep_recvmsg(sqe, fd, msg, flags, user_data)
+    sqe.rw_flags = sqe.rw_flags | IORING_RECV_MULTISHOT
+
+fn prep_timeout : (*IoUringSqe, *os.linux.structs.Timespec, u32, u32, u64) -> ()
+  | (sqe, ts, count, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_TIMEOUT
+    sqe.fd        = -1i32
+    sqe.addr      = ts as u64
+    sqe.len       = 1u32
+    sqe.off       = count as u64
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_timeout_remove : (*IoUringSqe, u64, u32, u64) -> ()
+  | (sqe, target_user_data, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_TIMEOUT_REMOVE
+    sqe.fd        = -1i32
+    sqe.addr      = target_user_data
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_timeout_update : (*IoUringSqe, *os.linux.structs.Timespec, u64, u32, u64) -> ()
+  | (sqe, ts, target_user_data, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_TIMEOUT_REMOVE
+    sqe.fd        = -1i32
+    sqe.addr      = target_user_data
+    sqe.len       = 0u32
+    sqe.off       = ts as u64
+    sqe.rw_flags  = flags | IORING_TIMEOUT_UPDATE
+    sqe.user_data = user_data
+
+fn prep_accept : (*IoUringSqe, i32, ptr, ptr, u32, u64) -> ()
+  | (sqe, fd, addr, addrlen, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_ACCEPT
+    sqe.fd        = fd
+    sqe.addr      = addr as u64
+    sqe.addr3     = addrlen as u64
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_accept_direct : (*IoUringSqe, i32, ptr, ptr, u32, u32, u64) -> ()
+  | (sqe, fd, addr, addrlen, flags, file_index, user_data) ->
+    prep_accept(sqe, fd, addr, addrlen, flags, user_data)
+    sqe.splice_fd_in = file_index as i32
+
+fn prep_accept_multishot : (*IoUringSqe, i32, ptr, ptr, u32, u64) -> ()
+  | (sqe, fd, addr, addrlen, flags, user_data) ->
+    prep_accept(sqe, fd, addr, addrlen, flags, user_data)
+    sqe.rw_flags = sqe.rw_flags | IORING_ACCEPT_MULTISHOT
+
+fn prep_cancel : (*IoUringSqe, u64, u32, u64) -> ()
+  | (sqe, target_user_data, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_ASYNC_CANCEL
+    sqe.fd        = -1i32
+    sqe.addr      = target_user_data
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_cancel_fd : (*IoUringSqe, i32, u32, u64) -> ()
+  | (sqe, fd, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_ASYNC_CANCEL
+    sqe.fd        = fd
+    sqe.rw_flags  = flags | IORING_ASYNC_CANCEL_FD
+    sqe.user_data = user_data
+
+fn prep_link_timeout : (*IoUringSqe, *os.linux.structs.Timespec, u32, u64) -> ()
+  | (sqe, ts, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_LINK_TIMEOUT
+    sqe.fd        = -1i32
+    sqe.addr      = ts as u64
+    sqe.len       = 1u32
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_connect : (*IoUringSqe, i32, ptr, u32, u64) -> ()
+  | (sqe, fd, addr, addrlen, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_CONNECT
+    sqe.fd        = fd
+    sqe.addr      = addr as u64
+    sqe.off       = addrlen as u64
+    sqe.user_data = user_data
+
+fn prep_fallocate : (*IoUringSqe, i32, u32, i64, i64, u64) -> ()
+  | (sqe, fd, mode, offset, len, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_FALLOCATE
+    sqe.fd        = fd
+    sqe.rw_flags  = mode
+    sqe.off       = offset as u64
+    sqe.addr      = len as u64
+    sqe.user_data = user_data
+
+fn prep_openat : (*IoUringSqe, i32, ptr, u32, u32, u64) -> ()
+  | (sqe, dfd, path, flags, mode, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_OPENAT
+    sqe.fd        = dfd
+    sqe.addr      = path as u64
+    sqe.rw_flags  = flags
+    sqe.len       = mode
+    sqe.user_data = user_data
+
+fn prep_openat_direct : (*IoUringSqe, i32, ptr, u32, u32, u32, u64) -> ()
+  | (sqe, dfd, path, flags, mode, file_index, user_data) ->
+    prep_openat(sqe, dfd, path, flags, mode, user_data)
+    sqe.splice_fd_in = file_index as i32
+
+fn prep_openat2 : (*IoUringSqe, i32, ptr, ptr, u32, u64) -> ()
+  | (sqe, dfd, path, how, how_size, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_OPENAT2
+    sqe.fd        = dfd
+    sqe.addr      = path as u64
+    sqe.off       = how as u64
+    sqe.len       = how_size
+    sqe.user_data = user_data
+
+fn prep_close : (*IoUringSqe, i32, u64) -> ()
+  | (sqe, fd, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_CLOSE
+    sqe.fd        = fd
+    sqe.user_data = user_data
+
+fn prep_close_direct : (*IoUringSqe, u32, u64) -> ()
+  | (sqe, file_index, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode       = IORING_OP_CLOSE
+    sqe.splice_fd_in = file_index as i32
+    sqe.user_data    = user_data
+
+fn prep_files_update : (*IoUringSqe, ptr, u32, u32, u64) -> ()
+  | (sqe, fds, nr_fds, offset, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_FILES_UPDATE
+    sqe.fd        = -1i32
+    sqe.addr      = fds as u64
+    sqe.len       = nr_fds
+    sqe.off       = offset as u64
+    sqe.user_data = user_data
+
+fn prep_statx : (*IoUringSqe, i32, ptr, u32, u32, ptr, u64) -> ()
+  | (sqe, dfd, path, flags, mask, statxbuf, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_STATX
+    sqe.fd        = dfd
+    sqe.addr      = path as u64
+    sqe.rw_flags  = flags
+    sqe.len       = mask
+    sqe.off       = statxbuf as u64
+    sqe.user_data = user_data
+
+fn prep_fadvise : (*IoUringSqe, i32, u64, u32, u32, u64) -> ()
+  | (sqe, fd, offset, len, advice, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_FADVISE
+    sqe.fd        = fd
+    sqe.off       = offset
+    sqe.len       = len
+    sqe.rw_flags  = advice
+    sqe.user_data = user_data
+
+fn prep_madvise : (*IoUringSqe, ptr, u32, u32, u64) -> ()
+  | (sqe, addr, len, advice, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_MADVISE
+    sqe.fd        = -1i32
+    sqe.addr      = addr as u64
+    sqe.len       = len
+    sqe.rw_flags  = advice
+    sqe.user_data = user_data
+
+fn prep_send : (*IoUringSqe, i32, ptr, u32, u32, u64) -> ()
+  | (sqe, fd, buf, len, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_SEND
+    sqe.fd        = fd
+    sqe.addr      = buf as u64
+    sqe.len       = len
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_send_set_addr : (*IoUringSqe, ptr, u16) -> ()
+  | (sqe, dest_addr, addr_len) ->
+    sqe.addr3 = dest_addr as u64
+    sqe.off   = addr_len as u64
+
+fn prep_recv : (*IoUringSqe, i32, ptr, u32, u32, u64) -> ()
+  | (sqe, fd, buf, len, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_RECV
+    sqe.fd        = fd
+    sqe.addr      = buf as u64
+    sqe.len       = len
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_recv_multishot : (*IoUringSqe, i32, ptr, u32, u32, u64) -> ()
+  | (sqe, fd, buf, len, flags, user_data) ->
+    prep_recv(sqe, fd, buf, len, flags, user_data)
+    sqe.rw_flags = sqe.rw_flags | IORING_RECV_MULTISHOT
+
+fn prep_epoll_ctl : (*IoUringSqe, i32, i32, u32, ptr, u64) -> ()
+  | (sqe, epfd, fd, op, ev, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_EPOLL_CTL
+    sqe.fd        = epfd
+    sqe.addr      = ev as u64
+    sqe.len       = op
+    sqe.off       = fd as u64
+    sqe.user_data = user_data
+
+fn prep_splice : (*IoUringSqe, i32, i64, i32, i64, u32, u32, u64) -> ()
+  | (sqe, fd_in, off_in, fd_out, off_out, nbytes, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode       = IORING_OP_SPLICE
+    sqe.fd           = fd_out
+    sqe.off          = off_out as u64
+    sqe.splice_fd_in = fd_in
+    sqe.addr         = off_in as u64
+    sqe.len          = nbytes
+    sqe.rw_flags     = flags
+    sqe.user_data    = user_data
+
+fn prep_tee : (*IoUringSqe, i32, i32, u32, u32, u64) -> ()
+  | (sqe, fd_in, fd_out, nbytes, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode       = IORING_OP_TEE
+    sqe.fd           = fd_out
+    sqe.splice_fd_in = fd_in
+    sqe.len          = nbytes
+    sqe.rw_flags     = flags
+    sqe.user_data    = user_data
+
+fn prep_provide_buffers : (*IoUringSqe, ptr, u32, u16, u16, u32, u64) -> ()
+  | (sqe, addr, len, nr, bgid, bid, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_PROVIDE_BUFFERS
+    sqe.fd        = nr as i32
+    sqe.addr      = addr as u64
+    sqe.len       = len
+    sqe.buf_index = bgid
+    sqe.off       = bid as u64
+    sqe.user_data = user_data
+
+fn prep_remove_buffers : (*IoUringSqe, u16, u16, u64) -> ()
+  | (sqe, nr, bgid, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_REMOVE_BUFFERS
+    sqe.fd        = nr as i32
+    sqe.buf_index = bgid
+    sqe.user_data = user_data
+
+fn prep_shutdown : (*IoUringSqe, i32, u32, u64) -> ()
+  | (sqe, fd, how, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_SHUTDOWN
+    sqe.fd        = fd
+    sqe.len       = how
+    sqe.user_data = user_data
+
+fn prep_renameat : (*IoUringSqe, i32, ptr, i32, ptr, u32, u64) -> ()
+  | (sqe, old_dfd, old_path, new_dfd, new_path, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode       = IORING_OP_RENAMEAT
+    sqe.fd           = old_dfd
+    sqe.addr         = old_path as u64
+    sqe.len          = new_dfd as u32
+    sqe.addr3        = new_path as u64
+    sqe.rw_flags     = flags
+    sqe.user_data    = user_data
+
+fn prep_unlinkat : (*IoUringSqe, i32, ptr, u32, u64) -> ()
+  | (sqe, dfd, path, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_UNLINKAT
+    sqe.fd        = dfd
+    sqe.addr      = path as u64
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_mkdirat : (*IoUringSqe, i32, ptr, u32, u64) -> ()
+  | (sqe, dfd, path, mode, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_MKDIRAT
+    sqe.fd        = dfd
+    sqe.addr      = path as u64
+    sqe.len       = mode
+    sqe.user_data = user_data
+
+fn prep_symlinkat : (*IoUringSqe, ptr, i32, ptr, u64) -> ()
+  | (sqe, target, new_dfd, linkpath, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_SYMLINKAT
+    sqe.fd        = new_dfd
+    sqe.addr      = target as u64
+    sqe.addr3     = linkpath as u64
+    sqe.user_data = user_data
+
+fn prep_linkat : (*IoUringSqe, i32, ptr, i32, ptr, u32, u64) -> ()
+  | (sqe, old_dfd, old_path, new_dfd, new_path, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode       = IORING_OP_LINKAT
+    sqe.fd           = old_dfd
+    sqe.addr         = old_path as u64
+    sqe.len          = new_dfd as u32
+    sqe.addr3        = new_path as u64
+    sqe.rw_flags     = flags
+    sqe.user_data    = user_data
+
+fn prep_msg_ring : (*IoUringSqe, i32, u32, u64, u32, u64) -> ()
+  | (sqe, fd, len, data, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_MSG_RING
+    sqe.fd        = fd
+    sqe.len       = len
+    sqe.off       = data
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_msg_ring_cqe_flags : (*IoUringSqe, i32, u32, u64, u32, u32, u64) -> ()
+  | (sqe, fd, len, data, flags, cqe_flags, user_data) ->
+    prep_msg_ring(sqe, fd, len, data, flags, user_data)
+    sqe.splice_fd_in = cqe_flags as i32
+
+fn prep_fsetxattr : (*IoUringSqe, i32, ptr, ptr, u32, u32, u64) -> ()
+  | (sqe, fd, name, val, flags, len, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_FSETXATTR
+    sqe.fd        = fd
+    sqe.addr      = name as u64
+    sqe.addr3     = val as u64
+    sqe.rw_flags  = flags
+    sqe.len       = len
+    sqe.user_data = user_data
+
+fn prep_setxattr : (*IoUringSqe, ptr, ptr, ptr, u32, u32, u64) -> ()
+  | (sqe, path, name, val, flags, len, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_SETXATTR
+    sqe.fd        = -1i32
+    sqe.addr      = name as u64
+    sqe.addr3     = val as u64
+    sqe.off       = path as u64
+    sqe.rw_flags  = flags
+    sqe.len       = len
+    sqe.user_data = user_data
+
+fn prep_fgetxattr : (*IoUringSqe, i32, ptr, ptr, u32, u64) -> ()
+  | (sqe, fd, name, buf, len, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_FGETXATTR
+    sqe.fd        = fd
+    sqe.addr      = name as u64
+    sqe.addr3     = buf as u64
+    sqe.len       = len
+    sqe.user_data = user_data
+
+fn prep_getxattr : (*IoUringSqe, ptr, ptr, ptr, u32, u64) -> ()
+  | (sqe, path, name, buf, len, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_GETXATTR
+    sqe.fd        = -1i32
+    sqe.addr      = name as u64
+    sqe.addr3     = buf as u64
+    sqe.off       = path as u64
+    sqe.len       = len
+    sqe.user_data = user_data
+
+fn prep_socket : (*IoUringSqe, i32, i32, i32, u32, u64) -> ()
+  | (sqe, domain, type_, protocol, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_SOCKET
+    sqe.fd        = domain
+    sqe.off       = type_ as u64
+    sqe.len       = protocol as u32
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_socket_direct : (*IoUringSqe, i32, i32, i32, u32, u32, u64) -> ()
+  | (sqe, domain, type_, protocol, file_index, flags, user_data) ->
+    prep_socket(sqe, domain, type_, protocol, flags, user_data)
+    sqe.splice_fd_in = file_index as i32
+
+fn prep_send_zc : (*IoUringSqe, i32, ptr, u32, u32, u32, u64) -> ()
+  | (sqe, fd, buf, len, flags, buf_index, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_SEND_ZC
+    sqe.fd        = fd
+    sqe.addr      = buf as u64
+    sqe.len       = len
+    sqe.rw_flags  = flags
+    sqe.buf_index = buf_index as u16
+    sqe.user_data = user_data
+
+fn prep_sendmsg_zc : (*IoUringSqe, i32, ptr, u32, u64) -> ()
+  | (sqe, fd, msg, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_SENDMSG_ZC
+    sqe.fd        = fd
+    sqe.addr      = msg as u64
+    sqe.len       = 1u32
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_read_multishot : (*IoUringSqe, i32, ptr, u32, u16, u64) -> ()
+  | (sqe, fd, buf, len, buf_group, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_READ_MULTISHOT
+    sqe.fd        = fd
+    sqe.addr      = buf as u64
+    sqe.len       = len
+    sqe.buf_index = buf_group
+    sqe.user_data = user_data
+
+fn prep_waitid : (*IoUringSqe, u32, i32, ptr, u32, u32, u64) -> ()
+  | (sqe, id_type, id, infop, options, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_WAITID
+    sqe.fd        = id_type as i32
+    sqe.addr      = id as u64
+    sqe.off       = infop as u64
+    sqe.len       = options
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_futex_wait : (*IoUringSqe, ptr, u64, u64, u32, u32, u64) -> ()
+  | (sqe, futex, val, mask, futex_flags, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_FUTEX_WAIT
+    sqe.fd        = -1i32
+    sqe.addr      = futex as u64
+    sqe.addr3     = val
+    sqe.len       = futex_flags
+    sqe.off       = mask
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_futex_wake : (*IoUringSqe, ptr, u64, u64, u32, u32, u64) -> ()
+  | (sqe, futex, val, mask, futex_flags, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_FUTEX_WAKE
+    sqe.fd        = -1i32
+    sqe.addr      = futex as u64
+    sqe.addr3     = val
+    sqe.len       = futex_flags
+    sqe.off       = mask
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_futex_waitv : (*IoUringSqe, ptr, u32, u32, ptr, u32, u64) -> ()
+  | (sqe, waiters, nr_futexes, futex_flags, timeout, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_FUTEX_WAITV
+    sqe.fd        = -1i32
+    sqe.addr      = waiters as u64
+    sqe.len       = nr_futexes
+    sqe.rw_flags  = futex_flags
+    sqe.off       = timeout as u64
+    sqe.buf_index = flags as u16
+    sqe.user_data = user_data
+
+fn prep_fixed_fd_install : (*IoUringSqe, i32, u32, u64) -> ()
+  | (sqe, fd, flags, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_FIXED_FD_INSTALL
+    sqe.fd        = fd
+    sqe.rw_flags  = flags
+    sqe.user_data = user_data
+
+fn prep_ftruncate : (*IoUringSqe, i32, i64, u64) -> ()
+  | (sqe, fd, len, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_FTRUNCATE
+    sqe.fd        = fd
+    sqe.off       = len as u64
+    sqe.user_data = user_data
+
+fn prep_bind : (*IoUringSqe, i32, ptr, u32, u64) -> ()
+  | (sqe, fd, addr, addrlen, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_BIND
+    sqe.fd        = fd
+    sqe.addr      = addr as u64
+    sqe.off       = addrlen as u64
+    sqe.user_data = user_data
+
+fn prep_listen : (*IoUringSqe, i32, i32, u64) -> ()
+  | (sqe, fd, backlog, user_data) ->
+    sqe_zero(sqe)
+    sqe.opcode    = IORING_OP_LISTEN
+    sqe.fd        = fd
+    sqe.len       = backlog as u32
+    sqe.user_data = user_data
+
+-- §8  VALIDATION FUNCTION (input checking per constraint)
+
+fn sqe_op_needs_fd : u8 -> bool
+  | op ->
+    op != IORING_OP_NOP &&
+    op != IORING_OP_TIMEOUT &&
+    op != IORING_OP_TIMEOUT_REMOVE &&
+    op != IORING_OP_ASYNC_CANCEL &&
+    op != IORING_OP_MADVISE
+
+fn sqe_check_reserved : (*IoUringSqe) -> bool
+  | sqe -> sqe.resv == 0u64
+
+fn sqe_check_opcode_range : u8 -> bool
+  | op -> op < IORING_OP_LAST
+
+fn sqe_full_validate : (*IoUringSqe) -> (bool, *u8)
+  | sqe ->
+    if !sqe_check_opcode_range(sqe.opcode)
+      (false, "invalid opcode" as *u8)
+    else if !sqe_check_reserved(sqe)
+      (false, "reserved field must be zero" as *u8)
+    else if sqe_op_needs_fd(sqe.opcode) && sqe.fd < -1i32
+      (false, "invalid fd" as *u8)
+    else
+      (true, 0 as *u8)
+
+-- §9  UNIT TESTS
+-- Test 1: prep_nop produces zeroed SQE with correct opcode
+--   let sqe = IoUringSqe { opcode:0u8, flags:0u8, ioprio:0u16, fd:0i32, off:0u64,
+--                           addr:0u64, len:0u32, rw_flags:0u32, user_data:0u64,
+--                           buf_index:0u16, personality:0u16, splice_fd_in:0i32,
+--                           addr3:0u64, resv:0u64 }
+--   prep_nop(&sqe, 42u64)
+--   assert(sqe.opcode == IORING_OP_NOP)
+--   assert(sqe.user_data == 42u64)
+--   assert(sqe.fd == 0i32)   -- zeroed
+--   assert(sqe.resv == 0u64)  -- must stay zero
+--   let (ok, _) = sqe_full_validate(&sqe)
+--   assert(ok)
+-- Test 2: prep_read sets all required fields
+--   let buf : *u8 = malloc(4096)
+--   prep_read(&sqe, 3i32, buf as ptr, 4096u32, 0u64, 99u64)
+--   assert(sqe.opcode == IORING_OP_READ)
+--   assert(sqe.fd == 3i32)
+--   assert(sqe.addr == buf as u64)
+--   assert(sqe.len == 4096u32)
+--   assert(sqe.off == 0u64)
+--   assert(sqe.user_data == 99u64)
+--   let (ok2, _) = sqe_full_validate(&sqe)
+--   assert(ok2)
+-- Test 3: invalid opcode rejected
+--   sqe.opcode = IORING_OP_LAST  -- one past the end
+--   let (ok3, msg) = sqe_full_validate(&sqe)
+--   assert(!ok3)
+--   assert(strcmp(msg, "invalid opcode") == 0)

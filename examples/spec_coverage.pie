@@ -1,0 +1,191 @@
+-- Spec-coverage tour: one working example per major language area.
+-- Everything below compiles; where the implementation's surface differs
+-- from v.md (struct field-literal patterns, state-handler sugar), the
+-- closest supported form is used and noted.
+
+-- a point type used by several sections below
+type Point = struct
+  x : i32
+  y : i32
+
+-- ===== bindings =====
+let x : i32 = 42
+let y : i32 = 42
+let mut z : i32 = 0
+let (a, b) = (1, 2)
+let point = Point { x: 1, y: 2 }
+let pair = (10, 20)
+let (_, important) = pair
+
+fn side_effect : () -> i64
+  | () -> 0
+
+let _ = side_effect()
+let line : Str ! [IO] = IO.read_line()
+
+-- ===== functions / clauses / guards =====
+fn fact : i64 -> i64
+  | 0 -> 1
+  | n -> n * fact(n - 1)
+
+fn gcd : (i64, i64) -> i64
+  | (a, 0) -> a
+  | (a, b) -> gcd(b, a % b)
+
+fn classify : i32 -> Str
+  | 0        -> "zero"
+  | n, n > 0 -> "positive"
+  | _        -> "negative"
+
+-- ===== generics + effect polymorphism =====
+fn map<A, B> : (*A, u64, A -> B ! [..r]) -> *B ! [Alloc, ..r]
+  | (arr, n, f) ->
+      let out : *B = alloc [B; n]
+      for i in 0..n
+        out[i] = f(arr[i])
+      out
+
+fn maxx<T : Ord> : (T, T) -> T
+  | (a, b) ->
+      if a > b
+        a
+      else
+        b
+
+-- ===== inline if with the optional `then` soft keyword =====
+fn pick : (bool, i32, i32) -> i32
+  | (c, a, b) -> if c then a else b
+
+-- ===== where clause: type equality propagated into the signature =====
+fn zip<A, B, C> : (*A, *B, u64) -> *C
+  where C = A
+  | (xs, ys, n) -> xs
+
+-- ===== pattern matching =====
+-- v.md writes field-literal struct patterns (`| { x: 0, y: 0 } -> ...`);
+-- the implementation currently matches structs by binding + guards:
+fn shape : Point -> Str
+  | p, p.x == 0 && p.y == 0 -> "origin"
+  | p, p.x == 0             -> "on y-axis"
+  | p                       -> "general"
+
+fn vowel : char -> Str
+  | 'a' | 'e' | 'i' | 'o' | 'u' -> "vowel"
+  | _                           -> "consonant"
+
+-- ===== structs / unions =====
+type Vec3f = struct
+  x : f32
+  y : f32
+  z : f32
+
+type CacheLine = struct #align(64)
+  data : [u8; 64]
+
+type Word = union
+  as_i32 : i32
+  as_u32 : u32
+  bytes  : [u8; 4]
+
+-- ===== effects + handlers (continuation resumption by juxtaposition) =====
+effect State<S>
+  get : () -> S
+  put : S -> ()
+
+-- the ambient state the handler threads through `get`/`put`
+let mut s : i64 = 0
+
+fn computation : () -> i32
+  | () -> 0
+
+fn handle_state : () -> i32
+  | () ->
+      handle computation
+        | State.get () k -> k s
+        | State.put v  k -> (s = v; k ())
+
+-- ===== term rewriting =====
+let arith : Rewrite = rewrite
+  | x + 0 ↦ x
+  | x * 1 ↦ x
+  | x * 2 ↦ x << 1
+
+fn is_power_of_2 : i64 -> bool
+  | n -> n > 0 && (n & (n - 1)) == 0
+
+fn log2 : i64 -> i64
+  | n ->
+      let mut k : i64 = 0
+      let mut v : i64 = n
+      while v > 1
+        v = v / 2
+        k = k + 1
+      k
+
+let guarded : Rewrite = rewrite
+  | x * n, is_power_of_2(n) ↦ x << log2(n)
+
+let full : Rewrite = arith ++ guarded
+
+rule fold_zero = x + 0 ↦ x
+
+-- ===== PGL =====
+pgen elim_add_zero<T : Numeric> ->
+  [x : T]
+  where [x]
+  ↦ x
+
+-- ===== quotation + comptime + stage =====
+let tree = ~Tree (x + y * z)
+let raw  = ~Data point
+let code = ~Bytes my_function
+
+fn my_function : i64 -> i64
+  | n -> n + 1
+
+let table = comptime
+  let t = 5
+  t
+
+-- the comptime generator the stage block splices
+fn gen : () -> i64
+  | () -> 0
+
+stage
+  let specialized = splice(gen())
+
+-- ===== UB / safety =====
+fn divide : (i32, i32) -> i32 ! [UB]
+  | (_, 0) -> ub! "division by zero"
+  | (a, b) -> a / b
+
+fn raw_index : (*i32, u64) -> i32
+  | (p, i) -> unchecked p[i]
+
+-- ===== memory =====
+fn mem_ops : () -> () ! [Alloc]
+  | () ->
+      let pp : *i32 = alloc i32
+      let v = *pp
+      let bits : u32 = transmute(3.14f32)
+      free pp
+
+-- ===== modules =====
+mod mathx
+  fn sin : f64 -> f64 #extern("sin") #cc(c)
+
+use std::mem
+use mathx as mm
+
+-- ===== IRDL =====
+dialect GpuD
+  opcode gadd
+  region body
+
+-- emit: lowering-side helper called from irdl rule bodies (a logging
+-- stub stands in for a real op-builder here)
+fn emit : Str -> i64
+  | msg -> 0
+
+irdl
+  GpuD.gadd [a : i32, b : i32] ↦ emit("x")

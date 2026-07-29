@@ -1,0 +1,57 @@
+-- EXPECT-CLEAN
+-- End-to-end test: alloc, struct update, defer, labeled break, offset_of
+struct Node
+    val  : i64
+    next : *Node
+
+fn node_new : i64 -> *Node ! [Alloc]
+  | v ->
+    let n : *Node = alloc Node as *Node
+    n.val  = v
+    n.next = null
+    n
+
+fn list_sum : *Node -> i64
+  | head ->
+    let mut s : i64 = 0i64
+    let mut p : *Node = head
+    while p != null
+      s = s + p.val
+      p = p.next
+    s
+
+fn first_positive : (*i64, i64) -> i64
+  | (arr, n) ->
+    let mut result : i64 = -1i64
+    let mut i : i64 = 0i64
+    'scan: while i < n
+      if arr[i] > 0i64 then
+        result = arr[i]
+        break 'scan
+      i = i + 1i64
+    result
+
+fn scoped_work : () -> i64 ! [Alloc]
+  | () ->
+    let buf : *i64 = alloc [i64; 8]
+    defer free(buf as *u8)
+    buf[0i64] = 10i64
+    buf[1i64] = 20i64
+    buf[2i64] = 30i64
+    buf[0i64] + buf[1i64] + buf[2i64]
+
+-- More pipeline: struct update chained
+struct Config
+    x : i64
+    y : i64
+    z : i64
+
+fn config_default : () -> Config
+  | () -> Config { x: 0i64, y: 0i64, z: 0i64 }
+
+fn config_all : (i64, i64, i64) -> Config
+  | (x, y, z) ->
+    let base : Config = config_default()
+    let c1 : Config = base { x: x }
+    let c2 : Config = c1 { y: y }
+    c2 { z: z }

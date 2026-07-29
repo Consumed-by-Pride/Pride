@@ -1,0 +1,5 @@
+-- EXPECT-CLEAN
+fn f : i32 -> i32
+  | n ->
+      unchecked
+        n + 1

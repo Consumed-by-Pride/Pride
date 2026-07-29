@@ -1,0 +1,31 @@
+-- EXPECT-CLEAN
+fn push : (*i64, i64, i64) -> i64
+  | (stack, sp, val) ->
+      stack[sp] = val
+      sp + 1
+
+fn pop : (*i64, i64) -> i64
+  | (stack, sp) -> stack[sp - 1]
+
+fn exec_add : (*i64, i64) -> i64
+  | (stack, sp) ->
+      let a = stack[sp - 1]
+      let b = stack[sp - 2]
+      stack[sp - 2] = a + b
+      sp - 1
+
+-- run: push all even i, exec_add all odd i (safe: always push two before first add)
+fn run : (*i64, i64) -> i64
+  | (stack, n) ->
+      let mut sp : i64 = 0
+      let mut i  : i64 = 0
+      -- prime with two pushes so exec_add never underflows
+      sp = push(stack, sp, 0)
+      sp = push(stack, sp, 0)
+      while i < n
+        if i % 2 == 0
+          sp = push(stack, sp, i)
+        else
+          sp = exec_add(stack, sp)
+        i = i + 1
+      pop(stack, sp)
