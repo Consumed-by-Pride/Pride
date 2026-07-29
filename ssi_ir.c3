@@ -4023,6 +4023,7 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         // literals / ident binders / '_'; anything else never reaches here.
         bool or_has_irrefutable = false;   // an ident binder or '_' alternative
         bool or_all_case_lits   = is_or;   // every alternative has a case value
+        bool or_has_str         = false;   // a string-literal alternative
         Node* or_ident = null;             // first ident alternative (binds scrutinee)
         if (is_or)
         {
@@ -4041,6 +4042,12 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
                 }
                 else
                 {
+                    if (alt.kind == Nk.NODE_PATTERN_LITERAL
+                        && alt.child_count >= 1 && alt.children[0] != null
+                        && alt.children[0].kind == Nk.NODE_LIT_STRING)
+                    {
+                        or_has_str = true;
+                    }
                     ulong tmp_cv = 0;
                     if (!match_case_value(alt, &tmp_cv)) or_all_case_lits = false;
                 }
@@ -4057,7 +4064,11 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         // equality pretest folded into its guard (one static false edge
         // cannot route per case value — the chain re-tests instead).
         bool or_chain_irrefutable = is_or && or_has_irrefutable;
-        bool or_tested_chain = is_or && !or_has_irrefutable && or_all_case_lits && guard != null;
+        // An OR with string-literal alternatives is a tested chain arm even
+        // unguarded: every alternative is a refutable content-equality test
+        // (no switch case values to claim).
+        bool or_tested_chain = is_or && !or_has_irrefutable
+            && ((or_all_case_lits && guard != null) || or_has_str);
         // Union-variant struct arm `{ name: binder }`: refutable, goes through
         // the default chain with its tag test folded into the dispatch block
         // (same tested-chain shape as guarded OR arms — a switch cannot prove
@@ -4106,18 +4117,34 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
             && pat.kind == Nk.NODE_PATTERN_LITERAL
             && pat.child_count >= 1 && pat.children[0] != null
             && pat.children[0].kind == Nk.NODE_LIT_NULL;
+        // String-literal arm (`| "hi" -> ...`): refutable CONTENT-equality
+        // test on the Str scrutinee. The switch has no integer case value
+        // for a string, so — like the null arm used to — the arm fell into
+        // the "non-int literal" fallback and was statically dead: every
+        // string silently dropped into the NEXT arm (usually the catch-all).
+        // single_test on the literal lowers to `==` on Str, which codegen
+        // emits as @pride_str_eq.
+        bool is_str_arm = !is_or && pat != null
+            && pat.kind == Nk.NODE_PATTERN_LITERAL
+            && pat.child_count >= 1 && pat.children[0] != null
+            && pat.children[0].kind == Nk.NODE_LIT_STRING;
         // Enum-name arms are tested-chain arms too: the switch cannot prove
         // a discriminant (no integer case value exists for a NAME pattern),
         // so they route through the default chain exactly like union-variant
         // arms, re-testing the tag in their dispatch block.
         bool chain_arm = is_wild || is_bind || is_tuple || or_chain_irrefutable || or_tested_chain
-            || is_variant_arm || is_newtype_arm || is_enum_name_arm || is_null_arm;
+            || is_variant_arm || is_newtype_arm || is_enum_name_arm || is_null_arm
+            || is_str_arm;
 
         int arm_blk = m.new_block();
         // Variant arms need the tag test evaluated in a dispatch block even
-        // without a user guard; null arms need their equality test there.
+        // without a user guard; null and string arms need their equality
+        // test there.
+        // (or_tested_chain needs the block even when guard==null: the OR
+        // with string alternatives has NO switch cases, so without the
+        // equality pretest here the arm would match EVERYTHING.)
         bool needs_test_blk = (guard != null) || is_variant_arm || is_enum_name_arm
-            || is_null_arm;
+            || is_null_arm || is_str_arm || or_tested_chain;
         int guard_blk = needs_test_blk ? m.new_block() : -1;
         int dispatch = (guard_blk >= 0) ? guard_blk : arm_blk;
 
@@ -4244,13 +4271,14 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
             IrVal* gval = guard != null
                 ? m.lower_expr(guard.child_count >= 1 ? guard.children[0] : null)
                 : null;
-            if (is_variant_arm || is_enum_name_arm || is_null_arm)
+            if (is_variant_arm || is_enum_name_arm || is_null_arm || is_str_arm)
             {
                 // The switch proved nothing: run the variant tag test here
                 // and AND any user guard into it. single_test covers both
                 // `{ name: binder }` (union) and bare name (enum) arms —
-                // and the null arm's PATTERN_LITERAL falls out of its
-                // generic literal-equality arm (icmp eq scrutinee, null).
+                // and the null/string arms' PATTERN_LITERAL falls out of its
+                // generic literal-equality arm (icmp eq on scalars, a
+                // @pride_str_eq call for Str).
                 gval = m.and_cond(m.single_test(pat, sval), gval, pat);
             }
             if (or_tested_chain)

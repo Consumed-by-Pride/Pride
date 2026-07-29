@@ -2844,6 +2844,58 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 bool lhs_is_struct = (lhs_ty != null && lhs_ty[0] == '{');
                 if (lhs_is_struct)
                 {
+                    // Str (= { ptr, i64 }) equality/inequality is a CONTENT
+                    // comparison, not a type error: route through the runtime's
+                    // pride_str_eq (the PrideStr by-value SysV ABI flattens to
+                    // (ptr,len) pairs). It used to fall into the placeholder
+                    // below — an always-false `add i1 0, 0` for EVERY string
+                    // comparison, silently.
+                    if (cstr_eq(lhs_ty, "{ ptr, i64 }")
+                        && (v.bop == Tt.TOKEN_EQEQ || v.bop == Tt.TOKEN_NEQ))
+                    {
+                        // String-literal operands are their raw byte-global
+                        // via emit_vref; the fat record needs the constant
+                        // aggregate form (`{ ptr @.str.N, i64 LEN }`).
+                        cg.out.writes("  %seqa."); cg.out.writei(v.id);
+                        cg.out.writes(" = extractvalue { ptr, i64 } ");
+                        if (lhs != null && lhs.op == ssi_ir::IrOp.IR_CONST_STR) { cgen_emit_str_const_record(cg, lhs); }
+                        else { cg.emit_vref(lhs); }
+                        cg.out.writes(", 0\n");
+                        cg.out.writes("  %seqb."); cg.out.writei(v.id);
+                        cg.out.writes(" = extractvalue { ptr, i64 } ");
+                        if (lhs != null && lhs.op == ssi_ir::IrOp.IR_CONST_STR) { cgen_emit_str_const_record(cg, lhs); }
+                        else { cg.emit_vref(lhs); }
+                        cg.out.writes(", 1\n");
+                        cg.out.writes("  %seqc."); cg.out.writei(v.id);
+                        cg.out.writes(" = extractvalue { ptr, i64 } ");
+                        if (rhs != null && rhs.op == ssi_ir::IrOp.IR_CONST_STR) { cgen_emit_str_const_record(cg, rhs); }
+                        else { cg.emit_vref(rhs); }
+                        cg.out.writes(", 0\n");
+                        cg.out.writes("  %seqd."); cg.out.writei(v.id);
+                        cg.out.writes(" = extractvalue { ptr, i64 } ");
+                        if (rhs != null && rhs.op == ssi_ir::IrOp.IR_CONST_STR) { cgen_emit_str_const_record(cg, rhs); }
+                        else { cg.emit_vref(rhs); }
+                        cg.out.writes(", 1\n");
+                        if (v.bop == Tt.TOKEN_NEQ)
+                        {
+                            cg.out.writes("  %seqr."); cg.out.writei(v.id);
+                            cg.out.writes(" = call i1 @pride_str_eq(ptr %seqa."); cg.out.writei(v.id);
+                            cg.out.writes(", i64 %seqb."); cg.out.writei(v.id);
+                            cg.out.writes(", ptr %seqc."); cg.out.writei(v.id);
+                            cg.out.writes(", i64 %seqd."); cg.out.writei(v.id); cg.out.writes(")\n");
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = xor i1 %seqr."); cg.out.writei(v.id); cg.out.writes(", true\n");
+                        }
+                        else
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = call i1 @pride_str_eq(ptr %seqa."); cg.out.writei(v.id);
+                            cg.out.writes(", i64 %seqb."); cg.out.writei(v.id);
+                            cg.out.writes(", ptr %seqc."); cg.out.writei(v.id);
+                            cg.out.writes(", i64 %seqd."); cg.out.writei(v.id); cg.out.writes(")\n");
+                        }
+                        return;
+                    }
                     // Emit placeholder matching result type (i1 for comparison, i64 otherwise)
                     char* res_ty2 = (tm != null) ? tm.get(v.id) : null;
                     bool is_cmp_op = (v.bop == Tt.TOKEN_LT || v.bop == Tt.TOKEN_GT
@@ -7031,6 +7083,7 @@ const char*[*] RUNTIME_DECL_NAMES = {
     "__pride_resume", "__pride_drop", "__pride_panic", "__pride_get_arm_arg",
     // Str runtime helpers
     "pride_str_init", "pride_str_push_str", "pride_str_push_i64", "pride_str_push_f64",
+    "pride_str_eq",
     // libc: memory / string / process
     "malloc", "free", "realloc", "calloc", "memcpy", "memmove", "memset", "memcmp",
     "strdup", "strndup", "strlen", "strcmp", "strncmp", "getenv", "putenv", "_exit",
@@ -7499,6 +7552,7 @@ fn void CgenModule.emit_runtime_decls(CgenModule* cg)
     cg.out.writes("declare void @pride_str_push_str(ptr, ptr, i64)\n");
     cg.out.writes("declare void @pride_str_push_i64(ptr, i64)\n");
     cg.out.writes("declare void @pride_str_push_f64(ptr, double)\n");
+    cg.out.writes("declare i1   @pride_str_eq(ptr, i64, ptr, i64)\n");
     // LLVM intrinsics — zero runtime cost, inlined by the backend
     // Bit manipulation
     cg.out.writes("declare i64 @llvm.ctpop.i64(i64)\n");
