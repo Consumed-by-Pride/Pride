@@ -1448,11 +1448,29 @@ fn Node* Parser.parse_clause_body(Parser* self)
         Tok t2 = self.cur;
         Scratch sc2;
         sc2.reset();
+        int sc_indents = 0;
         while (self.check(Tt.TOKEN_PIPE))
         {
             Node* cl = self.parse_clause();
             if (cl != null) sc2.push(cl);
             self.skip_newlines();
+            // Continuation arms of the closure may sit behind an INDENT of
+            // their own (aligned under the opening `|`): swallow the indent
+            // so the next `|` is seen — the lexer emits INDENT immediately
+            // followed by PIPE there, so the peek is exact — and balance it
+            // with the matching DEDENT on the way out. A multi-arm closure
+            // used to orphan every arm after the first (spurious E0182s).
+            while (self.check(Tt.TOKEN_INDENT) && self.peek1().type == Tt.TOKEN_PIPE)
+            {
+                self.advance();
+                sc_indents++;
+                self.skip_newlines();
+            }
+        }
+        while (sc_indents > 0 && self.check(Tt.TOKEN_DEDENT))
+        {
+            self.advance();
+            sc_indents--;
         }
         return self.finish(Nk.NODE_EXPR_CLOSURE, &sc2, t2.line, t2.col);
     }

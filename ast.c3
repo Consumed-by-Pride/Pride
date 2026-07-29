@@ -1728,7 +1728,12 @@ fn AstNode* generic_payload_subst(AstNode* app, AstNode* payload)
     AstNode* decl = null;
     if (hd != null && hd.resolved != null) decl = hd.resolved;
     if (decl == null) decl = app.resolved;
-    if (decl == null || decl.kind != NodeKind.NODE_DECL_TYPE) return payload;
+    // The generic parameters live as GENERIC_PARAM children of the decl —
+    // `type Pair<A, B> = struct …` (DECL_TYPE) or the direct form
+    // `struct Box<T> …` (DECL_STRUCT).
+    if (decl == null
+        || (decl.kind != NodeKind.NODE_DECL_TYPE
+            && decl.kind != NodeKind.NODE_DECL_STRUCT)) return payload;
     for (usz i = 0; i < decl.child_count; i++)
     {
         AstNode* gp = decl.children[i];
@@ -1823,6 +1828,84 @@ fn int union_variant_lookup(AstNode* udecl, char* name, usz name_len, AstNode** 
             if (eq)
             {
                 if (out_payload != null && fd.child_count >= 2) *out_payload = fd.children[1];
+                return ord;
+            }
+        }
+        ord++;
+    }
+    return -1;
+}
+
+// ── Struct field helpers ───────────────────────────────────────────────────
+// A struct type node resolves (through TypeVar/TypeDecl/generic head) to a
+// NODE_DECL_STRUCT whose EXPR_BLOCK child lists field NODE_FIELD_DECLs:
+// [name, type].  Mirrors the union helpers above; used by the struct-pattern
+// destructuring paths (`let { x, y } = p`, fn-clause patterns, v.md §5).
+
+// Return the NODE_DECL_STRUCT behind a type node, or null.
+fn AstNode* struct_decl_of(AstNode* ty)
+{
+    if (ty == null) return null;
+    // Generic instantiation (`Pair<i64, bool>`): the struct decl lives behind
+    // the application's head TypeVar — same look-through as union_decl_of.
+    if (ty.kind == NodeKind.NODE_TYPE_GENERIC_APP && ty.child_count >= 1)
+    {
+        AstNode* hd = ty.children[0];
+        if (hd != null && hd.resolved != null) return struct_decl_of(hd.resolved);
+        if (ty.resolved != null) return struct_decl_of(ty.resolved);
+        return null;
+    }
+    // A DECL_TYPE reached directly: the struct is its final child.
+    if (ty.kind == NodeKind.NODE_DECL_TYPE && ty.child_count >= 1)
+    {
+        AstNode* dbody = ty.children[ty.child_count - 1];
+        if (dbody != null && dbody.kind == NodeKind.NODE_DECL_STRUCT) return dbody;
+        return null;
+    }
+    AstNode* r = null;
+    if (ty.kind == NodeKind.NODE_TYPEVAR && ty.resolved != null) r = ty.resolved;
+    if (r == null && ty.kind == NodeKind.NODE_DECL_STRUCT) r = ty;
+    if (r != null)
+    {
+        if (r.kind == NodeKind.NODE_DECL_STRUCT) return r;
+        if (r.kind == NodeKind.NODE_DECL_TYPE && r.child_count >= 1)
+        {
+            AstNode* body = r.children[r.child_count - 1];
+            if (body != null && body.kind == NodeKind.NODE_DECL_STRUCT) return body;
+        }
+    }
+    return null;
+}
+
+// Look up a field by name in a struct decl; returns the DECLARATION ordinal
+// (extractvalue index) or -1.  The field's declared type goes to out_ty.
+fn int struct_field_lookup(AstNode* sdecl, char* name, usz name_len, AstNode** out_ty)
+{
+    if (out_ty != null) *out_ty = null;
+    if (sdecl == null || sdecl.kind != NodeKind.NODE_DECL_STRUCT || name == null) return -1;
+    AstNode* blk = null;
+    for (usz i = 0; i < sdecl.child_count; i++)
+    {
+        AstNode* c = sdecl.children[i];
+        if (c != null && c.kind == NodeKind.NODE_EXPR_BLOCK) { blk = c; break; }
+    }
+    if (blk == null) return -1;
+    int ord = 0;
+    for (usz i = 0; i < blk.child_count; i++)
+    {
+        AstNode* fd = blk.children[i];
+        if (fd == null || fd.kind != NodeKind.NODE_FIELD_DECL || fd.child_count < 1) continue;
+        AstNode* fn_node = fd.children[0];
+        if (fn_node != null && fn_node.p.ident.name_len == name_len)
+        {
+            bool eq = true;
+            for (usz k = 0; k < name_len; k++)
+            {
+                if (fn_node.p.ident.name_ptr[k] != name[k]) { eq = false; break; }
+            }
+            if (eq)
+            {
+                if (out_ty != null && fd.child_count >= 2) *out_ty = fd.children[1];
                 return ord;
             }
         }

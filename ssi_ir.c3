@@ -212,6 +212,21 @@ struct LoopCtx
     IrVal**  break_vals;          // heap matrix [break * nphi] of captured values
     usz      break_count;
     IrVal*[MAX_BREAKS] break_result; // break-with-value result per site
+    // For-range loops only (null for while/do/non-range iterators): the
+    // induction counter φ and its step.  A `continue` edge must feed
+    // counter+step into the counter φ — exactly like the body-end back-edge —
+    // because the generic path feeds the CURRENT value, which skips the
+    // increment and spins forever on the un-advanced counter.
+    IrVal*   counter_phi;
+    IrVal*   counter_step;
+    // Where the hdr_phis actually LIVE (== header for while/for; the BODY
+    // block for do-while, whose continue target is the CONDITION block).
+    // When phi_home != header, a continue cannot feed the header φs — the
+    // continue block is not their predecessor.  Instead each binder gains a
+    // CONDITION-block merge φ (cont_phis, lazily created on first continue):
+    // the loop back-edge and (after the loop) the condition/exit read it.
+    int      phi_home;
+    IrVal*[SCAN_CAP] cont_phis;
 }
 
 // A captured per-binder value reached at the end of a branch.
@@ -773,26 +788,50 @@ fn void SsiModule.emit_sigmas(SsiModule* m, Node* cond, bool polarity)
 
 // Collect every OUTER binder that is reassigned anywhere inside `n` (without
 // descending into nested function declarations, which have their own scope).
-fn void collect_assigned(Node* n, Snap* out)
+//
+// Field/index writes (`g.cells[i] = …`, `h.fst = …`, r43–r46) rebind the
+// chain's ROOT binder by value: walk the lhs down to its root ident so the
+// loop pre-places a header φ for it — without one the body's rebuild is
+// invisible after the loop (st8).  Roots whose writes go through MEMORY
+// instead (pointer roots — store-through; address-taken roots — home slot)
+// are never rebound, so they must NOT get a φ.
+fn void collect_assigned(SsiModule* m, Node* n, Snap* out)
 {
     if (n == null) return;
     if (n.kind == Nk.NODE_DECL_FN) return;   // nested fn: separate scope
     if (n.kind == Nk.NODE_EXPR_ASSIGN && n.child_count >= 1)
     {
         Node* lhs = n.children[0];
-        if (lhs != null && lhs.kind == Nk.NODE_IDENT && lhs.resolved != null)
+        Node* root = lhs;
+        bool via_chain = false;
+        while (root != null
+               && (root.kind == Nk.NODE_EXPR_FIELD
+                   || root.kind == Nk.NODE_EXPR_INDEX)
+               && root.child_count >= 1)
+        { root = root.children[0]; via_chain = true; }
+        // Chain writes rebind the root only on the by-value route; pointer,
+        // array and address-taken roots are written through memory instead
+        // (an array's env value is its storage POINTER — a header phi for
+        // it would be typed by annotation, [N x T], against ptr operands).
+        if (via_chain && root != null
+            && ((root.type_annotation != null
+                 && (root.type_annotation.kind == Nk.NODE_TYPE_PTR
+                     || root.type_annotation.kind == Nk.NODE_TYPE_ARRAY))
+                || (m != null && m.is_addr_taken(root.resolved))))
+        { root = null; }
+        if (root != null && root.kind == Nk.NODE_IDENT && root.resolved != null)
         {
             bool seen = false;
-            for (usz i = 0; i < out.count; i++) { if (out.binders[i] == lhs.resolved) { seen = true; break; } }
+            for (usz i = 0; i < out.count; i++) { if (out.binders[i] == root.resolved) { seen = true; break; } }
             if (!seen && out.count < SCAN_CAP)
             {
-                out.binders[out.count] = lhs.resolved;
+                out.binders[out.count] = root.resolved;
                 out.vals[out.count] = null;
                 out.count++;
             }
         }
     }
-    for (usz i = 0; i < n.child_count; i++) collect_assigned(n.children[i], out);
+    for (usz i = 0; i < n.child_count; i++) collect_assigned(m, n.children[i], out);
 }
 
 fn void SsiModule.capture(SsiModule* m, usz mark, Snap* snap)
@@ -1019,119 +1058,138 @@ fn void SsiModule.lower_closure_thunk(SsiModule* m, Node* closure_node)
         { clauses[nclause++] = ch; }
     }
 
-    // Add IR_PARAMs for clause arguments (from first clause's pattern)
-    if (nclause > 0)
+    // Value parameters: arity from the first clause's pattern (a tuple ⇒ its
+    // arity; otherwise a single argument), EXACTLY as lower_fn. The old code
+    // only emitted value params for IDENT/TUPLE first patterns — a closure
+    // whose first clause opened on a literal had NO value parameter (thunk
+    // signature disagreed with its call sites) and every clause after the
+    // first was dead code appended behind a RET.
+    Node* pat0 = nclause >= 1 && clauses[0].child_count >= 1 ? clauses[0].children[0] : null;
+    usz arity = 1;
+    if (pat0 != null && pat0.kind == Nk.NODE_PATTERN_TUPLE) arity = pat0.child_count;
+    if (arity == 0) arity = 1;
+    if (arity > MAX_EDGES) arity = MAX_EDGES;
+
+    IrVal*[MAX_EDGES] vparams;
+    for (usz i = 0; i < arity; i++)
     {
-        Node* first_clause = clauses[0];
-        Node* pat = first_clause.child_count >= 1 ? first_clause.children[0] : null;
-        if (pat != null && pat.kind == Nk.NODE_PATTERN_TUPLE)
+        Node* param_src = pat0;
+        if (pat0 != null && pat0.kind == Nk.NODE_PATTERN_TUPLE
+            && i < pat0.child_count && pat0.children[i] != null)
         {
-            for (usz pi = 0; pi < pat.child_count && f.param_count < MAX_EDGES; pi++)
-            {
-                IrVal* pv = m.new_val(IrOp.IR_PARAM, pat.child_count >= 1 ? pat.children[pi] : null);
-                if (pv != null) { m.emit(pv); f.params[f.param_count++] = pv; }
-            }
+            param_src = pat0.children[i];
         }
-        else if (pat != null && pat.kind == Nk.NODE_PATTERN_IDENT)
-        {
-            IrVal* pv = m.new_val(IrOp.IR_PARAM, pat);
-            if (pv != null) { m.emit(pv); f.params[f.param_count++] = pv; }
-        }
+        IrVal* pv = m.new_val(IrOp.IR_PARAM, param_src);
+        if (pv != null) { m.emit(pv); }
+        vparams[i] = pv;
+        if (pv != null && f.param_count < MAX_EDGES) { f.params[f.param_count] = pv; f.param_count++; }
     }
 
-    // Bind param variables (skip env_param at index 0)
-    m.bind_pattern(f, null);  // just to set up env
-    if (nclause > 0 && f.param_count > 1)
+    // Capture loads: free vars of the whole closure (excluding clause-local
+    // binders) loaded from the env record ONCE in the entry block — the loads
+    // dominate every dispatch/body block — and re-bound per scope below.
+    Node*[64] cap_binders;
+    usz cap_count = 0;
+    Node*[128] local_binders;
+    usz local_count = 0;
+    for (usz cpi = 0; cpi < closure_node.child_count; cpi++)
     {
-        Node* first_clause = clauses[0];
-        Node* pat = first_clause.child_count >= 1 ? first_clause.children[0] : null;
-        if (pat != null)
-        {
-            usz param_start = 1; // skip env
-            if (pat.kind == Nk.NODE_PATTERN_TUPLE)
-            {
-                for (usz pi = 0; pi < pat.child_count && param_start + pi < f.param_count; pi++)
-                {
-                    Node* binder = pat.children[pi];
-                    IrVal* pval  = f.params[param_start + pi];
-                    if (binder != null && pval != null) m.env_push(binder, pval);
-                }
-            }
-            else if (pat.kind == Nk.NODE_PATTERN_IDENT && f.param_count >= 2)
-            { m.env_push(pat, f.params[1]); }
-        }
+        Node* cl2 = closure_node.children[cpi];
+        if (cl2 == null) continue;
+        // Whole-clause marking (pattern + body), same rule as the old path:
+        // body-local binders are not captures.
+        mark_local_binders(cl2, &local_binders[0], &local_count, 128);
+    }
+    for (usz cpi = 0; cpi < closure_node.child_count; cpi++)
+    { collect_free_vars(closure_node.children[cpi], &local_binders[0], local_count,
+                       &cap_binders[0], &cap_count, 64); }
+    IrVal*[64] cap_vals;
+    for (usz ci3 = 0; ci3 < cap_count; ci3++)
+    {
+        cap_vals[ci3] = null;
+        Node* cap_binder = cap_binders[ci3];
+        if (cap_binder == null) continue;
+        IrVal* load_v = m.new_val(IrOp.IR_INDEX, cap_binder);
+        if (load_v == null) continue;
+        load_v.add_arg(env_param, -1);
+        load_v.ival = (ulong)ci3;
+        m.emit(load_v);
+        cap_vals[ci3] = load_v;
     }
 
-    // Lower clause bodies with capture loading.
-    // We must load captures from the env pointer INSIDE the clause body lowering
-    // context so env_close_block does not discard them.
+    // Dispatch cascade: the SAME shape as lower_fn — each clause tests its
+    // pattern against the value params; a guard ANDs into the test with the
+    // pattern bindings live; the body block re-binds pattern + captures and
+    // lowers the clause body; an irrefutable clause ends the cascade; a
+    // fall-through past the last refutable clause is a trap. The old
+    // straight-line lowering returned clause 0 unconditionally, leaving
+    // every later arm dead.
+    int cur_test = entry;
     for (usz ci = 0; ci < nclause; ci++)
     {
         Node* clause = clauses[ci];
-        // Open an env scope for this clause body
-        usz clause_mark = m.env_mark();
+        Node* pat = clause.child_count >= 1 ? clause.children[0] : null;
+        m.cur = cur_test;
+        usz tmark = m.env_mark();
+        for (usz cj = 0; cj < cap_count; cj++)
+        { if (cap_binders[cj] != null && cap_vals[cj] != null) m.env_push(cap_binders[cj], cap_vals[cj]); }
 
-        // Load each capture from env array and bind it in this scope.
-        // Re-collect free vars to get the exact binder nodes.
+        IrVal* cond = m.clause_test(pat, &vparams[0], arity);
+
+        // A guard (`| pat, guard -> body`) makes the clause refutable: bind
+        // the pattern, evaluate the guard, AND it into the dispatch cond.
+        Node* guard = null;
+        for (usz gi = 1; gi < clause.child_count; gi++)
         {
-            Node*[64] cap_binders_arr;
-            usz cap_binder_count = 0;
-            Node*[128] locals_arr2;
-            usz local_count2 = 0;
-            for (usz cpi = 0; cpi < closure_node.child_count; cpi++)
-            {
-                Node* cl2 = closure_node.children[cpi];
-                if (cl2 == null) continue;
-                // Whole-clause marking (pattern + body), same rule as
-                // lower_closure: body-local binders are not captures.
-                mark_local_binders(cl2, &locals_arr2[0], &local_count2, 128);
-            }
-            for (usz cpi = 0; cpi < closure_node.child_count; cpi++)
-            { collect_free_vars(closure_node.children[cpi], &locals_arr2[0], local_count2,
-                               &cap_binders_arr[0], &cap_binder_count, 64); }
-            for (usz ci3 = 0; ci3 < cap_binder_count; ci3++)
-            {
-                Node* cap_binder = cap_binders_arr[ci3];
-                if (cap_binder == null) continue;
-                IrVal* load_v = m.new_val(IrOp.IR_INDEX, cap_binder);
-                if (load_v == null) continue;
-                load_v.add_arg(env_param, -1);
-                load_v.ival = (ulong)ci3;
-                m.emit(load_v);
-                m.env_push(cap_binder, load_v);
-            }
+            Node* c = clause.children[gi];
+            if (c != null && c.kind == Nk.NODE_PATTERN_GUARD) { guard = c; break; }
+        }
+        if (guard != null)
+        {
+            m.bind_pattern_values(pat, &vparams[0], arity);
+            IrVal* gv = null;
+            if (guard.child_count >= 1) gv = m.lower_expr(guard.children[0]);
+            cond = m.and_cond(cond, gv, guard);
+            m.env_reset(tmark);   // un-bind; re-bound below
         }
 
-        // Lower the clause body (body starts after the pattern child)
-        IrVal* result = null;
-        for (usz bi = 1; bi < clause.child_count; bi++)
+        if (cond == null)
         {
-            Node* c2 = clause.children[bi];
-            if (c2 == null || c2.kind == Nk.NODE_PATTERN_GUARD) continue;
-            if (c2.kind == Nk.NODE_EXPR_BLOCK)
-            {
-                usz bm = m.env_mark();
-                result = m.lower_block(c2);
-                // emit_defers BEFORE env_close_block so deferred exprs
-                // can still see block-local bindings (e.g. `defer free(p)` sees p).
-                // We then mark defer_count=0 so the outer path won't re-fire.
-                if (!m.terminated())
-                {
-                    m.emit_defers();
-                    m.defer_count = 0;    // consumed — prevent double-fire below
-                }
-                m.env_close_block(bm);
-            }
-            else { result = m.lower_stmt(c2); }
-        }
-        if (!m.terminated())
-        {
-            m.emit_defers();
-            IrBlock* cb2 = m.blk(m.cur);
-            if (cb2 != null) { cb2.term = TermKind.TERM_RET; cb2.ret_val = result; }
+            // Irrefutable: re-bind (tmark was reset above if guarded) and
+            // lower the body; dispatch ends here.
+            for (usz cj = 0; cj < cap_count; cj++)
+            { if (cap_binders[cj] != null && cap_vals[cj] != null) m.env_push(cap_binders[cj], cap_vals[cj]); }
+            m.bind_pattern_values(pat, &vparams[0], arity);
+            m.lower_clause_body(clause);
+            m.env_reset(tmark);
+            cur_test = -1;
+            break;
         }
 
-        m.env_reset(clause_mark);
+        int body = m.new_block();
+        int next = m.new_block();
+        IrBlock* tb = m.blk(cur_test);
+        if (tb != null) { tb.term = TermKind.TERM_CBR; tb.cond = cond; }
+        m.link(cur_test, body);
+        m.link(cur_test, next);
+
+        m.cur = body;
+        usz bmark = m.env_mark();
+        for (usz cj = 0; cj < cap_count; cj++)
+        { if (cap_binders[cj] != null && cap_vals[cj] != null) m.env_push(cap_binders[cj], cap_vals[cj]); }
+        m.bind_pattern_values(pat, &vparams[0], arity);
+        m.lower_clause_body(clause);
+        m.env_reset(bmark);
+
+        m.env_reset(tmark);
+        cur_test = next;
+    }
+
+    // A trailing no-match block (all clauses refutable) is non-exhaustive: trap.
+    if (cur_test >= 0)
+    {
+        IrBlock* nb = m.blk(cur_test);
+        if (nb != null && nb.term == TermKind.TERM_NONE) nb.term = TermKind.TERM_UNREACHABLE;
     }
 
     // Close open block
@@ -1622,6 +1680,31 @@ fn IrVal* SsiModule.clause_test(SsiModule* m, Node* pat, IrVal** params, usz ari
     return m.single_test(pat, arity >= 1 ? params[0] : null);
 }
 
+// Match-expression tuple arms: the refutability test of a tuple pattern
+// against ONE scrutinee value — every component is tested via single_test
+// against the component's own projection (exactly clause_test over
+// projections; bind/wildcard components contribute no test). This is what
+// `match t | (0, 0) -> ...` spec matching needs: literal components compare
+// equal, binders destructure irrefutably.
+fn IrVal* SsiModule.tuple_component_test(SsiModule* m, Node* pat, IrVal* sval)
+{
+    if (pat == null || sval == null || pat.kind != Nk.NODE_PATTERN_TUPLE) return null;
+    IrVal* acc = null;
+    for (usz i = 0; i < pat.child_count; i++)
+    {
+        Node* comp = pat.children[i];
+        if (comp == null) continue;
+        IrVal* proj = m.new_val(IrOp.IR_INDEX, comp);
+        if (proj == null) continue;
+        proj.add_arg(sval, -1);
+        proj.ival = (ulong)i;
+        m.emit(proj);
+        IrVal* t = m.single_test(comp, proj);
+        acc = m.and_cond(acc, t, pat);
+    }
+    return acc;
+}
+
 // A single sub-pattern's refutability test against one value.
 fn IrVal* SsiModule.single_test(SsiModule* m, Node* pat, IrVal* v)
 {
@@ -2029,10 +2112,41 @@ fn IrVal* SsiModule.lower_stmt(SsiModule* m, Node* n)
 fn void SsiModule.lower_let(SsiModule* m, Node* d)
 {
     IrVal* init = null;
+    // Track the declared type (if any) and the initializer expression — both
+    // are needed by the bind-site widening below.
+    Node* decl_ty = null;
+    Node* init_expr = null;
     for (usz i = 1; i < d.child_count; i++)
     {
         Node* c = d.children[i];
-        if (c != null && !ssi::is_type_or_row(c)) { init = m.lower_expr(c); }
+        if (c == null) continue;
+        if (ssi::is_type_or_row(c)) { decl_ty = c; }
+        else { init_expr = c; init = m.lower_expr(c); }
+    }
+    // Explicit scalar annotation on a plain ident binding: the language's
+    // value semantics give the BINDING the declared type, so a differing
+    // initializer type must be converted HERE, at the bind site — not
+    // re-derived (and re-signed) per use.  Without this, `let w : i64 =
+    // <u8 expr>` left the binder at the initializer's natural narrow type:
+    // plain reads happened to work via per-use zero-extension, but chained
+    // arithmetic (`w + 1`) silently recomputed in i8 and picked the wrong
+    // extension by annotation (w + 1 == -50 for u8 200 + 5).  Only widen
+    // when BOTH sides are scalar primitives with different names — provided
+    // types (struct/ptr/fn/generic) keep the initializer's value as-is.
+    if (init != null && init_expr != null && decl_ty != null
+        && d.child_count >= 1 && d.children[0] != null
+        && d.children[0].kind == Nk.NODE_PATTERN_IDENT
+        && decl_ty.kind == Nk.NODE_TYPE_PRIMITIVE
+        && init_expr.type_annotation != null
+        && init_expr.type_annotation.kind == Nk.NODE_TYPE_PRIMITIVE)
+    {
+        Node* ea = init_expr.type_annotation;
+        char* an = ea.p.ident.name_ptr; usz al = ea.p.ident.name_len;
+        char* dn = decl_ty.p.ident.name_ptr; usz dl = decl_ty.p.ident.name_len;
+        bool same = (al == dl);
+        if (same && an != null && dn != null)
+        { for (usz ci = 0; ci < al; ci++) { if (an[ci] != dn[ci]) { same = false; break; } } }
+        if (!same) { init = m.cast_to(init, decl_ty, init_expr); }
     }
     // Bind the pattern's identifier(s) to the initializer value.
     if (d.child_count >= 1) m.bind_let_pattern(d.children[0], init);
@@ -2117,6 +2231,61 @@ fn void SsiModule.bind_let_pattern(SsiModule* m, Node* pat, IrVal* val)
                 int ord = 0; Node* vp_ty = null; Node* vp_un = null;
                 if (!variant_pattern_info(pat, &vp_un, &ord, &vp_ty))
                 {
+                    // Plain-struct destructure (`let { x, y } = p`,
+                    // `let { fst: a } = pair`): NOT a variant pattern.  Each
+                    // named field is projected out of the aggregate by its
+                    // DECLARATION ordinal (the pattern may list fields in any
+                    // order), then the subpattern binds recursively — or, for
+                    // the `{ x }` shorthand, the field node itself (the
+                    // resolver keys shorthand uses to the PATTERN_FIELD:
+                    // bind_pattern_field).  Previously this fell into the
+                    // unstamped fallback below, binding the UNIT value (or
+                    // nothing at all for the shorthand) — reads came out 0.
+                    Node* sdecl = ast::struct_decl_of(pat.type_annotation);
+                    if (sdecl != null)
+                    {
+                        for (usz si = 0; si < pat.child_count; si++)
+                        {
+                            Node* pf = pat.children[si];
+                            if (pf == null || pf.kind != Nk.NODE_PATTERN_FIELD
+                                || pf.child_count < 1) continue;
+                            Node* vn = pf.children[0];
+                            if (vn == null || vn.p.ident.name_ptr == null) continue;
+                            Node* fty2 = null;
+                            int ford = ast::struct_field_lookup(sdecl,
+                                vn.p.ident.name_ptr, vn.p.ident.name_len, &fty2);
+                            if (ford < 0) continue;   // typecheck already hard-errored
+                            if (pf.type_annotation == null)
+                            {
+                                // Unstamped (closure-body) form: fabricate the
+                                // field type from the declaration so codegen
+                                // can type the projection.
+                                pf.type_annotation =
+                                    ast::generic_payload_subst(pat.type_annotation, fty2);
+                            }
+                            IrVal* proj = m.new_val(IrOp.IR_INDEX, pf);
+                            if (proj != null && val != null)
+                            {
+                                proj.add_arg(val, -1);
+                                proj.ival = (ulong)ford;
+                            }
+                            if (proj != null) m.emit(proj);
+                            if (pf.child_count >= 2 && pf.children[1] != null
+                                && pf.children[1].kind != Nk.NODE_PATTERN_LITERAL)
+                            {
+                                // `{ name: subpattern }` — recursive binding
+                                // (nested tuple/struct destructuring works).
+                                m.bind_let_pattern(pf.children[1], proj);
+                            }
+                            else if (pf.child_count < 2)
+                            {
+                                m.env_push(pf, proj);
+                            }
+                            // `{ name: literal }` binds nothing (irrefutable
+                            // let-pattern convention, same as tuple lets).
+                        }
+                        return;
+                    }
                     // Unstamped pattern (e.g. inside an unannotated closure
                     // body, which the type checker never visits): the binder
                     // must still name a DEFINED value. Binding nothing turns
@@ -2205,10 +2374,53 @@ fn void SsiModule.lower_continue(SsiModule* m)
     LoopCtx* lc = &m.loops[m.loop_count - 1];
     IrBlock* b = m.blk(m.cur);
     if (b == null) return;
+    if (lc.phi_home != lc.header)
+    {
+        // do-while: continue targets the CONDITION block, whose φs the body
+        // block's loop-carried φs are NOT — the continue block is not their
+        // predecessor, and feeding them directly was exactly the "PHINode
+        // should have one entry for each predecessor" verifier failure (and
+        // semantically skipped the merge the condition itself reads).
+        for (usz i = 0; i < lc.nphi && i < SCAN_CAP; i++)
+        {
+            IrVal* back = m.env_lookup(lc.hdr_binders[i]);
+            if (back == null) continue;
+            IrVal* cp = lc.cont_phis[i];
+            if (cp == null)
+            {
+                cp = m.new_val(IrOp.IR_PHI,
+                               lc.hdr_phis[i] != null ? lc.hdr_phis[i].src : null);
+                if (cp == null) continue;
+                cp.binder = lc.hdr_binders[i];
+                m.add_phi(lc.header, cp);
+                lc.cont_phis[i] = cp;
+            }
+            cp.add_arg(back, m.cur);
+        }
+        b.term = TermKind.TERM_BR;
+        m.link(m.cur, lc.header);
+        return;
+    }
     // A continue is a back-edge: each header φ gains an operand from this site.
     for (usz i = 0; i < lc.nphi; i++)
     {
         IrVal* back = m.env_lookup(lc.hdr_binders[i]);
+        // For-range loop: the counter advances across a continue, too — feed
+        // counter+step (mirrors the body-end back-edge in lower_for) instead
+        // of the current counter, or the loop re-runs the SAME index forever.
+        if (back != null && lc.counter_phi != null && lc.counter_step != null
+            && lc.hdr_phis[i] == lc.counter_phi)
+        {
+            IrVal* bc = m.new_val(IrOp.IR_BIN, lc.counter_phi.src);
+            if (bc != null)
+            {
+                bc.bop = Tt.TOKEN_PLUS;
+                bc.add_arg(lc.counter_phi, -1);
+                bc.add_arg(lc.counter_step, -1);
+                m.emit(bc);
+                back = bc;
+            }
+        }
         if (back == null) continue;
         lc.hdr_phis[i].add_arg(back, m.cur);
     }
@@ -2258,10 +2470,48 @@ fn void SsiModule.lower_continue_label(SsiModule* m, char* name, usz nlen)
     }
     IrBlock* b = m.blk(m.cur);
     if (b == null) return;
+    if (lc.phi_home != lc.header)
+    {
+        // Labeled continue into an enclosing DO-WHILE: same condition-block
+        // merge as the unlabeled path (see lower_continue).
+        for (usz i = 0; i < lc.nphi && i < SCAN_CAP; i++)
+        {
+            IrVal* back = m.env_lookup(lc.hdr_binders[i]);
+            if (back == null) continue;
+            IrVal* cp = lc.cont_phis[i];
+            if (cp == null)
+            {
+                cp = m.new_val(IrOp.IR_PHI,
+                               lc.hdr_phis[i] != null ? lc.hdr_phis[i].src : null);
+                if (cp == null) continue;
+                cp.binder = lc.hdr_binders[i];
+                m.add_phi(lc.header, cp);
+                lc.cont_phis[i] = cp;
+            }
+            cp.add_arg(back, m.cur);
+        }
+        b.term = TermKind.TERM_BR;
+        m.link(m.cur, lc.header);
+        return;
+    }
     // Add back-edge operands to every header φ of the target loop.
     for (usz i = 0; i < lc.nphi; i++)
     {
         IrVal* back = m.env_lookup(lc.hdr_binders[i]);
+        // Same counter-advance rule as lower_continue for a for-range target.
+        if (back != null && lc.counter_phi != null && lc.counter_step != null
+            && lc.hdr_phis[i] == lc.counter_phi)
+        {
+            IrVal* bc = m.new_val(IrOp.IR_BIN, lc.counter_phi.src);
+            if (bc != null)
+            {
+                bc.bop = Tt.TOKEN_PLUS;
+                bc.add_arg(lc.counter_phi, -1);
+                bc.add_arg(lc.counter_step, -1);
+                m.emit(bc);
+                back = bc;
+            }
+        }
         if (back == null) continue;
         lc.hdr_phis[i].add_arg(back, m.cur);
     }
@@ -2952,6 +3202,36 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                         if (csv != null) return csv;
                     }
                 }
+                // Enum-variant selection `Color.Red` (r39): the base is the
+                // enum TYPE (not a value) — the generic projection below
+                // lowers it to a junk global and GEP-loads a record out of
+                // inttoptr(0).  Construct the tagged { ordinal, 0 } repr by
+                // declaration ordinal, exactly like the bare-ident variant
+                // arm in the default case; the member ident gets resolved to
+                // the variant node (the resolver does not link it).
+                Node* fbase2 = n.child_count >= 1 ? n.children[0] : null;
+                Node* fmem2  = n.child_count >= 2 ? n.children[1] : null;
+                Node* edecl2 = ast::enum_decl_of(fbase2);
+                if (edecl2 != null && fmem2 != null
+                    && fmem2.p.ident.name_ptr != null)
+                {
+                    for (usz evi = 1; evi < edecl2.child_count; evi++)
+                    {
+                        Node* ev2 = edecl2.children[evi];
+                        if (ev2 == null || ev2.kind != Nk.NODE_ENUM_VARIANT) continue;
+                        Node* vn2 = ev2.child_count >= 1 ? ev2.children[0] : null;
+                        if (vn2 == null || vn2.p.ident.name_ptr == null
+                            || vn2.p.ident.name_len != fmem2.p.ident.name_len) continue;
+                        bool veq = true;
+                        for (usz vci = 0; vci < fmem2.p.ident.name_len; vci++)
+                        { if (vn2.p.ident.name_ptr[vci] != fmem2.p.ident.name_ptr[vci]) { veq = false; break; } }
+                        if (!veq) continue;
+                        fmem2.resolved = ev2;
+                        IrVal* evv = m.lower_enum_variant_use(fmem2);
+                        if (evv != null) return evv;
+                        break;
+                    }
+                }
             }
             IrVal* base = m.lower_expr(n.child_count >= 1 ? n.children[0] : null);
             IrVal* v = m.new_val(IrOp.IR_FIELD, n);
@@ -3620,6 +3900,123 @@ fn void SsiModule.env_close_block(SsiModule* m, usz mark)
 }
 
 // assignment  x = rhs : evaluate rhs, then rebind x to that value (pure SSA).
+// By-value struct field assignment (`h.fst = 7`, nested `o.inner.v = 7`)
+// where the ROOT base is a local SSA aggregate — not a pointer, not
+// address-taken: the value lives in registers, there is no memory to store
+// through, and the pointer route emits GEP/store AGAINST THE VALUE ITSELF
+// (`gep {..}, ptr %v96` — invalid IR; r43).  Instead rebuild the aggregate
+// chain with the one leaf field replaced, exactly like source-level struct
+// update syntax, and rebind the root ident.  Returns true when handled.
+// Address of an lvalue chain (`p.cells`, `o.inner.arr`, `arr[i]` …) when the
+// storage is memory-backed somewhere along it.  Roots:
+//   * pointer ident     → env value (the pointee's base address)
+//   * inline-array ident → env value (array VALUES are storage pointers,
+//                          IR_ARRAY's contract — codegen binds them ptr)
+//   * address-taken root → its home alloca
+// A plain by-value struct root has NO address: returns null so callers
+// rebuild the aggregate chain by value instead (r45).
+// Levels: FIELD → IR_FIELD ival=1 (GEP, no load); INDEX → IR_INDEX ival=-3
+// (GEP, no load).
+fn IrVal* SsiModule.field_addr_chain(SsiModule* m, Node* fexpr)
+{
+    if (fexpr == null) return null;   // NOTE: ident leaves have 0 children —
+                                      // no child_count guard may precede this.
+    if (fexpr.kind == Nk.NODE_IDENT && fexpr.resolved != null)
+    {
+        Node* ann = fexpr.type_annotation;
+        if (ann != null && (ann.kind == Nk.NODE_TYPE_PTR
+                            || ann.kind == Nk.NODE_TYPE_ARRAY))
+        { return m.env_lookup(fexpr.resolved); }
+        return m.home_for(fexpr.resolved);   // null unless address-taken
+    }
+    if (fexpr.kind == Nk.NODE_EXPR_FIELD && fexpr.child_count >= 1)
+    {
+        IrVal* base_ptr = m.field_addr_chain(fexpr.children[0]);
+        if (base_ptr == null) return null;
+        IrVal* fa = m.new_val(IrOp.IR_FIELD, fexpr);
+        if (fa == null) return null;
+        fa.ival = 1;   // address-of-field mode (r46): GEP to the storage, no load
+        fa.add_arg(base_ptr, -1);
+        m.emit(fa);
+        return fa;
+    }
+    if (fexpr.kind == Nk.NODE_EXPR_INDEX && fexpr.child_count >= 2)
+    {
+        IrVal* base_ptr = m.field_addr_chain(fexpr.children[0]);
+        if (base_ptr == null) return null;
+        IrVal* idx_r = m.lower_expr(fexpr.children[1]);
+        if (idx_r == null) return null;
+        IrVal* ia = m.new_val(IrOp.IR_INDEX, fexpr);
+        if (ia == null) return null;
+        ia.ival = -3;   // address-of-element mode (r46): GEP to the storage, no load
+        ia.add_arg(base_ptr, -1);
+        ia.add_arg(idx_r, -1);
+        m.emit(ia);
+        return ia;
+    }
+    return null;
+}
+
+fn bool SsiModule.field_assign_rebuild(SsiModule* m, Node* target, IrVal* newval, Node* newval_ast)
+{
+    if (target == null || target.kind != Nk.NODE_EXPR_FIELD
+        || target.child_count < 2) return false;
+    Node* base_expr = target.children[0];
+    Node* fname     = target.children[1];
+    if (base_expr == null || fname == null) return false;
+    // Root ident: rebuild and rebind.
+    if (base_expr.kind == Nk.NODE_IDENT && base_expr.resolved != null
+        && m.home_for(base_expr.resolved) == null
+        && (base_expr.type_annotation == null
+            || base_expr.type_annotation.kind != Nk.NODE_TYPE_PTR))
+    {
+        IrVal* old = m.env_lookup(base_expr.resolved);
+        if (old == null) return false;
+        Node* finit = ast::node2(m.arena, Nk.NODE_FIELD_INIT,
+                                 fname, newval_ast != null ? newval_ast : fname,
+                                 target.line, target.col);
+        Node* usrc = ast::node2(m.arena, Nk.NODE_EXPR_STRUCT_LIT,
+                                base_expr, finit, target.line, target.col);
+        // Carry the base's instantiation stamp — codegen's concrete-repr
+        // substitution reads the literal's type_annotation (r33
+        // struct_app_ann); without it the update prints the generic decl's
+        // BOXED { ptr, ptr } repr against the concrete args[0] record.
+        usrc.type_annotation = base_expr.type_annotation;
+        IrVal* upd = m.new_val(IrOp.IR_STRUCT, usrc);
+        if (upd == null) return false;
+        upd.ival = 1;   // struct-update mode (arg[0] = base struct)
+        upd.add_arg(old, -1);
+        upd.add_arg(newval, -1);
+        m.emit(upd);
+        m.env_push(base_expr.resolved, upd);
+        return true;
+    }
+    // Nested field base: rebuild THIS level against the current inner value,
+    // then let the containing level rebuild against the result.
+    if (base_expr.kind == Nk.NODE_EXPR_FIELD)
+    {
+        IrVal* cur = m.lower_expr(base_expr);
+        if (cur == null) return false;
+        Node* finit = ast::node2(m.arena, Nk.NODE_FIELD_INIT,
+                                 fname, newval_ast != null ? newval_ast : fname,
+                                 target.line, target.col);
+        Node* usrc = ast::node2(m.arena, Nk.NODE_EXPR_STRUCT_LIT,
+                                base_expr, finit, target.line, target.col);
+        usrc.type_annotation = base_expr.type_annotation;
+        IrVal* upd = m.new_val(IrOp.IR_STRUCT, usrc);
+        if (upd == null) return false;
+        upd.ival = 1;
+        upd.add_arg(cur, -1);
+        upd.add_arg(newval, -1);
+        m.emit(upd);
+        // The containing level stores the rebuilt inner value — its own
+        // AST for the FIELD_INIT is only read for the field NAME, so the
+        // name node itself is a safe placeholder.
+        return m.field_assign_rebuild(base_expr, upd, fname);
+    }
+    return false;
+}
+
 fn IrVal* SsiModule.lower_assign(SsiModule* m, Node* n)
 {
     Node* lhs = n.child_count >= 1 ? n.children[0] : null;
@@ -3704,6 +4101,69 @@ fn IrVal* SsiModule.lower_assign(SsiModule* m, Node* n)
     }
     if (lhs != null && lhs.kind == Nk.NODE_EXPR_INDEX && lhs.child_count >= 2)
     {
+        Node* ib = lhs.children[0];
+        if (ib != null && (ib.kind == Nk.NODE_EXPR_FIELD
+                           || ib.kind == Nk.NODE_EXPR_INDEX))
+        {
+            // Array element behind memory (pointer root, address-taken home,
+            // or an array VALUE — IR_ARRAY values ARE storage pointers):
+            // take the element's address and store through, so the write
+            // reaches the storage (r46 — the legacy path wrote into a
+            // loaded COPY, and GEP'd struct values as pointers for
+            // `arr[i].f = v`).
+            IrVal* addr = m.field_addr_chain(lhs);
+            if (addr != null)
+            {
+                // Opaque-ptr stores carry the VALUE's type — coerce rv to
+                // the slot's declared element type or an i64 literal would
+                // overwrite a narrow slot's neighbours (r46).
+                if (rv != null && lhs.type_annotation != null
+                    && lhs.type_annotation.kind == Nk.NODE_TYPE_PRIMITIVE
+                    && rhs != null && rhs.type_annotation != null
+                    && rhs.type_annotation.kind == Nk.NODE_TYPE_PRIMITIVE)
+                {
+                    Node* ea = rhs.type_annotation;
+                    Node* da = lhs.type_annotation;
+                    bool same = (ea.p.ident.name_len == da.p.ident.name_len);
+                    if (same && ea.p.ident.name_ptr != null && da.p.ident.name_ptr != null)
+                    { for (usz ci = 0; ci < ea.p.ident.name_len; ci++)
+                      { if (ea.p.ident.name_ptr[ci] != da.p.ident.name_ptr[ci]) { same = false; break; } } }
+                    if (!same) { rv = m.cast_to(rv, da, rhs); }
+                }
+                IrVal* st2 = m.new_val(IrOp.IR_STORE, n);
+                if (st2 != null)
+                {
+                    st2.add_arg(addr, -1);   // args[0] = element address
+                    st2.add_arg(rv, -1);     // args[1] = value to store
+                    m.emit(st2);
+                }
+                return rv;
+            }
+            if (ib.kind == Nk.NODE_EXPR_FIELD)
+            {
+                // By-value struct field holding an inline array: update the
+                // array VALUE (materialise + GEP-insert), then rebuild the
+                // enclosing aggregate chain (r46).
+                IrVal* cur_arr = m.lower_expr(ib);
+                if (cur_arr != null && rv != null)
+                {
+                    IrVal* idx3 = m.lower_expr(lhs.children[1]);
+                    IrVal* upd = m.new_val(IrOp.IR_INDEX, ib);
+                    if (upd != null)
+                    {
+                        upd.ival = -2;   // r46: array element update (value semantics)
+                        upd.add_arg(cur_arr, -1);
+                        upd.add_arg(rv, -1);
+                        upd.add_arg(idx3, -1);
+                        m.emit(upd);
+                        // `ib` itself (the field expr) carries the field's
+                        // type annotation — the right stamp for the new value.
+                        if (m.field_assign_rebuild(ib, upd, ib))
+                        { return rv; }
+                    }
+                }
+            }
+        }
         IrVal* base_val  = m.lower_lvalue_base(lhs.children[0]);
         IrVal* index_val = m.lower_expr(lhs.children[1]);
         IrVal* st = m.new_val(IrOp.IR_STORE, n);
@@ -3718,6 +4178,37 @@ fn IrVal* SsiModule.lower_assign(SsiModule* m, Node* n)
     }
     if (lhs != null && lhs.kind == Nk.NODE_EXPR_FIELD && lhs.child_count >= 1)
     {
+        // Field behind memory (pointer root / address-taken home / array
+        // storage): GEP to the field's address and store through — the write
+        // must reach the storage, not a loaded copy (r46).
+        IrVal* faddr = m.field_addr_chain(lhs);
+        if (faddr != null && rv != null)
+        {
+            // Coerce rv to the field's declared type before the opaque-ptr
+            // store (narrow-field overwrite guard, r46).
+            if (lhs.type_annotation != null
+                && lhs.type_annotation.kind == Nk.NODE_TYPE_PRIMITIVE
+                && rhs != null && rhs.type_annotation != null
+                && rhs.type_annotation.kind == Nk.NODE_TYPE_PRIMITIVE)
+            {
+                Node* ea = rhs.type_annotation;
+                Node* da = lhs.type_annotation;
+                bool same = (ea.p.ident.name_len == da.p.ident.name_len);
+                if (same && ea.p.ident.name_ptr != null && da.p.ident.name_ptr != null)
+                { for (usz ci = 0; ci < ea.p.ident.name_len; ci++)
+                  { if (ea.p.ident.name_ptr[ci] != da.p.ident.name_ptr[ci]) { same = false; break; } } }
+                if (!same) { rv = m.cast_to(rv, da, rhs); }
+            }
+            IrVal* stf = m.new_val(IrOp.IR_STORE, n);
+            if (stf != null)
+            {
+                stf.add_arg(faddr, -1);
+                stf.add_arg(rv, -1);
+                m.emit(stf);
+            }
+            return rv;
+        }
+        if (rv != null && m.field_assign_rebuild(lhs, rv, rhs)) { return rv; }
         IrVal* base_val = m.lower_lvalue_base(lhs.children[0]);
         IrVal* st = m.new_val(IrOp.IR_STORE, n);
         if (st != null)
@@ -4128,6 +4619,19 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
             && pat.kind == Nk.NODE_PATTERN_LITERAL
             && pat.child_count >= 1 && pat.children[0] != null
             && pat.children[0].kind == Nk.NODE_LIT_STRING;
+        // Tuple arm with LITERAL components (`| (0, b) -> ...`): refutable —
+        // the component equalities are tested in the dispatch block via
+        // tuple_component_test, exactly like fn-clause tuple matching.
+        bool tuple_lit_comps = false;
+        if (is_tuple)
+        {
+            for (usz k = 0; k < pat.child_count; k++)
+            {
+                if (pat.children[k] != null
+                    && pat.children[k].kind == Nk.NODE_PATTERN_LITERAL)
+                { tuple_lit_comps = true; break; }
+            }
+        }
         // Enum-name arms are tested-chain arms too: the switch cannot prove
         // a discriminant (no integer case value exists for a NAME pattern),
         // so they route through the default chain exactly like union-variant
@@ -4142,9 +4646,10 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         // test there.
         // (or_tested_chain needs the block even when guard==null: the OR
         // with string alternatives has NO switch cases, so without the
-        // equality pretest here the arm would match EVERYTHING.)
+        // equality pretest here the arm would match EVERYTHING; same for
+        // refutable literal components of a tuple arm.)
         bool needs_test_blk = (guard != null) || is_variant_arm || is_enum_name_arm
-            || is_null_arm || is_str_arm || or_tested_chain;
+            || is_null_arm || is_str_arm || or_tested_chain || tuple_lit_comps;
         int guard_blk = needs_test_blk ? m.new_block() : -1;
         int dispatch = (guard_blk >= 0) ? guard_blk : arm_blk;
 
@@ -4259,6 +4764,13 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         // it via projections, a union-variant arm extracts its payload slot.
         // (Other pattern shapes keep the legacy binding until they get
         // properly typed destructuring.)
+        // Emit the destructuring projections in this arm's DISPATCH block
+        // (guard_blk when present, else arm_blk): the dispatch block
+        // dominates both the guard evaluation and the arm body. Emitting
+        // into whatever block the previous arm left cur in scattered the
+        // projections into earlier bodies (broken dominance) — and a guard
+        // referencing a bound name needs the binding ABOVE guard_blk.
+        m.cur = (guard_blk >= 0) ? guard_blk : arm_blk;
         if (is_bind || is_tuple || is_variant_arm || is_newtype_arm) { m.bind_let_pattern(pat, sval); }
         else if (or_ident != null)               { m.bind_let_pattern(or_ident, sval); }
         else                                     { m.bind_pattern(null, pat); }
@@ -4287,6 +4799,12 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
                 // about the scrutinee, so AND the alternative-equality
                 // pretest into the guard condition.
                 gval = m.and_cond(m.or_pattern_test(pat, sval), gval, pat);
+            }
+            if (tuple_lit_comps)
+            {
+                // Refutable literal components of the tuple pattern: AND
+                // their per-component equality tests in.
+                gval = m.and_cond(m.tuple_component_test(pat, sval), gval, pat);
             }
             IrBlock* gb = m.blk(guard_blk);
             if (gb != null && gval != null) { gb.term = TermKind.TERM_CBR; gb.cond = gval; }
@@ -4478,6 +4996,13 @@ fn IrVal** SsiModule.push_loop(SsiModule* m, int header, int exit, IrVal** hdr_p
     lc.nphi = nphi;
     lc.break_count = 0;
     lc.break_vals = null;
+    // Slots are reused across sibling loops — clear the for-range hook or a
+    // stale counter from a previous loop would corrupt this one's continue.
+    lc.counter_phi = null;
+    lc.counter_step = null;
+    // Same reuse hazard for the do-while condition-merge φs (r44).
+    lc.phi_home = header;
+    for (usz ci = 0; ci < SCAN_CAP; ci++) { lc.cont_phis[ci] = null; }
     if (nphi > 0)
     {
         lc.break_vals = (IrVal**)malloc(MAX_BREAKS * nphi * IrValPtr::size);
@@ -4526,16 +5051,21 @@ fn IrVal* SsiModule.build_exit_phis(SsiModule* m, Node* n, int exit, int header,
     bool has_breaks = done.break_count > 0;
     for (usz i = 0; i < nphi; i++)
     {
+        // At the header's exit edge the binder holds the value at the
+        // CONDITION point: for do-while with continue-merges that is the
+        // merge φ, not the (one-update-stale) body-header φ (r44).
+        IrVal* at_exit = (i < SCAN_CAP && done != null && done.cont_phis[i] != null)
+                       ? done.cont_phis[i] : hdr_phis[i];
         if (!has_breaks)
         {
-            m.env_push(hdr_binders[i], hdr_phis[i]);
+            m.env_push(hdr_binders[i], at_exit);
             continue;
         }
         // exit φ: normal-exit (from header, false edge) + each break site.
         IrVal* phi = m.new_val(IrOp.IR_PHI, n);
-        if (phi == null) { m.env_push(hdr_binders[i], hdr_phis[i]); continue; }
+        if (phi == null) { m.env_push(hdr_binders[i], at_exit); continue; }
         phi.binder = hdr_binders[i];
-        phi.add_arg(hdr_phis[i], header);
+        phi.add_arg(at_exit, header);
         for (usz bk = 0; bk < done.break_count; bk++)
         {
             IrVal* bv = done.break_vals[bk * done.nphi + i];
@@ -5105,7 +5635,7 @@ fn void SsiModule.lower_do_while(SsiModule* m, Node* n)
     // Pre-scan body for binders it reassigns — needed for φ placement.
     Snap assigned;
     assigned.count = 0;
-    if (body != null) collect_assigned(body, &assigned);
+    if (body != null) collect_assigned(m, body, &assigned);
 
     usz pre_mark = m.env_mark();
 
@@ -5135,6 +5665,7 @@ fn void SsiModule.lower_do_while(SsiModule* m, Node* n)
     // Lower the body (runs in body_blk, phi values visible).
     usz bmark = m.env_mark();
     IrVal** break_vals = m.push_loop(cond_blk, exit, &hdr_phis[0], &hdr_binders[0], nphi);
+    if (m.loop_count >= 1) { m.loops[m.loop_count - 1].phi_home = body_blk; }
     if (body != null) m.lower_stmt(body);
     LoopCtx done = m.pop_loop();
 
@@ -5151,13 +5682,24 @@ fn void SsiModule.lower_do_while(SsiModule* m, Node* n)
         {
             IrVal* back = m.env_lookup(hdr_binders[i]);
             if (back == null) back = entry_vals[i];
+            // Continue-merge φ (r44): it also takes the natural body-end
+            // value, and becomes the body φ's back-edge incoming.
+            if (i < SCAN_CAP && done.cont_phis[i] != null)
+            {
+                done.cont_phis[i].add_arg(back, body_end);
+                back = done.cont_phis[i];
+            }
             hdr_phis[i].add_arg(back, cond_blk);
         }
     }
     m.env_reset(bmark);
 
     // Evaluate condition in cond_blk; back-edge φ values are still in env.
+    // With continue-merge φs, the condition reads the MERGE — the value each
+    // path actually carried into the condition point.
     m.cur = cond_blk;
+    for (usz i = 0; i < nphi && i < SCAN_CAP; i++)
+    { if (done.cont_phis[i] != null) m.env_push(hdr_binders[i], done.cont_phis[i]); }
     IrVal* cond_val = cond != null ? m.lower_expr(cond) : null;
     IrBlock* hb = m.blk(cond_blk);
     if (hb != null) { hb.term = TermKind.TERM_CBR; hb.cond = cond_val; }
@@ -5187,7 +5729,7 @@ fn void SsiModule.lower_while(SsiModule* m, Node* n)
     // Pre-place header φ for every binder the body reassigns.
     Snap assigned;
     assigned.count = 0;
-    if (body != null) collect_assigned(body, &assigned);
+    if (body != null) collect_assigned(m, body, &assigned);
 
     usz pre_mark = m.env_mark();
     m.cur = header;
@@ -5302,7 +5844,7 @@ fn void SsiModule.lower_for(SsiModule* m, Node* n)
 
     Snap assigned;
     assigned.count = 0;
-    if (body != null) collect_assigned(body, &assigned);
+    if (body != null) collect_assigned(m, body, &assigned);
 
     usz pre_mark = m.env_mark();
     m.cur = header;
@@ -5392,7 +5934,27 @@ fn void SsiModule.lower_for(SsiModule* m, Node* n)
         IrVal* iv = m.new_val(IrOp.IR_PARAM, binder);
         if (iv != null) { m.emit(iv); m.bind_let_pattern(binder, iv); }
     }
+    // Hoist the range step: one value feeds both the body-end back-edge and
+    // every `continue` edge's counter increment (LoopCtx.counter_step).
+    // (Emitted in body_blk, which dominates the latch and all continue sites.)
+    IrVal* step_val = null;
+    if (is_range && counter_phi != null)
+    {
+        step_val = range_step;
+        if (step_val == null)
+        {
+            IrVal* one = m.new_val(IrOp.IR_CONST_INT, n);
+            if (one != null) { one.ival = 1; m.emit(one); }
+            step_val = one;
+        }
+    }
     IrVal** break_vals = m.push_loop(header, exit, &hdr_phis[0], &hdr_binders[0], nphi);
+    if (is_range && counter_phi != null && m.loop_count >= 1)
+    {
+        LoopCtx* lc2 = &m.loops[m.loop_count - 1];
+        lc2.counter_phi  = counter_phi;
+        lc2.counter_step = step_val;
+    }
     if (body != null) { m.lower_stmt(body); }
     LoopCtx done = m.pop_loop();
 
@@ -5404,13 +5966,6 @@ fn void SsiModule.lower_for(SsiModule* m, Node* n)
         IrVal* back_counter = null;
         if (is_range && counter_phi != null)
         {
-            IrVal* step_val = range_step;
-            if (step_val == null)
-            {
-                IrVal* one = m.new_val(IrOp.IR_CONST_INT, n);
-                if (one != null) { one.ival = 1; m.emit(one); }
-                step_val = one;
-            }
             back_counter = m.new_val(IrOp.IR_BIN, n);
             if (back_counter != null)
             {

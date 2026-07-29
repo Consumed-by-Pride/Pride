@@ -1569,7 +1569,21 @@ fn Node* TypeChecker.synth_field(TypeChecker* self, Node* e)
 
     // If the base is a module/effect path or its type is unknown, don't warn
     // (could be qualified access like math::sin, handled elsewhere).
-    if (bt == null) return null;
+    if (bt == null)
+    {
+        // Enum-variant selection without construction args (`Color.Red`):
+        // the base is the enum TYPE used as a value — synth yields nothing
+        // for it, but the variant value's type IS the enum type.  Leaving
+        // the field node unstamped made call-site coercions see the tymap
+        // default i64 against the enum's { i32, i64 } tagged repr
+        // ("unsupported argument coercion").
+        Node* edecl = ast::enum_decl_of(base);
+        if (edecl != null && name != null && name.p.ident.name_ptr != null
+            && ast::enum_variant_lookup(edecl, name.p.ident.name_ptr,
+                                        name.p.ident.name_len) >= 0)
+        { return base; }
+        return null;
+    }
 
     // The base has an abstract generic-parameter type (e.g. `b.val` where val:T
     // inside a generic body). We can't know its fields until monomorphization,
@@ -1672,6 +1686,35 @@ fn Node* TypeChecker.synth_field(TypeChecker* self, Node* e)
         self.soft("unknown field", name.line, name.col);
         return null;
     }
+    // Generic-struct instantiation base (`pr.fst` with `pr : Pair<i64, f64>`):
+    // the decl's field type names the type parameter — substitute the
+    // instantiation's arguments, or every consumer sees the boxed parameter
+    // type instead of the concrete field type.  DEEP substitution (r48):
+    // generic_payload_subst only rewrites a BARE typevar payload, so
+    // compound field types (`items : [T; 2]`, `*T`, `T -> T`) kept the
+    // parameter and downstream code boxed/broke (`store ptr 99`,
+    // `Index : T` for `b : Box<i64>`).
+    if (bt != null && bt.kind == Nk.NODE_TYPE_GENERIC_APP && bt.child_count >= 2)
+    {
+        Node* hd2 = bt.children[0];
+        Node* gdecl = (hd2 != null && hd2.resolved != null) ? hd2.resolved : bt.resolved;
+        if (gdecl != null
+            && (gdecl.kind == Nk.NODE_DECL_TYPE || gdecl.kind == Nk.NODE_DECL_STRUCT))
+        {
+            TypeBindings fb;
+            fb.clear();
+            usz oi = 1;
+            for (usz di = 0; di < gdecl.child_count && oi < bt.child_count; di++)
+            {
+                Node* gp = gdecl.children[di];
+                if (gp == null || gp.kind != Nk.NODE_GENERIC_PARAM) continue;
+                for (usz pi = 0; pi < gp.child_count && oi < bt.child_count; pi++)
+                { fb.bind(gp.children[pi], bt.children[oi]); oi++; }
+            }
+            if (fb.count > 0) { return self.substitute(ft, &fb, 0); }
+        }
+    }
+    ft = ast::generic_payload_subst(bt, ft);
     return ft;
 }
 
@@ -1855,10 +1898,41 @@ fn Node* TypeChecker.synth_struct_lit(TypeChecker* self, Node* e)
         // Set type_annotation on e so codegen can see the struct type.
         if (base_ty != null)
         {
+            // Struct-UPDATE on an untagged C-union (`u { f: ... }`): the
+            // repr is one 64-bit cell — updating one field while "keeping"
+            // the others has no meaning on overlapping storage, and the
+            // lowering cannot express it.  Loud rejection beats invalid IR.
+            Node* upd_udecl = ast::union_decl_of(base_ty);
+            if (ast::union_is_c_union(upd_udecl))
+            {
+                self.hard("update syntax on an untagged C-union is unsupported — construct the value from a single field instead",
+                          e.line, e.col);
+            }
             e.type_annotation = base_ty;
             return base_ty;
         }
         return tyname;
+    }
+
+    // Untagged C-union literal (one shared 64-bit cell — v.md §9): a
+    // construction writes a SINGLE interpretation into the cell; listing
+    // several fields would make later initialisers overlap earlier ones.
+    // Require exactly one provided field (the value check below still runs
+    // against the field's payload type).
+    Node* lit_udecl = ast::union_decl_of(tyname);
+    if (ast::union_is_c_union(lit_udecl))
+    {
+        int provided = 0;
+        for (usz i = 1; i < e.child_count; i++)
+        {
+            Node* fi = e.children[i];
+            if (fi != null && fi.kind == Nk.NODE_FIELD_INIT) provided++;
+        }
+        if (provided != 1)
+        {
+            self.hard("untagged C-union construction takes exactly one field — its fields overlap one 64-bit cell",
+                      e.line, e.col);
+        }
     }
 
     // Check each provided field initializer.
@@ -1887,16 +1961,21 @@ fn Node* TypeChecker.synth_struct_lit(TypeChecker* self, Node* e)
         }
     }
 
-    // Warn about required fields that were not provided.
-    for (usz i = 0; i < fields.child_count; i++)
+    // Warn about required fields that were not provided.  (A C-union literal
+    // provides exactly one interpretation by construction — the cell never
+    // "contains all fields", so the missing-field warning is meaningless.)
+    if (!ast::union_is_c_union(lit_udecl))
     {
-        Node* fd = fields.children[i];
-        if (fd == null || fd.kind != Nk.NODE_FIELD_DECL) continue;
-        Node* fn_name = fd.child_count >= 1 ? fd.children[0] : null;
-        if (fn_name == null) continue;
-        if (!struct_lit_has_field(e, fn_name.p.ident.name_ptr, fn_name.p.ident.name_len))
+        for (usz i = 0; i < fields.child_count; i++)
         {
-            self.soft("missing field in struct literal", e.line, e.col);
+            Node* fd = fields.children[i];
+            if (fd == null || fd.kind != Nk.NODE_FIELD_DECL) continue;
+            Node* fn_name = fd.child_count >= 1 ? fd.children[0] : null;
+            if (fn_name == null) continue;
+            if (!struct_lit_has_field(e, fn_name.p.ident.name_ptr, fn_name.p.ident.name_len))
+            {
+                self.soft("missing field in struct literal", e.line, e.col);
+            }
         }
     }
 
@@ -2857,7 +2936,13 @@ fn Node* TypeChecker.synth_match(TypeChecker* self, Node* e)
             {
                 Node* comp = pat.children[k];
                 if (comp == null) continue;
-                if (comp.kind == Nk.NODE_PATTERN_LITERAL || comp.kind == Nk.NODE_PATTERN_STRUCT
+                // Literal components ARE supported: the lowering folds a
+                // per-component equality test into the arm's dispatch block
+                // (fn clauses accept the same shapes via clause_test), which
+                // is exactly the spec's `| (0, 0) -> ...` tuple matching.
+                // NESTED struct/tuple/or components still need a decision
+                // tree — keep the hard error for those.
+                if (comp.kind == Nk.NODE_PATTERN_STRUCT
                     || comp.kind == Nk.NODE_PATTERN_TUPLE   || comp.kind == Nk.NODE_PATTERN_OR)
                 {
                     self.hard("refutable component in a match tuple pattern (bind it and refine with a guard)",
@@ -3067,6 +3152,46 @@ fn void TypeChecker.check(TypeChecker* self, Node* e, Node* expected)
     if (!self.arg_fits(e, actual, expected))
     {
         self.soft("type mismatch (soft): value does not fit the expected type", e.line, e.col);
+    }
+    // A struct literal checked against a generic-struct instantiation type
+    // takes the instantiation as its stamp (see the helper).
+    self.stamp_expected_struct_lit(e, expected);
+}
+
+// Recursively stamp struct literals returned through `return` statements in
+// a clause body (r48): check_clause covers only a DIRECT struct-literal body
+// (`| v -> Pair { … }`); `| v -> … return Pair { … }` inside a block (or an
+// if/loop arm) escaped the codomain stamp, so the literal printed the
+// generic decl's boxed repr against the fn's concrete return type.
+// Nested fn decls / closures have their own codomain — not descended into.
+fn void TypeChecker.stamp_return_struct_lits(TypeChecker* self, Node* n, Node* ret)
+{
+    if (n == null || ret == null) return;
+    if (n.kind == Nk.NODE_DECL_FN || n.kind == Nk.NODE_EXPR_CLOSURE) return;
+    if (n.kind == Nk.NODE_STMT_RETURN && n.child_count >= 1)
+    { self.stamp_expected_struct_lit(n.children[0], ret); }
+    for (usz i = 0; i < n.child_count; i++)
+    { self.stamp_return_struct_lits(n.children[i], ret); }
+}
+
+// A struct literal checked against a GENERIC-STRUCT INSTANTIATION
+// (`Pair { fst: a, snd: b } : Pair<i64, f64>`) IS the instantiation — not
+// the bare head TypeVar its syntax mentions.  Stamp it so codegen prints the
+// substituted record (insertvalue repr, return ABI, field projections).
+// Field validation already ran during synth against the decl's field list,
+// so nothing is lost by overwriting the stamp.  Shared by check()
+// (let/assignment positions) and check_clause (return position).
+fn void TypeChecker.stamp_expected_struct_lit(TypeChecker* self, Node* e, Node* expected)
+{
+    if (e == null || e.kind != Nk.NODE_EXPR_STRUCT_LIT || expected == null) return;
+    Node* un = self.unfold(expected);
+    if (un == null || un.kind != Nk.NODE_TYPE_GENERIC_APP) return;
+    Node* app_decl = ast::struct_decl_of(un);
+    Node* lit_head = e.child_count >= 1 ? e.children[0] : null;
+    Node* lit_decl = ast::struct_decl_of(lit_head);
+    if (app_decl != null && lit_decl != null && app_decl == lit_decl)
+    {
+        e.type_annotation = un;
     }
 }
 
@@ -3505,6 +3630,12 @@ fn void TypeChecker.check_clause(TypeChecker* self, Node* clause, Node* arg, Nod
         {
             body.type_annotation = ret;
         }
+        // Likewise: a struct-literal body returned from a fn whose codomain
+        // is a generic-struct instantiation (`-> Pair<i64, f64>` where the
+        // body is `Pair { ... }`) takes the instantiation as its stamp —
+        // and so do literals returned through `return` stmts in the body.
+        self.stamp_expected_struct_lit(body, ret);
+        self.stamp_return_struct_lits(body, ret);
         Node* bt = self.synth(body);
         // arg_fits allows an untyped numeric literal body to adapt to the
         // declared numeric return type (e.g. `| () -> 42` for `-> i32`).
@@ -3626,7 +3757,7 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
             {
                 bool field_form = pat.child_count >= 1 && pat.children[0] != null
                               && pat.children[0].kind == Nk.NODE_PATTERN_FIELD;
-                if (field_form)
+                if (field_form && ast::union_decl_of(ty) != null)
                 {
                     // Union-variant pattern `{ name: binder }`: resolve every
                     // field against the union's variant list, type the binder
@@ -3687,6 +3818,59 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
                             self.bind_pattern_types(bind, payload_ty);
                             pf.type_annotation = payload_ty;
                         }
+                    }
+                }
+                else if (field_form && ast::struct_decl_of(ty) != null)
+                {
+                    // Plain-struct destructuring (v.md §5 `let { x, y } = p`,
+                    // `{ fst: a, snd: b }` on fn clauses): IRREFUTABLE —
+                    // the field names select, the binders receive the field
+                    // values.  This used to be mistaken for a union-variant
+                    // pattern: shorthand fields were silently skipped (the
+                    // binders were never stamped, and the lowering bound
+                    // nothing — uses read as 0) and the explicit form
+                    // hard-errored "unknown variant in union pattern".
+                    Node* sdecl = ast::struct_decl_of(ty);
+                    pat.type_annotation = ty;
+                    for (usz fi = 0; fi < pat.child_count; fi++)
+                    {
+                        Node* pf = pat.children[fi];
+                        if (pf == null || pf.kind != Nk.NODE_PATTERN_FIELD
+                            || pf.child_count < 1) continue;
+                        Node* vn = pf.children[0];
+                        if (vn == null || vn.p.ident.name_ptr == null) continue;
+                        Node* fty = null;
+                        int ford = ast::struct_field_lookup(sdecl,
+                            vn.p.ident.name_ptr, vn.p.ident.name_len, &fty);
+                        if (ford < 0)
+                        {
+                            self.hard("unknown field in struct pattern (check the struct's field list)",
+                                      vn.line, vn.col);
+                            continue;
+                        }
+                        // Generic struct (`Pair<i64, bool>`): substitute the
+                        // decl's type parameter with the instantiation's
+                        // argument before scalar typing.
+                        fty = ast::generic_payload_subst(ty, fty);
+                        pf.type_annotation = fty;
+                        if (pf.child_count >= 2 && pf.children[1] != null
+                            && pf.children[1].kind != Nk.NODE_PATTERN_LITERAL)
+                        {
+                            // `{ name: subpattern }` — bind recursively
+                            // (nested tuples/structs work naturally).
+                            self.bind_pattern_types(pf.children[1], fty);
+                        }
+                        else if (pf.child_count < 2)
+                        {
+                            // Shorthand `{ x }`: the name IS the binder — the
+                            // resolver keys uses to the FIELD node
+                            // (bind_pattern_field), so the stamped field node
+                            // above is what downstream reads.
+                            vn.type_annotation = fty;
+                        }
+                        // `{ name: literal }` in binding position: a literal
+                        // cannot bind and a let-pattern must be irrefutable —
+                        // tolerated silently, same convention as tuple lets.
                     }
                 }
                 else if (ty != null && pat.child_count >= 2)

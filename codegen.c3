@@ -94,6 +94,14 @@ const char* LLVM_TRIPLE = "x86_64-pc-linux-gnu";
 char* g_target_triple_override = null;  // set by --target=<triple>
 bool  g_freestanding           = false; // set by --freestanding: no runtime, no libc
 
+// Deep generic-argument substitution context (r48): while a GENERIC_APP's
+// field list is being expanded into LLVM text / sizes, TYPEVAR leaves that
+// resolve to the app's generic parameters are substituted with the app's
+// arguments.  ast::generic_payload_subst alone only rewrites a BARE typevar
+// payload, so COMPOUND field types like `items : [T; 2]` stayed boxed
+// (`[2 x ptr]` for `Box<i64>`, with `store ptr 99` as downstream fallout).
+Node* g_subst_app = null;
+
 // Known target datalayouts
 const char* LLVM_DATALAYOUT_AARCH64 =
     "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128";
@@ -120,6 +128,17 @@ fn bool cstr_eq_n(char* a, char* b, usz n) @private
     if (a == null || b == null) return false;
     for (usz i = 0; i < n; i++) { if (a[i] != b[i]) return false; }
     return true;
+}
+
+// Rank of a tensor TYPE annotation (NODE_TYPE_TENSOR[elem, d0, d1, ...] —
+// so rank == child_count - 1).  Returns -1 for null / non-tensor
+// annotations.  Used by the `@` lowering to pick batched gemm vs. the
+// scalar dot-product path (spec §11).
+fn int cg_tensor_rank_of(Node* ann)
+{
+    if (ann == null) return -1;
+    if (ann.kind == Nk.NODE_TYPE_TENSOR) return (int)ann.child_count - 1;
+    return -1;
 }
 
 // Exact, full-byte comparison of a (ptr,len) span against a C string literal.
@@ -189,6 +208,38 @@ fn usz prim_alignof(char* name, usz len)
 // Write the LLVM type string for a Pride type node into buf[cap].
 // Returns buf (always null-terminated). Falls back to "i64" for unknown types.
 
+// Concrete generic-struct instantiation (r33): `Pair<i64, f64>`.  Returns
+// the struct decl's FIELD BLOCK when the app instantiates a STRUCT with
+// every argument concrete (no type-parameter TypeVars).  The ABI must then
+// print the SUBSTITUTED field record ({ i64, double }) — not the decl's
+// boxed { ptr, ptr } parameter repr, which is only coherent in still-generic
+// contexts.  Construction (insertvalue), field access (extractvalue),
+// parameters, and returns all print through this helper, so one substitution
+// keeps the whole value repr consistent.  An app that still mentions a type
+// parameter (or whose head is not a struct) returns null and keeps the
+// historical boxed head repr.
+fn Node* cg_concrete_struct_app_fblk(Node* app)
+{
+    if (app == null || app.kind != Nk.NODE_TYPE_GENERIC_APP || app.child_count < 2)
+    { return null; }
+    for (usz ai = 1; ai < app.child_count; ai++)
+    {
+        Node* arg = app.children[ai];
+        if (arg != null && arg.kind == Nk.NODE_TYPEVAR && arg.resolved != null
+            && (arg.resolved.kind == Nk.NODE_PARAM
+                || arg.resolved.kind == Nk.NODE_GENERIC_PARAM))
+        { return null; }   // still generic — boxed repr
+    }
+    Node* sd = ast::struct_decl_of(app);
+    if (sd == null) return null;
+    for (usz fi = 0; fi < sd.child_count; fi++)
+    {
+        Node* fc = sd.children[fi];
+        if (fc != null && fc.kind == Nk.NODE_EXPR_BLOCK) return fc;
+    }
+    return null;
+}
+
 fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
 {
     if (cap == 0) return buf;
@@ -241,6 +292,13 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
     }
     if (t.kind == Nk.NODE_TYPEVAR && t.resolved != null)
     {
+        // Inside a GENERIC_APP expansion (r48): substitute the argument.
+        if (g_subst_app != null)
+        {
+            Node* sm = ast::generic_payload_subst(g_subst_app, t);
+            if (sm != null && sm != t)
+            { return type_to_llvm_buf(sm, buf, cap, depth + 1); }
+        }
         Node* d = t.resolved;
         if (d.kind == Nk.NODE_DECL_ENUM) { snprintf(buf, cap, "{ i32, i64 }"); return buf; }
         // Union reprs (r13): tagged { i32, i64 } when a unit-payload variant
@@ -404,7 +462,38 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
         return buf;
     }
     if (t.kind == Nk.NODE_TYPE_GENERIC_APP && t.child_count >= 1)
-    { return type_to_llvm_buf(t.children[0], buf, cap, depth+1); }
+    {
+        // Concrete generic-struct instantiation: emit the substituted field
+        // record inline (see cg_concrete_struct_app_fblk).  The r48 context
+        // lets COMPOUND field types ([T; N], *T, fn…T) substitute too.
+        Node* fblk2 = cg_concrete_struct_app_fblk(t);
+        if (fblk2 != null)
+        {
+            Node* prev_app = g_subst_app;
+            g_subst_app = t;
+            usz off2 = 0;
+            if (off2 < cap-2) { buf[off2++] = '{'; buf[off2++] = ' '; }
+            bool first2 = true;
+            for (usz fi = 0; fi < fblk2.child_count; fi++)
+            {
+                Node* fd = fblk2.children[fi];
+                if (fd == null || fd.kind != Nk.NODE_FIELD_DECL || fd.child_count < 2) continue;
+                if (!first2 && off2 < cap-2) { buf[off2++] = ','; buf[off2++] = ' '; }
+                first2 = false;
+                if (off2 < cap - 1)
+                {
+                    Node* fty = ast::generic_payload_subst(t, fd.children[1]);
+                    type_to_llvm_buf(fty, buf + off2, cap - off2, depth + 1);
+                    off2 += strlen(buf + off2);
+                }
+            }
+            g_subst_app = prev_app;
+            if (off2 < cap-2) { buf[off2++] = ' '; buf[off2++] = '}'; }
+            buf[off2] = 0;
+            return buf;
+        }
+        return type_to_llvm_buf(t.children[0], buf, cap, depth+1);
+    }
     if (t.kind == Nk.NODE_TYPE_TUPLE)
     {
         // Tuple → struct.  Build { T0, T1, ... } in buf, recursing directly
@@ -587,6 +676,17 @@ fn void closure_thunk_ret_type(Node* clo, char* buf, usz cap)
             {
                 type_to_llvm_buf(body.type_annotation, buf, cap, 0);
                 if (buf[0] != 0 && !(buf[0] == 'v' && buf[1] == 'o')) { return; }
+            }
+            // An unannotated clause body that IS another closure literal
+            // (currying: `| n -> | x -> x + n`) evaluates to the fat
+            // {code, env} record — the typechecker stamps no annotation on
+            // an unascribed closure literal, but the record type is certain;
+            // the generic i64 fallback would chop the pointer pair in half
+            // and break every downstream coercion.
+            if (body != null && body.kind == Nk.NODE_EXPR_CLOSURE)
+            {
+                snprintf(buf, cap, "{ ptr, ptr }");
+                return;
             }
         }
     }
@@ -874,6 +974,15 @@ fn bool infer_fn_types(ssi_ir::SsiModule* ir, ssi_ir::SsiFunc* f, TypeTable* t)
                                     fn_param_llvm_type(fn_decl_iv, -1, &buf[0], TYMAP_ENTRY);
                                     // Filter void — calls that return () should still have void tymap
                                     // (void calls are fine; the issue is non-i64 integer returns)
+                                }
+                                // A call THROUGH a closure value: the callee binder is
+                                // the closure literal, whose return type lives in its
+                                // clause bodies (currying: a closure returning a
+                                // closure yields the fat { ptr, ptr } record — the i64
+                                // fallback halves it at every coercion site).
+                                if (fn_decl_iv != null && fn_decl_iv.kind == Nk.NODE_EXPR_CLOSURE)
+                                {
+                                    closure_thunk_ret_type(fn_decl_iv, &buf[0], TYMAP_ENTRY);
                                 }
                             }
                         case ssi_ir::IrOp.IR_TUPLE:
@@ -1278,6 +1387,12 @@ fn bool phi_annotation_type(ssi_ir::IrVal* ph, char* pbuf, usz cap)
             // Allow ptr if binder annotation IS a real pointer type
             if (pbuf[0] == 'p' && binder_ty_node.kind == Nk.NODE_TYPE_PTR)
             { binder_ty_ok = true; }
+            // Inline-array binder: the loop/branch-carried VALUE is its
+            // storage POINTER (IR_ARRAY's contract — array values are ptrs),
+            // never a [N x T] register aggregate, so the phi must be typed
+            // ptr or the [N x T] text mismatches every operand (r49).
+            if (binder_ty_node.kind == Nk.NODE_TYPE_ARRAY)
+            { snprintf(pbuf, cap, "ptr"); binder_ty_ok = true; }
             if (binder_ty_ok) { return true; }
         }
     }
@@ -1537,6 +1652,14 @@ fn void CgenModule.emit_type(CgenModule* cg, Node* t, bool in_ret_pos, int depth
         return;
     }
 
+    // Inside a GENERIC_APP expansion (r48): substitute typevar leaves.
+    if (t.kind == Nk.NODE_TYPEVAR && g_subst_app != null)
+    {
+        Node* sm2 = ast::generic_payload_subst(g_subst_app, t);
+        if (sm2 != null && sm2 != t)
+        { cg.emit_type(sm2, in_ret_pos, depth + 1); return; }
+    }
+
     // Unfold type aliases one level
     if (t.kind == Nk.NODE_TYPEVAR && t.resolved != null)
     {
@@ -1657,8 +1780,28 @@ fn void CgenModule.emit_type(CgenModule* cg, Node* t, bool in_ret_pos, int depth
             }
 
         case Nk.NODE_TYPE_GENERIC_APP:
-            // Monomorphized generic app: head should resolve to a concrete struct
-            if (t.child_count >= 1)
+            // Concrete generic-struct instantiation: emit the substituted
+            // field record inline (see cg_concrete_struct_app_fblk); a still-
+            // generic app keeps the boxed head repr.
+            Node* fblk9 = cg_concrete_struct_app_fblk(t);
+            if (fblk9 != null)
+            {
+                Node* prev_app9 = g_subst_app;
+                g_subst_app = t;
+                cg.out.writes("{ ");
+                bool first9 = true;
+                for (usz fi = 0; fi < fblk9.child_count; fi++)
+                {
+                    Node* fd = fblk9.children[fi];
+                    if (fd == null || fd.kind != Nk.NODE_FIELD_DECL || fd.child_count < 2) continue;
+                    if (!first9) { cg.out.writes(", "); }
+                    first9 = false;
+                    cg.emit_type(ast::generic_payload_subst(t, fd.children[1]), false, depth + 1);
+                }
+                g_subst_app = prev_app9;
+                cg.out.writes(" }");
+            }
+            else if (t.child_count >= 1)
             {
                 cg.emit_type(t.children[0], in_ret_pos, depth + 1);
             }
@@ -1991,6 +2134,17 @@ fn Node* struct_body_of(Node* n)
 {
     if (n == null) return null;
     if (n.kind == Nk.NODE_DECL_STRUCT || n.kind == Nk.NODE_DECL_UNION) return n;
+    // Generic instantiation (`Pair<i64, f64>`): the struct decl lives behind
+    // the application's head TypeVar — the same look-through as
+    // ast::struct_decl_of (needed so field INDEX lookup works on instantiations).
+    if (n.kind == Nk.NODE_TYPE_GENERIC_APP && n.child_count >= 1)
+    {
+        Node* hd = n.children[0];
+        if (hd != null && hd.resolved != null && hd.resolved != n)
+        { return struct_body_of(hd.resolved); }
+        if (n.resolved != null && n.resolved != n) return struct_body_of(n.resolved);
+        return null;
+    }
     // TypeVar use → its declaration (which may itself be an alias).
     if (n.kind == Nk.NODE_TYPEVAR && n.resolved != null) return struct_body_of(n.resolved);
     if (n.kind == Nk.NODE_DECL_TYPE && n.child_count >= 1)
@@ -2370,6 +2524,34 @@ fn int fp_ty_rank(char* ty)
 // null when the types are representation-identical and NO instruction is
 // required (same type, or both opaque `ptr`). Also null when no scalar
 // conversion exists (aggregates/void) — callers handle those separately.
+// Is an AST type annotation an unsigned-integer-ish type (uN, usize, bool)?
+// Signedness does not survive into the LLVM type text (iN is sign-agnostic),
+// so extension decisions MUST read the source annotation — `sext` on a
+// `u8 255` yields -1 (and on `true`, too: i1 sign-extends to -1) where the
+// value is defined to be 255 (1) — see r38.
+fn bool cg_ann_is_unsigned(Node* ann)
+{
+    if (ann == null) return false;
+    if (ann.kind == Nk.NODE_TYPEVAR && ann.resolved != null)
+    {
+        Node* d = ann.resolved;
+        if (d.kind == Nk.NODE_DECL_TYPE && d.child_count >= 1)
+        { return cg_ann_is_unsigned(d.children[d.child_count - 1]); }
+        return false;
+    }
+    if (ann.kind != Nk.NODE_TYPE_PRIMITIVE) return false;
+    char* n = ann.p.ident.name_ptr; usz l = ann.p.ident.name_len;
+    if (n == null || l == 0) return false;
+    if (l == 4 && n[0]=='b'&&n[1]=='o'&&n[2]=='o'&&n[3]=='l') return true;  // bool extends zero
+    if (l == 5 && n[0]=='u'&&n[1]=='s'&&n[2]=='i'&&n[3]=='z'&&n[4]=='e') return true;
+    if (l >= 2 && n[0] == 'u')   // uN
+    {
+        for (usz i = 1; i < l; i++) { if (n[i] < '0' || n[i] > '9') return false; }
+        return true;
+    }
+    return false;
+}
+
 fn char* coerce_op(char* src, char* dst)
 {
     if (src == null || dst == null || src[0] == 0 || dst[0] == 0) return null;
@@ -2396,6 +2578,19 @@ fn char* coerce_op(char* src, char* dst)
         || (src[0] == 'v' && src[1] == 'o') || (dst[0] == 'v' && dst[1] == 'o'))
     { return null; }
     return (char*)"bitcast";
+}
+
+// Signedness-aware sibling of coerce_op: identical, except an integer
+// WIDENING zero-extends when the VALUE is unsigned-typed. The LLVM type text
+// is sign-agnostic — signedness survives only in the AST annotation and on
+// integer literals, both of which is_signed_int_val knows how to read
+// (r38/r40). A sext of u8 200 / u32 4000000001 / bool true negates the value.
+fn char* coerce_op_val(char* src, char* dst, ssi_ir::IrVal* v)
+{
+    char* r = coerce_op(src, dst);
+    if (r != null && r[0] == 's' && r[1] == 'e' && !is_signed_int_val(v))
+    { return (char*)"zext"; }
+    return r;
 }
 
 // ── Typed φ-edge normalisation ─────────────────────────────────────────────
@@ -2469,7 +2664,7 @@ fn bool phi_edge_coercion(TypeTable* tm, ssi_ir::IrVal* ph, usz ai,
         return true;
     }
     if (apty[0] == '{' || (apty[0] == 'v' && apty[1] == 'o')) return false;   // prints undef
-    char* opc = coerce_op(apty, phi_ty);
+    char* opc = coerce_op_val(apty, phi_ty, arg);
     if (opc == null) return false;
     *op = opc; *src = apty; *dst = phi_ty;
     return true;
@@ -2611,7 +2806,39 @@ fn long sizeof_type_x86(Node* t)
             if (aln > 0) { long r2 = tot % aln; if (r2 != 0) tot += aln - r2; }
             return tot > 0 ? tot : 1;
         }
-        case Nk.NODE_TYPEVAR: return t.resolved != null ? sizeof_type_x86(t.resolved) : 8;
+        case Nk.NODE_TYPE_GENERIC_APP:
+        {
+            // Concrete generic-struct instantiation: substituted field sizes
+            // (must agree with the printed record repr — r33).
+            Node* fblk5 = cg_concrete_struct_app_fblk(t);
+            if (fblk5 == null) return 8;
+            Node* prev_app5 = g_subst_app;
+            g_subst_app = t;
+            long tot = 0; long aln = 1;
+            for (usz fi = 0; fi < fblk5.child_count; fi++)
+            {
+                Node* c = fblk5.children[fi];
+                if (c == null || c.kind != Nk.NODE_FIELD_DECL) continue;
+                Node* ft = c.child_count >= 2 ? ast::generic_payload_subst(t, c.children[1]) : null;
+                long fs = sizeof_type_x86(ft); long fa = alignof_type_x86(ft);
+                if (fa > aln) aln = fa;
+                long r = fa > 0 ? (tot % fa) : 0; if (r != 0) tot += fa - r;
+                tot += fs;
+            }
+            g_subst_app = prev_app5;
+            if (aln > 0) { long r2 = tot % aln; if (r2 != 0) tot += aln - r2; }
+            return tot > 0 ? tot : 1;
+        }
+        case Nk.NODE_TYPEVAR:
+        {
+            // Inside a GENERIC_APP expansion (r48): substitute the argument.
+            if (g_subst_app != null)
+            {
+                Node* sm5 = ast::generic_payload_subst(g_subst_app, t);
+                if (sm5 != null && sm5 != t) { return sizeof_type_x86(sm5); }
+            }
+            return t.resolved != null ? sizeof_type_x86(t.resolved) : 8;
+        }
         default: return 8;
     }
 }
@@ -2635,7 +2862,32 @@ fn long alignof_type_x86(Node* t)
             }
             return a;
         }
-        case Nk.NODE_TYPEVAR: return t.resolved != null ? alignof_type_x86(t.resolved) : 8;
+        case Nk.NODE_TYPE_GENERIC_APP:
+        {
+            Node* fblk6 = cg_concrete_struct_app_fblk(t);
+            if (fblk6 == null) return 8;
+            Node* prev_app6 = g_subst_app;
+            g_subst_app = t;
+            long a6 = 1;
+            for (usz fi = 0; fi < fblk6.child_count; fi++)
+            {
+                Node* c = fblk6.children[fi];
+                if (c == null || c.kind != Nk.NODE_FIELD_DECL) continue;
+                Node* ft = c.child_count >= 2 ? ast::generic_payload_subst(t, c.children[1]) : null;
+                long fa = alignof_type_x86(ft); if (fa > a6) a6 = fa;
+            }
+            g_subst_app = prev_app6;
+            return a6;
+        }
+        case Nk.NODE_TYPEVAR:
+        {
+            if (g_subst_app != null)
+            {
+                Node* sm6 = ast::generic_payload_subst(g_subst_app, t);
+                if (sm6 != null && sm6 != t) { return alignof_type_x86(sm6); }
+            }
+            return t.resolved != null ? alignof_type_x86(t.resolved) : 8;
+        }
         default: return 8;
     }
 }
@@ -2798,6 +3050,59 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 // Matmul: emit as call (may hook BLAS)
                 if (v.bop == Tt.TOKEN_AT)
                 {
+                    // vector · vector is a SCALAR dot product (spec §11
+                    // checked by typecheck) — route to __pride_vecdot and
+                    // coerce the double to the stamped element type.
+                    // Matrix-vector / vector-matrix stay with batched matmul
+                    // (the runtime takes rank-1 views of the operands).
+                    Node* mmn = v.src;
+                    int lrank = -1;
+                    int rrank = -1;
+                    Node* ret_ann = null;
+                    if (mmn != null && mmn.kind == Nk.NODE_EXPR_MATMUL)
+                    {
+                        Node* ln = mmn.child_count >= 1 ? mmn.children[0] : null;
+                        Node* rn = mmn.child_count >= 2 ? mmn.children[1] : null;
+                        lrank = cg_tensor_rank_of(ln != null ? ln.type_annotation : null);
+                        rrank = cg_tensor_rank_of(rn != null ? rn.type_annotation : null);
+                        ret_ann = mmn.type_annotation;
+                    }
+                    if (lrank == 1 && rrank == 1)
+                    {
+                        char[TYMAP_ENTRY] dtb; dtb[0] = 0;
+                        if (ret_ann != null)
+                        { type_to_llvm_buf(ret_ann, &dtb[0], TYMAP_ENTRY, 0); }
+                        if (dtb[0] == 0 || (dtb[0] == 'v' && dtb[1] == 'o'))
+                        { snprintf(&dtb[0], TYMAP_ENTRY, "double"); }
+                        cg.out.writes("  %vdot.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = call double @__pride_vecdot(ptr ");
+                        cg.emit_vref(lhs);
+                        cg.out.writes(", ptr ");
+                        cg.emit_vref(rhs);
+                        cg.out.writes(")\n");
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        if (dtb[0] == 'd')
+                        {
+                            cg.out.writes(" = fadd double %vdot.v"); cg.out.writei(v.id);
+                            cg.out.writes(", 0.0\n");
+                        }
+                        else if (dtb[0] == 'f')
+                        {
+                            cg.out.writes(" = fptrunc double %vdot.v"); cg.out.writei(v.id);
+                            cg.out.writes(" to float\n");
+                        }
+                        else if (dtb[0] == 'i')
+                        {
+                            cg.out.writes(" = fptosi double %vdot.v"); cg.out.writei(v.id);
+                            cg.out.writes(" to "); cg.out.writes(&dtb[0]); cg.out.writes("\n");
+                        }
+                        else
+                        {
+                            cg.out.writes(" = fadd double %vdot.v"); cg.out.writei(v.id);
+                            cg.out.writes(", 0.0\n");
+                        }
+                        return;
+                    }
                     cg.out.writes("  %v"); cg.out.writei(v.id);
                     cg.out.writes(" = call ptr @__pride_matmul(ptr ");
                     cg.emit_vref(lhs);
@@ -2896,13 +3201,23 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         }
                         return;
                     }
-                    // Emit placeholder matching result type (i1 for comparison, i64 otherwise)
+                    // Emit placeholder matching result type: i1 for
+                    // comparisons, a frozen undef RECORD when the stamped
+                    // result type is an aggregate (a scalar `add i64` where a
+                    // `{ ptr, i64 }` is stored downstream is invalid IR —
+                    // e.g. an unsupported `Str + Str` warned E0448 must still
+                    // assemble), i64 otherwise.
                     char* res_ty2 = (tm != null) ? tm.get(v.id) : null;
                     bool is_cmp_op = (v.bop == Tt.TOKEN_LT || v.bop == Tt.TOKEN_GT
                         || v.bop == Tt.TOKEN_LTEQ || v.bop == Tt.TOKEN_GTEQ
                         || v.bop == Tt.TOKEN_EQEQ || v.bop == Tt.TOKEN_NEQ);
                     cg.out.writes("  %v"); cg.out.writei(v.id);
                     if (is_cmp_op) { cg.out.writes(" = add i1 0, 0  ; aggregate cmp (type error, soft)\n"); }
+                    else if (res_ty2 != null && (res_ty2[0] == '{' || res_ty2[0] == '%'))
+                    {
+                        cg.out.writes(" = freeze "); cg.out.writes(res_ty2);
+                        cg.out.writes(" undef  ; aggregate op (type error, soft)\n");
+                    }
                     else { cg.out.writes(" = add i64 0, 0  ; aggregate op (type error, soft)\n"); }
                     return;
                 }
@@ -2964,7 +3279,9 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     if (lw != rw)
                     {
                         cg.out.writes("  %rhs.coerce."); cg.out.writei(v.id);
-                        cg.out.writes(" = "); cg.out.writes(lw > rw ? "sext " : "trunc ");
+                        cg.out.writes(" = ");
+                        if (lw > rw) { cg.out.writes(is_signed_int_val(rhs) ? "sext " : "zext "); }
+                        else         { cg.out.writes("trunc "); }
                         cg.out.writes(rhs_ty); cg.out.writes(" "); cg.emit_vref(rhs);
                         cg.out.writes(" to "); cg.out.writes(lhs_ty); cg.out.writes("\n");
                         // For comparison ops: if lhs_ty="i64" but actual lhs register is narrower
@@ -2993,7 +3310,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             if (lhs_is_narrow)
                             {
                                 cg.out.writes("  %lhs.coerce."); cg.out.writei(v.id);
-                                cg.out.writes(" = sext "); cg.out.writes(lhs_real_ty);
+                                cg.out.writes(is_signed_int_val(lhs) ? " = sext " : " = zext "); cg.out.writes(lhs_real_ty);
                                 cg.out.writes(" "); cg.emit_vref(lhs);
                                 cg.out.writes(" to "); cg.out.writes(lhs_ty); cg.out.writes("\n");
                             }
@@ -3062,7 +3379,12 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     cg.out.writes("\n");
                     return;
                 }
-                // Pointer arithmetic: ptr +/- int → GEP (byte offset)
+                // Pointer arithmetic: ptr +/- int → GEP.  The index scales by
+                // the POINTEE size (v.md §15: pointer arithmetic "advances by
+                // element size") — `arr + 1` on a *i64 steps 8 bytes, on a
+                // *u8 one byte.  When the pointee type is unknown (untyped
+                // closure paths) keep the historical byte-scale (1) rather
+                // than invent a size.
                 if ((v.bop == Tt.TOKEN_PLUS || v.bop == Tt.TOKEN_MINUS)
                     && lhs != null && rhs != null)
                 {
@@ -3071,6 +3393,17 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     {
                         char* rty_pa = (tm != null) ? tm.get(rhs.id) : null;
                         if (rty_pa == null || rty_pa[0] == 0) rty_pa = (char*)"i64";
+                        // Element scale from the lhs child annotation (*T → T).
+                        long pa_scale = 1;
+                        Node* pa_lnode = (v.src != null && v.src.child_count >= 1)
+                                         ? v.src.children[0] : null;
+                        Node* pa_lann = pa_lnode != null ? pa_lnode.type_annotation : null;
+                        if (pa_lann != null && pa_lann.kind == Nk.NODE_TYPE_PTR
+                            && pa_lann.child_count >= 1 && pa_lann.children[0] != null)
+                        {
+                            pa_scale = sizeof_type_x86(pa_lann.children[0]);
+                            if (pa_scale < 1) { pa_scale = 1; }
+                        }
                         // GEP index MUST be an integer — ptrtoint if rhs is ptr type
                         bool rhs_is_ptr_gep = (rty_pa[0] == 'p');
                         if (rhs_is_ptr_gep)
@@ -3080,12 +3413,23 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             cg.out.writes(" to i64\n");
                             rty_pa = (char*)"i64";
                         }
+                        // Scale the (integer) index by the pointee size.
+                        bool pa_scaled = (pa_scale != 1);
+                        if (pa_scaled)
+                        {
+                            cg.out.writes("  %ptra.sc.v"); cg.out.writei(v.id);
+                            cg.out.writes(" = mul "); cg.out.writes(rty_pa); cg.out.writes(" ");
+                            if (rhs_is_ptr_gep) { cg.out.writes("%gep.idx.v"); cg.out.writei(v.id); }
+                            else { cg.emit_vref(rhs); }
+                            cg.out.writes(", "); cg.out.writei(pa_scale); cg.out.writes("\n");
+                        }
                         if (v.bop == Tt.TOKEN_MINUS)
                         {
                             cg.out.writes("  %ptra.neg.v"); cg.out.writei(v.id);
                             cg.out.writes(" = sub "); cg.out.writes(rty_pa);
                             cg.out.writes(" 0, ");
-                            if (rhs_is_ptr_gep) { cg.out.writes("%gep.idx.v"); cg.out.writei(v.id); }
+                            if (pa_scaled) { cg.out.writes("%ptra.sc.v"); cg.out.writei(v.id); }
+                            else if (rhs_is_ptr_gep) { cg.out.writes("%gep.idx.v"); cg.out.writei(v.id); }
                             else { cg.emit_vref(rhs); }
                             cg.out.writes("\n");
                             cg.out.writes("  %v"); cg.out.writei(v.id);
@@ -3099,7 +3443,8 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             cg.out.writes(" = getelementptr inbounds i8, ptr ");
                             cg.emit_vref(lhs); cg.out.writes(", ");
                             cg.out.writes(rty_pa); cg.out.writes(" ");
-                            if (rhs_is_ptr_gep) { cg.out.writes("%gep.idx.v"); cg.out.writei(v.id); }
+                            if (pa_scaled) { cg.out.writes("%ptra.sc.v"); cg.out.writei(v.id); }
+                            else if (rhs_is_ptr_gep) { cg.out.writes("%gep.idx.v"); cg.out.writei(v.id); }
                             else { cg.emit_vref(rhs); }
                         }
                         cg.out.writes("\n");
@@ -3473,6 +3818,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             char* ap=aty_c+1; while(*ap>='0'&&*ap<='9'){an=an*10+(long)(*ap-'0');ap++;}
                             char* pp=pt+1;    while(*pp>='0'&&*pp<='9'){pn=pn*10+(long)(*pp-'0');pp++;}
                             if (an > pn) { cg.out.writes(" = trunc "); }
+                            else if (!is_signed_int_val(aval_c)) { cg.out.writes(" = zext "); }
                             else         { cg.out.writes(" = sext ");  }
                             cg.out.writes(aty_c); cg.out.writes(" "); cg.emit_vref(aval_c);
                             cg.out.writes(" to "); cg.out.writes(pt); cg.out.writes("\n");
@@ -3778,6 +4124,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             cg.out.writes("  %clarg.c."); cg.out.writei(v.id);
                             cg.out.writes("."); cg.out.writeu(ia2);
                             if (w2a == w2b)     { cg.out.writes(" = bitcast "); }
+                            else if (w2a < w2b && !is_signed_int_val(arg2)) { cg.out.writes(" = zext "); }
                             else if (w2a < w2b) { cg.out.writes(" = sext "); }
                             else                { cg.out.writes(" = trunc "); }
                             cg.out.writes(aty2); cg.out.writes(" ");
@@ -4196,18 +4543,16 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     Node* bt2 = base_ast.type_annotation;
                     if (bt2 != null)
                     {
+                        // struct_body_of covers DECL_STRUCT/UNION, TYPEVAR (alias
+                        // chains), DECL_TYPE aliases and GENERIC_APP instantiations.
                         if (bt2.kind == Nk.NODE_TYPE_PTR && bt2.child_count >= 1 && bt2.children[0] != null)
-                        { bt2 = bt2.children[0]; }
-                        if (bt2.kind == Nk.NODE_TYPEVAR && bt2.resolved != null
-                            && bt2.resolved.kind == Nk.NODE_DECL_STRUCT)
-                        { struct_decl = bt2.resolved; }
-                        else if (bt2.kind == Nk.NODE_DECL_STRUCT)
-                        { struct_decl = bt2; }
+                        { struct_decl = struct_body_of(bt2.children[0]); }
+                        if (struct_decl == null) { struct_decl = struct_body_of(bt2); }
                     }
-                    // Also try resolved name on the base ident itself
-                    if (struct_decl == null && base_ast.resolved != null
-                        && base_ast.resolved.kind == Nk.NODE_DECL_STRUCT)
-                    { struct_decl = base_ast.resolved; }
+                    // Also try the resolved name on the base ident itself (direct
+                    // decl reference or alias chain).
+                    if (struct_decl == null && base_ast.resolved != null)
+                    { struct_decl = struct_body_of(base_ast.resolved); }
                     // Check if ident resolves to a let/param binding that has a struct type
                     if (struct_decl == null && base_ast.resolved != null)
                     {
@@ -4218,12 +4563,8 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         if (dtype != null)
                         {
                             if (dtype.kind == Nk.NODE_TYPE_PTR && dtype.child_count >= 1 && dtype.children[0] != null)
-                            { dtype = dtype.children[0]; }
-                            if (dtype.kind == Nk.NODE_TYPEVAR && dtype.resolved != null
-                                && dtype.resolved.kind == Nk.NODE_DECL_STRUCT)
-                            { struct_decl = dtype.resolved; }
-                            else if (dtype.kind == Nk.NODE_DECL_STRUCT)
-                            { struct_decl = dtype; }
+                            { struct_decl = struct_body_of(dtype.children[0]); }
+                            if (struct_decl == null) { struct_decl = struct_body_of(dtype); }
                         }
                     }
                 }
@@ -4234,29 +4575,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                                field_name_node.p.ident.name_ptr,
                                                field_name_node.p.ident.name_len);
                 }
-                else if (field_name_node != null && struct_decl == null && base != null)
-                {
-                    // String/format record { ptr, i64(len), i64(cap) }: the
-                    // type is a synthesized tuple, so field_index_of found no
-                    // struct and the index defaulted to 0 — `.len` silently
-                    // loaded the DATA POINTER. Map the three layout names by
-                    // shape+name (mirrors synth_field in typecheck.c3).
-                    char* bty_r = (tm != null) ? tm.get(base.id) : null;
-                    bool is_str_rec = bty_r != null
-                        && cstr_eq_n(bty_r, (char*)"{ ptr, i64", 10);
-                    if (is_str_rec)
-                    {
-                        char* rnp = field_name_node.p.ident.name_ptr;
-                        usz   rnl = field_name_node.p.ident.name_len;
-                        if (rnl == 3 && rnp != null)
-                        {
-                            if (rnp[0]=='l' && rnp[1]=='e' && rnp[2]=='n')
-                            { field_idx = 1; }
-                            else if (rnp[0]=='c' && rnp[1]=='a' && rnp[2]=='p')
-                            { field_idx = 2; }
-                        }
-                    }
-                }
+
 
                 // Emit struct type name
                 char* sname = null; usz snlen = 0;
@@ -4371,6 +4690,21 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 cg.out.writei(field_idx);
                 cg.out.writes("\n");
 
+                // Address mode (r46, `p.cells` inside an array-element write):
+                // the value IS the field's storage address — consumers
+                // (IR_STORE variant B, further addr-mode FIELDs) GEP through
+                // it.  NEVER load here: loading an inline-array field as a
+                // register value would sever the write from the pointee.
+                if (v.ival == 1)
+                {
+                    if (tm != null) { tm.set(v.id, (char*)"ptr"); }
+                    cg.out.writes("  %v"); cg.out.writei(v.id);
+                    cg.out.writes(" = getelementptr inbounds i8, ptr %gep.v");
+                    cg.out.writei(v.id);
+                    cg.out.writes(", i64 0\n");
+                    return;
+                }
+
                 // %vN = load FieldType, ptr %gep.vN
                 cg.out.writes("  %v"); cg.out.writei(v.id);
                 cg.out.writes(" = load ");
@@ -4385,6 +4719,139 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 // GEP + load: args[0]=base (ptr), args[1]=index
                 ssi_ir::IrVal* base  = v.arg_count >= 1 ? v.args[0] : null;
                 ssi_ir::IrVal* index = v.arg_count >= 2 ? v.args[1] : null;
+
+                // Update mode (r46): whole-array VALUE with one element
+                // replaced — args[0]=array value, args[1]=new element,
+                // args[2]=index.  Materialise the array in memory, store the
+                // element through a GEP, load the array back; the result
+                // re-enters SSA as a plain [N x T] value that
+                // field_assign_rebuild stitches into the enclosing aggregate.
+                if (v.ival == -2 && v.arg_count >= 3)
+                {
+                    ssi_ir::IrVal* arr_v  = v.args[0];
+                    ssi_ir::IrVal* elem_v = v.args[1];
+                    ssi_ir::IrVal* idx_v  = v.args[2];
+                    char* aty = (tm != null && arr_v != null) ? tm.get(arr_v.id) : null;
+                    if (aty != null && aty[0] == '[')
+                    {
+                        // Element type text: after the first " x " separator,
+                        // up to the outer closing ']'.
+                        char[TYMAP_ENTRY] aueb; aueb[0] = 0;
+                        usz alen = strlen(aty);
+                        usz xp = 0;
+                        while (xp + 3 < alen && !(aty[xp] == ' '
+                               && aty[xp+1] == 'x' && aty[xp+2] == ' ')) { xp++; }
+                        usz es = xp + 3;
+                        usz ei = 0;
+                        while (es < alen - 1 && ei < TYMAP_ENTRY - 1)
+                        { aueb[ei] = aty[es]; ei++; es++; }
+                        aueb[ei] = 0;
+                        char* elem_ty_au = &aueb[0];
+                        char* eval_ty = (tm != null && elem_v != null)
+                                        ? tm.get(elem_v.id) : null;
+                        if (eval_ty == null || eval_ty[0] == 0) eval_ty = elem_ty_au;
+
+                        cg.out.writes("  %au.arr.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = alloca "); cg.out.writes(aty); cg.out.writes("\n");
+                        cg.out.writes("  store "); cg.out.writes(aty); cg.out.writes(" ");
+                        cg.emit_vref(arr_v);
+                        cg.out.writes(", ptr %au.arr.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                        cg.out.writes("  %au.gep.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = getelementptr inbounds ");
+                        cg.out.writes(elem_ty_au);
+                        cg.out.writes(", ptr %au.arr.v"); cg.out.writei(v.id);
+                        cg.out.writes(", i64 ");
+                        cg.emit_vref(idx_v);
+                        cg.out.writes("\n");
+                        // int-width coerce of the element (signedness-aware, r40)
+                        bool au_coerce = false;
+                        {
+                            usz el = strlen(elem_ty_au); usz vl = strlen(eval_ty);
+                            if (el != vl) { au_coerce = true; }
+                            else { for (usz ci = 0; ci < el; ci++)
+                                   { if (elem_ty_au[ci] != eval_ty[ci]) { au_coerce = true; break; } } }
+                        }
+                        if (au_coerce && elem_v != null
+                            && elem_ty_au[0] == 'i' && eval_ty[0] == 'i')
+                        {
+                            long en2 = 0; long vn2 = 0;
+                            char* ep2 = elem_ty_au + 1;
+                            while (*ep2 >= '0' && *ep2 <= '9') { en2 = en2*10 + (long)(*ep2 - '0'); ep2++; }
+                            char* vp2 = eval_ty + 1;
+                            while (*vp2 >= '0' && *vp2 <= '9') { vn2 = vn2*10 + (long)(*vp2 - '0'); vp2++; }
+                            cg.out.writes("  %au.coerce.v"); cg.out.writei(v.id);
+                            if (vn2 > en2) { cg.out.writes(" = trunc "); }
+                            else if (!is_signed_int_val(elem_v)) { cg.out.writes(" = zext "); }
+                            else { cg.out.writes(" = sext "); }
+                            cg.out.writes(eval_ty); cg.out.writes(" ");
+                            cg.emit_vref(elem_v);
+                            cg.out.writes(" to "); cg.out.writes(elem_ty_au); cg.out.writes("\n");
+                            cg.out.writes("  store "); cg.out.writes(elem_ty_au);
+                            cg.out.writes(" %au.coerce.v"); cg.out.writei(v.id);
+                        }
+                        else
+                        {
+                            cg.out.writes("  store "); cg.out.writes(elem_ty_au); cg.out.writes(" ");
+                            if (elem_v != null) { cg.emit_vref(elem_v); } else { cg.out.writes("undef"); }
+                        }
+                        cg.out.writes(", ptr %au.gep.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        cg.out.writes(" = load "); cg.out.writes(aty);
+                        cg.out.writes(", ptr %au.arr.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                        if (tm != null) { tm.set(v.id, aty); }
+                        return;
+                    }
+                }
+
+                // Address mode (r46): the value IS the element's storage
+                // address — args[0]=array storage ptr, args[1]=index.
+                // Element stride comes from the index expression's own
+                // annotation (the element type synth_index proved), and the
+                // index is extended to the i64 GEP operand signedness-aware.
+                if (v.ival == -3 && v.arg_count >= 2)
+                {
+                    ssi_ir::IrVal* abase = v.args[0];
+                    ssi_ir::IrVal* aidx  = v.args[1];
+                    char[TYMAP_ENTRY] iaeb; iaeb[0] = 0;
+                    if (v.src != null && v.src.type_annotation != null)
+                    {
+                        char* iet = type_to_llvm_buf(v.src.type_annotation, &iaeb[0], 64, 0);
+                        if (iet != null && iet != &iaeb[0] && iet[0] != 0)
+                        {
+                            usz ik = 0;
+                            while (ik < 63 && iet[ik] != 0) { iaeb[ik] = iet[ik]; ik++; }
+                            iaeb[ik] = 0;
+                        }
+                    }
+                    if (iaeb[0] == 0) { iaeb[0] = 'i'; iaeb[1] = '6'; iaeb[2] = '4'; iaeb[3] = 0; }
+                    char* ia_idx_ty = (tm != null && aidx != null) ? tm.get(aidx.id) : null;
+                    bool ia_ext = (ia_idx_ty != null && ia_idx_ty[0] == 'i'
+                                   && !(ia_idx_ty[1] == '6' && ia_idx_ty[2] == '4' && ia_idx_ty[3] == 0));
+                    if (ia_ext && aidx != null)
+                    {
+                        cg.out.writes("  %ia.idx.v"); cg.out.writei(v.id);
+                        cg.out.writes(!is_signed_int_val(aidx) ? " = zext " : " = sext ");
+                        cg.out.writes(ia_idx_ty); cg.out.writes(" ");
+                        cg.emit_vref(aidx);
+                        cg.out.writes(" to i64\n");
+                    }
+                    cg.out.writes("  %ia.gep.v"); cg.out.writei(v.id);
+                    cg.out.writes(" = getelementptr inbounds ");
+                    cg.out.writes(&iaeb[0]);
+                    cg.out.writes(", ptr ");
+                    if (abase != null) { cg.emit_vref(abase); } else { cg.out.writes("null"); }
+                    cg.out.writes(", i64 ");
+                    if (ia_ext) { cg.out.writes("%ia.idx.v"); cg.out.writei(v.id); }
+                    else if (aidx != null) { cg.emit_vref(aidx); }
+                    else { cg.out.writes("0"); }
+                    cg.out.writes("\n");
+                    cg.out.writes("  %v"); cg.out.writei(v.id);
+                    cg.out.writes(" = getelementptr inbounds i8, ptr %ia.gep.v");
+                    cg.out.writei(v.id);
+                    cg.out.writes(", i64 0\n");
+                    if (tm != null) { tm.set(v.id, (char*)"ptr"); }
+                    return;
+                }
 
                 // Closure env slot: base=env_ptr, v.ival=slot_index, no args[1]
                 // Only fires inside a closure thunk (cur_fn_decl.kind == NODE_EXPR_CLOSURE)
@@ -4624,11 +5091,12 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     }
                 }
 
-                // Ensure base is ptr for index GEP (pre-emit alloca+store for structs)
+                // Ensure base is ptr for index GEP (pre-emit alloca+store
+                // for struct AND inline-array values held in registers)
                 if (base != null)
                 {
                     char* ibt = (tm != null) ? tm.get(base.id) : null;
-                    if (ibt != null && ibt[0] == '%')
+                    if (ibt != null && (ibt[0] == '%' || ibt[0] == '['))
                     {
                         cg.out.writes("  %struct.ptr.v"); cg.out.writei(v.id);
                         cg.out.writes(" = alloca "); cg.out.writes(ibt); cg.out.writes("\n");
@@ -4651,7 +5119,9 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 if (base != null)
                 {
                     char* ibt2 = (tm != null) ? tm.get(base.id) : null;
-                    if (ibt2 != null && ibt2[0] != 'p' && ibt2[0] != '%' && ibt2[0] != 0)
+                    if (ibt2 != null && ibt2[0] == '[')
+                    { cg.out.writes("%struct.ptr.v"); cg.out.writei(v.id); }
+                    else if (ibt2 != null && ibt2[0] != 'p' && ibt2[0] != '%' && ibt2[0] != 0)
                     { cg.out.writes("%gep.itp.idx.v"); cg.out.writei(v.id); }
                     else { cg.emit_vref(base); }
                 }
@@ -4711,11 +5181,24 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         elem_ty_st = &elem_ty_buf[0];
                     }
 
+                    // Inline array held in a register (struct field, loaded
+                    // value): give it a memory home before GEP (r46).
+                    char* arrbase_ty = (tm != null && base_arg != null) ? tm.get(base_arg.id) : null;
+                    if (arrbase_ty != null && arrbase_ty[0] == '[')
+                    {
+                        cg.out.writes("  %st.arrptr.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = alloca "); cg.out.writes(arrbase_ty); cg.out.writes("\n");
+                        cg.out.writes("  store "); cg.out.writes(arrbase_ty); cg.out.writes(" ");
+                        cg.emit_vref(base_arg);
+                        cg.out.writes(", ptr %st.arrptr.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                    }
                     cg.out.writes("  %st.gep.v"); cg.out.writei(v.id);
                     cg.out.writes(" = getelementptr inbounds ");
                     cg.out.writes(elem_ty_st);  // element stride type (i8 for u8 arrays)
                     cg.out.writes(", ptr ");
-                    if (base_arg != null) { cg.emit_vref(base_arg); } else { cg.out.writes("null"); }
+                    if (arrbase_ty != null && arrbase_ty[0] == '[')
+                    { cg.out.writes("%st.arrptr.v"); cg.out.writei(v.id); }
+                    else if (base_arg != null) { cg.emit_vref(base_arg); } else { cg.out.writes("null"); }
                     cg.out.writes(", i64 ");
                     cg.emit_vref(idx_arg);
                     cg.out.writes("\n");
@@ -4735,6 +5218,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         char* vp2=val_ty_st+1;  while(*vp2>='0'&&*vp2<='9'){vn2=vn2*10+(long)(*vp2-'0');vp2++;}
                         cg.out.writes("  %st.coerce.v"); cg.out.writei(v.id);
                         if (vn2 > en2) { cg.out.writes(" = trunc "); }
+                        else if (!is_signed_int_val(val_arg)) { cg.out.writes(" = zext "); }
                         else           { cg.out.writes(" = sext ");  }
                         cg.out.writes(val_ty_st); cg.out.writes(" ");
                         if (val_arg != null) { cg.emit_vref(val_arg); } else { cg.out.writes("undef"); }
@@ -4918,7 +5402,9 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             if (sw1 != sw2)
                             {
                                 cg.out.writes("  %fst.coerce.v"); cg.out.writei(v.id);
-                                cg.out.writes(sw1>sw2 ? " = trunc " : " = sext ");
+                                if (sw1 > sw2)                       { cg.out.writes(" = trunc "); }
+                                else if (!is_signed_int_val(val_arg)) { cg.out.writes(" = zext "); }
+                                else                                  { cg.out.writes(" = sext "); }
                                 cg.out.writes(val_ty_st); cg.out.writes(" ");
                                 if (val_arg != null) { cg.emit_vref(val_arg); } else { cg.out.writes("undef"); }
                                 cg.out.writes(" to "); cg.out.writes(field_store_ty); cg.out.writes("\n");
@@ -5094,15 +5580,22 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     return;
                 }
 
-                // Widening int → sext or zext, not bitcast
+                // Widening int → sext or zext (per SOURCE signedness — the
+                // LLVM type text erased it; uN/bool must zero-extend) or
+                // trunc, never bitcast across widths.
                 if (src_int && dst_int)
                 {
                     int sw = 0; int dw = 0;
                     for (usz ci = 1; src_type_str[ci] >= '0' && src_type_str[ci] <= '9'; ci++) sw = sw*10+(int)(src_type_str[ci]-'0');
                     for (usz ci = 1; dst_type_str[ci] >= '0' && dst_type_str[ci] <= '9'; ci++) dw = dw*10+(int)(dst_type_str[ci]-'0');
+                    Node* cast_src_ann = (v.src != null && v.src.kind == Nk.NODE_EXPR_CAST
+                                         && v.src.child_count >= 1
+                                         && v.src.children[0] != null)
+                                         ? v.src.children[0].type_annotation : null;
                     cg.out.writes("  %v"); cg.out.writei(v.id); cg.out.writes(" = ");
                     if (sw == dw) { cg.out.writes("bitcast "); }
-                    else if (sw < dw) { cg.out.writes("sext "); }
+                    else if (sw < dw)
+                    { cg.out.writes(cg_ann_is_unsigned(cast_src_ann) ? "zext " : "sext "); }
                     else { cg.out.writes("trunc "); }
                     cg.out.writes(src_type_str); cg.out.writes(" "); cg.emit_vref(src);
                     cg.out.writes(" to "); cg.out.writes(dst_type_str); cg.out.writes("\n");
@@ -5382,7 +5875,9 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             char* ap=el_ty+1;   while(*ap>='0'&&*ap<='9'){aw=aw*10+(long)(*ap-'0');ap++;}
                             char* ep=ety_arr+1; while(*ep>='0'&&*ep<='9'){ew=ew*10+(long)(*ep-'0');ep++;}
                             cg.out.writes("  %ac."); cg.out.writei(v.id); cg.out.writes("."); cg.out.writeu(ai);
-                            cg.out.writes(aw>ew?" = trunc ":" = sext ");
+                            if (aw > ew)                             { cg.out.writes(" = trunc "); }
+                            else if (!is_signed_int_val(v.args[ai])) { cg.out.writes(" = zext "); }
+                            else                                     { cg.out.writes(" = sext "); }
                             cg.out.writes(el_ty); cg.out.writes(" ");
                             if(v.args[ai]!=null){cg.emit_vref(v.args[ai]);}else{cg.out.writes("undef");}
                             cg.out.writes(" to "); cg.out.writes(ety_arr); cg.out.writes("\n");
@@ -5403,6 +5898,150 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     // The result is a ptr — update TypeTable so IR_INDEX knows it's a ptr
                     if (tm != null) { tm.set(v.id, (char*)"ptr"); }
                     return;
+                }
+                // Untagged C-union literal (r34): the repr is ONE 64-bit
+                // reinterpretation cell (union_is_c_union; v.md §9), not a
+                // record — insertvalue on i64 is invalid IR.  Convert the
+                // single field value to the FIELD's declared payload type
+                // (fptrunc f64 literals into f32 members, trunc/zext ints,
+                // sitofp int literals into float members), then bit-pack it
+                // into the cell.  Typecheck enforces exactly one provided
+                // field; a defensive extra arg just overwrites (last wins).
+                {
+                    Node* ulit_ann = v.src != null ? v.src.type_annotation : null;
+                    Node* ulit_ud = ast::union_decl_of(ulit_ann);
+                    if (is_struct_lit && v.ival != 1 && ast::union_is_c_union(ulit_ud))
+                    {
+                        IrVal* cell = null;
+                        Node* cinit = null;
+                        for (usz cai = 0; cai < v.arg_count; cai++)
+                        { if (v.args[cai] != null) { cell = v.args[cai]; } }
+                        for (usz cii = 1; v.src != null && cii < v.src.child_count; cii++)
+                        { if (v.src.children[cii] != null
+                              && v.src.children[cii].kind == Nk.NODE_FIELD_INIT)
+                          { cinit = v.src.children[cii]; } }
+                        // Payload type from the union decl, by field name.
+                        char[TYMAP_ENTRY] pty_buf; pty_buf[0] = 0;
+                        if (ulit_ud != null && cinit != null && cinit.child_count >= 1
+                            && cinit.children[0] != null)
+                        {
+                            Node* payload_ty = null;
+                            int uord = ast::union_variant_lookup(ulit_ud,
+                                cinit.children[0].p.ident.name_ptr,
+                                cinit.children[0].p.ident.name_len, &payload_ty);
+                            if (uord >= 0 && payload_ty != null)
+                            { type_to_llvm_buf(payload_ty, &pty_buf[0], TYMAP_ENTRY, 0); }
+                        }
+                        char* cty = (cell != null && tm != null) ? tm.get(cell.id) : null;
+                        if (cell == null || cty == null || cty[0] == 0)
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = add i64 0, 0\n");
+                            return;
+                        }
+                        // Step 1: convert the value to the payload type.
+                        bool pay_conv = false;
+                        if (pty_buf[0] != 0 && !cstr_eq(cty, &pty_buf[0]))
+                        {
+                            char* py2 = &pty_buf[0];
+                            if (py2[0] == 'f' && cty[0] == 'd')
+                            {
+                                cg.out.writes("  %upay.v"); cg.out.writei(v.id);
+                                cg.out.writes(" = fptrunc double "); cg.emit_vref(cell);
+                                cg.out.writes(" to float\n");
+                                pay_conv = true;
+                            }
+                            else if (py2[0] == 'd' && cty[0] == 'f')
+                            {
+                                cg.out.writes("  %upay.v"); cg.out.writei(v.id);
+                                cg.out.writes(" = fpext float "); cg.emit_vref(cell);
+                                cg.out.writes(" to double\n");
+                                pay_conv = true;
+                            }
+                            else if (py2[0] == 'f' && cty[0] == 'i')
+                            {
+                                cg.out.writes("  %upay.v"); cg.out.writei(v.id);
+                                cg.out.writes(" = sitofp "); cg.out.writes(cty); cg.out.writes(" ");
+                                cg.emit_vref(cell); cg.out.writes(" to float\n");
+                                pay_conv = true;
+                            }
+                            else if (py2[0] == 'd' && cty[0] == 'i')
+                            {
+                                cg.out.writes("  %upay.v"); cg.out.writei(v.id);
+                                cg.out.writes(" = sitofp "); cg.out.writes(cty); cg.out.writes(" ");
+                                cg.emit_vref(cell); cg.out.writes(" to double\n");
+                                pay_conv = true;
+                            }
+                            else if (py2[0] == 'i' && (cty[0] == 'f' || cty[0] == 'd'))
+                            {
+                                cg.out.writes("  %upay.v"); cg.out.writei(v.id);
+                                cg.out.writes(" = fptosi "); cg.out.writes(cty); cg.out.writes(" ");
+                                cg.emit_vref(cell); cg.out.writes(" to "); cg.out.writes(py2);
+                                cg.out.writes("\n");
+                                pay_conv = true;
+                            }
+                            else if (py2[0] == 'i' && cty[0] == 'i')
+                            {
+                                long cw = 0; long pw = 0;
+                                for (usz wci = 1; cty[wci] >= '0' && cty[wci] <= '9'; wci++) cw = cw * 10 + (long)(cty[wci] - '0');
+                                for (usz wpi = 1; py2[wpi] >= '0' && py2[wpi] <= '9'; wpi++) pw = pw * 10 + (long)(py2[wpi] - '0');
+                                if (cw != pw)
+                                {
+                                    cg.out.writes("  %upay.v"); cg.out.writei(v.id);
+                                    cg.out.writes(cw > pw ? " = trunc " : " = zext ");
+                                    cg.out.writes(cty); cg.out.writes(" ");
+                                    cg.emit_vref(cell); cg.out.writes(" to "); cg.out.writes(py2);
+                                    cg.out.writes("\n");
+                                    pay_conv = true;
+                                }
+                            }
+                            if (pay_conv) { cty = &pty_buf[0]; }
+                        }
+                        // Reference to the (possibly converted) payload value.
+                        // Step 2: bit-pack the payload-typed value into i64.
+                        if (cty[0] == 'f')
+                        {
+                            cg.out.writes("  %ubit.v"); cg.out.writei(v.id);
+                            cg.out.writes(" = bitcast float "); if (pay_conv) { cg.out.writes("%upay.v"); cg.out.writei(v.id); } else { cg.emit_vref(cell); }
+                            cg.out.writes(" to i32\n");
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = zext i32 %ubit.v"); cg.out.writei(v.id);
+                            cg.out.writes(" to i64\n");
+                        }
+                        else if (cty[0] == 'd')
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = bitcast double "); if (pay_conv) { cg.out.writes("%upay.v"); cg.out.writei(v.id); } else { cg.emit_vref(cell); }
+                            cg.out.writes(" to i64\n");
+                        }
+                        else if (cty[0] == 'p')
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = ptrtoint ptr "); if (pay_conv) { cg.out.writes("%upay.v"); cg.out.writei(v.id); } else { cg.emit_vref(cell); }
+                            cg.out.writes(" to i64\n");
+                        }
+                        else if (cty[0] == 'i' && cty[1] == '6' && cty[2] == '4' && cty[3] == 0)
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = add i64 "); if (pay_conv) { cg.out.writes("%upay.v"); cg.out.writei(v.id); } else { cg.emit_vref(cell); }
+                            cg.out.writes(", 0\n");
+                        }
+                        else if (cty[0] == 'i')
+                        {
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = zext "); cg.out.writes(cty); cg.out.writes(" ");
+                            if (pay_conv) { cg.out.writes("%upay.v"); cg.out.writei(v.id); } else { cg.emit_vref(cell); } cg.out.writes(" to i64\n");
+                        }
+                        else
+                        {
+                            // Aggregate payloads cannot fit the cell — the
+                            // typechecker rejects them (union_payload_is_scalar
+                            // discipline); keep the value DEFINED regardless.
+                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(" = add i64 0, 0\n");
+                        }
+                        return;
+                    }
                 }
                 // Build aggregate with insertvalue chain from undef
                 // %agg.0 = insertvalue { T0, T1 } undef, T0 %v0, 0
@@ -5457,6 +6096,12 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         }
                         else if (ta2.kind == Nk.NODE_DECL_STRUCT) { struct_type_node = ta2; }
                     }
+                    // Generic-instantiation bases (r43): the chains above only
+                    // know TYPEVAR/DECL_TYPE/DECL_STRUCT directly — route the
+                    // residual cases (GENERIC_APP annotations on the base ident)
+                    // through struct_body_of, which understands applications.
+                    if (struct_type_node == null && stn_name != null)
+                    { struct_type_node = struct_body_of(stn_name.type_annotation); }
                     // Also try: v.src itself has type_annotation pointing to the struct
                     if (struct_type_node == null && v.src.type_annotation != null)
                     {
@@ -5482,6 +6127,15 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         if (c0 != null && c0.kind == Nk.NODE_EXPR_BLOCK) { struct_body_block = c0; break; }
                     }
                 }
+                // Generic-struct instantiation (r33): the literal is stamped
+                // with the app type (`Pair<i64, f64>`) — the decl's field
+                // types name type parameters, which print as the boxed ptr
+                // repr.  Substitute through the app for BOTH the element
+                // coerce and the record type so a concrete literal builds a
+                // concrete record ({ i64, double }, not { ptr, ptr }).
+                Node* struct_app_ann = (v.src != null && v.src.type_annotation != null
+                    && v.src.type_annotation.kind == Nk.NODE_TYPE_GENERIC_APP)
+                    ? v.src.type_annotation : null;
                 bool is_struct_update = (v.ival == 1);
                 usz field_arg_start_pre = is_struct_update ? 1 : 0;
 
@@ -5491,13 +6145,16 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     if (i < field_arg_start_pre) { continue; }
                     usz field_i_pre = i - field_arg_start_pre;
 
-                    // Compute actual struct field index for this arg:
-                    // For struct update: look up the field NAME from the FIELD_INIT node.
-                    // For struct literal: use positional index (field_i_pre).
+                    // Compute actual struct field index for this arg by NAME:
+                    // both struct literals and struct updates carry FIELD_INIT
+                    // children (possibly written out of declaration order) —
+                    // insertvalue must target the declared slot, not the write
+                    // position.  Only bare positional inits fall back to the
+                    // write index.
                     int actual_field_idx = (int)field_i_pre;
-                    if (is_struct_update && struct_body_block != null && v.src != null)
+                    if (struct_body_block != null && v.src != null)
                     {
-                        usz fi_child_idx_pre = field_i_pre + 1;  // +1 to skip base ident at src.children[0]
+                        usz fi_child_idx_pre = field_i_pre + 1;  // +1: name/base ident at src.children[0]
                         if (fi_child_idx_pre < v.src.child_count)
                         {
                             Node* fi_node_pre = v.src.children[fi_child_idx_pre];
@@ -5542,7 +6199,13 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             if (fd == null || fd.kind != Nk.NODE_FIELD_DECL) { continue; }
                             if ((int)fi_coerce == actual_field_idx && fd.child_count >= 2)
                             {
-                                type_to_llvm_buf(fd.children[1], &field_ty_buf[0], TYMAP_ENTRY, 0);
+                                Node* cfd_ty = fd.children[1];
+                                if (struct_app_ann != null)
+                                { cfd_ty = ast::generic_payload_subst(struct_app_ann, cfd_ty); }
+                                Node* prev_fapp = g_subst_app;
+                                if (struct_app_ann != null) { g_subst_app = struct_app_ann; }
+                                type_to_llvm_buf(cfd_ty, &field_ty_buf[0], TYMAP_ENTRY, 0);
+                                g_subst_app = prev_fapp;
                                 need_coerce_elem = (field_ty_buf[0] != 0);
                                 break;
                             }
@@ -5553,7 +6216,56 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     if (need_coerce_elem && v.args[i] != null)
                     {
                         char* arg_ty2 = (tm != null) ? tm.get(v.args[i].id) : null;
-                        if (arg_ty2 != null && arg_ty2[0] == 'i' && field_ty_buf[0] == 'i')
+                        bool arg_int2  = (arg_ty2 != null && arg_ty2[0] == 'i');
+                        bool arg_fp2   = (arg_ty2 != null && (arg_ty2[0] == 'f' || arg_ty2[0] == 'd'));
+                        bool fld_int2  = (field_ty_buf[0] == 'i');
+                        bool fld_fp2   = (field_ty_buf[0] == 'f' || field_ty_buf[0] == 'd');
+                        if (arg_int2 && fld_fp2)
+                        {
+                            // Integer value into a float field.
+                            cg.out.writes("  %fcoerce."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(i);
+                            cg.out.writes(" = sitofp ");
+                            cg.out.writes(arg_ty2); cg.out.writes(" "); cg.emit_vref(v.args[i]);
+                            cg.out.writes(" to "); cg.out.writes(&field_ty_buf[0]); cg.out.writes("\n");
+                            field_coerced = true;
+                        }
+                        else if (arg_fp2 && fld_fp2 && (arg_ty2[0] != field_ty_buf[0]))
+                        {
+                            // float ↔ double rank change.
+                            cg.out.writes("  %fcoerce."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(i);
+                            cg.out.writes(arg_ty2[0] == 'd' ? " = fptrunc " : " = fpext ");
+                            cg.out.writes(arg_ty2); cg.out.writes(" "); cg.emit_vref(v.args[i]);
+                            cg.out.writes(" to "); cg.out.writes(&field_ty_buf[0]); cg.out.writes("\n");
+                            field_coerced = true;
+                        }
+                        else if (arg_fp2 && fld_int2)
+                        {
+                            // Float value into an int field (C-style truncation).
+                            cg.out.writes("  %fcoerce."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(i);
+                            cg.out.writes(" = fptosi ");
+                            cg.out.writes(arg_ty2); cg.out.writes(" "); cg.emit_vref(v.args[i]);
+                            cg.out.writes(" to "); cg.out.writes(&field_ty_buf[0]); cg.out.writes("\n");
+                            field_coerced = true;
+                        }
+                        else if (field_ty_buf[0] == '['
+                                 && arg_ty2 != null && arg_ty2[0] == 'p')
+                        {
+                            // Inline-array field ([N x T] data, not a pointer)
+                            // fed by an array literal / array value, which
+                            // IR_ARRAY lowers to an ALLOCA POINTER: load the
+                            // whole array so the insertvalue holds the value.
+                            cg.out.writes("  %fcoerce."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(i);
+                            cg.out.writes(" = load "); cg.out.writes(&field_ty_buf[0]);
+                            cg.out.writes(", ptr "); cg.emit_vref(v.args[i]);
+                            cg.out.writes("\n");
+                            field_coerced = true;
+                        }
+                        if (field_coerced) { /* handled by the float/array paths above */ }
+                        else if (arg_ty2 != null && arg_ty2[0] == 'i' && field_ty_buf[0] == 'i')
                         {
                             usz al2 = strlen(arg_ty2); usz fl2 = strlen(&field_ty_buf[0]);
                             bool tymatch2 = (al2 == fl2);
@@ -5566,10 +6278,12 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                 cg.out.writes("  %fcoerce."); cg.out.writei(v.id);
                                 cg.out.writes("."); cg.out.writeu(i);
                                 cg.out.writes(" = ");
-                                // i1 → wider: use zext (zero-extend bool to byte)
-                                if (aw2 == 1 && fw2 > 1) { cg.out.writes("zext "); }
-                                else if (aw2 > fw2)       { cg.out.writes("trunc "); }
-                                else                      { cg.out.writes("sext "); }
+                                // i1 → wider: use zext (zero-extend bool to byte);
+                                // likewise any unsigned source zero-extends (r40).
+                                if (aw2 == 1 && fw2 > 1)              { cg.out.writes("zext "); }
+                                else if (aw2 > fw2)                    { cg.out.writes("trunc "); }
+                                else if (!is_signed_int_val(v.args[i])) { cg.out.writes("zext "); }
+                                else                                   { cg.out.writes("sext "); }
                                 cg.out.writes(arg_ty2); cg.out.writes(" "); cg.emit_vref(v.args[i]);
                                 cg.out.writes(" to "); cg.out.writes(&field_ty_buf[0]); cg.out.writes("\n");
                                 field_coerced = true;
@@ -5594,7 +6308,13 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             if (!first_f) cg.out.writes(", ");
                             first_f = false;
                             char[TYMAP_ENTRY] ftbuf2;
-                            type_to_llvm_buf(fd2.children[1], &ftbuf2[0], TYMAP_ENTRY, 0);
+                            Node* rfd_ty = fd2.children[1];
+                            if (struct_app_ann != null)
+                            { rfd_ty = ast::generic_payload_subst(struct_app_ann, rfd_ty); }
+                            Node* prev_rapp = g_subst_app;
+                            if (struct_app_ann != null) { g_subst_app = struct_app_ann; }
+                            type_to_llvm_buf(rfd_ty, &ftbuf2[0], TYMAP_ENTRY, 0);
+                            g_subst_app = prev_rapp;
                             cg.out.writes(ftbuf2[0] != 0 ? &ftbuf2[0] : (char*)"i64");
                         }
                         cg.out.writes(" }");
@@ -5813,6 +6533,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         cg.out.writeu(i); cg.out.writes(" = ");
                         if (is_bool)   { cg.out.writes("zext i1 "); }
                         else if (is_ptr_arg) { cg.out.writes("ptrtoint ptr "); }
+                        else if (!is_signed_int_val(pa)) { cg.out.writes("zext "); cg.out.writes(aty); cg.out.writes(" "); }
                         else { cg.out.writes("sext "); cg.out.writes(aty); cg.out.writes(" "); }
                         cg.emit_vref(pa);
                         cg.out.writes(" to i64\n");
@@ -6373,7 +7094,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         if (a == null || a.op == ssi_ir::IrOp.IR_CONST_INT) continue;
                         char* at = resolve_ty(tm, a);
                         if (at == null || at[0] == 0) continue;
-                        char* opc = coerce_op(at, (char*)"i64");
+                        char* opc = coerce_op_val(at, (char*)"i64", a);
                         if (opc == null) continue;
                         cg.out.writes("  %sysarg."); cg.out.writeu(sci);
                         cg.out.writes(".v"); cg.out.writei(v.id);
@@ -6716,7 +7437,7 @@ fn void CgenModule.emit_phi_edge_coerces(CgenModule* cg, ssi_ir::IrBlock* b, Typ
                                 if (esrc[ci] != slot0[ci]) { same_w = false; break; }
                             }
                             if (!(same_w && strlen(esrc) == strlen(slot0)))
-                            { bopc = coerce_op(esrc, slot0); }
+                            { bopc = coerce_op_val(esrc, slot0, ph.args[ai]); }
                         }
                         if (bopc != null)
                         {
@@ -6940,7 +7661,7 @@ fn void CgenModule.emit_terminator(CgenModule* cg, ssi_ir::IrBlock* b, TypeTable
                         // opcode (trunc/sext/fptrunc/fpext/fptosi/sitofp/…) —
                         // including the correct fpext for float→double widening,
                         // which the old per-site code emitted as invalid fptrunc.
-                        char* ret_opc = coerce_op(val_ty, ret_ty);
+                        char* ret_opc = coerce_op_val(val_ty, ret_ty, b.ret_val);
                         if (ret_opc == null) ret_opc = (char*)"bitcast";
                         cg.out.writes("  %coerce.ret.B"); cg.out.writei(b.id); cg.out.writes(" = ");
                         cg.out.writes(ret_opc); cg.out.writes(" ");
@@ -7081,6 +7802,9 @@ const char*[*] RUNTIME_DECL_NAMES = {
     // Pride effects runtime
     "__pride_perform", "__pride_push_handler", "__pride_pop_handler",
     "__pride_resume", "__pride_drop", "__pride_panic", "__pride_get_arm_arg",
+    "__pride_complete",
+    // Tensor runtime (`@` matmul, elemwise ops, vector dot)
+    "__pride_matmul", "__pride_tensor_elemwise", "__pride_vecdot",
     // Str runtime helpers
     "pride_str_init", "pride_str_push_str", "pride_str_push_i64", "pride_str_push_f64",
     "pride_str_eq",
@@ -7547,6 +8271,8 @@ fn void CgenModule.emit_runtime_decls(CgenModule* cg)
     // Tensor matmul (`@` operator) — implemented in runtime/compiler_rt.c
     cg.out.writes("declare ptr  @__pride_matmul(ptr, ptr)\n");
     cg.out.writes("declare ptr  @__pride_tensor_elemwise(ptr, ptr, i32)\n");
+    // vector · vector dot product (spec §11: rank-1 @ rank-1 -> scalar)
+    cg.out.writes("declare double @__pride_vecdot(ptr, ptr)\n");
     // Str runtime helpers (string builder used by fmt)
     cg.out.writes("declare void @pride_str_init(ptr)\n");
     cg.out.writes("declare void @pride_str_push_str(ptr, ptr, i64)\n");
