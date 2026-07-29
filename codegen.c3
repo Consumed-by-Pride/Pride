@@ -4631,6 +4631,21 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 cg.out.writei(field_idx);
                 cg.out.writes("\n");
 
+                // Address mode (r46, `p.cells` inside an array-element write):
+                // the value IS the field's storage address — consumers
+                // (IR_STORE variant B, further addr-mode FIELDs) GEP through
+                // it.  NEVER load here: loading an inline-array field as a
+                // register value would sever the write from the pointee.
+                if (v.ival == 1)
+                {
+                    if (tm != null) { tm.set(v.id, (char*)"ptr"); }
+                    cg.out.writes("  %v"); cg.out.writei(v.id);
+                    cg.out.writes(" = getelementptr inbounds i8, ptr %gep.v");
+                    cg.out.writei(v.id);
+                    cg.out.writes(", i64 0\n");
+                    return;
+                }
+
                 // %vN = load FieldType, ptr %gep.vN
                 cg.out.writes("  %v"); cg.out.writei(v.id);
                 cg.out.writes(" = load ");
@@ -4645,6 +4660,89 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 // GEP + load: args[0]=base (ptr), args[1]=index
                 ssi_ir::IrVal* base  = v.arg_count >= 1 ? v.args[0] : null;
                 ssi_ir::IrVal* index = v.arg_count >= 2 ? v.args[1] : null;
+
+                // Update mode (r46): whole-array VALUE with one element
+                // replaced — args[0]=array value, args[1]=new element,
+                // args[2]=index.  Materialise the array in memory, store the
+                // element through a GEP, load the array back; the result
+                // re-enters SSA as a plain [N x T] value that
+                // field_assign_rebuild stitches into the enclosing aggregate.
+                if (v.ival == -2 && v.arg_count >= 3)
+                {
+                    ssi_ir::IrVal* arr_v  = v.args[0];
+                    ssi_ir::IrVal* elem_v = v.args[1];
+                    ssi_ir::IrVal* idx_v  = v.args[2];
+                    char* aty = (tm != null && arr_v != null) ? tm.get(arr_v.id) : null;
+                    if (aty != null && aty[0] == '[')
+                    {
+                        // Element type text: after the first " x " separator,
+                        // up to the outer closing ']'.
+                        char[TYMAP_ENTRY] aueb; aueb[0] = 0;
+                        usz alen = strlen(aty);
+                        usz xp = 0;
+                        while (xp + 3 < alen && !(aty[xp] == ' '
+                               && aty[xp+1] == 'x' && aty[xp+2] == ' ')) { xp++; }
+                        usz es = xp + 3;
+                        usz ei = 0;
+                        while (es < alen - 1 && ei < TYMAP_ENTRY - 1)
+                        { aueb[ei] = aty[es]; ei++; es++; }
+                        aueb[ei] = 0;
+                        char* elem_ty_au = &aueb[0];
+                        char* eval_ty = (tm != null && elem_v != null)
+                                        ? tm.get(elem_v.id) : null;
+                        if (eval_ty == null || eval_ty[0] == 0) eval_ty = elem_ty_au;
+
+                        cg.out.writes("  %au.arr.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = alloca "); cg.out.writes(aty); cg.out.writes("\n");
+                        cg.out.writes("  store "); cg.out.writes(aty); cg.out.writes(" ");
+                        cg.emit_vref(arr_v);
+                        cg.out.writes(", ptr %au.arr.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                        cg.out.writes("  %au.gep.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = getelementptr inbounds ");
+                        cg.out.writes(elem_ty_au);
+                        cg.out.writes(", ptr %au.arr.v"); cg.out.writei(v.id);
+                        cg.out.writes(", i64 ");
+                        cg.emit_vref(idx_v);
+                        cg.out.writes("\n");
+                        // int-width coerce of the element (signedness-aware, r40)
+                        bool au_coerce = false;
+                        {
+                            usz el = strlen(elem_ty_au); usz vl = strlen(eval_ty);
+                            if (el != vl) { au_coerce = true; }
+                            else { for (usz ci = 0; ci < el; ci++)
+                                   { if (elem_ty_au[ci] != eval_ty[ci]) { au_coerce = true; break; } } }
+                        }
+                        if (au_coerce && elem_v != null
+                            && elem_ty_au[0] == 'i' && eval_ty[0] == 'i')
+                        {
+                            long en2 = 0; long vn2 = 0;
+                            char* ep2 = elem_ty_au + 1;
+                            while (*ep2 >= '0' && *ep2 <= '9') { en2 = en2*10 + (long)(*ep2 - '0'); ep2++; }
+                            char* vp2 = eval_ty + 1;
+                            while (*vp2 >= '0' && *vp2 <= '9') { vn2 = vn2*10 + (long)(*vp2 - '0'); vp2++; }
+                            cg.out.writes("  %au.coerce.v"); cg.out.writei(v.id);
+                            if (vn2 > en2) { cg.out.writes(" = trunc "); }
+                            else if (!is_signed_int_val(elem_v)) { cg.out.writes(" = zext "); }
+                            else { cg.out.writes(" = sext "); }
+                            cg.out.writes(eval_ty); cg.out.writes(" ");
+                            cg.emit_vref(elem_v);
+                            cg.out.writes(" to "); cg.out.writes(elem_ty_au); cg.out.writes("\n");
+                            cg.out.writes("  store "); cg.out.writes(elem_ty_au);
+                            cg.out.writes(" %au.coerce.v"); cg.out.writei(v.id);
+                        }
+                        else
+                        {
+                            cg.out.writes("  store "); cg.out.writes(elem_ty_au); cg.out.writes(" ");
+                            if (elem_v != null) { cg.emit_vref(elem_v); } else { cg.out.writes("undef"); }
+                        }
+                        cg.out.writes(", ptr %au.gep.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        cg.out.writes(" = load "); cg.out.writes(aty);
+                        cg.out.writes(", ptr %au.arr.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                        if (tm != null) { tm.set(v.id, aty); }
+                        return;
+                    }
+                }
 
                 // Closure env slot: base=env_ptr, v.ival=slot_index, no args[1]
                 // Only fires inside a closure thunk (cur_fn_decl.kind == NODE_EXPR_CLOSURE)
@@ -4884,11 +4982,12 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     }
                 }
 
-                // Ensure base is ptr for index GEP (pre-emit alloca+store for structs)
+                // Ensure base is ptr for index GEP (pre-emit alloca+store
+                // for struct AND inline-array values held in registers)
                 if (base != null)
                 {
                     char* ibt = (tm != null) ? tm.get(base.id) : null;
-                    if (ibt != null && ibt[0] == '%')
+                    if (ibt != null && (ibt[0] == '%' || ibt[0] == '['))
                     {
                         cg.out.writes("  %struct.ptr.v"); cg.out.writei(v.id);
                         cg.out.writes(" = alloca "); cg.out.writes(ibt); cg.out.writes("\n");
@@ -4911,7 +5010,9 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 if (base != null)
                 {
                     char* ibt2 = (tm != null) ? tm.get(base.id) : null;
-                    if (ibt2 != null && ibt2[0] != 'p' && ibt2[0] != '%' && ibt2[0] != 0)
+                    if (ibt2 != null && ibt2[0] == '[')
+                    { cg.out.writes("%struct.ptr.v"); cg.out.writei(v.id); }
+                    else if (ibt2 != null && ibt2[0] != 'p' && ibt2[0] != '%' && ibt2[0] != 0)
                     { cg.out.writes("%gep.itp.idx.v"); cg.out.writei(v.id); }
                     else { cg.emit_vref(base); }
                 }
@@ -4971,11 +5072,24 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         elem_ty_st = &elem_ty_buf[0];
                     }
 
+                    // Inline array held in a register (struct field, loaded
+                    // value): give it a memory home before GEP (r46).
+                    char* arrbase_ty = (tm != null && base_arg != null) ? tm.get(base_arg.id) : null;
+                    if (arrbase_ty != null && arrbase_ty[0] == '[')
+                    {
+                        cg.out.writes("  %st.arrptr.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = alloca "); cg.out.writes(arrbase_ty); cg.out.writes("\n");
+                        cg.out.writes("  store "); cg.out.writes(arrbase_ty); cg.out.writes(" ");
+                        cg.emit_vref(base_arg);
+                        cg.out.writes(", ptr %st.arrptr.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                    }
                     cg.out.writes("  %st.gep.v"); cg.out.writei(v.id);
                     cg.out.writes(" = getelementptr inbounds ");
                     cg.out.writes(elem_ty_st);  // element stride type (i8 for u8 arrays)
                     cg.out.writes(", ptr ");
-                    if (base_arg != null) { cg.emit_vref(base_arg); } else { cg.out.writes("null"); }
+                    if (arrbase_ty != null && arrbase_ty[0] == '[')
+                    { cg.out.writes("%st.arrptr.v"); cg.out.writei(v.id); }
+                    else if (base_arg != null) { cg.emit_vref(base_arg); } else { cg.out.writes("null"); }
                     cg.out.writes(", i64 ");
                     cg.emit_vref(idx_arg);
                     cg.out.writes("\n");
@@ -6024,7 +6138,21 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             cg.out.writes(" to "); cg.out.writes(&field_ty_buf[0]); cg.out.writes("\n");
                             field_coerced = true;
                         }
-                        if (field_coerced) { /* handled by the float paths above */ }
+                        else if (field_ty_buf[0] == '['
+                                 && arg_ty2 != null && arg_ty2[0] == 'p')
+                        {
+                            // Inline-array field ([N x T] data, not a pointer)
+                            // fed by an array literal / array value, which
+                            // IR_ARRAY lowers to an ALLOCA POINTER: load the
+                            // whole array so the insertvalue holds the value.
+                            cg.out.writes("  %fcoerce."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(i);
+                            cg.out.writes(" = load "); cg.out.writes(&field_ty_buf[0]);
+                            cg.out.writes(", ptr "); cg.emit_vref(v.args[i]);
+                            cg.out.writes("\n");
+                            field_coerced = true;
+                        }
+                        if (field_coerced) { /* handled by the float/array paths above */ }
                         else if (arg_ty2 != null && arg_ty2[0] == 'i' && field_ty_buf[0] == 'i')
                         {
                             usz al2 = strlen(arg_ty2); usz fl2 = strlen(&field_ty_buf[0]);

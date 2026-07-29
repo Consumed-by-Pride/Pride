@@ -788,26 +788,47 @@ fn void SsiModule.emit_sigmas(SsiModule* m, Node* cond, bool polarity)
 
 // Collect every OUTER binder that is reassigned anywhere inside `n` (without
 // descending into nested function declarations, which have their own scope).
-fn void collect_assigned(Node* n, Snap* out)
+//
+// Field/index writes (`g.cells[i] = …`, `h.fst = …`, r43–r46) rebind the
+// chain's ROOT binder by value: walk the lhs down to its root ident so the
+// loop pre-places a header φ for it — without one the body's rebuild is
+// invisible after the loop (st8).  Roots whose writes go through MEMORY
+// instead (pointer roots — store-through; address-taken roots — home slot)
+// are never rebound, so they must NOT get a φ.
+fn void collect_assigned(SsiModule* m, Node* n, Snap* out)
 {
     if (n == null) return;
     if (n.kind == Nk.NODE_DECL_FN) return;   // nested fn: separate scope
     if (n.kind == Nk.NODE_EXPR_ASSIGN && n.child_count >= 1)
     {
         Node* lhs = n.children[0];
-        if (lhs != null && lhs.kind == Nk.NODE_IDENT && lhs.resolved != null)
+        Node* root = lhs;
+        bool via_chain = false;
+        while (root != null
+               && (root.kind == Nk.NODE_EXPR_FIELD
+                   || root.kind == Nk.NODE_EXPR_INDEX)
+               && root.child_count >= 1)
+        { root = root.children[0]; via_chain = true; }
+        // Chain writes rebind the root only on the by-value route; pointer
+        // and address-taken roots are written through memory instead.
+        if (via_chain && root != null
+            && ((root.type_annotation != null
+                 && root.type_annotation.kind == Nk.NODE_TYPE_PTR)
+                || (m != null && m.is_addr_taken(root.resolved))))
+        { root = null; }
+        if (root != null && root.kind == Nk.NODE_IDENT && root.resolved != null)
         {
             bool seen = false;
-            for (usz i = 0; i < out.count; i++) { if (out.binders[i] == lhs.resolved) { seen = true; break; } }
+            for (usz i = 0; i < out.count; i++) { if (out.binders[i] == root.resolved) { seen = true; break; } }
             if (!seen && out.count < SCAN_CAP)
             {
-                out.binders[out.count] = lhs.resolved;
+                out.binders[out.count] = root.resolved;
                 out.vals[out.count] = null;
                 out.count++;
             }
         }
     }
-    for (usz i = 0; i < n.child_count; i++) collect_assigned(n.children[i], out);
+    for (usz i = 0; i < n.child_count; i++) collect_assigned(m, n.children[i], out);
 }
 
 fn void SsiModule.capture(SsiModule* m, usz mark, Snap* snap)
@@ -3883,6 +3904,51 @@ fn void SsiModule.env_close_block(SsiModule* m, usz mark)
 // (`gep {..}, ptr %v96` — invalid IR; r43).  Instead rebuild the aggregate
 // chain with the one leaf field replaced, exactly like source-level struct
 // update syntax, and rebind the root ident.  Returns true when handled.
+// Address of a field chain (`p.cells`, `p.q.inner.arr`) when the ROOT is
+// memory-backed — a pointer ident or an address-taken home.  Each level is
+// an IR_FIELD in address mode (ival=1: GEP, no load).  Returns null when
+// the root is a by-value SSA aggregate (no memory — callers rebuild by
+// value instead), or the chain is not a field.
+fn IrVal* SsiModule.field_addr_chain(SsiModule* m, Node* fexpr)
+{
+    if (fexpr == null || fexpr.kind != Nk.NODE_EXPR_FIELD
+        || fexpr.child_count < 1) return null;
+    Node* base_node = fexpr.children[0];
+    IrVal* base_ptr = null;
+    if (base_node != null && base_node.kind == Nk.NODE_IDENT && base_node.resolved != null)
+    {
+        if (base_node.type_annotation != null
+            && base_node.type_annotation.kind == Nk.NODE_TYPE_PTR)
+        {
+            // Pointer root: the env VALUE is the pointee's base address —
+            // field offsets must GEP through it (loading the pointer's own
+            // home slot as the struct base would address the slot, r46).
+            base_ptr = m.env_lookup(base_node.resolved);
+        }
+        else
+        {
+            // By-value root: memory-backed only when address-taken (its
+            // home alloca).  A plain SSA aggregate has NO address — return
+            // null so callers rebuild the chain by value (r45).
+            IrVal* h = m.home_for(base_node.resolved);
+            if (h != null) { base_ptr = h; }
+        }
+        if (base_ptr == null) return null;   // by-value SSA root: no address
+    }
+    else if (base_node != null && base_node.kind == Nk.NODE_EXPR_FIELD)
+    {
+        base_ptr = m.field_addr_chain(base_node);
+        if (base_ptr == null) return null;
+    }
+    else { return null; }
+    IrVal* fa = m.new_val(IrOp.IR_FIELD, fexpr);
+    if (fa == null) return null;
+    fa.ival = 1;   // address-of-field mode (r46): GEP to the storage, no load
+    fa.add_arg(base_ptr, -1);
+    m.emit(fa);
+    return fa;
+}
+
 fn bool SsiModule.field_assign_rebuild(SsiModule* m, Node* target, IrVal* newval, Node* newval_ast)
 {
     if (target == null || target.kind != Nk.NODE_EXPR_FIELD
@@ -4027,6 +4093,48 @@ fn IrVal* SsiModule.lower_assign(SsiModule* m, Node* n)
     }
     if (lhs != null && lhs.kind == Nk.NODE_EXPR_INDEX && lhs.child_count >= 2)
     {
+        Node* ib = lhs.children[0];
+        if (ib != null && ib.kind == Nk.NODE_EXPR_FIELD)
+        {
+            // Array element behind a struct memory address (pointer root or
+            // address-taken root): store through, so the write reaches the
+            // pointee (r46 — the legacy path wrote into a loaded COPY).
+            IrVal* addr = m.field_addr_chain(ib);
+            if (addr != null)
+            {
+                IrVal* index_v2 = m.lower_expr(lhs.children[1]);
+                IrVal* st2 = m.new_val(IrOp.IR_STORE, n);
+                if (st2 != null)
+                {
+                    st2.add_arg(addr, -1);
+                    st2.add_arg(rv, -1);
+                    st2.add_arg(index_v2, -1);
+                    m.emit(st2);
+                }
+                return rv;
+            }
+            // By-value struct field holding an inline array: update the
+            // array VALUE (materialise + GEP-insert), then rebuild the
+            // enclosing aggregate chain (r46).
+            IrVal* cur_arr = m.lower_expr(ib);
+            if (cur_arr != null && rv != null)
+            {
+                IrVal* idx3 = m.lower_expr(lhs.children[1]);
+                IrVal* upd = m.new_val(IrOp.IR_INDEX, ib);
+                if (upd != null)
+                {
+                    upd.ival = -2;   // r46: array element update (value semantics)
+                    upd.add_arg(cur_arr, -1);
+                    upd.add_arg(rv, -1);
+                    upd.add_arg(idx3, -1);
+                    m.emit(upd);
+                    // `ib` itself (the field expr) carries the field's
+                    // type annotation — the right stamp for the new value.
+                    if (m.field_assign_rebuild(ib, upd, ib))
+                    { return rv; }
+                }
+            }
+        }
         IrVal* base_val  = m.lower_lvalue_base(lhs.children[0]);
         IrVal* index_val = m.lower_expr(lhs.children[1]);
         IrVal* st = m.new_val(IrOp.IR_STORE, n);
@@ -5468,7 +5576,7 @@ fn void SsiModule.lower_do_while(SsiModule* m, Node* n)
     // Pre-scan body for binders it reassigns — needed for φ placement.
     Snap assigned;
     assigned.count = 0;
-    if (body != null) collect_assigned(body, &assigned);
+    if (body != null) collect_assigned(m, body, &assigned);
 
     usz pre_mark = m.env_mark();
 
@@ -5562,7 +5670,7 @@ fn void SsiModule.lower_while(SsiModule* m, Node* n)
     // Pre-place header φ for every binder the body reassigns.
     Snap assigned;
     assigned.count = 0;
-    if (body != null) collect_assigned(body, &assigned);
+    if (body != null) collect_assigned(m, body, &assigned);
 
     usz pre_mark = m.env_mark();
     m.cur = header;
@@ -5677,7 +5785,7 @@ fn void SsiModule.lower_for(SsiModule* m, Node* n)
 
     Snap assigned;
     assigned.count = 0;
-    if (body != null) collect_assigned(body, &assigned);
+    if (body != null) collect_assigned(m, body, &assigned);
 
     usz pre_mark = m.env_mark();
     m.cur = header;
