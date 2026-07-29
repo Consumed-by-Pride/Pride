@@ -1,0 +1,4 @@
+-- EXPECT-COUNT: type-err=1
+enum Tup
+  T(i64, i64)
+  N

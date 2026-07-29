@@ -1,0 +1,24 @@
+-- EXPECT-CLEAN
+-- C-union member stores through every addressing form: local cell rebuild,
+-- pointer deref, array element GEP, address-taken home (r53).
+
+type FloatBits = union
+  f : f32
+  i : u32
+
+fn poke : *FloatBits -> () ! [Union]
+  | p ->
+      p.i = 1069547520u32
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      let mut fb : FloatBits = FloatBits { f: 2.5f32 }
+      fb.i = 1077936128u32
+      fb.f = 1.0f32
+      let mut arr : [FloatBits; 2] = [FloatBits { i: 1u32 }, FloatBits { i: 2u32 }]
+      arr[0].i = 3u32
+      arr[1].f = 1.5f32
+      let q : *FloatBits = &fb
+      poke(q)
+      fb.i += 1u32
+      syscall(231, 0)

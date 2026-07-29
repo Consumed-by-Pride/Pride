@@ -54,6 +54,8 @@ struct TypeChecker
     ast::AstArena* arena;   // for synthesizing type nodes
     bool strict;            // --strict: promote soft warnings to errors
     Node* current_self_type; // Self = implementing type in impl blocks
+    Node* audit_fn_root;     // current check_fn node — r52 arm audit uses it
+                             // to tell fn-local bindings from module globals
 
     // Cached canonical primitive type nodes (built lazily, interned by us).
     Node*[16] prim_cache;
@@ -447,6 +449,24 @@ fn bool TypeChecker.subtype_body(TypeChecker* self, Node* a, Node* b)
         Node* a_ret = a.child_count >= 2 ? a.children[1] : null;
         Node* b_arg = b.child_count >= 1 ? b.children[0] : null;
         Node* b_ret = b.child_count >= 2 ? b.children[1] : null;
+        // Effect-row form (r53): NODE_TYPE_FN[core_fn, row].  Detach the rows
+        // from the structural comparison — a row is not a type — and check
+        // row SUBSUMPTION: the supplied function's effects must fit the
+        // parameter's declared row.  An open tail (`..r`, FLAG_OPEN_ROW)
+        // admits any further effects (v.md §10.4), so an effectful callee
+        // like `i64 -> i64 ! [Log]` fits a parameter typed `A -> A ! [..r]`.
+        Node* a_row = (a_ret != null && a_ret.kind == Nk.NODE_EFFECT_ROW) ? a_ret : null;
+        Node* b_row = (b_ret != null && b_ret.kind == Nk.NODE_EFFECT_ROW) ? b_ret : null;
+        if (a_row != null && a_arg != null && a_arg.kind == Nk.NODE_TYPE_FN)
+        { a_ret = a_arg.child_count >= 2 ? a_arg.children[1] : null;
+          a_arg = a_arg.child_count >= 1 ? a_arg.children[0] : null; }
+        if (b_row != null && b_arg != null && b_arg.kind == Nk.NODE_TYPE_FN)
+        { b_ret = b_arg.child_count >= 2 ? b_arg.children[1] : null;
+          b_arg = b_arg.child_count >= 1 ? b_arg.children[0] : null; }
+        if (a_row != null || b_row != null)
+        {
+            if (!row_subsumes(a_row, b_row)) return false;
+        }
         return self.subtype(b_arg, a_arg) && self.subtype(a_ret, b_ret);
     }
 
@@ -578,6 +598,56 @@ fn bool TypeChecker.same_type_body(TypeChecker* self, Node* a, Node* b)
 
 // Infer the type of an expression node, caching it on node.type_annotation.
 // Returns null when the type is genuinely unknown (kept permissive downstream).
+// Subtree membership by pointer identity (r52 arm audit).
+fn bool arm_subtree_contains(Node* root, Node* target)
+{
+    if (root == null || target == null) return false;
+    if (root == target) return true;
+    for (usz i = 0; i < root.child_count; i++)
+    { if (arm_subtree_contains(root.children[i], target)) return true; }
+    return false;
+}
+
+// Audit one handler arm's body for writes to OUTER locals (r52).  Handler
+// frames do not persist outer state: a rebinding of a binder declared
+// outside the arm cannot take part in the join's SSA (fx2 crashed the
+// verifier: the arm's def did not dominate main's use), and even writes
+// through pointers/heap are dropped between performs (fx2d: `sum[0] += v`
+// read the true heap yet never persisted — the runtime restores a
+// per-perform frame; README §4's "same-frame re-perform" limitation).
+// Until the runtime grows persistent handler frames, EVERY outer-local
+// assignment in an arm is a hard error; accumulate through the resume
+// value / the computation's own dataflow instead.  Reads are fine.
+// `+='/`-=' forms are the same NODE_EXPR_ASSIGN node at this stage, so
+// compound assigns audit identically.
+fn void TypeChecker.audit_arm_assigns(TypeChecker* self, Node* arm, Node* n)
+{
+    if (n == null) return;
+    if (n.kind == Nk.NODE_DECL_FN || n.kind == Nk.NODE_EXPR_CLOSURE) return;
+    if (n.kind == Nk.NODE_EXPR_ASSIGN && n.child_count >= 1)
+    {
+        Node* root = n.children[0];
+        while (root != null
+               && (root.kind == Nk.NODE_EXPR_FIELD || root.kind == Nk.NODE_EXPR_INDEX)
+               && root.child_count >= 1)
+        { root = root.children[0]; }
+        if (root != null && root.kind == Nk.NODE_IDENT && root.resolved != null
+            && !arm_subtree_contains(arm, root.resolved))
+        {
+            // Module-scope globals are static storage — frame snapshots
+            // cannot lose writes to them, so they stay legal (r52).
+            bool is_global = (self.audit_fn_root != null
+                && !arm_subtree_contains(self.audit_fn_root, root.resolved));
+            if (!is_global)
+            {
+                self.diag((char*)"effect handler arm assigns an outer local: handler frames do not persist outer state (the write is dropped between performs) — accumulate through the resume value / the computation's dataflow",
+                          n.line, n.col, true);
+            }
+        }
+    }
+    for (usz i = 0; i < n.child_count; i++) self.audit_arm_assigns(arm, n.children[i]);
+}
+
 fn Node* TypeChecker.synth(TypeChecker* self, Node* e)
 {
     if (e == null) return null;
@@ -822,6 +892,10 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
                     if (ec == null) continue;
                     Node* t = self.synth(ec);
                     if (hi == 0 && ec.kind != Nk.NODE_HANDLER_ARM) comp_t = t;
+                    // r52: hard-error outer-local assigns inside arm bodies
+                    // (the arm's rebind cannot dominate post-handle uses).
+                    if (ec.kind == Nk.NODE_HANDLER_ARM && ec.child_count >= 1)
+                    { self.audit_arm_assigns(ec, ec.children[ec.child_count - 1]); }
                 }
                 return comp_t;
             }
@@ -1688,34 +1762,10 @@ fn Node* TypeChecker.synth_field(TypeChecker* self, Node* e)
     }
     // Generic-struct instantiation base (`pr.fst` with `pr : Pair<i64, f64>`):
     // the decl's field type names the type parameter — substitute the
-    // instantiation's arguments, or every consumer sees the boxed parameter
-    // type instead of the concrete field type.  DEEP substitution (r48):
-    // generic_payload_subst only rewrites a BARE typevar payload, so
-    // compound field types (`items : [T; 2]`, `*T`, `T -> T`) kept the
-    // parameter and downstream code boxed/broke (`store ptr 99`,
-    // `Index : T` for `b : Box<i64>`).
-    if (bt != null && bt.kind == Nk.NODE_TYPE_GENERIC_APP && bt.child_count >= 2)
-    {
-        Node* hd2 = bt.children[0];
-        Node* gdecl = (hd2 != null && hd2.resolved != null) ? hd2.resolved : bt.resolved;
-        if (gdecl != null
-            && (gdecl.kind == Nk.NODE_DECL_TYPE || gdecl.kind == Nk.NODE_DECL_STRUCT))
-        {
-            TypeBindings fb;
-            fb.clear();
-            usz oi = 1;
-            for (usz di = 0; di < gdecl.child_count && oi < bt.child_count; di++)
-            {
-                Node* gp = gdecl.children[di];
-                if (gp == null || gp.kind != Nk.NODE_GENERIC_PARAM) continue;
-                for (usz pi = 0; pi < gp.child_count && oi < bt.child_count; pi++)
-                { fb.bind(gp.children[pi], bt.children[oi]); oi++; }
-            }
-            if (fb.count > 0) { return self.substitute(ft, &fb, 0); }
-        }
-    }
-    ft = ast::generic_payload_subst(bt, ft);
-    return ft;
+    // instantiation's arguments (deep, r48/r50: `[T; 2]` → `[i64; 2]`), or
+    // every consumer sees the boxed parameter type (`store ptr 99`,
+    // `Index : T`) instead of the concrete field type.
+    return self.app_subst(bt, ft);
 }
 
 // Method-style call  base.name(args)  (MethodCall[base, name, args...]).
@@ -1758,6 +1808,56 @@ fn Node* TypeChecker.synth_method_call(TypeChecker* self, Node* e)
                 {
                     self.hard("C-union field payload doesn't fit the 64-bit cell "
                               "(untagged unions hold one scalar per field)",
+                              e.line, e.col);
+                }
+                e.type_annotation = base;
+                return base;
+            }
+        }
+        // Enum variant constructor `E.A(payload)` — r54: same story as the
+        // union arm above; union_decl_of misses DECL_ENUM bases, so the
+        // constructor stayed UNTYPED: `let e = E.A(41)` carried no stamp,
+        // every `match e` saw an unknown scrutinee (arms unbound, no
+        // FLAG_REFUTABLE), and the lowering dispatched by arm ORDER — the
+        // first arm always fired and trailing payload binders dangled as
+        // undefined %vN.
+        Node* edecl2 = ast::enum_decl_of(base);
+        if (edecl2 != null)
+        {
+            Node* vpayload = null;
+            int evord = -1; int evcnt = 0;
+            for (usz evi = 1; evi < edecl2.child_count; evi++)
+            {
+                Node* ev5 = edecl2.children[evi];
+                if (ev5 == null || ev5.kind != Nk.NODE_ENUM_VARIANT) continue;
+                Node* vn5 = ev5.child_count >= 1 ? ev5.children[0] : null;
+                if (vn5 != null && vn5.p.ident.name_ptr != null
+                    && vn5.p.ident.name_len == name.p.ident.name_len)
+                {
+                    bool veq5 = true;
+                    for (usz vc5 = 0; vc5 < name.p.ident.name_len; vc5++)
+                    { if (vn5.p.ident.name_ptr[vc5] != name.p.ident.name_ptr[vc5])
+                      { veq5 = false; break; } }
+                    if (veq5)
+                    {
+                        evord = evcnt;
+                        if (ev5.child_count >= 2 && ev5.children[1] != null
+                            && ev5.children[1].kind == Nk.NODE_FIELD_DECL
+                            && ev5.children[1].child_count >= 2)
+                        { vpayload = ev5.children[1].children[1]; }
+                        break;
+                    }
+                }
+                evcnt++;
+            }
+            if (evord >= 0)
+            {
+                // Oversize payloads are rejected at the decl already
+                // (enum_payload_fits) — belt and braces here too.
+                if (vpayload != null && !ast::union_payload_is_scalar(vpayload))
+                {
+                    self.hard("enum payload doesn't fit the 64-bit cell "
+                              "(enum repr is { i32 tag, i64 payload })",
                               e.line, e.col);
                 }
                 e.type_annotation = base;
@@ -3181,6 +3281,33 @@ fn void TypeChecker.stamp_return_struct_lits(TypeChecker* self, Node* n, Node* r
 // Field validation already ran during synth against the decl's field list,
 // so nothing is lost by overwriting the stamp.  Shared by check()
 // (let/assignment positions) and check_clause (return position).
+// Deep substitute a (possibly generic-declared) TYPE against a GENERIC_APP
+// instantiation's bindings (r48/r50): `items : [T; 2]` under `Box<i64>`
+// becomes `[i64; 2]`.  Shared by synth_field (member access) and the
+// struct-literal stamping recursion.
+fn Node* TypeChecker.app_subst(TypeChecker* self, Node* bt, Node* ty)
+{
+    if (bt == null || bt.kind != Nk.NODE_TYPE_GENERIC_APP || bt.child_count < 2
+        || ty == null) return ty;
+    Node* hd2 = bt.children[0];
+    Node* gdecl = (hd2 != null && hd2.resolved != null) ? hd2.resolved : bt.resolved;
+    if (gdecl == null
+        || (gdecl.kind != Nk.NODE_DECL_TYPE && gdecl.kind != Nk.NODE_DECL_STRUCT))
+    { return ty; }
+    TypeBindings fb;
+    fb.clear();
+    usz oi = 1;
+    for (usz di = 0; di < gdecl.child_count && oi < bt.child_count; di++)
+    {
+        Node* gp = gdecl.children[di];
+        if (gp == null || gp.kind != Nk.NODE_GENERIC_PARAM) continue;
+        for (usz pi = 0; pi < gp.child_count && oi < bt.child_count; pi++)
+        { fb.bind(gp.children[pi], bt.children[oi]); oi++; }
+    }
+    if (fb.count > 0) { return self.substitute(ty, &fb, 0); }
+    return ast::generic_payload_subst(bt, ty);
+}
+
 fn void TypeChecker.stamp_expected_struct_lit(TypeChecker* self, Node* e, Node* expected)
 {
     if (e == null || e.kind != Nk.NODE_EXPR_STRUCT_LIT || expected == null) return;
@@ -3192,7 +3319,87 @@ fn void TypeChecker.stamp_expected_struct_lit(TypeChecker* self, Node* e, Node* 
     if (app_decl != null && lit_decl != null && app_decl == lit_decl)
     {
         e.type_annotation = un;
+        // Recurse into FIELD_INIT values (r50): a nested struct literal
+        // whose slot is itself a generic instantiation —
+        // `Pair { snd: Box { … } } : Pair<i64, Box<i64>>` — must be
+        // stamped too, or it prints the generic decl's boxed repr against
+        // the outer literal's concrete record.
+        Node* fields = self.struct_fields_of(un);
+        if (fields != null)
+        {
+            for (usz ci = 1; ci < e.child_count; ci++)
+            {
+                Node* finit = e.children[ci];
+                if (finit == null || finit.kind != Nk.NODE_FIELD_INIT
+                    || finit.child_count < 2) continue;
+                Node* fname = finit.children[0];
+                Node* fval  = finit.children[1];
+                if (fname == null || fval == null
+                    || fval.kind != Nk.NODE_EXPR_STRUCT_LIT) continue;
+                Node* raw_fty = field_type(fields,
+                                           fname.p.ident.name_ptr,
+                                           fname.p.ident.name_len);
+                if (raw_fty == null) continue;
+                self.stamp_expected_struct_lit(fval, self.app_subst(un, raw_fty));
+            }
+        }
     }
+}
+
+// Does an enum-payload type fit Pride's tagged repr?  A Pride enum value is
+// { i32 tag, i64 payload }: exactly ONE payload cell of ≤ 64 bits.  Scalars
+// (bool/iN/uN ≤ 64, f32/f64, rune) and pointers fit; strings (fat
+// { ptr, i64 }), arrays, slices, tensors, tuples, structs and nested enums
+// do not.  Multi-field payloads are rejected by the caller.  Before r50 an
+// over-sized payload COMPILED and silently overflowed the cell — `A([i64;
+// 3])` read a stack address as the payload.  Typevars that cannot be
+// resolved here (generic parameters) are permissively accepted; named types
+// are unfolded one alias level before the size call.
+fn bool enum_payload_fits(Node* ty)
+{
+    int hops = 0;
+    while (ty != null && hops < 8)
+    {
+        hops++;
+        switch (ty.kind)
+        {
+            case Nk.NODE_TYPE_PRIMITIVE:
+            {
+                char* pn = ty.p.ident.name_ptr;
+                usz   pl = ty.p.ident.name_len;
+                if (pl == 3 && pn != null && pn[0] == 'S' && pn[1] == 't' && pn[2] == 'r')
+                { return false; }   // Str is fat: { ptr, i64 }
+                if (pl == 4 && pn != null && (pn[0] == 'i' || pn[0] == 'u')
+                    && pn[1] == '1' && pn[2] == '2' && pn[3] == '8')
+                { return false; }   // 128-bit ints exceed the cell
+                return true;
+            }
+            case Nk.NODE_TYPE_PTR:
+                return true;
+            case Nk.NODE_TYPEVAR:
+            {
+                Node* r = ty.resolved;
+                if (r == null) return true;           // generic param: permissive
+                if (r.kind == Nk.NODE_DECL_TYPE || r.kind == Nk.NODE_DECL_NEWTYPE)
+                {
+                    if (r.child_count < 1) return false;
+                    Node* u = r.children[r.child_count - 1];
+                    if (u == null || u == r) return false;
+                    if (u.kind == Nk.NODE_DECL_STRUCT || u.kind == Nk.NODE_DECL_ENUM
+                        || u.kind == Nk.NODE_DECL_UNION)
+                    { return false; }
+                    ty = u;                            // unfold one alias level
+                    continue;
+                }
+                return false;                          // struct/enum decl directly
+            }
+            case Nk.NODE_TYPE_GENERIC_APP:
+                return false;                          // instantiated generics: boxed/fat
+            default:
+                return false;                          // arrays, slices, tuples, fns…
+        }
+    }
+    return false;
 }
 
 fn void TypeChecker.check_program(TypeChecker* self, Node* program)
@@ -3240,16 +3447,30 @@ fn void TypeChecker.check_decl(TypeChecker* self, Node* d)
     }
     if (d.kind == Nk.NODE_DECL_ENUM)
     {
-        // Resolve payload types for each variant
+        // Resolve payload types for each variant, and enforce the repr
+        // truth (r50): a Pride enum is { i32 tag, i64 payload } — ONE
+        // payload cell of ≤ 64 bits.  Over-sized and multi-field payloads
+        // used to compile and silently overflow the cell.
         for (usz vi = 1; vi < d.child_count; vi++)
         {
             Node* evar = d.children[vi];
             if (evar == null || evar.kind != Nk.NODE_ENUM_VARIANT) continue;
+            usz pay_fields = 0;
+            bool bad = false;
             for (usz fi = 1; fi < evar.child_count; fi++)
             {
                 Node* field = evar.children[fi];
-                if (field != null && field.child_count >= 1)
-                { self.synth(field.children[0]); }
+                if (field == null || field.kind != Nk.NODE_FIELD_DECL
+                    || field.child_count < 2) continue;
+                pay_fields++;
+                self.synth(field.children[1]);
+                if (!enum_payload_fits(field.children[1])) { bad = true; }
+            }
+            if (pay_fields > 1) { bad = true; }
+            if (bad)
+            {
+                self.diag((char*)"enum payload over the tagged 64-bit cell: variants take at most one ≤64-bit scalar or pointer payload (Pride enums are { i32, i64 }) — box larger values behind *T or a slice",
+                          evar.line, evar.col, true);
             }
         }
         return;
@@ -3378,6 +3599,40 @@ fn bool ident_name_eq(Node* a, Node* b)
     return true;
 }
 
+// Effect-row subsumption (r53): does the row a function ACTUALLY performs fit
+// the row a context EXPECTS of it?  `actual == null` is a pure callee — it
+// fits every expectation.  `expected == null` is a context that expects purity
+// — only pure/empty callees fit.  An open expected tail (`..r`, §10.4) admits
+// any further effects.  Otherwise every ref in the actual row must be named in
+// the expected row.
+fn bool row_subsumes(Node* actual, Node* expected)
+{
+    if (expected == null)
+    {
+        if (actual == null) return true;
+        for (usz i = 0; i < actual.child_count; i++)
+        { if (actual.children[i] != null
+              && actual.children[i].kind == Nk.NODE_EFFECT_REF) return false; }
+        return true;
+    }
+    if (actual == null) return true;
+    if ((expected.flags & ast::FLAG_OPEN_ROW) != 0) return true;
+    for (usz i = 0; i < actual.child_count; i++)
+    {
+        Node* ac = actual.children[i];
+        if (ac == null || ac.kind != Nk.NODE_EFFECT_REF || ac.child_count < 1) continue;
+        bool found = false;
+        for (usz j = 0; j < expected.child_count && !found; j++)
+        {
+            Node* ec = expected.children[j];
+            if (ec == null || ec.kind != Nk.NODE_EFFECT_REF || ec.child_count < 1) continue;
+            if (ident_name_eq(ac.children[0], ec.children[0])) found = true;
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
 // Check whether the given clause/arm patterns cover every variant of a union.
 // `patterns` is the parent block of clauses/arms; `is_clause` selects the node
 // kind. Returns true (and the caller stamps FLAG_EXHAUSTIVE) when every union
@@ -3385,7 +3640,9 @@ fn bool ident_name_eq(Node* a, Node* b)
 fn bool TypeChecker.union_match_exhaustive(TypeChecker* self, Node* variants, Node* parent, bool is_clause)
 {
     // If the "variants" node is a NODE_DECL_ENUM, its ENUM_VARIANT children
-    // are the variants. Map them to field-like names for matching.
+    // are the variants. Match against bare variant-NAME patterns (`| B ->`)
+    // and positional struct patterns (`| A(a) ->`); guarded arms only cover
+    // conditionally, wildcard covers all (r54).
     if (variants != null && variants.kind == Nk.NODE_DECL_ENUM)
     {
         int covered = 0; int total = 0;
@@ -3394,7 +3651,8 @@ fn bool TypeChecker.union_match_exhaustive(TypeChecker* self, Node* variants, No
             Node* evar = variants.children[vi];
             if (evar == null || evar.kind != Nk.NODE_ENUM_VARIANT) continue;
             total++;
-            // Check if any arm of the match/clause covers this variant name
+            Node* vname = (evar.child_count >= 1) ? evar.children[0] : null;
+            if (vname == null) continue;
             for (usz ai = 0; ai < parent.child_count; ai++)
             {
                 Node* arm = parent.children[ai];
@@ -3403,20 +3661,31 @@ fn bool TypeChecker.union_match_exhaustive(TypeChecker* self, Node* variants, No
                 if (pat == null) continue;
                 if (pat.kind == Nk.NODE_WILDCARD || pat.kind == Nk.NODE_PATTERN_WILDCARD)
                 { covered = total; break; }
-                if (pat.kind == Nk.NODE_PATTERN_IDENT || pat.kind == Nk.NODE_IDENT)
+                // A guarded arm covers its variant only conditionally.
+                bool guarded = false;
+                for (usz k = 1; k < arm.child_count; k++)
                 {
-                    // Check name matches variant
-                    if (evar.child_count >= 1 && evar.children[0] != null)
-                    {
-                        Node* vname = evar.children[0];
-                        if (vname.p.ident.name_len == pat.p.ident.name_len)
-                        {
-                            bool nm = true;
-                            for (usz ci = 0; ci < vname.p.ident.name_len; ci++)
-                            { if (vname.p.ident.name_ptr[ci] != pat.p.ident.name_ptr[ci]) { nm = false; break; } }
-                            if (nm) { covered++; break; }
-                        }
-                    }
+                    if (arm.children[k] != null
+                        && arm.children[k].kind == Nk.NODE_PATTERN_GUARD)
+                    { guarded = true; break; }
+                }
+                if (guarded) continue;
+                // Bare variant-name pattern `| B -> ...`
+                if (pat.kind == Nk.NODE_PATTERN_IDENT && pat.child_count >= 1
+                    && pat.children[0] != null)
+                {
+                    if (ident_name_eq(pat.children[0], vname)) { covered++; break; }
+                    continue;
+                }
+                // Positional variant struct pattern `| A(a) -> ...`: the head
+                // names the variant (resolved identity preferred).
+                if (pat.kind == Nk.NODE_PATTERN_STRUCT && pat.child_count >= 1
+                    && pat.children[0] != null)
+                {
+                    Node* hd = pat.children[0];
+                    if (hd.resolved != null && hd.resolved == evar) { covered++; break; }
+                    if (ident_name_eq(hd, vname)) { covered++; break; }
+                    continue;
                 }
             }
         }
@@ -3467,6 +3736,10 @@ fn bool TypeChecker.union_match_exhaustive(TypeChecker* self, Node* variants, No
 
 fn void TypeChecker.check_fn(TypeChecker* self, Node* fn_node)
 {
+    Node* prev_audit_root = self.audit_fn_root;
+    self.audit_fn_root = fn_node;
+    defer self.audit_fn_root = prev_audit_root;
+
     Node* sig = self.fn_signature_type(fn_node);
 
     // Signature shape: NODE_TYPE_FN[arg, ret], optionally wrapped as
@@ -3684,6 +3957,19 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
             {
                 pat.children[0].type_annotation = ty;
                 pat.type_annotation = ty;
+                // Bare enum-variant NAME pattern (`| B -> ...`) — r54: a
+                // refutable discriminant test, not an irrefutable binder.
+                // Without the flag the linter treats the arm as a catch-all
+                // (every later arm reported unreachable) and the lowering's
+                // own is_enum_name_arm classification disagrees.
+                Node* ed5 = ast::enum_decl_of(ty);
+                Node* nm5 = pat.children[0];
+                if (ed5 != null && nm5 != null
+                    && nm5.kind == Nk.NODE_TYPEVAR
+                    && nm5.p.ident.name_ptr != null
+                    && ast::enum_variant_lookup(ed5, nm5.p.ident.name_ptr,
+                                                nm5.p.ident.name_len) >= 0)
+                { pat.flags |= ast::FLAG_REFUTABLE; }
             }
 
         case Nk.NODE_PATTERN_OR:
@@ -3872,6 +4158,45 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
                         // cannot bind and a let-pattern must be irrefutable —
                         // tolerated silently, same convention as tuple lets.
                     }
+                }
+                else if (ty != null && pat.child_count >= 2
+                         && pat.children[0] != null && pat.children[0].resolved != null
+                         && pat.children[0].resolved.kind == Nk.NODE_ENUM_VARIANT)
+                {
+                // Positional enum-variant pattern `A(a)` (r54): binders
+                // receive the variant's PAYLOAD type — stamping the binder
+                // with the scrutinee type (the newtype fallback below used
+                // to swallow this form, `underlying = ty`) made the lowering
+                // unbox the i64 payload slot at the enum's aggregate repr
+                // ({ i32, i64 }), poisoning every use of the binder.
+                Node* ev4 = pat.children[0].resolved;
+                pat.type_annotation = ty;
+                pat.flags |= ast::FLAG_REFUTABLE;
+                Node* pay4 = null;
+                if (ev4.child_count >= 2 && ev4.children[1] != null
+                    && ev4.children[1].kind == Nk.NODE_FIELD_DECL
+                    && ev4.children[1].child_count >= 2)
+                { pay4 = ev4.children[1].children[1]; }
+                // The repr holds ONE payload cell; extra binders have no
+                // slot to draw from (typecheck already rejects multi-field
+                // payloads at the enum decl, so >1 binder is user error).
+                if (pat.child_count > 2)
+                {
+                    self.hard("too many binders in enum variant pattern (the repr holds one payload cell)",
+                              pat.line, pat.col);
+                }
+                pay4 = ast::generic_payload_subst(ty, pay4);
+                for (usz i = 1; i < pat.child_count; i++)
+                {
+                    Node* fp2 = pat.children[i];
+                    if (fp2 == null || fp2.kind != Nk.NODE_PATTERN_IDENT) continue;
+                    if (pay4 != null && !ast::union_payload_is_scalar(pay4))
+                    {
+                        self.hard("variant payload is not lowered yet (only scalar payloads fit the { i32, i64 } repr)",
+                                  fp2.line, fp2.col);
+                    }
+                    self.bind_pattern_types(fp2, pay4 != null ? pay4 : ty);
+                }
                 }
                 else if (ty != null && pat.child_count >= 2)
                 {

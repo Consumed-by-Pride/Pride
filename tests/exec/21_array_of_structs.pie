@@ -1,0 +1,49 @@
+-- EXPECT: 2\n6\n22\n66\n10\n3\n5\n7\n9\n65\n
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+type Cell = struct
+  items : [i64; 2]
+  n : i64
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      let mut arr : [Cell; 2] = [Cell { items: [1, 2], n: 3 }, Cell { items: [4, 5], n: 6 }]
+      print_i64_nl(arr[0].items[1])
+      print_i64_nl(arr[1].n)
+      arr[0].items[1] = 22
+      arr[1].n = 66
+      print_i64_nl(arr[0].items[1])
+      print_i64_nl(arr[1].n)
+      let mut m : [i64; 6] = [1, 2, 3, 4, 5, 6]
+      m[0] = 10
+      m[5] = 60
+      let mut i : i64 = 0
+      while i < 6
+        m[i] += i
+        i += 1
+      i = 0
+      while i < 6
+        print_i64_nl(m[i])
+        i += 1
+      syscall(231, 0)

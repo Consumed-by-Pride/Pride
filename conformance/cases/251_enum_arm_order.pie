@@ -1,0 +1,14 @@
+-- EXPECT-CLEAN
+-- Sealed enum match with the payload-less arm FIRST: order-independent
+-- exhaustiveness and dispatch (r54).
+
+enum E
+  A(i64)
+  B
+
+fn main : () -> () ! [IO]
+  | () ->
+      let b = E.B
+      match b
+        | B -> syscall(231, 0)
+        | A(a) -> syscall(231, a)

@@ -1,0 +1,62 @@
+-- EXPECT: 1\n2\n3\n9\n20\n1\n30\n10\n10\n20\n30\n100\n200\n300\n
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+type Grid = struct
+  cells : [i64; 3]
+  n : i64
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      let mut g : Grid = Grid { cells: [1, 2, 3], n: 9 }
+      print_i64_nl(g.cells[0])
+      print_i64_nl(g.cells[1])
+      print_i64_nl(g.cells[2])
+      print_i64_nl(g.n)
+      g.cells[1] = 20
+      print_i64_nl(g.cells[1])
+      print_i64_nl(g.cells[0])
+      let p : *Grid = alloc Grid
+      p.cells[2] = 30
+      p.n = 10
+      print_i64_nl(p.cells[2])
+      print_i64_nl(p.n)
+      let mut v : Grid = Grid { cells: [0, 0, 0], n: 0 }
+      let mut i : i64 = 0
+      while i < 3
+        v.cells[i] = (i + 1) * 10
+        i += 1
+      print_i64_nl(v.cells[0])
+      print_i64_nl(v.cells[1])
+      print_i64_nl(v.cells[2])
+      let q : *Grid = alloc Grid
+      let mut j : i64 = 0
+      while j < 3
+        q.cells[j] = (j + 1) * 100
+        j += 1
+      print_i64_nl(q.cells[0])
+      print_i64_nl(q.cells[1])
+      print_i64_nl(q.cells[2])
+      free p
+      free q
+      syscall(231, 0)

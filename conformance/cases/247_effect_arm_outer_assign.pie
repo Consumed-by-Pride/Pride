@@ -1,0 +1,17 @@
+-- EXPECT-COUNT: type-err=1
+effect Push
+  push : i64 -> ()
+fn pusher : () -> i64 ! [Push]
+  | () ->
+      Push.push(11)
+      7
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      let mut sum : i64 = 0
+      let r : i64 = handle pusher()
+        | Push.push v k ->
+            sum += v
+            k ()
+      print_i64_nl(sum)
+fn print_i64_nl : i64 -> () ! [IO]
+  | n -> syscall(231, 0)
