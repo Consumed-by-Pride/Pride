@@ -1387,6 +1387,12 @@ fn bool phi_annotation_type(ssi_ir::IrVal* ph, char* pbuf, usz cap)
             // Allow ptr if binder annotation IS a real pointer type
             if (pbuf[0] == 'p' && binder_ty_node.kind == Nk.NODE_TYPE_PTR)
             { binder_ty_ok = true; }
+            // Inline-array binder: the loop/branch-carried VALUE is its
+            // storage POINTER (IR_ARRAY's contract — array values are ptrs),
+            // never a [N x T] register aggregate, so the phi must be typed
+            // ptr or the [N x T] text mismatches every operand (r49).
+            if (binder_ty_node.kind == Nk.NODE_TYPE_ARRAY)
+            { snprintf(pbuf, cap, "ptr"); binder_ty_ok = true; }
             if (binder_ty_ok) { return true; }
         }
     }
