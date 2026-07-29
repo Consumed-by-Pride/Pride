@@ -2477,6 +2477,34 @@ fn int fp_ty_rank(char* ty)
 // null when the types are representation-identical and NO instruction is
 // required (same type, or both opaque `ptr`). Also null when no scalar
 // conversion exists (aggregates/void) — callers handle those separately.
+// Is an AST type annotation an unsigned-integer-ish type (uN, usize, bool)?
+// Signedness does not survive into the LLVM type text (iN is sign-agnostic),
+// so extension decisions MUST read the source annotation — `sext` on a
+// `u8 255` yields -1 (and on `true`, too: i1 sign-extends to -1) where the
+// value is defined to be 255 (1) — see r38.
+fn bool cg_ann_is_unsigned(Node* ann)
+{
+    if (ann == null) return false;
+    if (ann.kind == Nk.NODE_TYPEVAR && ann.resolved != null)
+    {
+        Node* d = ann.resolved;
+        if (d.kind == Nk.NODE_DECL_TYPE && d.child_count >= 1)
+        { return cg_ann_is_unsigned(d.children[d.child_count - 1]); }
+        return false;
+    }
+    if (ann.kind != Nk.NODE_TYPE_PRIMITIVE) return false;
+    char* n = ann.p.ident.name_ptr; usz l = ann.p.ident.name_len;
+    if (n == null || l == 0) return false;
+    if (l == 4 && n[0]=='b'&&n[1]=='o'&&n[2]=='o'&&n[3]=='l') return true;  // bool extends zero
+    if (l == 5 && n[0]=='u'&&n[1]=='s'&&n[2]=='i'&&n[3]=='z'&&n[4]=='e') return true;
+    if (l >= 2 && n[0] == 'u')   // uN
+    {
+        for (usz i = 1; i < l; i++) { if (n[i] < '0' || n[i] > '9') return false; }
+        return true;
+    }
+    return false;
+}
+
 fn char* coerce_op(char* src, char* dst)
 {
     if (src == null || dst == null || src[0] == 0 || dst[0] == 0) return null;
@@ -5326,15 +5354,22 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     return;
                 }
 
-                // Widening int → sext or zext, not bitcast
+                // Widening int → sext or zext (per SOURCE signedness — the
+                // LLVM type text erased it; uN/bool must zero-extend) or
+                // trunc, never bitcast across widths.
                 if (src_int && dst_int)
                 {
                     int sw = 0; int dw = 0;
                     for (usz ci = 1; src_type_str[ci] >= '0' && src_type_str[ci] <= '9'; ci++) sw = sw*10+(int)(src_type_str[ci]-'0');
                     for (usz ci = 1; dst_type_str[ci] >= '0' && dst_type_str[ci] <= '9'; ci++) dw = dw*10+(int)(dst_type_str[ci]-'0');
+                    Node* cast_src_ann = (v.src != null && v.src.kind == Nk.NODE_EXPR_CAST
+                                         && v.src.child_count >= 1
+                                         && v.src.children[0] != null)
+                                         ? v.src.children[0].type_annotation : null;
                     cg.out.writes("  %v"); cg.out.writei(v.id); cg.out.writes(" = ");
                     if (sw == dw) { cg.out.writes("bitcast "); }
-                    else if (sw < dw) { cg.out.writes("sext "); }
+                    else if (sw < dw)
+                    { cg.out.writes(cg_ann_is_unsigned(cast_src_ann) ? "zext " : "sext "); }
                     else { cg.out.writes("trunc "); }
                     cg.out.writes(src_type_str); cg.out.writes(" "); cg.emit_vref(src);
                     cg.out.writes(" to "); cg.out.writes(dst_type_str); cg.out.writes("\n");
