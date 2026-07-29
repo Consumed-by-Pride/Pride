@@ -1641,6 +1641,31 @@ fn IrVal* SsiModule.clause_test(SsiModule* m, Node* pat, IrVal** params, usz ari
     return m.single_test(pat, arity >= 1 ? params[0] : null);
 }
 
+// Match-expression tuple arms: the refutability test of a tuple pattern
+// against ONE scrutinee value — every component is tested via single_test
+// against the component's own projection (exactly clause_test over
+// projections; bind/wildcard components contribute no test). This is what
+// `match t | (0, 0) -> ...` spec matching needs: literal components compare
+// equal, binders destructure irrefutably.
+fn IrVal* SsiModule.tuple_component_test(SsiModule* m, Node* pat, IrVal* sval)
+{
+    if (pat == null || sval == null || pat.kind != Nk.NODE_PATTERN_TUPLE) return null;
+    IrVal* acc = null;
+    for (usz i = 0; i < pat.child_count; i++)
+    {
+        Node* comp = pat.children[i];
+        if (comp == null) continue;
+        IrVal* proj = m.new_val(IrOp.IR_INDEX, comp);
+        if (proj == null) continue;
+        proj.add_arg(sval, -1);
+        proj.ival = (ulong)i;
+        m.emit(proj);
+        IrVal* t = m.single_test(comp, proj);
+        acc = m.and_cond(acc, t, pat);
+    }
+    return acc;
+}
+
 // A single sub-pattern's refutability test against one value.
 fn IrVal* SsiModule.single_test(SsiModule* m, Node* pat, IrVal* v)
 {
@@ -4147,6 +4172,19 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
             && pat.kind == Nk.NODE_PATTERN_LITERAL
             && pat.child_count >= 1 && pat.children[0] != null
             && pat.children[0].kind == Nk.NODE_LIT_STRING;
+        // Tuple arm with LITERAL components (`| (0, b) -> ...`): refutable —
+        // the component equalities are tested in the dispatch block via
+        // tuple_component_test, exactly like fn-clause tuple matching.
+        bool tuple_lit_comps = false;
+        if (is_tuple)
+        {
+            for (usz k = 0; k < pat.child_count; k++)
+            {
+                if (pat.children[k] != null
+                    && pat.children[k].kind == Nk.NODE_PATTERN_LITERAL)
+                { tuple_lit_comps = true; break; }
+            }
+        }
         // Enum-name arms are tested-chain arms too: the switch cannot prove
         // a discriminant (no integer case value exists for a NAME pattern),
         // so they route through the default chain exactly like union-variant
@@ -4161,9 +4199,10 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         // test there.
         // (or_tested_chain needs the block even when guard==null: the OR
         // with string alternatives has NO switch cases, so without the
-        // equality pretest here the arm would match EVERYTHING.)
+        // equality pretest here the arm would match EVERYTHING; same for
+        // refutable literal components of a tuple arm.)
         bool needs_test_blk = (guard != null) || is_variant_arm || is_enum_name_arm
-            || is_null_arm || is_str_arm || or_tested_chain;
+            || is_null_arm || is_str_arm || or_tested_chain || tuple_lit_comps;
         int guard_blk = needs_test_blk ? m.new_block() : -1;
         int dispatch = (guard_blk >= 0) ? guard_blk : arm_blk;
 
@@ -4278,6 +4317,13 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
         // it via projections, a union-variant arm extracts its payload slot.
         // (Other pattern shapes keep the legacy binding until they get
         // properly typed destructuring.)
+        // Emit the destructuring projections in this arm's DISPATCH block
+        // (guard_blk when present, else arm_blk): the dispatch block
+        // dominates both the guard evaluation and the arm body. Emitting
+        // into whatever block the previous arm left cur in scattered the
+        // projections into earlier bodies (broken dominance) — and a guard
+        // referencing a bound name needs the binding ABOVE guard_blk.
+        m.cur = (guard_blk >= 0) ? guard_blk : arm_blk;
         if (is_bind || is_tuple || is_variant_arm || is_newtype_arm) { m.bind_let_pattern(pat, sval); }
         else if (or_ident != null)               { m.bind_let_pattern(or_ident, sval); }
         else                                     { m.bind_pattern(null, pat); }
@@ -4306,6 +4352,12 @@ fn IrVal* SsiModule.lower_match(SsiModule* m, Node* n)
                 // about the scrutinee, so AND the alternative-equality
                 // pretest into the guard condition.
                 gval = m.and_cond(m.or_pattern_test(pat, sval), gval, pat);
+            }
+            if (tuple_lit_comps)
+            {
+                // Refutable literal components of the tuple pattern: AND
+                // their per-component equality tests in.
+                gval = m.and_cond(m.tuple_component_test(pat, sval), gval, pat);
             }
             IrBlock* gb = m.blk(guard_blk);
             if (gb != null && gval != null) { gb.term = TermKind.TERM_CBR; gb.cond = gval; }

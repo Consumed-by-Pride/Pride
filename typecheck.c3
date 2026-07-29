@@ -2857,7 +2857,13 @@ fn Node* TypeChecker.synth_match(TypeChecker* self, Node* e)
             {
                 Node* comp = pat.children[k];
                 if (comp == null) continue;
-                if (comp.kind == Nk.NODE_PATTERN_LITERAL || comp.kind == Nk.NODE_PATTERN_STRUCT
+                // Literal components ARE supported: the lowering folds a
+                // per-component equality test into the arm's dispatch block
+                // (fn clauses accept the same shapes via clause_test), which
+                // is exactly the spec's `| (0, 0) -> ...` tuple matching.
+                // NESTED struct/tuple/or components still need a decision
+                // tree — keep the hard error for those.
+                if (comp.kind == Nk.NODE_PATTERN_STRUCT
                     || comp.kind == Nk.NODE_PATTERN_TUPLE   || comp.kind == Nk.NODE_PATTERN_OR)
                 {
                     self.hard("refutable component in a match tuple pattern (bind it and refine with a guard)",
