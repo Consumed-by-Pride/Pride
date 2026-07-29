@@ -3678,13 +3678,19 @@ fn bool TypeChecker.union_match_exhaustive(TypeChecker* self, Node* variants, No
                     continue;
                 }
                 // Positional variant struct pattern `| A(a) -> ...`: the head
-                // names the variant (resolved identity preferred).
+                // names the variant (resolved identity preferred).  Field-form
+                // `{ A: a }` wraps the name in a PATTERN_FIELD — unwrap it.
                 if (pat.kind == Nk.NODE_PATTERN_STRUCT && pat.child_count >= 1
                     && pat.children[0] != null)
                 {
                     Node* hd = pat.children[0];
-                    if (hd.resolved != null && hd.resolved == evar) { covered++; break; }
-                    if (ident_name_eq(hd, vname)) { covered++; break; }
+                    if (hd.kind == Nk.NODE_PATTERN_FIELD && hd.child_count >= 1)
+                    { hd = hd.children[0]; }
+                    if (hd != null)
+                    {
+                        if (hd.resolved != null && hd.resolved == evar) { covered++; break; }
+                        if (ident_name_eq(hd, vname)) { covered++; break; }
+                    }
                     continue;
                 }
             }
@@ -4103,6 +4109,63 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
                             }
                             self.bind_pattern_types(bind, payload_ty);
                             pf.type_annotation = payload_ty;
+                        }
+                    }
+                }
+                else if (field_form && ast::enum_decl_of(ty) != null)
+                {
+                    // Enum-variant pattern `{ A: a }` (r54): same tagged
+                    // `{ i32, i64 }` repr as unions — resolve the field name
+                    // to a variant, type the binder with the variant payload,
+                    // stamp the pattern so the lowering recovers the
+                    // discriminant.  Without this, enum binder `{ A: a }` in
+                    // fn clauses aliased the WHOLE scrutinee record
+                    // (`add nsw i64 {}, 100` — an aggregate as an int operand).
+                    Node* edecl3 = ast::enum_decl_of(ty);
+                    pat.type_annotation = ty;
+                    pat.flags |= ast::FLAG_REFUTABLE;
+                    for (usz vi3 = 0; vi3 < pat.child_count; vi3++)
+                    {
+                        Node* pf3 = pat.children[vi3];
+                        if (pf3 == null || pf3.kind != Nk.NODE_PATTERN_FIELD || pf3.child_count < 2) continue;
+                        Node* vn3 = pf3.children[0];
+                        Node* bind3 = pf3.children[1];
+                        if (vn3 == null) continue;
+                        int eord3 = ast::enum_variant_lookup(edecl3,
+                            vn3.p.ident.name_ptr, vn3.p.ident.name_len);
+                        if (eord3 < 0)
+                        {
+                            self.hard("unknown variant in enum pattern (check the enum's variant list)",
+                                      vn3.line, vn3.col);
+                            continue;
+                        }
+                        Node* epay3 = null;
+                        int ec3 = 0;
+                        for (usz q3 = 1; q3 < edecl3.child_count; q3++)
+                        {
+                            Node* qv3 = edecl3.children[q3];
+                            if (qv3 == null || qv3.kind != Nk.NODE_ENUM_VARIANT) continue;
+                            if (ec3 == eord3)
+                            {
+                                if (qv3.child_count >= 2 && qv3.children[1] != null
+                                    && qv3.children[1].kind == Nk.NODE_FIELD_DECL
+                                    && qv3.children[1].child_count >= 2)
+                                { epay3 = qv3.children[1].children[1]; }
+                                break;
+                            }
+                            ec3++;
+                        }
+                        epay3 = ast::generic_payload_subst(ty, epay3);
+                        if (bind3 != null && bind3.kind == Nk.NODE_PATTERN_IDENT)
+                        {
+                            if (epay3 != null && epay3.kind == Nk.NODE_EXPR_UNIT) continue;
+                            if (epay3 != null && !ast::union_payload_is_scalar(epay3))
+                            {
+                                self.hard("variant payload is not lowered yet (only scalar payloads fit the { i32, i64 } repr)",
+                                          bind3.line, bind3.col);
+                            }
+                            self.bind_pattern_types(bind3, epay3 != null ? epay3 : ty);
+                            pf3.type_annotation = epay3;
                         }
                     }
                 }

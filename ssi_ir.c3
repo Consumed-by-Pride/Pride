@@ -1428,17 +1428,51 @@ fn bool variant_pattern_info(Node* pat, Node** out_union_ty, int* out_ord, Node*
     {
         Node* ty = pat.type_annotation != null ? pat.type_annotation : pf0.type_annotation;
         Node* vn = pf0.children[0];
-        if (vn != null && vn.p.ident.name_ptr != null && ast::union_decl_of(ty) != null)
+        if (vn != null && vn.p.ident.name_ptr != null)
         {
-            Node* payload = null;
-            int ord = ast::union_variant_lookup(ast::union_decl_of(ty),
-                        vn.p.ident.name_ptr, vn.p.ident.name_len, &payload);
-            if (ord >= 0)
+            if (ast::union_decl_of(ty) != null)
             {
-                if (out_union_ty != null) *out_union_ty = ty;
-                if (out_ord != null) *out_ord = ord;
-                if (out_payload != null) *out_payload = payload;
-                return true;
+                Node* payload = null;
+                int ord = ast::union_variant_lookup(ast::union_decl_of(ty),
+                            vn.p.ident.name_ptr, vn.p.ident.name_len, &payload);
+                if (ord >= 0)
+                {
+                    if (out_union_ty != null) *out_union_ty = ty;
+                    if (out_ord != null) *out_ord = ord;
+                    if (out_payload != null) *out_payload = payload;
+                    return true;
+                }
+            }
+            // r54b: `{ A: a }` enum-variant field-form (fn clauses); same
+            // repr, so recognition suffices for the shared tag/payload path.
+            Node* edecl = ast::enum_decl_of(ty);
+            if (edecl != null)
+            {
+                int eord = ast::enum_variant_lookup(edecl,
+                    vn.p.ident.name_ptr, vn.p.ident.name_len);
+                if (eord >= 0)
+                {
+                    Node* epay = null;
+                    int ecnt = 0;
+                    for (usz ei = 1; ei < edecl.child_count; ei++)
+                    {
+                        Node* ev = edecl.children[ei];
+                        if (ev == null || ev.kind != Nk.NODE_ENUM_VARIANT) continue;
+                        if (ecnt == eord)
+                        {
+                            if (ev.child_count >= 2 && ev.children[1] != null
+                                && ev.children[1].kind == Nk.NODE_FIELD_DECL
+                                && ev.children[1].child_count >= 2)
+                            { epay = ev.children[1].children[1]; }
+                            break;
+                        }
+                        ecnt++;
+                    }
+                    if (out_union_ty != null) *out_union_ty = ty;
+                    if (out_ord != null) *out_ord = eord;
+                    if (out_payload != null) *out_payload = epay;
+                    return true;
+                }
             }
         }
     }
