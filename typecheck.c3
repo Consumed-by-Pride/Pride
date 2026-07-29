@@ -54,6 +54,8 @@ struct TypeChecker
     ast::AstArena* arena;   // for synthesizing type nodes
     bool strict;            // --strict: promote soft warnings to errors
     Node* current_self_type; // Self = implementing type in impl blocks
+    Node* audit_fn_root;     // current check_fn node — r52 arm audit uses it
+                             // to tell fn-local bindings from module globals
 
     // Cached canonical primitive type nodes (built lazily, interned by us).
     Node*[16] prim_cache;
@@ -578,6 +580,56 @@ fn bool TypeChecker.same_type_body(TypeChecker* self, Node* a, Node* b)
 
 // Infer the type of an expression node, caching it on node.type_annotation.
 // Returns null when the type is genuinely unknown (kept permissive downstream).
+// Subtree membership by pointer identity (r52 arm audit).
+fn bool arm_subtree_contains(Node* root, Node* target)
+{
+    if (root == null || target == null) return false;
+    if (root == target) return true;
+    for (usz i = 0; i < root.child_count; i++)
+    { if (arm_subtree_contains(root.children[i], target)) return true; }
+    return false;
+}
+
+// Audit one handler arm's body for writes to OUTER locals (r52).  Handler
+// frames do not persist outer state: a rebinding of a binder declared
+// outside the arm cannot take part in the join's SSA (fx2 crashed the
+// verifier: the arm's def did not dominate main's use), and even writes
+// through pointers/heap are dropped between performs (fx2d: `sum[0] += v`
+// read the true heap yet never persisted — the runtime restores a
+// per-perform frame; README §4's "same-frame re-perform" limitation).
+// Until the runtime grows persistent handler frames, EVERY outer-local
+// assignment in an arm is a hard error; accumulate through the resume
+// value / the computation's own dataflow instead.  Reads are fine.
+// `+='/`-=' forms are the same NODE_EXPR_ASSIGN node at this stage, so
+// compound assigns audit identically.
+fn void TypeChecker.audit_arm_assigns(TypeChecker* self, Node* arm, Node* n)
+{
+    if (n == null) return;
+    if (n.kind == Nk.NODE_DECL_FN || n.kind == Nk.NODE_EXPR_CLOSURE) return;
+    if (n.kind == Nk.NODE_EXPR_ASSIGN && n.child_count >= 1)
+    {
+        Node* root = n.children[0];
+        while (root != null
+               && (root.kind == Nk.NODE_EXPR_FIELD || root.kind == Nk.NODE_EXPR_INDEX)
+               && root.child_count >= 1)
+        { root = root.children[0]; }
+        if (root != null && root.kind == Nk.NODE_IDENT && root.resolved != null
+            && !arm_subtree_contains(arm, root.resolved))
+        {
+            // Module-scope globals are static storage — frame snapshots
+            // cannot lose writes to them, so they stay legal (r52).
+            bool is_global = (self.audit_fn_root != null
+                && !arm_subtree_contains(self.audit_fn_root, root.resolved));
+            if (!is_global)
+            {
+                self.diag((char*)"effect handler arm assigns an outer local: handler frames do not persist outer state (the write is dropped between performs) — accumulate through the resume value / the computation's dataflow",
+                          n.line, n.col, true);
+            }
+        }
+    }
+    for (usz i = 0; i < n.child_count; i++) self.audit_arm_assigns(arm, n.children[i]);
+}
+
 fn Node* TypeChecker.synth(TypeChecker* self, Node* e)
 {
     if (e == null) return null;
@@ -822,6 +874,10 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
                     if (ec == null) continue;
                     Node* t = self.synth(ec);
                     if (hi == 0 && ec.kind != Nk.NODE_HANDLER_ARM) comp_t = t;
+                    // r52: hard-error outer-local assigns inside arm bodies
+                    // (the arm's rebind cannot dominate post-handle uses).
+                    if (ec.kind == Nk.NODE_HANDLER_ARM && ec.child_count >= 1)
+                    { self.audit_arm_assigns(ec, ec.children[ec.child_count - 1]); }
                 }
                 return comp_t;
             }
@@ -3564,6 +3620,10 @@ fn bool TypeChecker.union_match_exhaustive(TypeChecker* self, Node* variants, No
 
 fn void TypeChecker.check_fn(TypeChecker* self, Node* fn_node)
 {
+    Node* prev_audit_root = self.audit_fn_root;
+    self.audit_fn_root = fn_node;
+    defer self.audit_fn_root = prev_audit_root;
+
     Node* sig = self.fn_signature_type(fn_node);
 
     // Signature shape: NODE_TYPE_FN[arg, ret], optionally wrapped as

@@ -1546,7 +1546,11 @@ fn int main(int argc, char** argv)
     // to `undef`/garbage, and shipping that IR as a .ll/.o/binary is a
     // silent-miscompilation path (previously `fn f : T -> U = | p -> 0`
     // mis-parsed this way and produced a runnable but wrong executable).
-    bool frontend_hard_error = lx.had_errors() || p.had_error || r.had_error;
+    // r52: typecheck HARD errors gate too — an over-sized enum payload
+    // (E0308) or a handler-arm outer assign (E0365) used to EMIT runnable
+    // binaries whose runtime behavior silently differed from the source.
+    bool frontend_hard_error = lx.had_errors() || p.had_error || r.had_error
+                               || tc.error_count > 0;
     bool codegen_ok = true;
     if (emit_llvm && frontend_hard_error)
     {
