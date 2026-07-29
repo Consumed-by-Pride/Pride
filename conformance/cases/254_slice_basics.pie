@@ -1,0 +1,24 @@
+-- EXPECT-CLEAN
+-- Fat slices (r56): [T] is { ptr, i64 } end to end — params, let-decay,
+-- literals at call sites, .len/.ptr typing and indexing.
+
+fn sum : [i64] -> i64
+  | s ->
+      let mut acc : i64 = 0
+      for i in 0..s.len
+        acc += s[i]
+      acc
+
+fn first_ptr : [i64] -> *i64
+  | s -> s.ptr
+
+fn main : () -> () ! [IO]
+  | () ->
+      let arr : [i64; 4] = [1, 2, 3, 4]
+      let s : [i64] = [5, 6, 7]
+      let _a : i64 = sum(arr)
+      let _b : i64 = sum(s)
+      let _c : i64 = sum([9, 1])
+      let _n : i64 = s.len
+      let _p : *i64 = first_ptr(s)
+      syscall(231, 0)

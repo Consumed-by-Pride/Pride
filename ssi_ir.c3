@@ -1684,6 +1684,59 @@ fn IrVal* SsiModule.tag_const(SsiModule* m, int ord, Node* src)
     return c;
 }
 
+// r56: array→fat-slice decay.  An array value ([N x T] storage pointer) in a
+// slice-typed context becomes the fat record { data-ptr, len } so `.len` /
+// `s[i]` / fn-boundary marshalling all see one uniform slice representation.
+// Returns arrv unchanged unless the annotation unwraps to a sized array type.
+fn IrVal* SsiModule.slice_decay(SsiModule* m, IrVal* arrv, Node* arr_ann, Node* like)
+{
+    if (arrv == null || arr_ann == null) return arrv;
+    Node* a = arr_ann;
+    if (a.kind == Nk.NODE_TYPE_PTR && a.child_count >= 1 && a.children[0] != null)
+    { a = a.children[0]; }
+    if (a.kind != Nk.NODE_TYPE_ARRAY || a.child_count < 2) return arrv;
+    Node* szl = a.children[1];
+    if (szl == null || szl.kind != Nk.NODE_LIT_INT) return arrv;
+    ulong n = szl.p.lit_int.int_val;
+    int ln = like != null ? like.line : 0;
+    int lc = like != null ? like.col  : 0;
+    Node* lit = ast::node_int(m.arena, n, 64, true, ln, lc);
+    IrVal* lenv = m.new_val(IrOp.IR_CONST_INT, lit);
+    if (lenv == null) return arrv;
+    lenv.ival = n;
+    m.emit(lenv);
+    IrVal* fat = m.new_val(IrOp.IR_TUPLE, like);
+    if (fat == null) return arrv;
+    fat.add_arg(arrv, -1);
+    fat.add_arg(lenv, -1);
+    m.emit(fat);
+    return fat;
+}
+
+// r56: core callee fn type of a call node — resolve the callee ident to its
+// DECL_FN, find its NODE_TYPE_FN child, and unwrap the effect-row form
+// FN[FN[params, ret], row] down to the core FN.
+fn Node* ssi_callee_fnty(Node* call)
+{
+    if (call == null || call.child_count < 1) return null;
+    Node* callee = call.children[0];
+    Node* decl = (callee != null) ? callee.resolved : null;
+    if (decl == null || decl.kind != Nk.NODE_DECL_FN) return null;
+    Node* ty = null;
+    for (usz i = 0; i < decl.child_count; i++)
+    {
+        Node* c = decl.children[i];
+        if (c != null && c.kind == Nk.NODE_TYPE_FN) { ty = c; break; }
+    }
+    if (ty == null) return null;
+    Node* maybe_core = ty.child_count >= 1 ? ty.children[0] : null;
+    Node* maybe_row  = ty.child_count >= 2 ? ty.children[1] : null;
+    if (maybe_row != null && maybe_row.kind == Nk.NODE_EFFECT_ROW
+        && maybe_core != null && maybe_core.kind == Nk.NODE_TYPE_FN)
+    { ty = maybe_core; }
+    return ty;
+}
+
 // A bare enum-variant VALUE (`Green`) lowers to the tagged repr
 // `{ i32 ordinal, i64 payload }` with a zero payload slot — the exact shape a
 // DECL_ENUM's repr and a fn's parameter assume. The ordinal is recovered from
@@ -2224,6 +2277,14 @@ fn void SsiModule.lower_let(SsiModule* m, Node* d)
         if (same && an != null && dn != null)
         { for (usz ci = 0; ci < al; ci++) { if (an[ci] != dn[ci]) { same = false; break; } } }
         if (!same) { init = m.cast_to(init, decl_ty, init_expr); }
+    }
+    // r56: `let s : [T] = [1, 2, 3]` — the array decays to a fat slice at the
+    // bind site so every later read sees the { ptr, len } record.
+    if (init != null && decl_ty != null && decl_ty.kind == Nk.NODE_TYPE_SLICE)
+    {
+        init = m.slice_decay(init,
+            init_expr != null ? init_expr.type_annotation : null,
+            init_expr != null ? init_expr : d);
     }
     // Bind the pattern's identifier(s) to the initializer value.
     if (d.child_count >= 1) m.bind_let_pattern(d.children[0], init);
@@ -3183,11 +3244,32 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                     return resume_v;
                 }
                 IrVal* v = m.new_val(IrOp.IR_CALL, n);
+                Node* fnty = ssi_callee_fnty(n);
+                Node* fparams = (fnty != null && fnty.child_count >= 1)
+                              ? fnty.children[0] : null;
+                usz pcount = 0;
+                if (fparams != null)
+                {
+                    pcount = (fparams.kind == Nk.NODE_TYPE_TUPLE)
+                           ? fparams.child_count : 1;
+                }
                 for (usz i = 0; i < n.child_count; i++)
                 {
                     Node* c = n.children[i];
                     if (c == null || ssi::is_type_or_row(c)) { continue; }
                     IrVal* a = m.lower_expr(c);
+                    // r56: an array expression passed to a slice-typed
+                    // parameter decays to the fat record at the call site.
+                    if (a != null && fparams != null && i >= 1 && (i - 1) < pcount
+                        && c.type_annotation != null
+                        && c.type_annotation.kind == Nk.NODE_TYPE_ARRAY)
+                    {
+                        Node* pty = (fparams.kind == Nk.NODE_TYPE_TUPLE
+                                     && (i - 1) < fparams.child_count)
+                                  ? fparams.children[i - 1] : fparams;
+                        if (pty != null && pty.kind == Nk.NODE_TYPE_SLICE)
+                        { a = m.slice_decay(a, c.type_annotation, c); }
+                    }
                     if (v != null) { v.add_arg(a, -1); }
                 }
                 if (v != null) { m.emit(v); }

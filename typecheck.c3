@@ -701,6 +701,29 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
         case Nk.NODE_EXPR_UNIT:
             return self.mk_prim(Prim.PRIM_UNIT);
 
+        case Nk.NODE_EXPR_ARRAY_LIT:
+            // A literal [a, b, c] has the natural type [T; N] where T is the
+            // first element's synthesized type (subsequent elements merely
+            // checked).  The stamp lets consumers see the array type — slice
+            // decay at slice-typed bind sites and call sites keys off it.
+            // The size child is a LitInt so codegen can read N directly.
+            {
+                usz alit_n = e.child_count;
+                Node* elem_ty = null;
+                for (usz ai = 0; ai < alit_n; ai++)
+                {
+                    Node* ac = e.children[ai];
+                    if (ac == null) continue;
+                    Node* ety = self.synth(ac);
+                    if (ai == 0) { elem_ty = ety; }
+                }
+                if (elem_ty == null) { elem_ty = self.mk_prim(Prim.PRIM_I64); }
+                Node* szl = ast::node_int(self.arena, (ulong)alit_n, 64, true,
+                                          e.line, e.col);
+                return ast::node2(self.arena, Nk.NODE_TYPE_ARRAY, elem_ty, szl,
+                                  e.line, e.col);
+            }
+
         case Nk.NODE_IDENT:
         case Nk.NODE_TYPEVAR:
             return self.synth_name(e);
@@ -844,7 +867,15 @@ fn Node* TypeChecker.synth_uncached(TypeChecker* self, Node* e)
             }
 
         case Nk.NODE_EXPR_RANGE:
-            if (e.child_count >= 1) return self.synth(e.children[0]);
+            // Synthesize BOTH endpoints (r56): only the start used to be
+            // visited, leaving the end expression's subtree completely
+            // unannotated — a Field base in `0..s.len` carried no type at
+            // any node, so codegen could not resolve `.len` (and any type
+            // error inside the end expression went undiagnosed).
+            {
+                if (e.child_count >= 2) self.synth(e.children[1]);
+                if (e.child_count >= 1) return self.synth(e.children[0]);
+            }
             return null;
 
         case Nk.NODE_EXPR_RANGE_STEP:
@@ -1736,6 +1767,27 @@ fn Node* TypeChecker.synth_field(TypeChecker* self, Node* e)
             { return bt2.children[2]; }
             self.soft("unknown field in string record (ptr, len, cap exist)", name.line, name.col);
             return null;
+        }
+        // Fat slice (r56): `[T]` marshals as { ptr, i64 } — `.len` is the
+        // length, `.ptr` the data pointer.  Without this, `s.len` drew the
+        // generic non-struct warning and stayed untyped (E0415 on valid code).
+        {
+            Node* bts = self.unfold(bt);
+            if (bts != null && bts.kind == Nk.NODE_TYPE_SLICE && name != null)
+            {
+                char* np2 = name.p.ident.name_ptr; usz nl2 = name.p.ident.name_len;
+                if (nl2 == 3 && np2[0]=='l' && np2[1]=='e' && np2[2]=='n')
+                { return self.mk_prim(Prim.PRIM_I64); }
+                if (nl2 == 3 && np2[0]=='p' && np2[1]=='t' && np2[2]=='r')
+                {
+                    Node* el = bts.child_count >= 1 ? bts.children[0]
+                                                    : self.mk_prim(Prim.PRIM_I64);
+                    return ast::node1(self.arena, Nk.NODE_TYPE_PTR, el,
+                                      name.line, name.col);
+                }
+                self.soft("unknown field in slice (ptr, len exist)", name.line, name.col);
+                return null;
+            }
         }
         // A module-qualified type (`geom::Point`) we could not resolve to a
         // concrete struct (e.g. the module member isn't a struct, or it's an

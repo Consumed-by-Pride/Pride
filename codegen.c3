@@ -276,9 +276,12 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
         if (l == 4 && n[0] == 'b') { buf[0]='i'; buf[1]='1'; buf[2]=0; return buf; }                            // bool
         // Fall through to slow path for other primitives (iN/uN, str, etc.)
     }
+    // r56: slices are fat records { ptr, i64 } (data pointer + length)
+    if (t.kind == Nk.NODE_TYPE_SLICE)
+    { snprintf(buf, cap, "{ ptr, i64 }"); return buf; }
     // Fast path: pointer types
     if (t.kind == Nk.NODE_TYPE_PTR || t.kind == Nk.NODE_TYPE_REF
-        || t.kind == Nk.NODE_TYPE_MUT_REF || t.kind == Nk.NODE_TYPE_SLICE)
+        || t.kind == Nk.NODE_TYPE_MUT_REF)
     { buf[0]='p'; buf[1]='t'; buf[2]='r'; buf[3]=0; return buf; }
 
     // Unfold alias
@@ -423,10 +426,11 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
         usz ol3 = strlen(buf); if (ol3 + 2 < cap) { buf[ol3]=' '; buf[ol3+1]='}'; buf[ol3+2]=0; }
         return buf;
     }
+    if (t.kind == Nk.NODE_TYPE_SLICE)
+    { snprintf(buf,cap,"{ ptr, i64 }"); return buf; }  // r56 fat slice
     if (t.kind == Nk.NODE_TYPE_PTR
      || t.kind == Nk.NODE_TYPE_REF
-     || t.kind == Nk.NODE_TYPE_MUT_REF
-     || t.kind == Nk.NODE_TYPE_SLICE)
+     || t.kind == Nk.NODE_TYPE_MUT_REF)
     { snprintf(buf,cap,"ptr"); return buf; }
     // Bare union node used directly as a type (via DECL_TYPE recursion):
     if (t.kind == Nk.NODE_DECL_UNION)
@@ -1726,10 +1730,12 @@ fn void CgenModule.emit_type(CgenModule* cg, Node* t, bool in_ret_pos, int depth
                 // Fallback
                 cg.out.writes("i64");
             }
+        case Nk.NODE_TYPE_SLICE:
+            cg.out.writes("{ ptr, i64 }");  // r56 fat slice
+
         case Nk.NODE_TYPE_PTR:
         case Nk.NODE_TYPE_REF:
         case Nk.NODE_TYPE_MUT_REF:
-        case Nk.NODE_TYPE_SLICE:
             cg.out.writes("ptr");
 
         case Nk.NODE_TYPE_ARRAY:
@@ -4629,6 +4635,44 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                                field_name_node.p.ident.name_ptr,
                                                field_name_node.p.ident.name_len);
                 }
+                // r56: no struct decl — map well-known names on str-like fat
+                // records (Str / slice / tuple fat): ptr→0 (already default),
+                // len→1, cap→2.
+                if (field_name_node != null && struct_decl == null)
+                {
+                    // Prefer the BASE expression's annotation (the object
+                    // being indexed); the field node itself is annotated with
+                    // the FIELD type (i64 for .len), which is not str-like.
+                    Node* bsl = (v.src != null && v.src.child_count >= 1
+                                 && v.src.children[0] != null)
+                                ? v.src.children[0].type_annotation : null;
+                    if (bsl == null && v.src != null)
+                    { bsl = v.src.type_annotation; }
+                    if (bsl != null && bsl.kind == Nk.NODE_TYPE_PTR
+                        && bsl.child_count >= 1 && bsl.children[0] != null)
+                    { bsl = bsl.children[0]; }
+                    bool strlike = false;
+                    if (bsl != null)
+                    {
+                        if (bsl.kind == Nk.NODE_TYPE_TUPLE || bsl.kind == Nk.NODE_TYPE_SLICE)
+                        { strlike = true; }
+                        if (bsl.kind == Nk.NODE_TYPE_PRIMITIVE)
+                        {
+                            usz bl = bsl.p.ident.name_len;
+                            char* bn = bsl.p.ident.name_ptr;
+                            if (bl == 3 && bn[0] == 'S') { strlike = true; }  // Str
+                        }
+                    }
+                    if (strlike)
+                    {
+                        usz fl2 = field_name_node.p.ident.name_len;
+                        char* fn2 = field_name_node.p.ident.name_ptr;
+                        if (fl2 == 3 && fn2[0] == 'l' && fn2[1] == 'e' && fn2[2] == 'n')
+                        { field_idx = 1; }
+                        else if (fl2 == 3 && fn2[0] == 'c' && fn2[1] == 'a' && fn2[2] == 'p')
+                        { field_idx = 2; }
+                    }
+                }
 
 
                 // Emit struct type name
@@ -5124,6 +5168,65 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     cg.out.writes(" = load i8, ptr %gep.v"); cg.out.writei(v.id);
                     cg.out.writes("\n");
                     return;
+                }
+                // r56: fat-slice value indexing — s[i] where s : [T] is a
+                // { ptr, i64 } record, not a memory ptr. Extract the data
+                // pointer, GEP by the dynamic index, load the element.
+                // (The extractvalue arm below would read record FIELDS.)
+                if (base != null && index != null)
+                {
+                    char* btm_sl = (tm != null) ? tm.get(base.id) : null;
+                    if (btm_sl == null) btm_sl = resolve_ty(tm, base);
+                    Node* slann = (v.src != null && v.src.child_count >= 1
+                                   && v.src.children[0] != null)
+                                  ? v.src.children[0].type_annotation : null;
+                    if (slann != null && slann.kind == Nk.NODE_TYPE_PTR
+                        && slann.child_count >= 1 && slann.children[0] != null)
+                    { slann = slann.children[0]; }
+                    if (btm_sl != null && btm_sl[0] == '{'
+                        && slann != null && slann.kind == Nk.NODE_TYPE_SLICE)
+                    {
+                        char[TYMAP_ENTRY] sleb; sleb[0] = 0;
+                        if (v.src != null && v.src.type_annotation != null)
+                        {
+                            char* selt = type_to_llvm_buf(v.src.type_annotation,
+                                                          &sleb[0], 64, 0);
+                            if (selt != null && selt != &sleb[0] && selt[0] != 0)
+                            {
+                                usz sk = 0;
+                                while (sk < 63 && selt[sk] != 0) { sleb[sk] = selt[sk]; sk++; }
+                                sleb[sk] = 0;
+                            }
+                        }
+                        if (sleb[0] == 0) { sleb[0]='i'; sleb[1]='6'; sleb[2]='4'; sleb[3]=0; }
+                        char* sl_idx_ty = (tm != null) ? tm.get(index.id) : null;
+                        bool sl_ext = (sl_idx_ty != null && sl_idx_ty[0] == 'i'
+                            && !(sl_idx_ty[1] == '6' && sl_idx_ty[2] == '4' && sl_idx_ty[3] == 0));
+                        if (sl_ext)
+                        {
+                            cg.out.writes("  %sl.idx.v"); cg.out.writei(v.id);
+                            cg.out.writes(!is_signed_int_val(index) ? " = zext " : " = sext ");
+                            cg.out.writes(sl_idx_ty); cg.out.writes(" ");
+                            cg.emit_vref(index);
+                            cg.out.writes(" to i64\n");
+                        }
+                        cg.out.writes("  %sl.ptr.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = extractvalue "); cg.out.writes(btm_sl);
+                        cg.out.writes(" "); cg.emit_vref(base); cg.out.writes(", 0\n");
+                        cg.out.writes("  %sl.gep.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = getelementptr inbounds ");
+                        cg.out.writes(&sleb[0]);
+                        cg.out.writes(", ptr %sl.ptr.v"); cg.out.writei(v.id);
+                        cg.out.writes(", i64 ");
+                        if (sl_ext) { cg.out.writes("%sl.idx.v"); cg.out.writei(v.id); }
+                        else { cg.emit_vref(index); }
+                        cg.out.writes("\n");
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        cg.out.writes(" = load "); cg.out.writes(&sleb[0]);
+                        cg.out.writes(", ptr %sl.gep.v"); cg.out.writei(v.id);
+                        cg.out.writes("\n");
+                        return;
+                    }
                 }
                 if (base != null)
                 {
@@ -5734,6 +5837,37 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 // skip this path and use insertvalue below.
                 char* agg_ty = (tm != null) ? tm.get(v.id) : null;
                 bool is_struct_lit = (v.op == ssi_ir::IrOp.IR_STRUCT);
+                // r56: a tuple value may be STAMPED with a scalar/array type
+                // by annotation-driven typing (e.g. the fat-slice decay takes
+                // the array-typed arg ident as its src).  The insertvalue
+                // chain would then print that scalar as the record type and
+                // emit `insertvalue i64 undef` — invalid IR.  When the
+                // stamped type isn't the record shape, build `{ T0, T1 }`
+                // from the component types instead.
+                bool tuple_override = false;
+                char[TYMAP_ENTRY] tovr;
+                if (v.op == ssi_ir::IrOp.IR_TUPLE && v.arg_count > 0
+                    && !is_struct_lit && agg_ty != null
+                    && !(agg_ty[0] == '{' || agg_ty[0] == '%'))
+                {
+                    usz off = 0;
+                    tovr[off++] = '{'; tovr[off++] = ' ';
+                    for (usz ai = 0; ai < v.arg_count && off < TYMAP_ENTRY - 8; ai++)
+                    {
+                        if (ai > 0) { tovr[off++] = ','; tovr[off++] = ' '; }
+                        char* ety = (v.args[ai] != null) ? tm.get(v.args[ai].id) : null;
+                        if (ety == null || ety[0] == 0) ety = (char*)"i64";
+                        for (usz ei = 0; ety[ei] != 0 && off < TYMAP_ENTRY - 4; ei++)
+                        { tovr[off++] = ety[ei]; }
+                    }
+                    tovr[off++] = ' '; tovr[off++] = '}'; tovr[off] = 0;
+                    agg_ty = &tovr[0];
+                    tuple_override = true;
+                    // The VALUE is a record now — restamp its type entry so
+                    // downstream consumers (call marshalling, stores, further
+                    // aggregates) see `{ T0, T1 }`, not the scalar stamp.
+                    if (tm != null) { tm.set(v.id, &tovr[0]); }
+                }
                 // Tensor literal: the runtime wire format (compiler_rt.c §8)
                 // is   PrideTensor { u64 rank, u64 dims[rank], double data[] }
                 // with the helpers (matmul/elemwise) reading exactly that.
@@ -6144,6 +6278,37 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         return;
                     }
                 }
+                // r56: component-typed tuple rebuild — the stamped type isn't
+                // a record, so skip every struct-body lookup and build the
+                // aggregate purely from the argument types.
+                if (tuple_override)
+                {
+                    for (usz ti2 = 0; ti2 < v.arg_count; ti2++)
+                    {
+                        if (ti2 + 1 == v.arg_count)
+                        { cg.out.writes("  %v"); cg.out.writei(v.id); }
+                        else
+                        { cg.out.writes("  %agg."); cg.out.writei(v.id);
+                          cg.out.writes("."); cg.out.writeu(ti2); }
+                        cg.out.writes(" = insertvalue ");
+                        cg.out.writes(agg_ty);
+                        if (ti2 == 0) { cg.out.writes(" undef, "); }
+                        else
+                        {
+                            cg.out.writes(" %agg."); cg.out.writei(v.id);
+                            cg.out.writes("."); cg.out.writeu(ti2 - 1);
+                            cg.out.writes(", ");
+                        }
+                        char* e2ty = (v.args[ti2] != null) ? tm.get(v.args[ti2].id) : null;
+                        if (e2ty == null || e2ty[0] == 0) e2ty = (char*)"i64";
+                        cg.out.writes(e2ty);
+                        cg.out.writes(" ");
+                        if (v.args[ti2] != null) { cg.emit_vref(v.args[ti2]); }
+                        else { cg.out.writes("undef"); }
+                        cg.out.writes(", "); cg.out.writeu(ti2); cg.out.writes("\n");
+                    }
+                    return;
+                }
                 // Build aggregate with insertvalue chain from undef
                 // %agg.0 = insertvalue { T0, T1 } undef, T0 %v0, 0
                 // %agg.1 = insertvalue { T0, T1 } %agg.0, T1 %v1, 1
@@ -6264,6 +6429,15 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             {
                                 char* fi_nm = fi_node_pre.children[0].p.ident.name_ptr;
                                 usz   fi_nl = fi_node_pre.children[0].p.ident.name_len;
+                                // r56: no struct decl (fat slice / Str record):
+                                // map the well-known slot names directly.
+                                if (is_struct_update && struct_body_block == null)
+                                {
+                                    if (fi_nl == 3 && fi_nm[0]=='l' && fi_nm[1]=='e' && fi_nm[2]=='n')
+                                    { actual_field_idx = 1; }
+                                    else if (fi_nl == 3 && fi_nm[0]=='c' && fi_nm[1]=='a' && fi_nm[2]=='p')
+                                    { actual_field_idx = 2; }
+                                }
                                 usz fdi2 = 0;
                                 for (usz ci_pre = 0; ci_pre < struct_body_block.child_count; ci_pre++)
                                 {
@@ -6420,6 +6594,7 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         }
                         cg.out.writes(" }");
                     }
+                    else if (tuple_override) { cg.out.writes(agg_ty); }  // r56
                     else
                     {
                         // struct_body_block not found: try to get struct type from base val (arg[0])
