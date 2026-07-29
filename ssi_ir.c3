@@ -809,11 +809,14 @@ fn void collect_assigned(SsiModule* m, Node* n, Snap* out)
                    || root.kind == Nk.NODE_EXPR_INDEX)
                && root.child_count >= 1)
         { root = root.children[0]; via_chain = true; }
-        // Chain writes rebind the root only on the by-value route; pointer
-        // and address-taken roots are written through memory instead.
+        // Chain writes rebind the root only on the by-value route; pointer,
+        // array and address-taken roots are written through memory instead
+        // (an array's env value is its storage POINTER — a header phi for
+        // it would be typed by annotation, [N x T], against ptr operands).
         if (via_chain && root != null
             && ((root.type_annotation != null
-                 && root.type_annotation.kind == Nk.NODE_TYPE_PTR)
+                 && (root.type_annotation.kind == Nk.NODE_TYPE_PTR
+                     || root.type_annotation.kind == Nk.NODE_TYPE_ARRAY))
                 || (m != null && m.is_addr_taken(root.resolved))))
         { root = null; }
         if (root != null && root.kind == Nk.NODE_IDENT && root.resolved != null)
@@ -3904,49 +3907,54 @@ fn void SsiModule.env_close_block(SsiModule* m, usz mark)
 // (`gep {..}, ptr %v96` — invalid IR; r43).  Instead rebuild the aggregate
 // chain with the one leaf field replaced, exactly like source-level struct
 // update syntax, and rebind the root ident.  Returns true when handled.
-// Address of a field chain (`p.cells`, `p.q.inner.arr`) when the ROOT is
-// memory-backed — a pointer ident or an address-taken home.  Each level is
-// an IR_FIELD in address mode (ival=1: GEP, no load).  Returns null when
-// the root is a by-value SSA aggregate (no memory — callers rebuild by
-// value instead), or the chain is not a field.
+// Address of an lvalue chain (`p.cells`, `o.inner.arr`, `arr[i]` …) when the
+// storage is memory-backed somewhere along it.  Roots:
+//   * pointer ident     → env value (the pointee's base address)
+//   * inline-array ident → env value (array VALUES are storage pointers,
+//                          IR_ARRAY's contract — codegen binds them ptr)
+//   * address-taken root → its home alloca
+// A plain by-value struct root has NO address: returns null so callers
+// rebuild the aggregate chain by value instead (r45).
+// Levels: FIELD → IR_FIELD ival=1 (GEP, no load); INDEX → IR_INDEX ival=-3
+// (GEP, no load).
 fn IrVal* SsiModule.field_addr_chain(SsiModule* m, Node* fexpr)
 {
-    if (fexpr == null || fexpr.kind != Nk.NODE_EXPR_FIELD
-        || fexpr.child_count < 1) return null;
-    Node* base_node = fexpr.children[0];
-    IrVal* base_ptr = null;
-    if (base_node != null && base_node.kind == Nk.NODE_IDENT && base_node.resolved != null)
+    if (fexpr == null) return null;   // NOTE: ident leaves have 0 children —
+                                      // no child_count guard may precede this.
+    if (fexpr.kind == Nk.NODE_IDENT && fexpr.resolved != null)
     {
-        if (base_node.type_annotation != null
-            && base_node.type_annotation.kind == Nk.NODE_TYPE_PTR)
-        {
-            // Pointer root: the env VALUE is the pointee's base address —
-            // field offsets must GEP through it (loading the pointer's own
-            // home slot as the struct base would address the slot, r46).
-            base_ptr = m.env_lookup(base_node.resolved);
-        }
-        else
-        {
-            // By-value root: memory-backed only when address-taken (its
-            // home alloca).  A plain SSA aggregate has NO address — return
-            // null so callers rebuild the chain by value (r45).
-            IrVal* h = m.home_for(base_node.resolved);
-            if (h != null) { base_ptr = h; }
-        }
-        if (base_ptr == null) return null;   // by-value SSA root: no address
+        Node* ann = fexpr.type_annotation;
+        if (ann != null && (ann.kind == Nk.NODE_TYPE_PTR
+                            || ann.kind == Nk.NODE_TYPE_ARRAY))
+        { return m.env_lookup(fexpr.resolved); }
+        return m.home_for(fexpr.resolved);   // null unless address-taken
     }
-    else if (base_node != null && base_node.kind == Nk.NODE_EXPR_FIELD)
+    if (fexpr.kind == Nk.NODE_EXPR_FIELD && fexpr.child_count >= 1)
     {
-        base_ptr = m.field_addr_chain(base_node);
+        IrVal* base_ptr = m.field_addr_chain(fexpr.children[0]);
         if (base_ptr == null) return null;
+        IrVal* fa = m.new_val(IrOp.IR_FIELD, fexpr);
+        if (fa == null) return null;
+        fa.ival = 1;   // address-of-field mode (r46): GEP to the storage, no load
+        fa.add_arg(base_ptr, -1);
+        m.emit(fa);
+        return fa;
     }
-    else { return null; }
-    IrVal* fa = m.new_val(IrOp.IR_FIELD, fexpr);
-    if (fa == null) return null;
-    fa.ival = 1;   // address-of-field mode (r46): GEP to the storage, no load
-    fa.add_arg(base_ptr, -1);
-    m.emit(fa);
-    return fa;
+    if (fexpr.kind == Nk.NODE_EXPR_INDEX && fexpr.child_count >= 2)
+    {
+        IrVal* base_ptr = m.field_addr_chain(fexpr.children[0]);
+        if (base_ptr == null) return null;
+        IrVal* idx_r = m.lower_expr(fexpr.children[1]);
+        if (idx_r == null) return null;
+        IrVal* ia = m.new_val(IrOp.IR_INDEX, fexpr);
+        if (ia == null) return null;
+        ia.ival = -3;   // address-of-element mode (r46): GEP to the storage, no load
+        ia.add_arg(base_ptr, -1);
+        ia.add_arg(idx_r, -1);
+        m.emit(ia);
+        return ia;
+    }
+    return null;
 }
 
 fn bool SsiModule.field_assign_rebuild(SsiModule* m, Node* target, IrVal* newval, Node* newval_ast)
@@ -4094,44 +4102,65 @@ fn IrVal* SsiModule.lower_assign(SsiModule* m, Node* n)
     if (lhs != null && lhs.kind == Nk.NODE_EXPR_INDEX && lhs.child_count >= 2)
     {
         Node* ib = lhs.children[0];
-        if (ib != null && ib.kind == Nk.NODE_EXPR_FIELD)
+        if (ib != null && (ib.kind == Nk.NODE_EXPR_FIELD
+                           || ib.kind == Nk.NODE_EXPR_INDEX))
         {
-            // Array element behind a struct memory address (pointer root or
-            // address-taken root): store through, so the write reaches the
-            // pointee (r46 — the legacy path wrote into a loaded COPY).
-            IrVal* addr = m.field_addr_chain(ib);
+            // Array element behind memory (pointer root, address-taken home,
+            // or an array VALUE — IR_ARRAY values ARE storage pointers):
+            // take the element's address and store through, so the write
+            // reaches the storage (r46 — the legacy path wrote into a
+            // loaded COPY, and GEP'd struct values as pointers for
+            // `arr[i].f = v`).
+            IrVal* addr = m.field_addr_chain(lhs);
             if (addr != null)
             {
-                IrVal* index_v2 = m.lower_expr(lhs.children[1]);
+                // Opaque-ptr stores carry the VALUE's type — coerce rv to
+                // the slot's declared element type or an i64 literal would
+                // overwrite a narrow slot's neighbours (r46).
+                if (rv != null && lhs.type_annotation != null
+                    && lhs.type_annotation.kind == Nk.NODE_TYPE_PRIMITIVE
+                    && rhs != null && rhs.type_annotation != null
+                    && rhs.type_annotation.kind == Nk.NODE_TYPE_PRIMITIVE)
+                {
+                    Node* ea = rhs.type_annotation;
+                    Node* da = lhs.type_annotation;
+                    bool same = (ea.p.ident.name_len == da.p.ident.name_len);
+                    if (same && ea.p.ident.name_ptr != null && da.p.ident.name_ptr != null)
+                    { for (usz ci = 0; ci < ea.p.ident.name_len; ci++)
+                      { if (ea.p.ident.name_ptr[ci] != da.p.ident.name_ptr[ci]) { same = false; break; } } }
+                    if (!same) { rv = m.cast_to(rv, da, rhs); }
+                }
                 IrVal* st2 = m.new_val(IrOp.IR_STORE, n);
                 if (st2 != null)
                 {
-                    st2.add_arg(addr, -1);
-                    st2.add_arg(rv, -1);
-                    st2.add_arg(index_v2, -1);
+                    st2.add_arg(addr, -1);   // args[0] = element address
+                    st2.add_arg(rv, -1);     // args[1] = value to store
                     m.emit(st2);
                 }
                 return rv;
             }
-            // By-value struct field holding an inline array: update the
-            // array VALUE (materialise + GEP-insert), then rebuild the
-            // enclosing aggregate chain (r46).
-            IrVal* cur_arr = m.lower_expr(ib);
-            if (cur_arr != null && rv != null)
+            if (ib.kind == Nk.NODE_EXPR_FIELD)
             {
-                IrVal* idx3 = m.lower_expr(lhs.children[1]);
-                IrVal* upd = m.new_val(IrOp.IR_INDEX, ib);
-                if (upd != null)
+                // By-value struct field holding an inline array: update the
+                // array VALUE (materialise + GEP-insert), then rebuild the
+                // enclosing aggregate chain (r46).
+                IrVal* cur_arr = m.lower_expr(ib);
+                if (cur_arr != null && rv != null)
                 {
-                    upd.ival = -2;   // r46: array element update (value semantics)
-                    upd.add_arg(cur_arr, -1);
-                    upd.add_arg(rv, -1);
-                    upd.add_arg(idx3, -1);
-                    m.emit(upd);
-                    // `ib` itself (the field expr) carries the field's
-                    // type annotation — the right stamp for the new value.
-                    if (m.field_assign_rebuild(ib, upd, ib))
-                    { return rv; }
+                    IrVal* idx3 = m.lower_expr(lhs.children[1]);
+                    IrVal* upd = m.new_val(IrOp.IR_INDEX, ib);
+                    if (upd != null)
+                    {
+                        upd.ival = -2;   // r46: array element update (value semantics)
+                        upd.add_arg(cur_arr, -1);
+                        upd.add_arg(rv, -1);
+                        upd.add_arg(idx3, -1);
+                        m.emit(upd);
+                        // `ib` itself (the field expr) carries the field's
+                        // type annotation — the right stamp for the new value.
+                        if (m.field_assign_rebuild(ib, upd, ib))
+                        { return rv; }
+                    }
                 }
             }
         }
@@ -4149,6 +4178,36 @@ fn IrVal* SsiModule.lower_assign(SsiModule* m, Node* n)
     }
     if (lhs != null && lhs.kind == Nk.NODE_EXPR_FIELD && lhs.child_count >= 1)
     {
+        // Field behind memory (pointer root / address-taken home / array
+        // storage): GEP to the field's address and store through — the write
+        // must reach the storage, not a loaded copy (r46).
+        IrVal* faddr = m.field_addr_chain(lhs);
+        if (faddr != null && rv != null)
+        {
+            // Coerce rv to the field's declared type before the opaque-ptr
+            // store (narrow-field overwrite guard, r46).
+            if (lhs.type_annotation != null
+                && lhs.type_annotation.kind == Nk.NODE_TYPE_PRIMITIVE
+                && rhs != null && rhs.type_annotation != null
+                && rhs.type_annotation.kind == Nk.NODE_TYPE_PRIMITIVE)
+            {
+                Node* ea = rhs.type_annotation;
+                Node* da = lhs.type_annotation;
+                bool same = (ea.p.ident.name_len == da.p.ident.name_len);
+                if (same && ea.p.ident.name_ptr != null && da.p.ident.name_ptr != null)
+                { for (usz ci = 0; ci < ea.p.ident.name_len; ci++)
+                  { if (ea.p.ident.name_ptr[ci] != da.p.ident.name_ptr[ci]) { same = false; break; } } }
+                if (!same) { rv = m.cast_to(rv, da, rhs); }
+            }
+            IrVal* stf = m.new_val(IrOp.IR_STORE, n);
+            if (stf != null)
+            {
+                stf.add_arg(faddr, -1);
+                stf.add_arg(rv, -1);
+                m.emit(stf);
+            }
+            return rv;
+        }
         if (rv != null && m.field_assign_rebuild(lhs, rv, rhs)) { return rv; }
         IrVal* base_val = m.lower_lvalue_base(lhs.children[0]);
         IrVal* st = m.new_val(IrOp.IR_STORE, n);

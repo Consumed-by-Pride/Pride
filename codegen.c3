@@ -4744,6 +4744,56 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     }
                 }
 
+                // Address mode (r46): the value IS the element's storage
+                // address — args[0]=array storage ptr, args[1]=index.
+                // Element stride comes from the index expression's own
+                // annotation (the element type synth_index proved), and the
+                // index is extended to the i64 GEP operand signedness-aware.
+                if (v.ival == -3 && v.arg_count >= 2)
+                {
+                    ssi_ir::IrVal* abase = v.args[0];
+                    ssi_ir::IrVal* aidx  = v.args[1];
+                    char[TYMAP_ENTRY] iaeb; iaeb[0] = 0;
+                    if (v.src != null && v.src.type_annotation != null)
+                    {
+                        char* iet = type_to_llvm_buf(v.src.type_annotation, &iaeb[0], 64, 0);
+                        if (iet != null && iet != &iaeb[0] && iet[0] != 0)
+                        {
+                            usz ik = 0;
+                            while (ik < 63 && iet[ik] != 0) { iaeb[ik] = iet[ik]; ik++; }
+                            iaeb[ik] = 0;
+                        }
+                    }
+                    if (iaeb[0] == 0) { iaeb[0] = 'i'; iaeb[1] = '6'; iaeb[2] = '4'; iaeb[3] = 0; }
+                    char* ia_idx_ty = (tm != null && aidx != null) ? tm.get(aidx.id) : null;
+                    bool ia_ext = (ia_idx_ty != null && ia_idx_ty[0] == 'i'
+                                   && !(ia_idx_ty[1] == '6' && ia_idx_ty[2] == '4' && ia_idx_ty[3] == 0));
+                    if (ia_ext && aidx != null)
+                    {
+                        cg.out.writes("  %ia.idx.v"); cg.out.writei(v.id);
+                        cg.out.writes(!is_signed_int_val(aidx) ? " = zext " : " = sext ");
+                        cg.out.writes(ia_idx_ty); cg.out.writes(" ");
+                        cg.emit_vref(aidx);
+                        cg.out.writes(" to i64\n");
+                    }
+                    cg.out.writes("  %ia.gep.v"); cg.out.writei(v.id);
+                    cg.out.writes(" = getelementptr inbounds ");
+                    cg.out.writes(&iaeb[0]);
+                    cg.out.writes(", ptr ");
+                    if (abase != null) { cg.emit_vref(abase); } else { cg.out.writes("null"); }
+                    cg.out.writes(", i64 ");
+                    if (ia_ext) { cg.out.writes("%ia.idx.v"); cg.out.writei(v.id); }
+                    else if (aidx != null) { cg.emit_vref(aidx); }
+                    else { cg.out.writes("0"); }
+                    cg.out.writes("\n");
+                    cg.out.writes("  %v"); cg.out.writei(v.id);
+                    cg.out.writes(" = getelementptr inbounds i8, ptr %ia.gep.v");
+                    cg.out.writei(v.id);
+                    cg.out.writes(", i64 0\n");
+                    if (tm != null) { tm.set(v.id, (char*)"ptr"); }
+                    return;
+                }
+
                 // Closure env slot: base=env_ptr, v.ival=slot_index, no args[1]
                 // Only fires inside a closure thunk (cur_fn_decl.kind == NODE_EXPR_CLOSURE)
                 // to avoid false-firing on regular fn params with IR_INDEX patterns.
