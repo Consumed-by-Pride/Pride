@@ -1086,6 +1086,29 @@ void* __pride_matmul(void* lhs_ptr, void* rhs_ptr) {
     PrideTensor* A = (PrideTensor*)lhs_ptr;
     PrideTensor* B = (PrideTensor*)rhs_ptr;
 
+    uint64_t* a_dims = tensor_dims(A);
+    uint64_t* b_dims = tensor_dims(B);
+
+    /* Matrix-vector contractions (spec §11 checked by the typechecker).
+     * A rank-1 operand is a matrix view: on the right it is a [K×1]
+     * column (m[M×K] @ v[K] → v[M]), on the left a [1×K] row
+     * (v[K] @ m[K×N] → v[N]).  The result is always rank 1; the
+     * vector·vector dot product is a SCALAR and comes through
+     * __pride_vecdot below instead. */
+    if (A->rank >= 1 && A->rank <= 2 && B->rank >= 1 && B->rank <= 2
+        && (A->rank == 1 || B->rank == 1)) {
+        size_t M = (A->rank == 2) ? (size_t)a_dims[0] : 1;
+        size_t K = (size_t)a_dims[A->rank - 1];
+        size_t N = (B->rank == 2) ? (size_t)b_dims[1] : 1;
+        if (PRIDE_UNLIKELY(K != (size_t)b_dims[0])) {
+            panic_fmt("matmul: inner dimensions do not match");
+        }
+        uint64_t c_dim = (uint64_t)(A->rank == 2 ? M : N);
+        PrideTensor* C = __pride_tensor_new(1, &c_dim);
+        gemm_block(tensor_data(C), tensor_data(A), tensor_data(B), M, K, N);
+        return (void*)C;
+    }
+
     if (PRIDE_UNLIKELY(A->rank < 2 || B->rank < 2)) {
         panic_fmt("matmul: operands must have rank >= 2");
     }
@@ -1094,8 +1117,6 @@ void* __pride_matmul(void* lhs_ptr, void* rhs_ptr) {
     }
 
     uint64_t rank    = A->rank;
-    uint64_t* a_dims = tensor_dims(A);
-    uint64_t* b_dims = tensor_dims(B);
 
     /* Matrix dims: A=[...×M×K], B=[...×K×N] */
     size_t M = (size_t)a_dims[rank - 2];
@@ -1138,6 +1159,31 @@ void* __pride_matmul(void* lhs_ptr, void* rhs_ptr) {
     }
 
     return (void*)C;
+}
+
+/* __pride_vecdot — vector·vector dot product (spec §11: (k)@(k) -> scalar).
+ * Both operands are rank-1 tensors of equal length; the result is the
+ * scalar sum of elementwise products (tensors store f64 elements). */
+double __pride_vecdot(void* lhs_ptr, void* rhs_ptr) {
+    if (PRIDE_UNLIKELY(lhs_ptr == NULL || rhs_ptr == NULL)) {
+        panic_fmt("vecdot: null operand");
+    }
+    PrideTensor* A = (PrideTensor*)lhs_ptr;
+    PrideTensor* B = (PrideTensor*)rhs_ptr;
+    if (PRIDE_UNLIKELY(A->rank != 1 || B->rank != 1)) {
+        panic_fmt("vecdot: operands must be rank 1");
+    }
+    uint64_t* a_dims = tensor_dims(A);
+    uint64_t* b_dims = tensor_dims(B);
+    size_t K = (size_t)a_dims[0];
+    if (PRIDE_UNLIKELY(K != (size_t)b_dims[0])) {
+        panic_fmt("vecdot: lengths do not match");
+    }
+    double* Ad = tensor_data(A);
+    double* Bd = tensor_data(B);
+    double acc = 0.0;
+    for (size_t i = 0; i < K; i++) acc += Ad[i] * Bd[i];
+    return acc;
 }
 
 /* Elementwise binary op: result = f(A[i], B[i]) for each element.

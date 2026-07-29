@@ -122,6 +122,17 @@ fn bool cstr_eq_n(char* a, char* b, usz n) @private
     return true;
 }
 
+// Rank of a tensor TYPE annotation (NODE_TYPE_TENSOR[elem, d0, d1, ...] —
+// so rank == child_count - 1).  Returns -1 for null / non-tensor
+// annotations.  Used by the `@` lowering to pick batched gemm vs. the
+// scalar dot-product path (spec §11).
+fn int cg_tensor_rank_of(Node* ann)
+{
+    if (ann == null) return -1;
+    if (ann.kind == Nk.NODE_TYPE_TENSOR) return (int)ann.child_count - 1;
+    return -1;
+}
+
 // Exact, full-byte comparison of a (ptr,len) span against a C string literal.
 // Every ad-hoc "is this identifier named X" check in this file MUST go
 // through this helper rather than hand-rolled partial byte-position checks
@@ -2818,6 +2829,59 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 // Matmul: emit as call (may hook BLAS)
                 if (v.bop == Tt.TOKEN_AT)
                 {
+                    // vector · vector is a SCALAR dot product (spec §11
+                    // checked by typecheck) — route to __pride_vecdot and
+                    // coerce the double to the stamped element type.
+                    // Matrix-vector / vector-matrix stay with batched matmul
+                    // (the runtime takes rank-1 views of the operands).
+                    Node* mmn = v.src;
+                    int lrank = -1;
+                    int rrank = -1;
+                    Node* ret_ann = null;
+                    if (mmn != null && mmn.kind == Nk.NODE_EXPR_MATMUL)
+                    {
+                        Node* ln = mmn.child_count >= 1 ? mmn.children[0] : null;
+                        Node* rn = mmn.child_count >= 2 ? mmn.children[1] : null;
+                        lrank = cg_tensor_rank_of(ln != null ? ln.type_annotation : null);
+                        rrank = cg_tensor_rank_of(rn != null ? rn.type_annotation : null);
+                        ret_ann = mmn.type_annotation;
+                    }
+                    if (lrank == 1 && rrank == 1)
+                    {
+                        char[TYMAP_ENTRY] dtb; dtb[0] = 0;
+                        if (ret_ann != null)
+                        { type_to_llvm_buf(ret_ann, &dtb[0], TYMAP_ENTRY, 0); }
+                        if (dtb[0] == 0 || (dtb[0] == 'v' && dtb[1] == 'o'))
+                        { snprintf(&dtb[0], TYMAP_ENTRY, "double"); }
+                        cg.out.writes("  %vdot.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = call double @__pride_vecdot(ptr ");
+                        cg.emit_vref(lhs);
+                        cg.out.writes(", ptr ");
+                        cg.emit_vref(rhs);
+                        cg.out.writes(")\n");
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        if (dtb[0] == 'd')
+                        {
+                            cg.out.writes(" = fadd double %vdot.v"); cg.out.writei(v.id);
+                            cg.out.writes(", 0.0\n");
+                        }
+                        else if (dtb[0] == 'f')
+                        {
+                            cg.out.writes(" = fptrunc double %vdot.v"); cg.out.writei(v.id);
+                            cg.out.writes(" to float\n");
+                        }
+                        else if (dtb[0] == 'i')
+                        {
+                            cg.out.writes(" = fptosi double %vdot.v"); cg.out.writei(v.id);
+                            cg.out.writes(" to "); cg.out.writes(&dtb[0]); cg.out.writes("\n");
+                        }
+                        else
+                        {
+                            cg.out.writes(" = fadd double %vdot.v"); cg.out.writei(v.id);
+                            cg.out.writes(", 0.0\n");
+                        }
+                        return;
+                    }
                     cg.out.writes("  %v"); cg.out.writei(v.id);
                     cg.out.writes(" = call ptr @__pride_matmul(ptr ");
                     cg.emit_vref(lhs);
@@ -7101,6 +7165,9 @@ const char*[*] RUNTIME_DECL_NAMES = {
     // Pride effects runtime
     "__pride_perform", "__pride_push_handler", "__pride_pop_handler",
     "__pride_resume", "__pride_drop", "__pride_panic", "__pride_get_arm_arg",
+    "__pride_complete",
+    // Tensor runtime (`@` matmul, elemwise ops, vector dot)
+    "__pride_matmul", "__pride_tensor_elemwise", "__pride_vecdot",
     // Str runtime helpers
     "pride_str_init", "pride_str_push_str", "pride_str_push_i64", "pride_str_push_f64",
     "pride_str_eq",
@@ -7567,6 +7634,8 @@ fn void CgenModule.emit_runtime_decls(CgenModule* cg)
     // Tensor matmul (`@` operator) — implemented in runtime/compiler_rt.c
     cg.out.writes("declare ptr  @__pride_matmul(ptr, ptr)\n");
     cg.out.writes("declare ptr  @__pride_tensor_elemwise(ptr, ptr, i32)\n");
+    // vector · vector dot product (spec §11: rank-1 @ rank-1 -> scalar)
+    cg.out.writes("declare double @__pride_vecdot(ptr, ptr)\n");
     // Str runtime helpers (string builder used by fmt)
     cg.out.writes("declare void @pride_str_init(ptr)\n");
     cg.out.writes("declare void @pride_str_push_str(ptr, ptr, i64)\n");
