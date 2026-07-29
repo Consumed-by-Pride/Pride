@@ -588,6 +588,17 @@ fn void closure_thunk_ret_type(Node* clo, char* buf, usz cap)
                 type_to_llvm_buf(body.type_annotation, buf, cap, 0);
                 if (buf[0] != 0 && !(buf[0] == 'v' && buf[1] == 'o')) { return; }
             }
+            // An unannotated clause body that IS another closure literal
+            // (currying: `| n -> | x -> x + n`) evaluates to the fat
+            // {code, env} record — the typechecker stamps no annotation on
+            // an unascribed closure literal, but the record type is certain;
+            // the generic i64 fallback would chop the pointer pair in half
+            // and break every downstream coercion.
+            if (body != null && body.kind == Nk.NODE_EXPR_CLOSURE)
+            {
+                snprintf(buf, cap, "{ ptr, ptr }");
+                return;
+            }
         }
     }
     snprintf(buf, cap, "i64");
@@ -874,6 +885,15 @@ fn bool infer_fn_types(ssi_ir::SsiModule* ir, ssi_ir::SsiFunc* f, TypeTable* t)
                                     fn_param_llvm_type(fn_decl_iv, -1, &buf[0], TYMAP_ENTRY);
                                     // Filter void — calls that return () should still have void tymap
                                     // (void calls are fine; the issue is non-i64 integer returns)
+                                }
+                                // A call THROUGH a closure value: the callee binder is
+                                // the closure literal, whose return type lives in its
+                                // clause bodies (currying: a closure returning a
+                                // closure yields the fat { ptr, ptr } record — the i64
+                                // fallback halves it at every coercion site).
+                                if (fn_decl_iv != null && fn_decl_iv.kind == Nk.NODE_EXPR_CLOSURE)
+                                {
+                                    closure_thunk_ret_type(fn_decl_iv, &buf[0], TYMAP_ENTRY);
                                 }
                             }
                         case ssi_ir::IrOp.IR_TUPLE:

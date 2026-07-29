@@ -1019,119 +1019,138 @@ fn void SsiModule.lower_closure_thunk(SsiModule* m, Node* closure_node)
         { clauses[nclause++] = ch; }
     }
 
-    // Add IR_PARAMs for clause arguments (from first clause's pattern)
-    if (nclause > 0)
+    // Value parameters: arity from the first clause's pattern (a tuple ⇒ its
+    // arity; otherwise a single argument), EXACTLY as lower_fn. The old code
+    // only emitted value params for IDENT/TUPLE first patterns — a closure
+    // whose first clause opened on a literal had NO value parameter (thunk
+    // signature disagreed with its call sites) and every clause after the
+    // first was dead code appended behind a RET.
+    Node* pat0 = nclause >= 1 && clauses[0].child_count >= 1 ? clauses[0].children[0] : null;
+    usz arity = 1;
+    if (pat0 != null && pat0.kind == Nk.NODE_PATTERN_TUPLE) arity = pat0.child_count;
+    if (arity == 0) arity = 1;
+    if (arity > MAX_EDGES) arity = MAX_EDGES;
+
+    IrVal*[MAX_EDGES] vparams;
+    for (usz i = 0; i < arity; i++)
     {
-        Node* first_clause = clauses[0];
-        Node* pat = first_clause.child_count >= 1 ? first_clause.children[0] : null;
-        if (pat != null && pat.kind == Nk.NODE_PATTERN_TUPLE)
+        Node* param_src = pat0;
+        if (pat0 != null && pat0.kind == Nk.NODE_PATTERN_TUPLE
+            && i < pat0.child_count && pat0.children[i] != null)
         {
-            for (usz pi = 0; pi < pat.child_count && f.param_count < MAX_EDGES; pi++)
-            {
-                IrVal* pv = m.new_val(IrOp.IR_PARAM, pat.child_count >= 1 ? pat.children[pi] : null);
-                if (pv != null) { m.emit(pv); f.params[f.param_count++] = pv; }
-            }
+            param_src = pat0.children[i];
         }
-        else if (pat != null && pat.kind == Nk.NODE_PATTERN_IDENT)
-        {
-            IrVal* pv = m.new_val(IrOp.IR_PARAM, pat);
-            if (pv != null) { m.emit(pv); f.params[f.param_count++] = pv; }
-        }
+        IrVal* pv = m.new_val(IrOp.IR_PARAM, param_src);
+        if (pv != null) { m.emit(pv); }
+        vparams[i] = pv;
+        if (pv != null && f.param_count < MAX_EDGES) { f.params[f.param_count] = pv; f.param_count++; }
     }
 
-    // Bind param variables (skip env_param at index 0)
-    m.bind_pattern(f, null);  // just to set up env
-    if (nclause > 0 && f.param_count > 1)
+    // Capture loads: free vars of the whole closure (excluding clause-local
+    // binders) loaded from the env record ONCE in the entry block — the loads
+    // dominate every dispatch/body block — and re-bound per scope below.
+    Node*[64] cap_binders;
+    usz cap_count = 0;
+    Node*[128] local_binders;
+    usz local_count = 0;
+    for (usz cpi = 0; cpi < closure_node.child_count; cpi++)
     {
-        Node* first_clause = clauses[0];
-        Node* pat = first_clause.child_count >= 1 ? first_clause.children[0] : null;
-        if (pat != null)
-        {
-            usz param_start = 1; // skip env
-            if (pat.kind == Nk.NODE_PATTERN_TUPLE)
-            {
-                for (usz pi = 0; pi < pat.child_count && param_start + pi < f.param_count; pi++)
-                {
-                    Node* binder = pat.children[pi];
-                    IrVal* pval  = f.params[param_start + pi];
-                    if (binder != null && pval != null) m.env_push(binder, pval);
-                }
-            }
-            else if (pat.kind == Nk.NODE_PATTERN_IDENT && f.param_count >= 2)
-            { m.env_push(pat, f.params[1]); }
-        }
+        Node* cl2 = closure_node.children[cpi];
+        if (cl2 == null) continue;
+        // Whole-clause marking (pattern + body), same rule as the old path:
+        // body-local binders are not captures.
+        mark_local_binders(cl2, &local_binders[0], &local_count, 128);
+    }
+    for (usz cpi = 0; cpi < closure_node.child_count; cpi++)
+    { collect_free_vars(closure_node.children[cpi], &local_binders[0], local_count,
+                       &cap_binders[0], &cap_count, 64); }
+    IrVal*[64] cap_vals;
+    for (usz ci3 = 0; ci3 < cap_count; ci3++)
+    {
+        cap_vals[ci3] = null;
+        Node* cap_binder = cap_binders[ci3];
+        if (cap_binder == null) continue;
+        IrVal* load_v = m.new_val(IrOp.IR_INDEX, cap_binder);
+        if (load_v == null) continue;
+        load_v.add_arg(env_param, -1);
+        load_v.ival = (ulong)ci3;
+        m.emit(load_v);
+        cap_vals[ci3] = load_v;
     }
 
-    // Lower clause bodies with capture loading.
-    // We must load captures from the env pointer INSIDE the clause body lowering
-    // context so env_close_block does not discard them.
+    // Dispatch cascade: the SAME shape as lower_fn — each clause tests its
+    // pattern against the value params; a guard ANDs into the test with the
+    // pattern bindings live; the body block re-binds pattern + captures and
+    // lowers the clause body; an irrefutable clause ends the cascade; a
+    // fall-through past the last refutable clause is a trap. The old
+    // straight-line lowering returned clause 0 unconditionally, leaving
+    // every later arm dead.
+    int cur_test = entry;
     for (usz ci = 0; ci < nclause; ci++)
     {
         Node* clause = clauses[ci];
-        // Open an env scope for this clause body
-        usz clause_mark = m.env_mark();
+        Node* pat = clause.child_count >= 1 ? clause.children[0] : null;
+        m.cur = cur_test;
+        usz tmark = m.env_mark();
+        for (usz cj = 0; cj < cap_count; cj++)
+        { if (cap_binders[cj] != null && cap_vals[cj] != null) m.env_push(cap_binders[cj], cap_vals[cj]); }
 
-        // Load each capture from env array and bind it in this scope.
-        // Re-collect free vars to get the exact binder nodes.
+        IrVal* cond = m.clause_test(pat, &vparams[0], arity);
+
+        // A guard (`| pat, guard -> body`) makes the clause refutable: bind
+        // the pattern, evaluate the guard, AND it into the dispatch cond.
+        Node* guard = null;
+        for (usz gi = 1; gi < clause.child_count; gi++)
         {
-            Node*[64] cap_binders_arr;
-            usz cap_binder_count = 0;
-            Node*[128] locals_arr2;
-            usz local_count2 = 0;
-            for (usz cpi = 0; cpi < closure_node.child_count; cpi++)
-            {
-                Node* cl2 = closure_node.children[cpi];
-                if (cl2 == null) continue;
-                // Whole-clause marking (pattern + body), same rule as
-                // lower_closure: body-local binders are not captures.
-                mark_local_binders(cl2, &locals_arr2[0], &local_count2, 128);
-            }
-            for (usz cpi = 0; cpi < closure_node.child_count; cpi++)
-            { collect_free_vars(closure_node.children[cpi], &locals_arr2[0], local_count2,
-                               &cap_binders_arr[0], &cap_binder_count, 64); }
-            for (usz ci3 = 0; ci3 < cap_binder_count; ci3++)
-            {
-                Node* cap_binder = cap_binders_arr[ci3];
-                if (cap_binder == null) continue;
-                IrVal* load_v = m.new_val(IrOp.IR_INDEX, cap_binder);
-                if (load_v == null) continue;
-                load_v.add_arg(env_param, -1);
-                load_v.ival = (ulong)ci3;
-                m.emit(load_v);
-                m.env_push(cap_binder, load_v);
-            }
+            Node* c = clause.children[gi];
+            if (c != null && c.kind == Nk.NODE_PATTERN_GUARD) { guard = c; break; }
+        }
+        if (guard != null)
+        {
+            m.bind_pattern_values(pat, &vparams[0], arity);
+            IrVal* gv = null;
+            if (guard.child_count >= 1) gv = m.lower_expr(guard.children[0]);
+            cond = m.and_cond(cond, gv, guard);
+            m.env_reset(tmark);   // un-bind; re-bound below
         }
 
-        // Lower the clause body (body starts after the pattern child)
-        IrVal* result = null;
-        for (usz bi = 1; bi < clause.child_count; bi++)
+        if (cond == null)
         {
-            Node* c2 = clause.children[bi];
-            if (c2 == null || c2.kind == Nk.NODE_PATTERN_GUARD) continue;
-            if (c2.kind == Nk.NODE_EXPR_BLOCK)
-            {
-                usz bm = m.env_mark();
-                result = m.lower_block(c2);
-                // emit_defers BEFORE env_close_block so deferred exprs
-                // can still see block-local bindings (e.g. `defer free(p)` sees p).
-                // We then mark defer_count=0 so the outer path won't re-fire.
-                if (!m.terminated())
-                {
-                    m.emit_defers();
-                    m.defer_count = 0;    // consumed — prevent double-fire below
-                }
-                m.env_close_block(bm);
-            }
-            else { result = m.lower_stmt(c2); }
-        }
-        if (!m.terminated())
-        {
-            m.emit_defers();
-            IrBlock* cb2 = m.blk(m.cur);
-            if (cb2 != null) { cb2.term = TermKind.TERM_RET; cb2.ret_val = result; }
+            // Irrefutable: re-bind (tmark was reset above if guarded) and
+            // lower the body; dispatch ends here.
+            for (usz cj = 0; cj < cap_count; cj++)
+            { if (cap_binders[cj] != null && cap_vals[cj] != null) m.env_push(cap_binders[cj], cap_vals[cj]); }
+            m.bind_pattern_values(pat, &vparams[0], arity);
+            m.lower_clause_body(clause);
+            m.env_reset(tmark);
+            cur_test = -1;
+            break;
         }
 
-        m.env_reset(clause_mark);
+        int body = m.new_block();
+        int next = m.new_block();
+        IrBlock* tb = m.blk(cur_test);
+        if (tb != null) { tb.term = TermKind.TERM_CBR; tb.cond = cond; }
+        m.link(cur_test, body);
+        m.link(cur_test, next);
+
+        m.cur = body;
+        usz bmark = m.env_mark();
+        for (usz cj = 0; cj < cap_count; cj++)
+        { if (cap_binders[cj] != null && cap_vals[cj] != null) m.env_push(cap_binders[cj], cap_vals[cj]); }
+        m.bind_pattern_values(pat, &vparams[0], arity);
+        m.lower_clause_body(clause);
+        m.env_reset(bmark);
+
+        m.env_reset(tmark);
+        cur_test = next;
+    }
+
+    // A trailing no-match block (all clauses refutable) is non-exhaustive: trap.
+    if (cur_test >= 0)
+    {
+        IrBlock* nb = m.blk(cur_test);
+        if (nb != null && nb.term == TermKind.TERM_NONE) nb.term = TermKind.TERM_UNREACHABLE;
     }
 
     // Close open block
