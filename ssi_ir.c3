@@ -3915,6 +3915,47 @@ fn IrVal* SsiModule.lower_assign(SsiModule* m, Node* n)
     }
     if (lhs != null && lhs.kind == Nk.NODE_EXPR_FIELD && lhs.child_count >= 1)
     {
+        // By-value struct binding (`h.fst = 7` where h is an SSA aggregate,
+        // not a pointer and not address-taken): the value lives in a
+        // register — there is no memory to store through, and the old
+        // pointer-route emitted GEP/store AGAINST THE VALUE ITSELF
+        // (`gep {..}, ptr %v96` — invalid IR).  Instead rebuild the
+        // aggregate with the one field replaced, exactly like source-level
+        // struct update `h { fst: 7 }`, and re-bind the target (r43).
+        Node* base_expr = lhs.children[0];
+        if (base_expr != null && base_expr.kind == Nk.NODE_IDENT
+            && base_expr.resolved != null
+            && m.home_for(base_expr.resolved) == null
+            && (base_expr.type_annotation == null
+                || base_expr.type_annotation.kind != Nk.NODE_TYPE_PTR))
+        {
+            IrVal* old = m.env_lookup(base_expr.resolved);
+            Node* fname = lhs.child_count >= 2 ? lhs.children[1] : null;
+            if (old != null && fname != null && rv != null)
+            {
+                Node* finit = ast::node2(m.arena, Nk.NODE_FIELD_INIT,
+                                         fname, rhs != null ? rhs : fname,
+                                         lhs.line, lhs.col);
+                Node* usrc = ast::node2(m.arena, Nk.NODE_EXPR_STRUCT_LIT,
+                                        base_expr, finit, lhs.line, lhs.col);
+                // Carry the base's instantiation stamp (`Pair<i64, f64>`):
+                // codegen's concrete-repr substitution reads the literal's
+                // type_annotation for exactly this (r33 struct_app_ann) —
+                // without it the update prints the generic decl's BOXED
+                // { ptr, ptr } repr against the concrete args[0] record.
+                usrc.type_annotation = base_expr.type_annotation;
+                IrVal* upd = m.new_val(IrOp.IR_STRUCT, usrc);
+                if (upd != null)
+                {
+                    upd.ival = 1;   // struct-update mode (arg[0] = base struct)
+                    upd.add_arg(old, -1);
+                    upd.add_arg(rv, -1);
+                    m.emit(upd);
+                    m.env_push(base_expr.resolved, upd);
+                    return rv;
+                }
+            }
+        }
         IrVal* base_val = m.lower_lvalue_base(lhs.children[0]);
         IrVal* st = m.new_val(IrOp.IR_STORE, n);
         if (st != null)

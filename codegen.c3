@@ -5873,6 +5873,12 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         }
                         else if (ta2.kind == Nk.NODE_DECL_STRUCT) { struct_type_node = ta2; }
                     }
+                    // Generic-instantiation bases (r43): the chains above only
+                    // know TYPEVAR/DECL_TYPE/DECL_STRUCT directly — route the
+                    // residual cases (GENERIC_APP annotations on the base ident)
+                    // through struct_body_of, which understands applications.
+                    if (struct_type_node == null && stn_name != null)
+                    { struct_type_node = struct_body_of(stn_name.type_annotation); }
                     // Also try: v.src itself has type_annotation pointing to the struct
                     if (struct_type_node == null && v.src.type_annotation != null)
                     {
