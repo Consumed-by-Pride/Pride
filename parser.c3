@@ -171,6 +171,34 @@ fn bool Parser.check(Parser* self, Tt t)
     return self.cur.type == t;
 }
 
+// Consume ONE generic closing `>`.  The lexer greedily reads `>>`, `>=` and
+// `>>=` as single tokens, so a nested generic application closing with
+// adjacent `>`s (`Pair<i64, Box<i64>>`) otherwise fails with "expected
+// '>'".  Splitting the current token in place is the standard fix: the
+// remainder (still pointing into the source buffer) stays as the new
+// current token (r50).
+fn bool Parser.accept_gt_close(Parser* self)
+{
+    if (self.cur.type == Tt.TOKEN_GT) { self.advance(); return true; }
+    switch (self.cur.type)
+    {
+        case Tt.TOKEN_RSHIFT:      // `>>`  leaves `>`
+            self.cur.type  = Tt.TOKEN_GT;
+            self.cur.start += 1; self.cur.len = 1; self.cur.col += 1;
+            return true;
+        case Tt.TOKEN_GTEQ:        // `>=`  leaves `=`
+            self.cur.type  = Tt.TOKEN_EQ;
+            self.cur.start += 1; self.cur.len = 1; self.cur.col += 1;
+            return true;
+        case Tt.TOKEN_RSHIFTEQ:    // `>>=` leaves `>=`
+            self.cur.type  = Tt.TOKEN_GTEQ;
+            self.cur.start += 1; self.cur.len = 2; self.cur.col += 1;
+            return true;
+        default:
+            return false;
+    }
+}
+
 fn bool Parser.accept(Parser* self, Tt t)
 {
     if (self.cur.type == t)
@@ -1055,7 +1083,8 @@ fn Node* Parser.parse_generics(Parser* self)
             s.push(self.parse_generic_param());
         }
     }
-    self.expect(Tt.TOKEN_GT, "expected '>' to close generic parameters");
+    if (!self.accept_gt_close())
+    { self.error("expected '>' to close generic parameters"); }
     return self.finish(Nk.NODE_GENERIC_PARAM, &s, lt.line, lt.col);
 }
 
@@ -1882,7 +1911,8 @@ fn Node* Parser.parse_type_postfix(Parser* self)
                 s.push(self.parse_type());
             }
         }
-        self.expect(Tt.TOKEN_GT, "expected '>' to close generic application");
+        if (!self.accept_gt_close())
+        { self.error("expected '>' to close generic application"); }
         return self.finish(Nk.NODE_TYPE_GENERIC_APP, &s, lt.line, lt.col);
     }
 
@@ -1985,7 +2015,8 @@ fn Node* Parser.parse_tensor_type(Parser* self)
         }
     }
 
-    self.expect(Tt.TOKEN_GT, "expected '>' to close Tensor type");
+    if (!self.accept_gt_close())
+    { self.error("expected '>' to close Tensor type"); }
     return self.finish(Nk.NODE_TYPE_TENSOR, &s, kw.line, kw.col);
 }
 

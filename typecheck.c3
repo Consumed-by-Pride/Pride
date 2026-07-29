@@ -1688,34 +1688,10 @@ fn Node* TypeChecker.synth_field(TypeChecker* self, Node* e)
     }
     // Generic-struct instantiation base (`pr.fst` with `pr : Pair<i64, f64>`):
     // the decl's field type names the type parameter — substitute the
-    // instantiation's arguments, or every consumer sees the boxed parameter
-    // type instead of the concrete field type.  DEEP substitution (r48):
-    // generic_payload_subst only rewrites a BARE typevar payload, so
-    // compound field types (`items : [T; 2]`, `*T`, `T -> T`) kept the
-    // parameter and downstream code boxed/broke (`store ptr 99`,
-    // `Index : T` for `b : Box<i64>`).
-    if (bt != null && bt.kind == Nk.NODE_TYPE_GENERIC_APP && bt.child_count >= 2)
-    {
-        Node* hd2 = bt.children[0];
-        Node* gdecl = (hd2 != null && hd2.resolved != null) ? hd2.resolved : bt.resolved;
-        if (gdecl != null
-            && (gdecl.kind == Nk.NODE_DECL_TYPE || gdecl.kind == Nk.NODE_DECL_STRUCT))
-        {
-            TypeBindings fb;
-            fb.clear();
-            usz oi = 1;
-            for (usz di = 0; di < gdecl.child_count && oi < bt.child_count; di++)
-            {
-                Node* gp = gdecl.children[di];
-                if (gp == null || gp.kind != Nk.NODE_GENERIC_PARAM) continue;
-                for (usz pi = 0; pi < gp.child_count && oi < bt.child_count; pi++)
-                { fb.bind(gp.children[pi], bt.children[oi]); oi++; }
-            }
-            if (fb.count > 0) { return self.substitute(ft, &fb, 0); }
-        }
-    }
-    ft = ast::generic_payload_subst(bt, ft);
-    return ft;
+    // instantiation's arguments (deep, r48/r50: `[T; 2]` → `[i64; 2]`), or
+    // every consumer sees the boxed parameter type (`store ptr 99`,
+    // `Index : T`) instead of the concrete field type.
+    return self.app_subst(bt, ft);
 }
 
 // Method-style call  base.name(args)  (MethodCall[base, name, args...]).
@@ -3181,6 +3157,33 @@ fn void TypeChecker.stamp_return_struct_lits(TypeChecker* self, Node* n, Node* r
 // Field validation already ran during synth against the decl's field list,
 // so nothing is lost by overwriting the stamp.  Shared by check()
 // (let/assignment positions) and check_clause (return position).
+// Deep substitute a (possibly generic-declared) TYPE against a GENERIC_APP
+// instantiation's bindings (r48/r50): `items : [T; 2]` under `Box<i64>`
+// becomes `[i64; 2]`.  Shared by synth_field (member access) and the
+// struct-literal stamping recursion.
+fn Node* TypeChecker.app_subst(TypeChecker* self, Node* bt, Node* ty)
+{
+    if (bt == null || bt.kind != Nk.NODE_TYPE_GENERIC_APP || bt.child_count < 2
+        || ty == null) return ty;
+    Node* hd2 = bt.children[0];
+    Node* gdecl = (hd2 != null && hd2.resolved != null) ? hd2.resolved : bt.resolved;
+    if (gdecl == null
+        || (gdecl.kind != Nk.NODE_DECL_TYPE && gdecl.kind != Nk.NODE_DECL_STRUCT))
+    { return ty; }
+    TypeBindings fb;
+    fb.clear();
+    usz oi = 1;
+    for (usz di = 0; di < gdecl.child_count && oi < bt.child_count; di++)
+    {
+        Node* gp = gdecl.children[di];
+        if (gp == null || gp.kind != Nk.NODE_GENERIC_PARAM) continue;
+        for (usz pi = 0; pi < gp.child_count && oi < bt.child_count; pi++)
+        { fb.bind(gp.children[pi], bt.children[oi]); oi++; }
+    }
+    if (fb.count > 0) { return self.substitute(ty, &fb, 0); }
+    return ast::generic_payload_subst(bt, ty);
+}
+
 fn void TypeChecker.stamp_expected_struct_lit(TypeChecker* self, Node* e, Node* expected)
 {
     if (e == null || e.kind != Nk.NODE_EXPR_STRUCT_LIT || expected == null) return;
@@ -3192,7 +3195,87 @@ fn void TypeChecker.stamp_expected_struct_lit(TypeChecker* self, Node* e, Node* 
     if (app_decl != null && lit_decl != null && app_decl == lit_decl)
     {
         e.type_annotation = un;
+        // Recurse into FIELD_INIT values (r50): a nested struct literal
+        // whose slot is itself a generic instantiation —
+        // `Pair { snd: Box { … } } : Pair<i64, Box<i64>>` — must be
+        // stamped too, or it prints the generic decl's boxed repr against
+        // the outer literal's concrete record.
+        Node* fields = self.struct_fields_of(un);
+        if (fields != null)
+        {
+            for (usz ci = 1; ci < e.child_count; ci++)
+            {
+                Node* finit = e.children[ci];
+                if (finit == null || finit.kind != Nk.NODE_FIELD_INIT
+                    || finit.child_count < 2) continue;
+                Node* fname = finit.children[0];
+                Node* fval  = finit.children[1];
+                if (fname == null || fval == null
+                    || fval.kind != Nk.NODE_EXPR_STRUCT_LIT) continue;
+                Node* raw_fty = field_type(fields,
+                                           fname.p.ident.name_ptr,
+                                           fname.p.ident.name_len);
+                if (raw_fty == null) continue;
+                self.stamp_expected_struct_lit(fval, self.app_subst(un, raw_fty));
+            }
+        }
     }
+}
+
+// Does an enum-payload type fit Pride's tagged repr?  A Pride enum value is
+// { i32 tag, i64 payload }: exactly ONE payload cell of ≤ 64 bits.  Scalars
+// (bool/iN/uN ≤ 64, f32/f64, rune) and pointers fit; strings (fat
+// { ptr, i64 }), arrays, slices, tensors, tuples, structs and nested enums
+// do not.  Multi-field payloads are rejected by the caller.  Before r50 an
+// over-sized payload COMPILED and silently overflowed the cell — `A([i64;
+// 3])` read a stack address as the payload.  Typevars that cannot be
+// resolved here (generic parameters) are permissively accepted; named types
+// are unfolded one alias level before the size call.
+fn bool enum_payload_fits(Node* ty)
+{
+    int hops = 0;
+    while (ty != null && hops < 8)
+    {
+        hops++;
+        switch (ty.kind)
+        {
+            case Nk.NODE_TYPE_PRIMITIVE:
+            {
+                char* pn = ty.p.ident.name_ptr;
+                usz   pl = ty.p.ident.name_len;
+                if (pl == 3 && pn != null && pn[0] == 'S' && pn[1] == 't' && pn[2] == 'r')
+                { return false; }   // Str is fat: { ptr, i64 }
+                if (pl == 4 && pn != null && (pn[0] == 'i' || pn[0] == 'u')
+                    && pn[1] == '1' && pn[2] == '2' && pn[3] == '8')
+                { return false; }   // 128-bit ints exceed the cell
+                return true;
+            }
+            case Nk.NODE_TYPE_PTR:
+                return true;
+            case Nk.NODE_TYPEVAR:
+            {
+                Node* r = ty.resolved;
+                if (r == null) return true;           // generic param: permissive
+                if (r.kind == Nk.NODE_DECL_TYPE || r.kind == Nk.NODE_DECL_NEWTYPE)
+                {
+                    if (r.child_count < 1) return false;
+                    Node* u = r.children[r.child_count - 1];
+                    if (u == null || u == r) return false;
+                    if (u.kind == Nk.NODE_DECL_STRUCT || u.kind == Nk.NODE_DECL_ENUM
+                        || u.kind == Nk.NODE_DECL_UNION)
+                    { return false; }
+                    ty = u;                            // unfold one alias level
+                    continue;
+                }
+                return false;                          // struct/enum decl directly
+            }
+            case Nk.NODE_TYPE_GENERIC_APP:
+                return false;                          // instantiated generics: boxed/fat
+            default:
+                return false;                          // arrays, slices, tuples, fns…
+        }
+    }
+    return false;
 }
 
 fn void TypeChecker.check_program(TypeChecker* self, Node* program)
@@ -3240,16 +3323,30 @@ fn void TypeChecker.check_decl(TypeChecker* self, Node* d)
     }
     if (d.kind == Nk.NODE_DECL_ENUM)
     {
-        // Resolve payload types for each variant
+        // Resolve payload types for each variant, and enforce the repr
+        // truth (r50): a Pride enum is { i32 tag, i64 payload } — ONE
+        // payload cell of ≤ 64 bits.  Over-sized and multi-field payloads
+        // used to compile and silently overflow the cell.
         for (usz vi = 1; vi < d.child_count; vi++)
         {
             Node* evar = d.children[vi];
             if (evar == null || evar.kind != Nk.NODE_ENUM_VARIANT) continue;
+            usz pay_fields = 0;
+            bool bad = false;
             for (usz fi = 1; fi < evar.child_count; fi++)
             {
                 Node* field = evar.children[fi];
-                if (field != null && field.child_count >= 1)
-                { self.synth(field.children[0]); }
+                if (field == null || field.kind != Nk.NODE_FIELD_DECL
+                    || field.child_count < 2) continue;
+                pay_fields++;
+                self.synth(field.children[1]);
+                if (!enum_payload_fits(field.children[1])) { bad = true; }
+            }
+            if (pay_fields > 1) { bad = true; }
+            if (bad)
+            {
+                self.diag((char*)"enum payload over the tagged 64-bit cell: variants take at most one ≤64-bit scalar or pointer payload (Pride enums are { i32, i64 }) — box larger values behind *T or a slice",
+                          evar.line, evar.col, true);
             }
         }
         return;

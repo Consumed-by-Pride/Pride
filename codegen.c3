@@ -5414,6 +5414,8 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                         cg.out.writes("  store "); cg.out.writes(field_store_ty); cg.out.writes(" ");
                         if (emit_val_ref_str != null)
                         { cg.out.writes(emit_val_ref_str); cg.out.writei(v.id); }
+                        else if (val_arg != null && val_arg.op == ssi_ir::IrOp.IR_CONST_STR)
+                        { cgen_emit_str_const_record(cg, val_arg); }
                         else if (val_arg != null) { cg.emit_vref(val_arg); }
                         else { cg.out.writes("undef"); }
                         cg.out.writes(", ptr %st.gep.v"); cg.out.writei(v.id);
@@ -5424,7 +5426,10 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 {
                     // Pointer deref store: store val, ptr base
                     cg.out.writes("  store "); cg.out.writes(val_ty_st); cg.out.writes(" ");
-                    if (val_arg != null) { cg.emit_vref(val_arg); } else { cg.out.writes("undef"); }
+                    if (val_arg != null && val_arg.op == ssi_ir::IrOp.IR_CONST_STR)
+                    { cgen_emit_str_const_record(cg, val_arg); }
+                    else if (val_arg != null) { cg.emit_vref(val_arg); }
+                    else { cg.out.writes("undef"); }
                     cg.out.writes(", ptr ");
                     if (base_arg != null) { cg.emit_vref(base_arg); } else { cg.out.writes("null"); }
                     cg.out.writes("\n");
@@ -6366,6 +6371,14 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     // Field value
                     if (field_coerced)
                     { cg.out.writes("%fcoerce."); cg.out.writei(v.id); cg.out.writes("."); cg.out.writeu(i); }
+                    else if (v.args[i] != null && v.args[i].op == ssi_ir::IrOp.IR_CONST_STR)
+                    {
+                        // A string literal's LLVM value is its fat record
+                        // { ptr @.str.N, i64 LEN } — emit_vref renders the
+                        // raw byte-global ref (a ptr), which is not a value
+                        // of the record type (r50, `Rec { name: "abc" }`).
+                        cgen_emit_str_const_record(cg, v.args[i]);
+                    }
                     else { cg.emit_vref(v.args[i]); }
                     // Field index (struct-decl position, pre-computed)
                     cg.out.writes(", ");
