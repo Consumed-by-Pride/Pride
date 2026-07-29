@@ -1814,6 +1814,56 @@ fn Node* TypeChecker.synth_method_call(TypeChecker* self, Node* e)
                 return base;
             }
         }
+        // Enum variant constructor `E.A(payload)` — r54: same story as the
+        // union arm above; union_decl_of misses DECL_ENUM bases, so the
+        // constructor stayed UNTYPED: `let e = E.A(41)` carried no stamp,
+        // every `match e` saw an unknown scrutinee (arms unbound, no
+        // FLAG_REFUTABLE), and the lowering dispatched by arm ORDER — the
+        // first arm always fired and trailing payload binders dangled as
+        // undefined %vN.
+        Node* edecl2 = ast::enum_decl_of(base);
+        if (edecl2 != null)
+        {
+            Node* vpayload = null;
+            int evord = -1; int evcnt = 0;
+            for (usz evi = 1; evi < edecl2.child_count; evi++)
+            {
+                Node* ev5 = edecl2.children[evi];
+                if (ev5 == null || ev5.kind != Nk.NODE_ENUM_VARIANT) continue;
+                Node* vn5 = ev5.child_count >= 1 ? ev5.children[0] : null;
+                if (vn5 != null && vn5.p.ident.name_ptr != null
+                    && vn5.p.ident.name_len == name.p.ident.name_len)
+                {
+                    bool veq5 = true;
+                    for (usz vc5 = 0; vc5 < name.p.ident.name_len; vc5++)
+                    { if (vn5.p.ident.name_ptr[vc5] != name.p.ident.name_ptr[vc5])
+                      { veq5 = false; break; } }
+                    if (veq5)
+                    {
+                        evord = evcnt;
+                        if (ev5.child_count >= 2 && ev5.children[1] != null
+                            && ev5.children[1].kind == Nk.NODE_FIELD_DECL
+                            && ev5.children[1].child_count >= 2)
+                        { vpayload = ev5.children[1].children[1]; }
+                        break;
+                    }
+                }
+                evcnt++;
+            }
+            if (evord >= 0)
+            {
+                // Oversize payloads are rejected at the decl already
+                // (enum_payload_fits) — belt and braces here too.
+                if (vpayload != null && !ast::union_payload_is_scalar(vpayload))
+                {
+                    self.hard("enum payload doesn't fit the 64-bit cell "
+                              "(enum repr is { i32 tag, i64 payload })",
+                              e.line, e.col);
+                }
+                e.type_annotation = base;
+                return base;
+            }
+        }
     }
     if (bt == null || name == null) return null;
 
@@ -3590,7 +3640,9 @@ fn bool row_subsumes(Node* actual, Node* expected)
 fn bool TypeChecker.union_match_exhaustive(TypeChecker* self, Node* variants, Node* parent, bool is_clause)
 {
     // If the "variants" node is a NODE_DECL_ENUM, its ENUM_VARIANT children
-    // are the variants. Map them to field-like names for matching.
+    // are the variants. Match against bare variant-NAME patterns (`| B ->`)
+    // and positional struct patterns (`| A(a) ->`); guarded arms only cover
+    // conditionally, wildcard covers all (r54).
     if (variants != null && variants.kind == Nk.NODE_DECL_ENUM)
     {
         int covered = 0; int total = 0;
@@ -3599,7 +3651,8 @@ fn bool TypeChecker.union_match_exhaustive(TypeChecker* self, Node* variants, No
             Node* evar = variants.children[vi];
             if (evar == null || evar.kind != Nk.NODE_ENUM_VARIANT) continue;
             total++;
-            // Check if any arm of the match/clause covers this variant name
+            Node* vname = (evar.child_count >= 1) ? evar.children[0] : null;
+            if (vname == null) continue;
             for (usz ai = 0; ai < parent.child_count; ai++)
             {
                 Node* arm = parent.children[ai];
@@ -3608,20 +3661,31 @@ fn bool TypeChecker.union_match_exhaustive(TypeChecker* self, Node* variants, No
                 if (pat == null) continue;
                 if (pat.kind == Nk.NODE_WILDCARD || pat.kind == Nk.NODE_PATTERN_WILDCARD)
                 { covered = total; break; }
-                if (pat.kind == Nk.NODE_PATTERN_IDENT || pat.kind == Nk.NODE_IDENT)
+                // A guarded arm covers its variant only conditionally.
+                bool guarded = false;
+                for (usz k = 1; k < arm.child_count; k++)
                 {
-                    // Check name matches variant
-                    if (evar.child_count >= 1 && evar.children[0] != null)
-                    {
-                        Node* vname = evar.children[0];
-                        if (vname.p.ident.name_len == pat.p.ident.name_len)
-                        {
-                            bool nm = true;
-                            for (usz ci = 0; ci < vname.p.ident.name_len; ci++)
-                            { if (vname.p.ident.name_ptr[ci] != pat.p.ident.name_ptr[ci]) { nm = false; break; } }
-                            if (nm) { covered++; break; }
-                        }
-                    }
+                    if (arm.children[k] != null
+                        && arm.children[k].kind == Nk.NODE_PATTERN_GUARD)
+                    { guarded = true; break; }
+                }
+                if (guarded) continue;
+                // Bare variant-name pattern `| B -> ...`
+                if (pat.kind == Nk.NODE_PATTERN_IDENT && pat.child_count >= 1
+                    && pat.children[0] != null)
+                {
+                    if (ident_name_eq(pat.children[0], vname)) { covered++; break; }
+                    continue;
+                }
+                // Positional variant struct pattern `| A(a) -> ...`: the head
+                // names the variant (resolved identity preferred).
+                if (pat.kind == Nk.NODE_PATTERN_STRUCT && pat.child_count >= 1
+                    && pat.children[0] != null)
+                {
+                    Node* hd = pat.children[0];
+                    if (hd.resolved != null && hd.resolved == evar) { covered++; break; }
+                    if (ident_name_eq(hd, vname)) { covered++; break; }
+                    continue;
                 }
             }
         }
@@ -3893,6 +3957,19 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
             {
                 pat.children[0].type_annotation = ty;
                 pat.type_annotation = ty;
+                // Bare enum-variant NAME pattern (`| B -> ...`) — r54: a
+                // refutable discriminant test, not an irrefutable binder.
+                // Without the flag the linter treats the arm as a catch-all
+                // (every later arm reported unreachable) and the lowering's
+                // own is_enum_name_arm classification disagrees.
+                Node* ed5 = ast::enum_decl_of(ty);
+                Node* nm5 = pat.children[0];
+                if (ed5 != null && nm5 != null
+                    && nm5.kind == Nk.NODE_TYPEVAR
+                    && nm5.p.ident.name_ptr != null
+                    && ast::enum_variant_lookup(ed5, nm5.p.ident.name_ptr,
+                                                nm5.p.ident.name_len) >= 0)
+                { pat.flags |= ast::FLAG_REFUTABLE; }
             }
 
         case Nk.NODE_PATTERN_OR:
@@ -4081,6 +4158,45 @@ fn void TypeChecker.bind_pattern_types(TypeChecker* self, Node* pat, Node* ty)
                         // cannot bind and a let-pattern must be irrefutable —
                         // tolerated silently, same convention as tuple lets.
                     }
+                }
+                else if (ty != null && pat.child_count >= 2
+                         && pat.children[0] != null && pat.children[0].resolved != null
+                         && pat.children[0].resolved.kind == Nk.NODE_ENUM_VARIANT)
+                {
+                // Positional enum-variant pattern `A(a)` (r54): binders
+                // receive the variant's PAYLOAD type — stamping the binder
+                // with the scrutinee type (the newtype fallback below used
+                // to swallow this form, `underlying = ty`) made the lowering
+                // unbox the i64 payload slot at the enum's aggregate repr
+                // ({ i32, i64 }), poisoning every use of the binder.
+                Node* ev4 = pat.children[0].resolved;
+                pat.type_annotation = ty;
+                pat.flags |= ast::FLAG_REFUTABLE;
+                Node* pay4 = null;
+                if (ev4.child_count >= 2 && ev4.children[1] != null
+                    && ev4.children[1].kind == Nk.NODE_FIELD_DECL
+                    && ev4.children[1].child_count >= 2)
+                { pay4 = ev4.children[1].children[1]; }
+                // The repr holds ONE payload cell; extra binders have no
+                // slot to draw from (typecheck already rejects multi-field
+                // payloads at the enum decl, so >1 binder is user error).
+                if (pat.child_count > 2)
+                {
+                    self.hard("too many binders in enum variant pattern (the repr holds one payload cell)",
+                              pat.line, pat.col);
+                }
+                pay4 = ast::generic_payload_subst(ty, pay4);
+                for (usz i = 1; i < pat.child_count; i++)
+                {
+                    Node* fp2 = pat.children[i];
+                    if (fp2 == null || fp2.kind != Nk.NODE_PATTERN_IDENT) continue;
+                    if (pay4 != null && !ast::union_payload_is_scalar(pay4))
+                    {
+                        self.hard("variant payload is not lowered yet (only scalar payloads fit the { i32, i64 } repr)",
+                                  fp2.line, fp2.col);
+                    }
+                    self.bind_pattern_types(fp2, pay4 != null ? pay4 : ty);
+                }
                 }
                 else if (ty != null && pat.child_count >= 2)
                 {

@@ -1,0 +1,14 @@
+-- EXPECT-COUNT: type-err=1
+-- The enum repr holds ONE payload cell; a two-binder positional pattern has
+-- no slot for the second binder — rejected loudly (r54).
+
+enum E
+  A(i64)
+  B
+
+fn main : () -> () ! [IO]
+  | () ->
+      let e = E.A(41)
+      match e
+        | A(x, y) -> syscall(231, x + y)
+        | B -> syscall(231, 0)

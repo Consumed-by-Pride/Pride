@@ -1423,19 +1423,62 @@ fn bool variant_pattern_info(Node* pat, Node** out_union_ty, int* out_ord, Node*
 {
     if (pat == null || pat.kind != Nk.NODE_PATTERN_STRUCT || pat.child_count < 1) return false;
     Node* pf0 = pat.children[0];
-    if (pf0 == null || pf0.kind != Nk.NODE_PATTERN_FIELD || pf0.child_count < 1) return false;
-    Node* ty = pat.type_annotation != null ? pat.type_annotation : pf0.type_annotation;
-    if (ast::union_decl_of(ty) == null) return false;
-    Node* vn = pf0.children[0];
-    if (vn == null || vn.p.ident.name_ptr == null) return false;
-    Node* payload = null;
-    int ord = ast::union_variant_lookup(ast::union_decl_of(ty),
-                vn.p.ident.name_ptr, vn.p.ident.name_len, &payload);
-    if (ord < 0) return false;
-    if (out_union_ty != null) *out_union_ty = ty;
-    if (out_ord != null) *out_ord = ord;
-    if (out_payload != null) *out_payload = payload;
-    return true;
+    // `{ name: binder }` union-variant form — children[0] is a PATTERN_FIELD.
+    if (pf0 != null && pf0.kind == Nk.NODE_PATTERN_FIELD && pf0.child_count >= 1)
+    {
+        Node* ty = pat.type_annotation != null ? pat.type_annotation : pf0.type_annotation;
+        Node* vn = pf0.children[0];
+        if (vn != null && vn.p.ident.name_ptr != null && ast::union_decl_of(ty) != null)
+        {
+            Node* payload = null;
+            int ord = ast::union_variant_lookup(ast::union_decl_of(ty),
+                        vn.p.ident.name_ptr, vn.p.ident.name_len, &payload);
+            if (ord >= 0)
+            {
+                if (out_union_ty != null) *out_union_ty = ty;
+                if (out_ord != null) *out_ord = ord;
+                if (out_payload != null) *out_payload = payload;
+                return true;
+            }
+        }
+    }
+    // Enum variant struct patterns (`| A(a) -> ...`) — r54.  The parser's
+    // positional form is PATTERN_STRUCT[TypeVar-head, PatIdent-binders...]:
+    // children[0] is a TYPEVAR resolving straight to the ENUM_VARIANT (not a
+    // PATTERN_FIELD), and the pattern carries no union annotation, so the
+    // union path above never fires.  Enums share the tagged
+    // `{ i32 discriminant, i64 payload-bits }` repr exactly, hence once the
+    // arm is RECOGNIZED the same tag-test / payload-extraction machinery
+    // applies; previously the arm got neither a dispatch test (silent
+    // fall-through into later arms) nor a payload binding (zeros).
+    {
+        Node* head = pat.child_count >= 1 ? pat.children[0] : null;
+        Node* hv = (head != null) ? head.resolved : null;
+        if (hv != null && hv.kind == Nk.NODE_ENUM_VARIANT
+            && hv.resolved != null && hv.resolved.kind == Nk.NODE_DECL_ENUM)
+        {
+            Node* edecl = hv.resolved;
+            int eord = -1; int ecnt = 0;
+            for (usz ei = 1; ei < edecl.child_count; ei++)
+            {
+                Node* ev = edecl.children[ei];
+                if (ev == null || ev.kind != Nk.NODE_ENUM_VARIANT) continue;
+                if (ev == hv) { eord = ecnt; break; }
+                ecnt++;
+            }
+            if (eord < 0) return false;
+            Node* epay = null;
+            if (hv.child_count >= 2 && hv.children[1] != null
+                && hv.children[1].kind == Nk.NODE_FIELD_DECL
+                && hv.children[1].child_count >= 2)
+            { epay = hv.children[1].children[1]; }
+            if (out_union_ty != null) *out_union_ty = edecl;
+            if (out_ord != null) *out_ord = eord;
+            if (out_payload != null) *out_payload = epay;
+            return true;
+        }
+    }
+    return false;
 }
 
 // The repr-extraction values (tag/payload extractvalue) and the fabricated
@@ -2229,7 +2272,36 @@ fn void SsiModule.bind_let_pattern(SsiModule* m, Node* pat, IrVal* val)
                     return;
                 }
                 int ord = 0; Node* vp_ty = null; Node* vp_un = null;
-                if (!variant_pattern_info(pat, &vp_un, &ord, &vp_ty))
+                bool is_vpi = variant_pattern_info(pat, &vp_un, &ord, &vp_ty);
+                // Positional enum-variant binders (`| A(a) -> ...`, r54):
+                // children[0] resolves to the ENUM_VARIANT; children[1..] are
+                // PATTERN_IDENT binders receiving the payload slot.  The union
+                // `{ name: binder }` loop below keys on PATTERN_FIELD children,
+                // which this form has none of.
+                if (is_vpi)
+                {
+                    Node* bh2 = pat.child_count >= 1 ? pat.children[0] : null;
+                    if (bh2 != null && bh2.resolved != null
+                        && bh2.resolved.kind == Nk.NODE_ENUM_VARIANT)
+                    {
+                        for (usz pi = 1; pi < pat.child_count; pi++)
+                        {
+                            Node* pb = pat.children[pi];
+                            if (pb == null || pb.kind != Nk.NODE_PATTERN_IDENT) continue;
+                            // The declaration's payload type is authoritative
+                            // here — a stale whole-enum stamp on the binder
+                            // would unbox the i64 slot at the aggregate repr.
+                            Node* pty2 = vp_ty != null ? vp_ty : pb.type_annotation;
+                            if (pty2 == null || pty2.kind == Nk.NODE_EXPR_UNIT)
+                            { m.bind_let_pattern(pb, m.mk_unit(pb)); continue; }
+                            IrVal* pv2 = m.union_payload(val, pb);
+                            IrVal* cv2 = m.unbox_from_i64(pv2, pty2, pb);
+                            m.bind_let_pattern(pb, cv2);
+                        }
+                        return;
+                    }
+                }
+                if (!is_vpi)
                 {
                     // Plain-struct destructure (`let { x, y } = p`,
                     // `let { fst: a } = pair`): NOT a variant pattern.  Each
@@ -3149,6 +3221,79 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                             ag.add_arg(pay64, -1);
                             m.emit(ag);
                             return ag;
+                        }
+                    }
+                }
+            }
+            // Enum-variant constructor call `E.A(payload)` (r54): mirror the
+            // tagged-union arm above — ENUM bases fail ast::union_decl_of so
+            // they used to fall into the generic call path, emitting an
+            // indirect call through inttoptr(0) (immediate UB; -O3 then folded
+            // the UB into garbage program points).  The repr is the same
+            // `{ i32 ordinal, i64 payload-bits }`; payloads larger than the
+            // cell are rejected up front by the typechecker (enum_payload_fits).
+            {
+                Node* ebase = n.child_count >= 1 ? n.children[0] : null;
+                Node* emem  = n.child_count >= 2 ? n.children[1] : null;
+                Node* edecl = ast::enum_decl_of(ebase);
+                if (edecl != null && emem != null
+                    && emem.p.ident.name_ptr != null)
+                {
+                    int eord = -1;
+                    int ecnt = 0;
+                    Node* epayload = null;
+                    Node* ev_found = null;
+                    for (usz evi = 1; evi < edecl.child_count; evi++)
+                    {
+                        Node* ev3 = edecl.children[evi];
+                        if (ev3 == null || ev3.kind != Nk.NODE_ENUM_VARIANT) continue;
+                        Node* vn3 = ev3.child_count >= 1 ? ev3.children[0] : null;
+                        bool veq2 = vn3 != null && vn3.p.ident.name_ptr != null
+                            && vn3.p.ident.name_len == emem.p.ident.name_len;
+                        if (veq2)
+                        {
+                            for (usz vci2 = 0; vci2 < emem.p.ident.name_len; vci2++)
+                            { if (vn3.p.ident.name_ptr[vci2] != emem.p.ident.name_ptr[vci2])
+                              { veq2 = false; break; } }
+                        }
+                        if (veq2)
+                        {
+                            eord = ecnt;
+                            ev_found = ev3;
+                            // payload type = the _0 FIELD_DECL's second child
+                            if (ev3.child_count >= 2 && ev3.children[1] != null
+                                && ev3.children[1].kind == Nk.NODE_FIELD_DECL
+                                && ev3.children[1].child_count >= 2)
+                            { epayload = ev3.children[1].children[1]; }
+                            break;
+                        }
+                        ecnt++;
+                    }
+                    if (eord >= 0)
+                    {
+                        emem.resolved = ev_found;
+                        IrVal* etag = m.tag_const(eord, n);
+                        bool eunit = epayload == null || epayload.kind == Nk.NODE_EXPR_UNIT;
+                        IrVal* epay = null;
+                        if (eunit)
+                        {
+                            Node* ezlit = ast::node_int(m.arena, 0, 64, true, n.line, n.col);
+                            epay = m.new_val(IrOp.IR_CONST_INT, ezlit);
+                            if (epay != null) { epay.ival = 0; m.emit(epay); }
+                        }
+                        else
+                        {
+                            Node* earg = n.child_count >= 3 ? n.children[2] : null;
+                            IrVal* eav = m.lower_expr(earg);
+                            epay = m.bitbox_to_i64(eav, epayload, n);
+                        }
+                        IrVal* eag = m.new_val(IrOp.IR_TUPLE, n);
+                        if (eag != null)
+                        {
+                            eag.add_arg(etag, -1);
+                            eag.add_arg(epay, -1);
+                            m.emit(eag);
+                            return eag;
                         }
                     }
                 }
