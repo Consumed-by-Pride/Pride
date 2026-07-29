@@ -1688,8 +1688,32 @@ fn Node* TypeChecker.synth_field(TypeChecker* self, Node* e)
     }
     // Generic-struct instantiation base (`pr.fst` with `pr : Pair<i64, f64>`):
     // the decl's field type names the type parameter — substitute the
-    // instantiation's argument, or every consumer sees the boxed parameter
-    // type instead of the concrete field type.  No-op for concrete bases.
+    // instantiation's arguments, or every consumer sees the boxed parameter
+    // type instead of the concrete field type.  DEEP substitution (r48):
+    // generic_payload_subst only rewrites a BARE typevar payload, so
+    // compound field types (`items : [T; 2]`, `*T`, `T -> T`) kept the
+    // parameter and downstream code boxed/broke (`store ptr 99`,
+    // `Index : T` for `b : Box<i64>`).
+    if (bt != null && bt.kind == Nk.NODE_TYPE_GENERIC_APP && bt.child_count >= 2)
+    {
+        Node* hd2 = bt.children[0];
+        Node* gdecl = (hd2 != null && hd2.resolved != null) ? hd2.resolved : bt.resolved;
+        if (gdecl != null
+            && (gdecl.kind == Nk.NODE_DECL_TYPE || gdecl.kind == Nk.NODE_DECL_STRUCT))
+        {
+            TypeBindings fb;
+            fb.clear();
+            usz oi = 1;
+            for (usz di = 0; di < gdecl.child_count && oi < bt.child_count; di++)
+            {
+                Node* gp = gdecl.children[di];
+                if (gp == null || gp.kind != Nk.NODE_GENERIC_PARAM) continue;
+                for (usz pi = 0; pi < gp.child_count && oi < bt.child_count; pi++)
+                { fb.bind(gp.children[pi], bt.children[oi]); oi++; }
+            }
+            if (fb.count > 0) { return self.substitute(ft, &fb, 0); }
+        }
+    }
     ft = ast::generic_payload_subst(bt, ft);
     return ft;
 }
@@ -3134,6 +3158,22 @@ fn void TypeChecker.check(TypeChecker* self, Node* e, Node* expected)
     self.stamp_expected_struct_lit(e, expected);
 }
 
+// Recursively stamp struct literals returned through `return` statements in
+// a clause body (r48): check_clause covers only a DIRECT struct-literal body
+// (`| v -> Pair { … }`); `| v -> … return Pair { … }` inside a block (or an
+// if/loop arm) escaped the codomain stamp, so the literal printed the
+// generic decl's boxed repr against the fn's concrete return type.
+// Nested fn decls / closures have their own codomain — not descended into.
+fn void TypeChecker.stamp_return_struct_lits(TypeChecker* self, Node* n, Node* ret)
+{
+    if (n == null || ret == null) return;
+    if (n.kind == Nk.NODE_DECL_FN || n.kind == Nk.NODE_EXPR_CLOSURE) return;
+    if (n.kind == Nk.NODE_STMT_RETURN && n.child_count >= 1)
+    { self.stamp_expected_struct_lit(n.children[0], ret); }
+    for (usz i = 0; i < n.child_count; i++)
+    { self.stamp_return_struct_lits(n.children[i], ret); }
+}
+
 // A struct literal checked against a GENERIC-STRUCT INSTANTIATION
 // (`Pair { fst: a, snd: b } : Pair<i64, f64>`) IS the instantiation — not
 // the bare head TypeVar its syntax mentions.  Stamp it so codegen prints the
@@ -3592,8 +3632,10 @@ fn void TypeChecker.check_clause(TypeChecker* self, Node* clause, Node* arg, Nod
         }
         // Likewise: a struct-literal body returned from a fn whose codomain
         // is a generic-struct instantiation (`-> Pair<i64, f64>` where the
-        // body is `Pair { ... }`) takes the instantiation as its stamp.
+        // body is `Pair { ... }`) takes the instantiation as its stamp —
+        // and so do literals returned through `return` stmts in the body.
         self.stamp_expected_struct_lit(body, ret);
+        self.stamp_return_struct_lits(body, ret);
         Node* bt = self.synth(body);
         // arg_fits allows an untyped numeric literal body to adapt to the
         // declared numeric return type (e.g. `| () -> 42` for `-> i32`).

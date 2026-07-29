@@ -94,6 +94,14 @@ const char* LLVM_TRIPLE = "x86_64-pc-linux-gnu";
 char* g_target_triple_override = null;  // set by --target=<triple>
 bool  g_freestanding           = false; // set by --freestanding: no runtime, no libc
 
+// Deep generic-argument substitution context (r48): while a GENERIC_APP's
+// field list is being expanded into LLVM text / sizes, TYPEVAR leaves that
+// resolve to the app's generic parameters are substituted with the app's
+// arguments.  ast::generic_payload_subst alone only rewrites a BARE typevar
+// payload, so COMPOUND field types like `items : [T; 2]` stayed boxed
+// (`[2 x ptr]` for `Box<i64>`, with `store ptr 99` as downstream fallout).
+Node* g_subst_app = null;
+
 // Known target datalayouts
 const char* LLVM_DATALAYOUT_AARCH64 =
     "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128";
@@ -284,6 +292,13 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
     }
     if (t.kind == Nk.NODE_TYPEVAR && t.resolved != null)
     {
+        // Inside a GENERIC_APP expansion (r48): substitute the argument.
+        if (g_subst_app != null)
+        {
+            Node* sm = ast::generic_payload_subst(g_subst_app, t);
+            if (sm != null && sm != t)
+            { return type_to_llvm_buf(sm, buf, cap, depth + 1); }
+        }
         Node* d = t.resolved;
         if (d.kind == Nk.NODE_DECL_ENUM) { snprintf(buf, cap, "{ i32, i64 }"); return buf; }
         // Union reprs (r13): tagged { i32, i64 } when a unit-payload variant
@@ -449,10 +464,13 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
     if (t.kind == Nk.NODE_TYPE_GENERIC_APP && t.child_count >= 1)
     {
         // Concrete generic-struct instantiation: emit the substituted field
-        // record inline (see cg_concrete_struct_app_fblk).
+        // record inline (see cg_concrete_struct_app_fblk).  The r48 context
+        // lets COMPOUND field types ([T; N], *T, fn…T) substitute too.
         Node* fblk2 = cg_concrete_struct_app_fblk(t);
         if (fblk2 != null)
         {
+            Node* prev_app = g_subst_app;
+            g_subst_app = t;
             usz off2 = 0;
             if (off2 < cap-2) { buf[off2++] = '{'; buf[off2++] = ' '; }
             bool first2 = true;
@@ -469,6 +487,7 @@ fn char* type_to_llvm_buf(Node* t, char* buf, usz cap, int depth)
                     off2 += strlen(buf + off2);
                 }
             }
+            g_subst_app = prev_app;
             if (off2 < cap-2) { buf[off2++] = ' '; buf[off2++] = '}'; }
             buf[off2] = 0;
             return buf;
@@ -1627,6 +1646,14 @@ fn void CgenModule.emit_type(CgenModule* cg, Node* t, bool in_ret_pos, int depth
         return;
     }
 
+    // Inside a GENERIC_APP expansion (r48): substitute typevar leaves.
+    if (t.kind == Nk.NODE_TYPEVAR && g_subst_app != null)
+    {
+        Node* sm2 = ast::generic_payload_subst(g_subst_app, t);
+        if (sm2 != null && sm2 != t)
+        { cg.emit_type(sm2, in_ret_pos, depth + 1); return; }
+    }
+
     // Unfold type aliases one level
     if (t.kind == Nk.NODE_TYPEVAR && t.resolved != null)
     {
@@ -1753,6 +1780,8 @@ fn void CgenModule.emit_type(CgenModule* cg, Node* t, bool in_ret_pos, int depth
             Node* fblk9 = cg_concrete_struct_app_fblk(t);
             if (fblk9 != null)
             {
+                Node* prev_app9 = g_subst_app;
+                g_subst_app = t;
                 cg.out.writes("{ ");
                 bool first9 = true;
                 for (usz fi = 0; fi < fblk9.child_count; fi++)
@@ -1763,6 +1792,7 @@ fn void CgenModule.emit_type(CgenModule* cg, Node* t, bool in_ret_pos, int depth
                     first9 = false;
                     cg.emit_type(ast::generic_payload_subst(t, fd.children[1]), false, depth + 1);
                 }
+                g_subst_app = prev_app9;
                 cg.out.writes(" }");
             }
             else if (t.child_count >= 1)
@@ -2776,6 +2806,8 @@ fn long sizeof_type_x86(Node* t)
             // (must agree with the printed record repr — r33).
             Node* fblk5 = cg_concrete_struct_app_fblk(t);
             if (fblk5 == null) return 8;
+            Node* prev_app5 = g_subst_app;
+            g_subst_app = t;
             long tot = 0; long aln = 1;
             for (usz fi = 0; fi < fblk5.child_count; fi++)
             {
@@ -2787,10 +2819,20 @@ fn long sizeof_type_x86(Node* t)
                 long r = fa > 0 ? (tot % fa) : 0; if (r != 0) tot += fa - r;
                 tot += fs;
             }
+            g_subst_app = prev_app5;
             if (aln > 0) { long r2 = tot % aln; if (r2 != 0) tot += aln - r2; }
             return tot > 0 ? tot : 1;
         }
-        case Nk.NODE_TYPEVAR: return t.resolved != null ? sizeof_type_x86(t.resolved) : 8;
+        case Nk.NODE_TYPEVAR:
+        {
+            // Inside a GENERIC_APP expansion (r48): substitute the argument.
+            if (g_subst_app != null)
+            {
+                Node* sm5 = ast::generic_payload_subst(g_subst_app, t);
+                if (sm5 != null && sm5 != t) { return sizeof_type_x86(sm5); }
+            }
+            return t.resolved != null ? sizeof_type_x86(t.resolved) : 8;
+        }
         default: return 8;
     }
 }
@@ -2818,6 +2860,8 @@ fn long alignof_type_x86(Node* t)
         {
             Node* fblk6 = cg_concrete_struct_app_fblk(t);
             if (fblk6 == null) return 8;
+            Node* prev_app6 = g_subst_app;
+            g_subst_app = t;
             long a6 = 1;
             for (usz fi = 0; fi < fblk6.child_count; fi++)
             {
@@ -2826,9 +2870,18 @@ fn long alignof_type_x86(Node* t)
                 Node* ft = c.child_count >= 2 ? ast::generic_payload_subst(t, c.children[1]) : null;
                 long fa = alignof_type_x86(ft); if (fa > a6) a6 = fa;
             }
+            g_subst_app = prev_app6;
             return a6;
         }
-        case Nk.NODE_TYPEVAR: return t.resolved != null ? alignof_type_x86(t.resolved) : 8;
+        case Nk.NODE_TYPEVAR:
+        {
+            if (g_subst_app != null)
+            {
+                Node* sm6 = ast::generic_payload_subst(g_subst_app, t);
+                if (sm6 != null && sm6 != t) { return alignof_type_x86(sm6); }
+            }
+            return t.resolved != null ? alignof_type_x86(t.resolved) : 8;
+        }
         default: return 8;
     }
 }
@@ -6143,7 +6196,10 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                 Node* cfd_ty = fd.children[1];
                                 if (struct_app_ann != null)
                                 { cfd_ty = ast::generic_payload_subst(struct_app_ann, cfd_ty); }
+                                Node* prev_fapp = g_subst_app;
+                                if (struct_app_ann != null) { g_subst_app = struct_app_ann; }
                                 type_to_llvm_buf(cfd_ty, &field_ty_buf[0], TYMAP_ENTRY, 0);
+                                g_subst_app = prev_fapp;
                                 need_coerce_elem = (field_ty_buf[0] != 0);
                                 break;
                             }
@@ -6249,7 +6305,10 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             Node* rfd_ty = fd2.children[1];
                             if (struct_app_ann != null)
                             { rfd_ty = ast::generic_payload_subst(struct_app_ann, rfd_ty); }
+                            Node* prev_rapp = g_subst_app;
+                            if (struct_app_ann != null) { g_subst_app = struct_app_ann; }
                             type_to_llvm_buf(rfd_ty, &ftbuf2[0], TYMAP_ENTRY, 0);
+                            g_subst_app = prev_rapp;
                             cg.out.writes(ftbuf2[0] != 0 ? &ftbuf2[0] : (char*)"i64");
                         }
                         cg.out.writes(" }");
