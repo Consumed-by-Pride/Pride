@@ -3876,6 +3876,73 @@ fn void SsiModule.env_close_block(SsiModule* m, usz mark)
 }
 
 // assignment  x = rhs : evaluate rhs, then rebind x to that value (pure SSA).
+// By-value struct field assignment (`h.fst = 7`, nested `o.inner.v = 7`)
+// where the ROOT base is a local SSA aggregate — not a pointer, not
+// address-taken: the value lives in registers, there is no memory to store
+// through, and the pointer route emits GEP/store AGAINST THE VALUE ITSELF
+// (`gep {..}, ptr %v96` — invalid IR; r43).  Instead rebuild the aggregate
+// chain with the one leaf field replaced, exactly like source-level struct
+// update syntax, and rebind the root ident.  Returns true when handled.
+fn bool SsiModule.field_assign_rebuild(SsiModule* m, Node* target, IrVal* newval, Node* newval_ast)
+{
+    if (target == null || target.kind != Nk.NODE_EXPR_FIELD
+        || target.child_count < 2) return false;
+    Node* base_expr = target.children[0];
+    Node* fname     = target.children[1];
+    if (base_expr == null || fname == null) return false;
+    // Root ident: rebuild and rebind.
+    if (base_expr.kind == Nk.NODE_IDENT && base_expr.resolved != null
+        && m.home_for(base_expr.resolved) == null
+        && (base_expr.type_annotation == null
+            || base_expr.type_annotation.kind != Nk.NODE_TYPE_PTR))
+    {
+        IrVal* old = m.env_lookup(base_expr.resolved);
+        if (old == null) return false;
+        Node* finit = ast::node2(m.arena, Nk.NODE_FIELD_INIT,
+                                 fname, newval_ast != null ? newval_ast : fname,
+                                 target.line, target.col);
+        Node* usrc = ast::node2(m.arena, Nk.NODE_EXPR_STRUCT_LIT,
+                                base_expr, finit, target.line, target.col);
+        // Carry the base's instantiation stamp — codegen's concrete-repr
+        // substitution reads the literal's type_annotation (r33
+        // struct_app_ann); without it the update prints the generic decl's
+        // BOXED { ptr, ptr } repr against the concrete args[0] record.
+        usrc.type_annotation = base_expr.type_annotation;
+        IrVal* upd = m.new_val(IrOp.IR_STRUCT, usrc);
+        if (upd == null) return false;
+        upd.ival = 1;   // struct-update mode (arg[0] = base struct)
+        upd.add_arg(old, -1);
+        upd.add_arg(newval, -1);
+        m.emit(upd);
+        m.env_push(base_expr.resolved, upd);
+        return true;
+    }
+    // Nested field base: rebuild THIS level against the current inner value,
+    // then let the containing level rebuild against the result.
+    if (base_expr.kind == Nk.NODE_EXPR_FIELD)
+    {
+        IrVal* cur = m.lower_expr(base_expr);
+        if (cur == null) return false;
+        Node* finit = ast::node2(m.arena, Nk.NODE_FIELD_INIT,
+                                 fname, newval_ast != null ? newval_ast : fname,
+                                 target.line, target.col);
+        Node* usrc = ast::node2(m.arena, Nk.NODE_EXPR_STRUCT_LIT,
+                                base_expr, finit, target.line, target.col);
+        usrc.type_annotation = base_expr.type_annotation;
+        IrVal* upd = m.new_val(IrOp.IR_STRUCT, usrc);
+        if (upd == null) return false;
+        upd.ival = 1;
+        upd.add_arg(cur, -1);
+        upd.add_arg(newval, -1);
+        m.emit(upd);
+        // The containing level stores the rebuilt inner value — its own
+        // AST for the FIELD_INIT is only read for the field NAME, so the
+        // name node itself is a safe placeholder.
+        return m.field_assign_rebuild(base_expr, upd, fname);
+    }
+    return false;
+}
+
 fn IrVal* SsiModule.lower_assign(SsiModule* m, Node* n)
 {
     Node* lhs = n.child_count >= 1 ? n.children[0] : null;
@@ -3974,47 +4041,7 @@ fn IrVal* SsiModule.lower_assign(SsiModule* m, Node* n)
     }
     if (lhs != null && lhs.kind == Nk.NODE_EXPR_FIELD && lhs.child_count >= 1)
     {
-        // By-value struct binding (`h.fst = 7` where h is an SSA aggregate,
-        // not a pointer and not address-taken): the value lives in a
-        // register — there is no memory to store through, and the old
-        // pointer-route emitted GEP/store AGAINST THE VALUE ITSELF
-        // (`gep {..}, ptr %v96` — invalid IR).  Instead rebuild the
-        // aggregate with the one field replaced, exactly like source-level
-        // struct update `h { fst: 7 }`, and re-bind the target (r43).
-        Node* base_expr = lhs.children[0];
-        if (base_expr != null && base_expr.kind == Nk.NODE_IDENT
-            && base_expr.resolved != null
-            && m.home_for(base_expr.resolved) == null
-            && (base_expr.type_annotation == null
-                || base_expr.type_annotation.kind != Nk.NODE_TYPE_PTR))
-        {
-            IrVal* old = m.env_lookup(base_expr.resolved);
-            Node* fname = lhs.child_count >= 2 ? lhs.children[1] : null;
-            if (old != null && fname != null && rv != null)
-            {
-                Node* finit = ast::node2(m.arena, Nk.NODE_FIELD_INIT,
-                                         fname, rhs != null ? rhs : fname,
-                                         lhs.line, lhs.col);
-                Node* usrc = ast::node2(m.arena, Nk.NODE_EXPR_STRUCT_LIT,
-                                        base_expr, finit, lhs.line, lhs.col);
-                // Carry the base's instantiation stamp (`Pair<i64, f64>`):
-                // codegen's concrete-repr substitution reads the literal's
-                // type_annotation for exactly this (r33 struct_app_ann) —
-                // without it the update prints the generic decl's BOXED
-                // { ptr, ptr } repr against the concrete args[0] record.
-                usrc.type_annotation = base_expr.type_annotation;
-                IrVal* upd = m.new_val(IrOp.IR_STRUCT, usrc);
-                if (upd != null)
-                {
-                    upd.ival = 1;   // struct-update mode (arg[0] = base struct)
-                    upd.add_arg(old, -1);
-                    upd.add_arg(rv, -1);
-                    m.emit(upd);
-                    m.env_push(base_expr.resolved, upd);
-                    return rv;
-                }
-            }
-        }
+        if (rv != null && m.field_assign_rebuild(lhs, rv, rhs)) { return rv; }
         IrVal* base_val = m.lower_lvalue_base(lhs.children[0]);
         IrVal* st = m.new_val(IrOp.IR_STORE, n);
         if (st != null)
