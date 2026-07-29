@@ -4421,6 +4421,24 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             field_name_node.p.ident.name_len, &pay2);
                         if (ord2 >= 0)
                         {
+                            // Address mode (r53b): the store path (lower_assign
+                            // FIELD → field_addr_chain) needs the FIELD's
+                            // address.  Every field of a C-union overlaps the
+                            // shared cell at offset 0, so the field address IS
+                            // the cell address — an identity GEP just binds it
+                            // to a fresh SSA name.  The store itself performs
+                            // the union member-store: writing the field-typed
+                            // value through memory replaces exactly that
+                            // field's low footprint bytes.
+                            if (v.ival == 1)
+                            {
+                                cg.out.writes("  %v"); cg.out.writei(v.id);
+                                cg.out.writes(" = getelementptr i64, ptr ");
+                                cg.emit_vref(base);
+                                cg.out.writes(", i64 0\n");
+                                if (tm != null) { tm.set(v.id, (char*)"ptr"); }
+                                return;
+                            }
                             char[TYMAP_ENTRY] pbuf2;
                             pbuf2[0] = 0;
                             type_to_llvm_buf(pay2, &pbuf2[0], TYMAP_ENTRY, 0);
@@ -4429,12 +4447,26 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             // operand's recorded type was coerced (casts), bind
                             // it to an i64 name first.
                             char* bty5 = (tm != null && base != null) ? tm.get(base.id) : null;
+                            // Pointer base (r53b): `p.f` auto-derefs — load the
+                            // i64 cell through the pointer, then reinterpret
+                            // from the loaded value (used to feed the trunc/
+                            // bitcast a 0 constant, i.e. every read was 0).
+                            bool ucell_ld = (bty5 != null && bty5[0] == 'p');
+                            if (ucell_ld)
+                            {
+                                cg.out.writes("  %ucell.v"); cg.out.writei(v.id);
+                                cg.out.writes(" = load i64, ptr ");
+                                cg.emit_vref(base);
+                                cg.out.writes("\n");
+                            }
                             if (pbuf2[0] == 'i' && pbuf2[1] == '6' && pbuf2[2] == '4' && pbuf2[3] == 0)
                             {
                                 // i64 view: identity rename.
                                 cg.out.writes("  %v"); cg.out.writei(v.id);
                                 cg.out.writes(" = add i64 ");
-                                if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
+                                if (ucell_ld)
+                                { cg.out.writes("%ucell.v"); cg.out.writei(v.id); }
+                                else if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
                                     && bty5[2] == '4' && bty5[3] == 0)
                                 { cg.emit_vref(base); }
                                 else { cg.out.writes("0"); }
@@ -4444,7 +4476,12 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             {
                                 // f32: low 32 bits bitcast.
                                 cg.out.writes("  %v"); cg.out.writei(v.id);
-                                if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
+                                if (ucell_ld)
+                                {
+                                    cg.out.writes(".t = trunc i64 %ucell.v");
+                                    cg.out.writei(v.id);
+                                }
+                                else if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
                                     && bty5[2] == '4' && bty5[3] == 0)
                                 {
                                     cg.out.writes(".t = trunc i64 ");
@@ -4460,7 +4497,12 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             {
                                 // f64: full-width bitcast.
                                 cg.out.writes("  %v"); cg.out.writei(v.id);
-                                if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
+                                if (ucell_ld)
+                                {
+                                    cg.out.writes(" = bitcast i64 %ucell.v");
+                                    cg.out.writei(v.id);
+                                }
+                                else if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
                                     && bty5[2] == '4' && bty5[3] == 0)
                                 {
                                     cg.out.writes(" = bitcast i64 ");
@@ -4472,7 +4514,12 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             else if (pbuf2[0] == 'p')
                             {
                                 cg.out.writes("  %v"); cg.out.writei(v.id);
-                                if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
+                                if (ucell_ld)
+                                {
+                                    cg.out.writes(" = inttoptr i64 %ucell.v");
+                                    cg.out.writei(v.id);
+                                }
+                                else if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
                                     && bty5[2] == '4' && bty5[3] == 0)
                                 {
                                     cg.out.writes(" = inttoptr i64 ");
@@ -4485,7 +4532,12 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             {
                                 // Sub-64 integer/bool view: low-bits trunc.
                                 cg.out.writes("  %v"); cg.out.writei(v.id);
-                                if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
+                                if (ucell_ld)
+                                {
+                                    cg.out.writes(" = trunc i64 %ucell.v");
+                                    cg.out.writei(v.id);
+                                }
+                                else if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
                                     && bty5[2] == '4' && bty5[3] == 0)
                                 {
                                     cg.out.writes(" = trunc i64 ");
@@ -4499,7 +4551,9 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                                 // Any other payload: keep the raw box.
                                 cg.out.writes("  %v"); cg.out.writei(v.id);
                                 cg.out.writes(" = add i64 ");
-                                if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
+                                if (ucell_ld)
+                                { cg.out.writes("%ucell.v"); cg.out.writei(v.id); }
+                                else if (bty5 != null && bty5[0] == 'i' && bty5[1] == '6'
                                     && bty5[2] == '4' && bty5[3] == 0)
                                 { cg.emit_vref(base); }
                                 else { cg.out.writes("0"); }
@@ -5904,22 +5958,31 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     if (tm != null) { tm.set(v.id, (char*)"ptr"); }
                     return;
                 }
-                // Untagged C-union literal (r34): the repr is ONE 64-bit
-                // reinterpretation cell (union_is_c_union; v.md §9), not a
-                // record — insertvalue on i64 is invalid IR.  Convert the
-                // single field value to the FIELD's declared payload type
-                // (fptrunc f64 literals into f32 members, trunc/zext ints,
-                // sitofp int literals into float members), then bit-pack it
-                // into the cell.  Typecheck enforces exactly one provided
-                // field; a defensive extra arg just overwrites (last wins).
+                // Untagged C-union literal (r34) and FIELD WRITE (r53): the
+                // repr is ONE 64-bit reinterpretation cell (union_is_c_union;
+                // v.md §9), not a record — insertvalue on i64 is invalid IR.
+                // Convert the single field value to the FIELD's declared
+                // payload type (fptrunc f64 literals into f32 members,
+                // trunc/zext ints, sitofp int literals into float members),
+                // then bit-pack it into the cell.  Typecheck enforces exactly
+                // one provided field; a defensive extra arg just overwrites
+                // (last wins).
+                // ival==1 is the by-value rebuild of `u.f = x` (r53): pack
+                // the RHS into %upack.vN, then MERGE it into the base cell —
+                // the field's low footprint bytes are replaced, the rest of
+                // the cell survives (C union member-store semantics).  The
+                // generic struct-update insertvalue path would instead print
+                // a phantom `{ f32, i32 }` record type against the i64 cell.
                 {
                     Node* ulit_ann = v.src != null ? v.src.type_annotation : null;
                     Node* ulit_ud = ast::union_decl_of(ulit_ann);
-                    if (is_struct_lit && v.ival != 1 && ast::union_is_c_union(ulit_ud))
+                    if (is_struct_lit && ast::union_is_c_union(ulit_ud))
                     {
+                        bool uupd = (v.ival == 1);
+                        IrVal* ubase = (uupd && v.arg_count >= 1) ? v.args[0] : null;
                         IrVal* cell = null;
                         Node* cinit = null;
-                        for (usz cai = 0; cai < v.arg_count; cai++)
+                        for (usz cai = (usz)(uupd ? 1 : 0); cai < v.arg_count; cai++)
                         { if (v.args[cai] != null) { cell = v.args[cai]; } }
                         for (usz cii = 1; v.src != null && cii < v.src.child_count; cii++)
                         { if (v.src.children[cii] != null
@@ -6009,31 +6072,31 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             cg.out.writes("  %ubit.v"); cg.out.writei(v.id);
                             cg.out.writes(" = bitcast float "); if (pay_conv) { cg.out.writes("%upay.v"); cg.out.writei(v.id); } else { cg.emit_vref(cell); }
                             cg.out.writes(" to i32\n");
-                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(uupd ? "  %upack.v" : "  %v"); cg.out.writei(v.id);
                             cg.out.writes(" = zext i32 %ubit.v"); cg.out.writei(v.id);
                             cg.out.writes(" to i64\n");
                         }
                         else if (cty[0] == 'd')
                         {
-                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(uupd ? "  %upack.v" : "  %v"); cg.out.writei(v.id);
                             cg.out.writes(" = bitcast double "); if (pay_conv) { cg.out.writes("%upay.v"); cg.out.writei(v.id); } else { cg.emit_vref(cell); }
                             cg.out.writes(" to i64\n");
                         }
                         else if (cty[0] == 'p')
                         {
-                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(uupd ? "  %upack.v" : "  %v"); cg.out.writei(v.id);
                             cg.out.writes(" = ptrtoint ptr "); if (pay_conv) { cg.out.writes("%upay.v"); cg.out.writei(v.id); } else { cg.emit_vref(cell); }
                             cg.out.writes(" to i64\n");
                         }
                         else if (cty[0] == 'i' && cty[1] == '6' && cty[2] == '4' && cty[3] == 0)
                         {
-                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(uupd ? "  %upack.v" : "  %v"); cg.out.writei(v.id);
                             cg.out.writes(" = add i64 "); if (pay_conv) { cg.out.writes("%upay.v"); cg.out.writei(v.id); } else { cg.emit_vref(cell); }
                             cg.out.writes(", 0\n");
                         }
                         else if (cty[0] == 'i')
                         {
-                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(uupd ? "  %upack.v" : "  %v"); cg.out.writei(v.id);
                             cg.out.writes(" = zext "); cg.out.writes(cty); cg.out.writes(" ");
                             if (pay_conv) { cg.out.writes("%upay.v"); cg.out.writei(v.id); } else { cg.emit_vref(cell); } cg.out.writes(" to i64\n");
                         }
@@ -6042,8 +6105,41 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                             // Aggregate payloads cannot fit the cell — the
                             // typechecker rejects them (union_payload_is_scalar
                             // discipline); keep the value DEFINED regardless.
-                            cg.out.writes("  %v"); cg.out.writei(v.id);
+                            cg.out.writes(uupd ? "  %upack.v" : "  %v"); cg.out.writei(v.id);
                             cg.out.writes(" = add i64 0, 0\n");
+                        }
+                        if (uupd)
+                        {
+                            // Merge the packed footprint into the base cell:
+                            // a full-width payload replaces the whole cell,
+                            // otherwise (cell & keepmask) | packed.
+                            long ubits = 64;
+                            char* upty = (pty_buf[0] != 0) ? &pty_buf[0] : cty;
+                            if (upty[0] == 'f' && upty[1] == 'l') { ubits = 32; }
+                            else if (upty[0] == 'i')
+                            {
+                                long ub2 = 0;
+                                for (usz uwi = 1; upty[uwi] >= '0' && upty[uwi] <= '9'; uwi++)
+                                { ub2 = ub2 * 10 + (long)(upty[uwi] - '0'); }
+                                if (ub2 > 0 && ub2 < 64) { ubits = ub2; }
+                            }
+                            if (ubits >= 64 || ubase == null)
+                            {
+                                cg.out.writes("  %v"); cg.out.writei(v.id);
+                                cg.out.writes(" = add i64 %upack.v"); cg.out.writei(v.id);
+                                cg.out.writes(", 0\n");
+                            }
+                            else
+                            {
+                                ulong ukm = ~(ulong)0 << (uint)ubits;
+                                cg.out.writes("  %um.v"); cg.out.writei(v.id);
+                                cg.out.writes(" = and i64 ");
+                                cg.emit_vref(ubase);
+                                cg.out.writes(", "); cg.out.writei((long)ukm); cg.out.writes("\n");
+                                cg.out.writes("  %v"); cg.out.writei(v.id);
+                                cg.out.writes(" = or i64 %um.v"); cg.out.writei(v.id);
+                                cg.out.writes(", %upack.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                            }
                         }
                         return;
                     }

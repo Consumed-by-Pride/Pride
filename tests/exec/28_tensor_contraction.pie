@@ -1,0 +1,54 @@
+-- EXPECT: 10\n20\n30\n1\n2\n3\n4\n7\n10\n15\n22\n50\n110\n500\n
+
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      -- ranked literals + element indexing (rank 1 and rank 2)
+      let v : Tensor<i64; 3> = [| 10, 20, 30 |]
+      print_i64_nl(v[0])
+      print_i64_nl(v[1])
+      print_i64_nl(v[2])
+      let m : Tensor<i64; 2, 2> = [| [| 1, 2 |], [| 3, 4 |] |]
+      print_i64_nl(m[0][0])
+      print_i64_nl(m[0][1])
+      print_i64_nl(m[1][0])
+      print_i64_nl(m[1][1])
+      -- matrix @ matrix: [[7,10],[15,22]]
+      let mm = m @ m
+      print_i64_nl(mm[0][0])
+      print_i64_nl(mm[0][1])
+      print_i64_nl(mm[1][0])
+      print_i64_nl(mm[1][1])
+      -- matrix @ vector: [50, 110]
+      let w : Tensor<i64; 2> = [| 10, 20 |]
+      let mv = m @ w
+      print_i64_nl(mv[0])
+      print_i64_nl(mv[1])
+      -- vector @ vector: dot product 10*10 + 20*20 = 500
+      let d : i64 = w @ w
+      print_i64_nl(d)
+      syscall(231, 0)

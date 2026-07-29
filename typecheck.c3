@@ -449,6 +449,24 @@ fn bool TypeChecker.subtype_body(TypeChecker* self, Node* a, Node* b)
         Node* a_ret = a.child_count >= 2 ? a.children[1] : null;
         Node* b_arg = b.child_count >= 1 ? b.children[0] : null;
         Node* b_ret = b.child_count >= 2 ? b.children[1] : null;
+        // Effect-row form (r53): NODE_TYPE_FN[core_fn, row].  Detach the rows
+        // from the structural comparison — a row is not a type — and check
+        // row SUBSUMPTION: the supplied function's effects must fit the
+        // parameter's declared row.  An open tail (`..r`, FLAG_OPEN_ROW)
+        // admits any further effects (v.md §10.4), so an effectful callee
+        // like `i64 -> i64 ! [Log]` fits a parameter typed `A -> A ! [..r]`.
+        Node* a_row = (a_ret != null && a_ret.kind == Nk.NODE_EFFECT_ROW) ? a_ret : null;
+        Node* b_row = (b_ret != null && b_ret.kind == Nk.NODE_EFFECT_ROW) ? b_ret : null;
+        if (a_row != null && a_arg != null && a_arg.kind == Nk.NODE_TYPE_FN)
+        { a_ret = a_arg.child_count >= 2 ? a_arg.children[1] : null;
+          a_arg = a_arg.child_count >= 1 ? a_arg.children[0] : null; }
+        if (b_row != null && b_arg != null && b_arg.kind == Nk.NODE_TYPE_FN)
+        { b_ret = b_arg.child_count >= 2 ? b_arg.children[1] : null;
+          b_arg = b_arg.child_count >= 1 ? b_arg.children[0] : null; }
+        if (a_row != null || b_row != null)
+        {
+            if (!row_subsumes(a_row, b_row)) return false;
+        }
         return self.subtype(b_arg, a_arg) && self.subtype(a_ret, b_ret);
     }
 
@@ -3527,6 +3545,40 @@ fn bool ident_name_eq(Node* a, Node* b)
     for (usz i = 0; i < a.p.ident.name_len; i++)
     {
         if (a.p.ident.name_ptr[i] != b.p.ident.name_ptr[i]) return false;
+    }
+    return true;
+}
+
+// Effect-row subsumption (r53): does the row a function ACTUALLY performs fit
+// the row a context EXPECTS of it?  `actual == null` is a pure callee — it
+// fits every expectation.  `expected == null` is a context that expects purity
+// — only pure/empty callees fit.  An open expected tail (`..r`, §10.4) admits
+// any further effects.  Otherwise every ref in the actual row must be named in
+// the expected row.
+fn bool row_subsumes(Node* actual, Node* expected)
+{
+    if (expected == null)
+    {
+        if (actual == null) return true;
+        for (usz i = 0; i < actual.child_count; i++)
+        { if (actual.children[i] != null
+              && actual.children[i].kind == Nk.NODE_EFFECT_REF) return false; }
+        return true;
+    }
+    if (actual == null) return true;
+    if ((expected.flags & ast::FLAG_OPEN_ROW) != 0) return true;
+    for (usz i = 0; i < actual.child_count; i++)
+    {
+        Node* ac = actual.children[i];
+        if (ac == null || ac.kind != Nk.NODE_EFFECT_REF || ac.child_count < 1) continue;
+        bool found = false;
+        for (usz j = 0; j < expected.child_count && !found; j++)
+        {
+            Node* ec = expected.children[j];
+            if (ec == null || ec.kind != Nk.NODE_EFFECT_REF || ec.child_count < 1) continue;
+            if (ident_name_eq(ac.children[0], ec.children[0])) found = true;
+        }
+        if (!found) return false;
     }
     return true;
 }
