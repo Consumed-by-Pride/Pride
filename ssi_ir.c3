@@ -219,6 +219,14 @@ struct LoopCtx
     // increment and spins forever on the un-advanced counter.
     IrVal*   counter_phi;
     IrVal*   counter_step;
+    // Where the hdr_phis actually LIVE (== header for while/for; the BODY
+    // block for do-while, whose continue target is the CONDITION block).
+    // When phi_home != header, a continue cannot feed the header φs — the
+    // continue block is not their predecessor.  Instead each binder gains a
+    // CONDITION-block merge φ (cont_phis, lazily created on first continue):
+    // the loop back-edge and (after the loop) the condition/exit read it.
+    int      phi_home;
+    IrVal*[SCAN_CAP] cont_phis;
 }
 
 // A captured per-binder value reached at the end of a branch.
@@ -2342,6 +2350,33 @@ fn void SsiModule.lower_continue(SsiModule* m)
     LoopCtx* lc = &m.loops[m.loop_count - 1];
     IrBlock* b = m.blk(m.cur);
     if (b == null) return;
+    if (lc.phi_home != lc.header)
+    {
+        // do-while: continue targets the CONDITION block, whose φs the body
+        // block's loop-carried φs are NOT — the continue block is not their
+        // predecessor, and feeding them directly was exactly the "PHINode
+        // should have one entry for each predecessor" verifier failure (and
+        // semantically skipped the merge the condition itself reads).
+        for (usz i = 0; i < lc.nphi && i < SCAN_CAP; i++)
+        {
+            IrVal* back = m.env_lookup(lc.hdr_binders[i]);
+            if (back == null) continue;
+            IrVal* cp = lc.cont_phis[i];
+            if (cp == null)
+            {
+                cp = m.new_val(IrOp.IR_PHI,
+                               lc.hdr_phis[i] != null ? lc.hdr_phis[i].src : null);
+                if (cp == null) continue;
+                cp.binder = lc.hdr_binders[i];
+                m.add_phi(lc.header, cp);
+                lc.cont_phis[i] = cp;
+            }
+            cp.add_arg(back, m.cur);
+        }
+        b.term = TermKind.TERM_BR;
+        m.link(m.cur, lc.header);
+        return;
+    }
     // A continue is a back-edge: each header φ gains an operand from this site.
     for (usz i = 0; i < lc.nphi; i++)
     {
@@ -2411,6 +2446,30 @@ fn void SsiModule.lower_continue_label(SsiModule* m, char* name, usz nlen)
     }
     IrBlock* b = m.blk(m.cur);
     if (b == null) return;
+    if (lc.phi_home != lc.header)
+    {
+        // Labeled continue into an enclosing DO-WHILE: same condition-block
+        // merge as the unlabeled path (see lower_continue).
+        for (usz i = 0; i < lc.nphi && i < SCAN_CAP; i++)
+        {
+            IrVal* back = m.env_lookup(lc.hdr_binders[i]);
+            if (back == null) continue;
+            IrVal* cp = lc.cont_phis[i];
+            if (cp == null)
+            {
+                cp = m.new_val(IrOp.IR_PHI,
+                               lc.hdr_phis[i] != null ? lc.hdr_phis[i].src : null);
+                if (cp == null) continue;
+                cp.binder = lc.hdr_binders[i];
+                m.add_phi(lc.header, cp);
+                lc.cont_phis[i] = cp;
+            }
+            cp.add_arg(back, m.cur);
+        }
+        b.term = TermKind.TERM_BR;
+        m.link(m.cur, lc.header);
+        return;
+    }
     // Add back-edge operands to every header φ of the target loop.
     for (usz i = 0; i < lc.nphi; i++)
     {
@@ -4747,6 +4806,9 @@ fn IrVal** SsiModule.push_loop(SsiModule* m, int header, int exit, IrVal** hdr_p
     // stale counter from a previous loop would corrupt this one's continue.
     lc.counter_phi = null;
     lc.counter_step = null;
+    // Same reuse hazard for the do-while condition-merge φs (r44).
+    lc.phi_home = header;
+    for (usz ci = 0; ci < SCAN_CAP; ci++) { lc.cont_phis[ci] = null; }
     if (nphi > 0)
     {
         lc.break_vals = (IrVal**)malloc(MAX_BREAKS * nphi * IrValPtr::size);
@@ -4795,16 +4857,21 @@ fn IrVal* SsiModule.build_exit_phis(SsiModule* m, Node* n, int exit, int header,
     bool has_breaks = done.break_count > 0;
     for (usz i = 0; i < nphi; i++)
     {
+        // At the header's exit edge the binder holds the value at the
+        // CONDITION point: for do-while with continue-merges that is the
+        // merge φ, not the (one-update-stale) body-header φ (r44).
+        IrVal* at_exit = (i < SCAN_CAP && done != null && done.cont_phis[i] != null)
+                       ? done.cont_phis[i] : hdr_phis[i];
         if (!has_breaks)
         {
-            m.env_push(hdr_binders[i], hdr_phis[i]);
+            m.env_push(hdr_binders[i], at_exit);
             continue;
         }
         // exit φ: normal-exit (from header, false edge) + each break site.
         IrVal* phi = m.new_val(IrOp.IR_PHI, n);
-        if (phi == null) { m.env_push(hdr_binders[i], hdr_phis[i]); continue; }
+        if (phi == null) { m.env_push(hdr_binders[i], at_exit); continue; }
         phi.binder = hdr_binders[i];
-        phi.add_arg(hdr_phis[i], header);
+        phi.add_arg(at_exit, header);
         for (usz bk = 0; bk < done.break_count; bk++)
         {
             IrVal* bv = done.break_vals[bk * done.nphi + i];
@@ -5404,6 +5471,7 @@ fn void SsiModule.lower_do_while(SsiModule* m, Node* n)
     // Lower the body (runs in body_blk, phi values visible).
     usz bmark = m.env_mark();
     IrVal** break_vals = m.push_loop(cond_blk, exit, &hdr_phis[0], &hdr_binders[0], nphi);
+    if (m.loop_count >= 1) { m.loops[m.loop_count - 1].phi_home = body_blk; }
     if (body != null) m.lower_stmt(body);
     LoopCtx done = m.pop_loop();
 
@@ -5420,13 +5488,24 @@ fn void SsiModule.lower_do_while(SsiModule* m, Node* n)
         {
             IrVal* back = m.env_lookup(hdr_binders[i]);
             if (back == null) back = entry_vals[i];
+            // Continue-merge φ (r44): it also takes the natural body-end
+            // value, and becomes the body φ's back-edge incoming.
+            if (i < SCAN_CAP && done.cont_phis[i] != null)
+            {
+                done.cont_phis[i].add_arg(back, body_end);
+                back = done.cont_phis[i];
+            }
             hdr_phis[i].add_arg(back, cond_blk);
         }
     }
     m.env_reset(bmark);
 
     // Evaluate condition in cond_blk; back-edge φ values are still in env.
+    // With continue-merge φs, the condition reads the MERGE — the value each
+    // path actually carried into the condition point.
     m.cur = cond_blk;
+    for (usz i = 0; i < nphi && i < SCAN_CAP; i++)
+    { if (done.cont_phis[i] != null) m.env_push(hdr_binders[i], done.cont_phis[i]); }
     IrVal* cond_val = cond != null ? m.lower_expr(cond) : null;
     IrBlock* hb = m.blk(cond_blk);
     if (hb != null) { hb.term = TermKind.TERM_CBR; hb.cond = cond_val; }
