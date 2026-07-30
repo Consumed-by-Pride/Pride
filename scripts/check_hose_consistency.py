@@ -9,6 +9,7 @@ Effects (HOSE) overhaul. Checks syntax, module structure, loop termination
 import os
 import sys
 import re
+import shutil
 import subprocess
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -120,21 +121,49 @@ def check_pride_modules():
             
     return errors
 
-def check_gcc_build():
-    """Verify that runtime/compiler_rt.c compiles cleanly with GCC 12."""
-    cmd = ["gcc", "-O2", "-msse4.1", "-pthread", "-std=c11", "-c",
+def resolve_c_runtime_toolchain():
+    """Adaptive C toolchain for the runtime objects.
+
+    Compiler: $CC, else the first of cc/gcc/clang on PATH.
+    Standard: probed via scripts/detect_c_std.sh — the newest the compiler
+    provides in final form (c23 → c2x → gnu18 → c18 → c17 → c11).
+    PRIDE_C_STD forces the flag and skips probing; any probe failure falls
+    back to the -std=c11 baseline.
+    """
+    cc = os.environ.get("CC") or next(
+        (c for c in ("cc", "gcc", "clang") if shutil.which(c)), "cc")
+    flag = os.environ.get("PRIDE_C_STD")
+    if not flag:
+        script = os.path.join(REPO_ROOT, "scripts", "detect_c_std.sh")
+        try:
+            res = subprocess.run(
+                ["bash", script], capture_output=True, text=True,
+                env={**os.environ, "CC": cc}, timeout=120)
+            candidate = res.stdout.strip().splitlines()[0] if res.stdout.strip() else ""
+            if res.returncode == 0 and candidate.startswith("-std="):
+                flag = candidate
+        except Exception:
+            flag = None
+    return cc, flag or "-std=c11"
+
+def check_runtime_c_build():
+    """Verify that runtime/compiler_rt.c compiles cleanly with the adaptively
+    detected C standard flag (c23/c2x → gnu18/c18/c17 → c11)."""
+    cc, cstd = resolve_c_runtime_toolchain()
+    cmd = [cc, "-O2", "-msse4.1", "-pthread", cstd, "-c",
            os.path.join(REPO_ROOT, "runtime", "compiler_rt.c"), "-o", "/dev/null", "-Wall"]
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
-        return [f"GCC compilation failed:\n{res.stderr}"]
+        return [f"C runtime compilation failed ({cc} {cstd}):\n{res.stderr}"]
+    print(f"   C runtime toolchain: {cc} {cstd}")
     return []
 
 def main():
     print("Running Pride HOSE Consistency Checker...")
     errors = []
     
-    print("1. Checking GCC 12 compilation of C runtime...")
-    errors.extend(check_gcc_build())
+    print("1. Checking C runtime compilation (adaptive C standard)...")
+    errors.extend(check_runtime_c_build())
     
     print("2. Checking runtime symbol consistency across codegen.c3 and runtime/compiler_rt.c...")
     errors.extend(check_runtime_symbols())

@@ -15,7 +15,10 @@
  *   Zig's compiler_rt is ~15K lines. Rust's is ~80K lines. We are tiny.
  *
  * COMPILE:
- *   gcc -O2 -msse4.1 -pthread -std=c11 -c compiler_rt.c -o compiler_rt.o
+ *   make runtime            # recommended: auto-detects the newest C standard
+ *                           # flag $CC supports (c23 → c2x → gnu18 → c18 →
+ *                           # c17 → c11; see scripts/detect_c_std.sh)
+ *   $CC -O2 -msse4.1 -pthread -std=c11 -c compiler_rt.c -o compiler_rt.o
  *
  * SECTIONS:
  *   §1  Platform macros

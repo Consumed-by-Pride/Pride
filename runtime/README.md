@@ -9,10 +9,14 @@ and every subsystem is replaceable independently without touching the frontend.
 ## Building
 
 ```sh
-# Step 1: Compile the Pride compiler_rt (gcc for the C runtime only)
-gcc -O2 -std=c11 -pthread -Wall -Wextra -fno-strict-aliasing \
-    -fPIC -c runtime/compiler_rt.c -o runtime/compiler_rt.o
-# Or: make runtime
+# Step 1: Compile the Pride compiler_rt ($CC for the C runtime only).
+# The C standard flag is auto-detected — newest supported wins:
+# c23 → c2x → gnu18 → c18 → c17 → c11 (see scripts/detect_c_std.sh;
+# override with CC=... or PRIDE_C_STD=-std=xxx).
+make runtime
+# Or manually:
+$CC -O2 "$(bash scripts/detect_c_std.sh)" -pthread -Wall -Wextra \
+    -fno-strict-aliasing -fPIC -c runtime/compiler_rt.c -o runtime/compiler_rt.o
 
 # Step 2: Emit LLVM 22 IR from a Pride source file
 ./pride --emit-llvm output.ll source.pie

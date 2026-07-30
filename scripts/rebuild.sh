@@ -2,8 +2,11 @@
 # scripts/rebuild.sh — full rebuild of the Pride compiler + runtime objects.
 #
 # Environment knobs (all optional):
-#   C3C=/path/to/c3c   C3 compiler binary      (default: /home/user/c3/c3c)
-#   CC=cc              C compiler for runtime  (default: cc)
+#   C3C=/path/to/c3c      C3 compiler binary      (default: /home/user/c3/c3c)
+#   CC=cc                 C compiler for runtime  (default: first of cc/gcc/clang)
+#   PRIDE_C_STD=-std=xxx  Force the C standard flag for the runtime, skipping
+#                         adaptive detection (default: probe newest supported:
+#                         c23 → c2x → gnu18 → c18 → c17 → c11)
 #
 # Toolchain policy: the verified pipeline is LLVM 22.1.x. This script installs
 # the -22 toolchain via apt.llvm.org when missing and no unversioned LLVM is
@@ -15,7 +18,12 @@ cd "$(dirname "$0")/.."
 PRIDE_DIR="$(pwd)"
 
 C3C="${C3C:-/home/user/c3/c3c}"
-CC="${CC:-cc}"
+
+# Adaptive C toolchain resolution for the runtime objects (shared library:
+# honours $CC, falls back cc → gcc → clang, probes the newest -std= flag).
+# shellcheck source=detect_c_std.sh
+source "$PRIDE_DIR/scripts/detect_c_std.sh"
+CC="$(pride_resolve_cc)"
 
 echo "=== Toolchain check ==="
 if ! command -v llvm-as-22 >/dev/null 2>&1 && ! command -v llvm-as >/dev/null 2>&1; then
@@ -56,7 +64,9 @@ cd "$PRIDE_DIR"
 ./pride --version
 
 echo "=== Building runtime objects ==="
-CFLAGS="-O2 -std=c11 -pthread -fPIC -fno-strict-aliasing -msse4.1 \
+CSTD="$(pride_detect_c_std "$CC")"
+echo "C runtime toolchain: $CC $CSTD (adaptive)"
+CFLAGS="-O2 $CSTD -pthread -fPIC -fno-strict-aliasing -msse4.1 \
  -ffunction-sections -fdata-sections -Wno-unused-parameter -Wno-unused-function"
 $CC $CFLAGS -c runtime/compiler_rt.c      -o runtime/compiler_rt.o
 $CC $CFLAGS -c runtime/compiler_rt_arch.c -o runtime/compiler_rt_arch.o

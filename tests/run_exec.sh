@@ -12,14 +12,23 @@ GCC=/usr/lib/gcc/x86_64-linux-gnu/14
 
 pass=0; fail=0; skip=0
 
+# Adaptive C standard detection for the runtime objects — probes $CC for the
+# newest supported standard (c23 → c2x → gnu18 → c18 → c17 → c11).
+# Override with CC=... or PRIDE_C_STD=-std=xxx.
+# shellcheck source=../scripts/detect_c_std.sh
+source "$(dirname "$0")/../scripts/detect_c_std.sh"
+CC="$(pride_resolve_cc)"
+CSTD="$(pride_detect_c_std "$CC")"
+echo "C runtime toolchain: $CC $CSTD (adaptive)"
+
 # Recompile CRTs if needed
 if [ ! -f "$CRT_LANG" ] || [ runtime/compiler_rt.c -nt "$CRT_LANG" ]; then
-    gcc -O2 -std=c11 -pthread -fPIC -msse4.1 -ffunction-sections -fdata-sections \
+    $CC -O2 $CSTD -pthread -fPIC -msse4.1 -ffunction-sections -fdata-sections \
         -Wno-unused-parameter -Wno-unused-function -Wno-builtin-declaration-mismatch \
         -c runtime/compiler_rt.c -o "$CRT_LANG" 2>/dev/null
 fi
 if [ ! -f "$CRT_ARCH" ] || [ runtime/compiler_rt_arch.c -nt "$CRT_ARCH" ]; then
-    gcc -O2 -std=c11 -pthread -fPIC -ffunction-sections -fdata-sections \
+    $CC -O2 $CSTD -pthread -fPIC -ffunction-sections -fdata-sections \
         -Wno-unused-parameter -Wno-unused-function -Wno-builtin-declaration-mismatch \
         -c runtime/compiler_rt_arch.c -o "$CRT_ARCH" 2>/dev/null
 fi

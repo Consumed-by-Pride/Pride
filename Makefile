@@ -5,6 +5,11 @@
 #           LLVM 22.1.x toolchain: llvm-as-22 llc-22 opt-22 ld.lld-22
 #           Available from: https://apt.llvm.org/  (Debian trixie channel)
 #
+# The C runtime objects (runtime/compiler_rt*.c) are compiled with $(CC)
+# using an auto-detected C standard flag — newest supported wins:
+# c23 → c2x → gnu18 → c18 → c17 → c11 (scripts/detect_c_std.sh).
+# Override with `make runtime CC=clang` or `PRIDE_C_STD=-std=c11`.
+#
 # Targets:
 #   make              — build ./pride
 #   make asan         — AddressSanitizer build  → ./pride_asan
@@ -53,6 +58,12 @@ DYNLINKER := /lib64/ld-linux-x86-64.so.2
 # doesn't fail with undefined-symbol errors for programs using i128/u128.
 GCC_LIBDIR := /usr/lib/gcc/x86_64-linux-gnu/14
 
+# Adaptive C standard detection for the C runtime: probe $(CC) for the newest
+# ISO C standard it provides in final form (c23/c2x → gnu18/c18/c17 → c11).
+# Evaluated once at parse time; PRIDE_C_STD (if set) bypasses the probe.
+CSTD      := $(shell CC="$(CC)" PRIDE_C_STD="$(PRIDE_C_STD)" bash scripts/detect_c_std.sh)
+RT_CFLAGS := -O2 $(CSTD) -pthread -Wall -Wextra -fno-strict-aliasing -msse4.1 -fPIC
+
 MODULES := \
 	lexer.c3       \
 	ast.c3         \
@@ -77,7 +88,7 @@ MODULES := \
 	codegen.c3     \
 	pride.c3
 
-.PHONY: all asan test conform redteam clean c3c runtime
+.PHONY: all asan test conform redteam clean c3c runtime compile
 
 all: c3c $(BINARY)
 
@@ -91,12 +102,14 @@ asan: c3c $(MODULES)
 	@chmod +x $(ASAN)
 	@echo "Built: ./$(ASAN)"
 
-runtime: runtime/compiler_rt.c runtime/compiler_rt_arch.c
-	gcc -O2 -std=c11 -pthread -Wall -Wextra -fno-strict-aliasing \
-	    -msse4.1 -fPIC -c runtime/compiler_rt.c -o runtime/compiler_rt.o
-	gcc -O2 -std=c11 -pthread -Wall -Wextra -fno-strict-aliasing \
-	    -msse4.1 -fPIC -c runtime/compiler_rt_arch.c -o runtime/compiler_rt_arch.o
-	@echo "Built: runtime/compiler_rt.o runtime/compiler_rt_arch.o"
+runtime: runtime/compiler_rt.o runtime/compiler_rt_arch.o
+	@echo "Built: runtime/compiler_rt.o runtime/compiler_rt_arch.o  [$(CC) $(CSTD)]"
+
+runtime/compiler_rt.o: runtime/compiler_rt.c
+	$(CC) $(RT_CFLAGS) -c $< -o $@
+
+runtime/compiler_rt_arch.o: runtime/compiler_rt_arch.c
+	$(CC) $(RT_CFLAGS) -c $< -o $@
 
 test: all conform redteam
 
