@@ -1,7 +1,8 @@
 mod pride.subtyping
 
 -- stdlib/pride/subtyping.pie — Semantic Subtyping Suite
--- Manages union/intersection type lattices, membership testing, and safe casting.
+-- Implements union/intersection type lattices, membership testing,
+-- bitmask classification, and safe casting.
 
 struct TypeLattice {
     count: i64,
@@ -10,22 +11,46 @@ struct TypeLattice {
 
 fn type_lattice_new : () -> TypeLattice
     | () ->
-        TypeLattice { count: 0, tags: [0; 32] }
+        TypeLattice { count: 0i64, tags: [0i64; 32] }
 
 fn type_lattice_destroy : *TypeLattice -> ()
     | l ->
         if l != null then {
-            l.count = 0;
+            let mut i : i64 = 0i64;
+            while true do {
+                if i >= l.count then {
+                    break;
+                };
+                l.tags[i] = 0i64;
+                i = i + 1i64;
+            };
+            l.count = 0i64;
         } else {
             ()
         }
 
 fn type_lattice_add_tag : (*TypeLattice, i64) -> ()
     | (l, tag) ->
-        if l != null && l.count < 32 then {
-            let idx : i64 = l.count;
-            l.tags[idx] = tag;
-            l.count = idx + 1;
+        if l != null && l.count < 32i64 then {
+            let mut exists : bool = false;
+            let mut i : i64 = 0i64;
+            while true do {
+                if i >= l.count then {
+                    break;
+                };
+                if l.tags[i] == tag then {
+                    exists = true;
+                    break;
+                };
+                i = i + 1i64;
+            };
+            if !exists then {
+                let idx : i64 = l.count;
+                l.tags[idx] = tag;
+                l.count = idx + 1i64;
+            } else {
+                ();
+            };
         } else {
             ()
         }
@@ -35,30 +60,103 @@ fn union_is_member : (*TypeLattice, i64) -> bool
         if l == null then {
             false
         } else {
-            let mut i : i64 = 0;
+            let mut i : i64 = 0i64;
             let mut found : bool = false;
-            while i < l.count do {
+            while true do {
+                if i >= l.count then {
+                    break;
+                };
                 if l.tags[i] == tag then {
                     found = true;
                     break;
                 };
-                i = i + 1;
+                i = i + 1i64;
             };
             found
         }
 
+-- Lattice join (union of two lattices l1 ∪ l2 into out)
+fn lattice_join : (*TypeLattice, *TypeLattice, *TypeLattice) -> ()
+    | (l1, l2, out) ->
+        if l1 != null && l2 != null && out != null then {
+            let mut i : i64 = 0i64;
+            while true do {
+                if i >= l1.count then {
+                    break;
+                };
+                type_lattice_add_tag(out, l1.tags[i]);
+                i = i + 1i64;
+            };
+            let mut j : i64 = 0i64;
+            while true do {
+                if j >= l2.count then {
+                    break;
+                };
+                type_lattice_add_tag(out, l2.tags[j]);
+                j = j + 1i64;
+            };
+        } else {
+            ()
+        }
+
+-- Lattice meet (intersection of two lattices l1 ∩ l2 into out)
+fn lattice_meet : (*TypeLattice, *TypeLattice, *TypeLattice) -> ()
+    | (l1, l2, out) ->
+        if l1 != null && l2 != null && out != null then {
+            let mut i : i64 = 0i64;
+            while true do {
+                if i >= l1.count then {
+                    break;
+                };
+                if union_is_member(l2, l1.tags[i]) then {
+                    type_lattice_add_tag(out, l1.tags[i]);
+                } else {
+                    ();
+                };
+                i = i + 1i64;
+            };
+        } else {
+            ()
+        }
+
+-- True if sub is a subtype of sup (every member of sub is in sup)
+fn union_is_subtype : (*TypeLattice, *TypeLattice) -> bool
+    | (sub, sup) ->
+        if sub == null || sup == null then {
+            false
+        } else {
+            let mut i : i64 = 0i64;
+            let mut all_in : bool = true;
+            while true do {
+                if i >= sub.count then {
+                    break;
+                };
+                if !union_is_member(sup, sub.tags[i]) then {
+                    all_in = false;
+                    break;
+                };
+                i = i + 1i64;
+            };
+            all_in
+        }
+
+-- Bitmask tag classifications
 fn tag_of_union_u32 : u32 -> i64
     | v ->
-        1
+        0x10000000i64
 
 fn tag_of_union_ptr : ptr -> i64
     | p ->
-        2
+        if p != null then 0x20000000i64 else 0x00000000i64
+
+fn tag_of_union_struct : i64 -> i64
+    | struct_id ->
+        0x40000000i64 + struct_id
 
 fn cast_union_checked : (i64, i64, i64) -> (i64, bool)
     | (val, src_tag, expected_tag) ->
-        if src_tag == expected_tag then {
+        if src_tag == expected_tag && expected_tag != 0i64 then {
             (val, true)
         } else {
-            (0, false)
+            (0i64, false)
         }

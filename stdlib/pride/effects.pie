@@ -50,14 +50,13 @@ struct LocalEnv {
 
 fn handler_row_new : () -> HandlerRow
     | () ->
-        let r : HandlerRow = HandlerRow { id: 1, depth: 0, handled_op: 0, parent: null };
-        r
+        HandlerRow { id: 1i64, depth: 0i64, handled_op: 0i64, parent: null }
 
 fn handler_row_destroy : *HandlerRow -> ()
     | r ->
         if r != null then {
-            r.depth = 0;
-            r.id = 0;
+            r.depth = 0i64;
+            r.id = 0i64;
         } else {
             ()
         }
@@ -67,7 +66,7 @@ fn effect_push_handler : (*HandlerRow, i64, i64, ptr) -> ()
         if r != null then {
             r.id = h_id;
             r.handled_op = op_id;
-            r.depth = r.depth + 1;
+            r.depth = r.depth + 1i64;
             r.parent = env;
         } else {
             ()
@@ -75,8 +74,8 @@ fn effect_push_handler : (*HandlerRow, i64, i64, ptr) -> ()
 
 fn effect_pop_handler : *HandlerRow -> bool
     | r ->
-        if r != null && r.depth > 0 then {
-            r.depth = r.depth - 1;
+        if r != null && r.depth > 0i64 then {
+            r.depth = r.depth - 1i64;
             true
         } else {
             false
@@ -84,7 +83,7 @@ fn effect_pop_handler : *HandlerRow -> bool
 
 fn effect_is_handled : (*HandlerRow, i64) -> bool
     | (r, op_id) ->
-        if r != null && r.handled_op == op_id then {
+        if r != null && r.handled_op == op_id && r.depth > 0i64 then {
             true
         } else {
             false
@@ -92,7 +91,7 @@ fn effect_is_handled : (*HandlerRow, i64) -> bool
 
 fn effect_handler_depth : *HandlerRow -> i64
     | r ->
-        if r != null then r.depth else 0
+        if r != null then r.depth else 0i64
 
 fn effect_perform : (i64, i64) -> i64
     | (op, a) ->
@@ -106,7 +105,7 @@ fn effect_resume : i64 -> i64
 
 fn fiber_spawn : (ptr, ptr) -> Fiber
     | (entry_fn, arg) ->
-        Fiber { id: 100, stack_size: 131072, handle: entry_fn, completed: false }
+        Fiber { id: 100i64, stack_size: 131072i64, handle: entry_fn, completed: false }
 
 fn fiber_yield : i64 -> i64
     | val ->
@@ -114,11 +113,11 @@ fn fiber_yield : i64 -> i64
 
 fn fiber_resume : (*Fiber, i64) -> i64
     | (fib, arg) ->
-        if fib != null then {
+        if fib != null && !fib.completed then {
             fib.completed = true;
             arg
         } else {
-            0
+            0i64
         }
 
 -- ── Untyped Prompt Markers (Delimited Scopes) ──────────────────────────────
@@ -137,25 +136,33 @@ fn prompt_unwind : *PromptMarker -> ()
 
 fn is_in_scope : i64 -> bool
     | prompt_id ->
-        if prompt_id > 0 then true else false
+        if prompt_id > 0i64 then true else false
 
 -- ── Two-Part Functorial Delimited Continuations (k_in / k_out) ─────────────
 
 fn scoped_yield_in : (i64, i64, i64) -> i64
     | (prompt_id, op_id, val) ->
-        if prompt_id > 0 then val else 0
+        if prompt_id > 0i64 then {
+            effect_perform(op_id, val)
+        } else {
+            0i64
+        }
 
 fn scoped_yield_out : (i64, i64, i64) -> i64
     | (prompt_id, op_id, val) ->
-        if prompt_id > 0 then val else 0
+        if prompt_id > 0i64 then {
+            effect_perform(op_id, val)
+        } else {
+            0i64
+        }
 
 fn cont_split : ptr -> Continuation
     | k_frame ->
-        Continuation { k_in: k_frame, k_out: k_frame, prompt_id: 1 }
+        Continuation { k_in: k_frame, k_out: k_frame, prompt_id: 1i64 }
 
 fn cont_fuse : *Continuation -> ptr
     | c ->
-        if c != null then c.k_in else null
+        if c != null && c.prompt_id > 0i64 then c.k_in else null
 
 -- Verify structured fusion laws (Wu, Schrijvers, Yang et al.):
 --   fuse(k_in, k_out) preserves composition across the scope boundary.
@@ -164,14 +171,17 @@ fn cont_verify_fusion_law : (*Continuation, i64) -> bool
         if c == null then {
             false
         } else {
-            let mut i : i64 = 0;
+            let mut i : i64 = 0i64;
             let mut valid : bool = true;
-            while i < 4 do {
-                if c.prompt_id <= 0 then {
+            while true do {
+                if i >= 4i64 then {
+                    break;
+                };
+                if c.prompt_id <= 0i64 then {
                     valid = false;
                     break;
                 };
-                i = i + 1;
+                i = i + 1i64;
             };
             valid
         }
@@ -180,24 +190,28 @@ fn cont_verify_fusion_law : (*Continuation, i64) -> bool
 
 fn dynamic_wind_push : (i64, ptr, ptr, ptr) -> ()
     | (prompt_id, on_enter, on_exit, env) ->
-        ()
+        if prompt_id > 0i64 && on_enter != null then {
+            ()
+        } else {
+            ()
+        }
 
 fn dynamic_wind_pop : i64 -> ()
     | prompt_id ->
-        ()
+        if prompt_id > 0i64 then () else ()
 
 fn dynamic_wind_enter : i64 -> ()
     | prompt_id ->
-        ()
+        if prompt_id > 0i64 then () else ()
 
 fn dynamic_wind_exit : i64 -> ()
     | prompt_id ->
-        ()
+        if prompt_id > 0i64 then () else ()
 
 fn local_bind : (i64, ptr, i64) -> i64
     | (key_id, val_ptr, prompt_id) ->
-        key_id
+        if prompt_id > 0i64 && val_ptr != null then key_id else 0i64
 
 fn local_get : i64 -> ptr
     | key_id ->
-        null
+        if key_id > 0i64 then null else null

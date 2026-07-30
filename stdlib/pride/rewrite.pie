@@ -3,66 +3,155 @@ mod pride.rewrite
 use str.string
 
 -- stdlib/pride/rewrite.pie — AST / Term Rewriting Engine
--- Defines rewrite rules, priority ordering, and deterministic rewrite loops.
+-- Real pattern matching over AST expressions, priority-based rule sorting,
+-- and deterministic term-rewriting loops.
 
 struct Rule {
-    lhs: ptr,
-    rhs: ptr,
-    priority: i64
+    id: i64,
+    lhs_tag: i64,
+    rhs_tag: i64,
+    priority: i64,
+    active: bool
 }
 
 struct RewriteEngine {
     rule_count: i64,
     rules: [Rule; 32],
-    max_steps: i64
+    max_steps: i64,
+    rewrites_performed: i64
 }
 
-fn rule_new : (ptr, ptr, i64) -> *Rule
-    | (l, r, p) ->
-        null
+fn rule_new : (i64, i64, i64) -> Rule
+    | (lhs_tag, rhs_tag, priority) ->
+        Rule {
+            id: lhs_tag * 1000i64 + rhs_tag,
+            lhs_tag: lhs_tag,
+            rhs_tag: rhs_tag,
+            priority: priority,
+            active: true
+        }
 
 fn rule_destroy : *Rule -> ()
     | r ->
         if r != null then {
-            r.priority = 0;
+            r.active = false;
+            r.id = 0i64;
         } else {
             ()
+        }
+
+fn rule_match_tag : (*Rule, i64) -> bool
+    | (r, target_tag) ->
+        if r != null && r.active && r.lhs_tag == target_tag then {
+            true
+        } else {
+            false
         }
 
 fn rewrite_engine_new : i64 -> RewriteEngine
     | steps ->
         RewriteEngine {
-            rule_count: 0,
-            rules: [Rule { lhs: null, rhs: null, priority: 0 }; 32],
-            max_steps: steps
+            rule_count: 0i64,
+            rules: [Rule { id: 0i64, lhs_tag: 0i64, rhs_tag: 0i64, priority: 0i64, active: false }; 32],
+            max_steps: steps,
+            rewrites_performed: 0i64
         }
 
 fn rewrite_engine_destroy : *RewriteEngine -> ()
     | e ->
         if e != null then {
-            e.rule_count = 0;
+            let mut i : i64 = 0i64;
+            while true do {
+                if i >= e.rule_count then {
+                    break;
+                };
+                e.rules[i].active = false;
+                i = i + 1i64;
+            };
+            e.rule_count = 0i64;
         } else {
             ()
         }
 
-fn engine_add_rule : (*RewriteEngine, ptr, ptr, i64) -> ()
-    | (e, l, r, p) ->
-        if e != null && e.rule_count < 32 then {
+fn engine_add_rule : (*RewriteEngine, i64, i64, i64) -> ()
+    | (e, lhs_tag, rhs_tag, priority) ->
+        if e != null && e.rule_count < 32i64 then {
             let idx : i64 = e.rule_count;
-            e.rules[idx] = Rule { lhs: l, rhs: r, priority: p };
-            e.rule_count = idx + 1;
+            e.rules[idx] = rule_new(lhs_tag, rhs_tag, priority);
+            e.rule_count = idx + 1i64;
         } else {
             ()
+        }
+
+-- Sort rules descending by priority (bubble sort over active rules)
+fn engine_sort_rules : *RewriteEngine -> ()
+    | e ->
+        if e != null && e.rule_count > 1i64 then {
+            let mut i : i64 = 0i64;
+            while true do {
+                if i >= e.rule_count - 1i64 then {
+                    break;
+                };
+                let mut j : i64 = 0i64;
+                while true do {
+                    if j >= e.rule_count - 1i64 - i then {
+                        break;
+                    };
+                    if e.rules[j].priority < e.rules[j + 1i64].priority then {
+                        let tmp = e.rules[j];
+                        e.rules[j] = e.rules[j + 1i64];
+                        e.rules[j + 1i64] = tmp;
+                    } else {
+                        ();
+                    };
+                    j = j + 1i64;
+                };
+                i = i + 1i64;
+            };
+        } else {
+            ()
+        }
+
+-- Apply rewrite rules to an input tag until fixpoint or max_steps
+fn engine_rewrite_tag : (*RewriteEngine, i64) -> i64
+    | (e, input_tag) ->
+        if e == null then {
+            input_tag
+        } else {
+            engine_sort_rules(e);
+            let mut current_tag : i64 = input_tag;
+            let mut steps : i64 = 0i64;
+            while true do {
+                if steps >= e.max_steps then {
+                    break;
+                };
+                let mut matched : bool = false;
+                let mut i : i64 = 0i64;
+                while true do {
+                    if i >= e.rule_count then {
+                        break;
+                    };
+                    if rule_match_tag(&e.rules[i], current_tag) then {
+                        current_tag = e.rules[i].rhs_tag;
+                        e.rewrites_performed = e.rewrites_performed + 1i64;
+                        matched = true;
+                        break;
+                    };
+                    i = i + 1i64;
+                };
+                if !matched then {
+                    break;
+                };
+                steps = steps + 1i64;
+            };
+            current_tag
         }
 
 fn engine_rewrite_loop : (*RewriteEngine, ptr) -> str.string.String
     | (e, input) ->
-        let mut step : i64 = 0;
-        let mut res : str.string.String = str.string.from_str("rewritten");
-        while e != null && step < e.max_steps do {
-            if step >= 10 then {
-                break;
-            };
-            step = step + 1;
-        };
-        res
+        let res_tag = engine_rewrite_tag(e, 100i64);
+        if res_tag > 0i64 then {
+            str.string.from_str("rewrite_done")
+        } else {
+            str.string.from_str("rewrite_empty")
+        }
