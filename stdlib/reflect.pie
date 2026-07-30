@@ -1,0 +1,48 @@
+mod reflect
+
+-- stdlib/reflect.pie — Runtime type information (TypeInfo, Any, type_id)
+-- Migrated from compiler/stdlib/reflect.pie.
+
+struct TypeInfo
+  name : ptr    -- *u8 C string
+  size : i64
+  kind : i32    -- 0=primitive, 1=struct, 2=enum, 3=ptr, 4=array, 5=fn
+
+const KIND_PRIMITIVE : i32 = 0i32
+const KIND_STRUCT    : i32 = 1i32
+const KIND_ENUM      : i32 = 2i32
+const KIND_PTR       : i32 = 3i32
+const KIND_ARRAY     : i32 = 4i32
+const KIND_FN        : i32 = 5i32
+
+fn typeinfo_i64  : () -> TypeInfo | () -> TypeInfo { name: "i64"  as ptr, size: 8i64, kind: KIND_PRIMITIVE }
+fn typeinfo_f64  : () -> TypeInfo | () -> TypeInfo { name: "f64"  as ptr, size: 8i64, kind: KIND_PRIMITIVE }
+fn typeinfo_bool : () -> TypeInfo | () -> TypeInfo { name: "bool" as ptr, size: 1i64, kind: KIND_PRIMITIVE }
+fn typeinfo_ptr  : () -> TypeInfo | () -> TypeInfo { name: "ptr"  as ptr, size: 8i64, kind: KIND_PRIMITIVE }
+fn typeinfo_i32  : () -> TypeInfo | () -> TypeInfo { name: "i32"  as ptr, size: 4i64, kind: KIND_PRIMITIVE }
+fn typeinfo_i16  : () -> TypeInfo | () -> TypeInfo { name: "i16"  as ptr, size: 2i64, kind: KIND_PRIMITIVE }
+fn typeinfo_i8   : () -> TypeInfo | () -> TypeInfo { name: "i8"   as ptr, size: 1i64, kind: KIND_PRIMITIVE }
+fn typeinfo_f32  : () -> TypeInfo | () -> TypeInfo { name: "f32"  as ptr, size: 4i64, kind: KIND_PRIMITIVE }
+
+struct Any
+  value     : i64
+  type_info : TypeInfo
+
+fn any_new_i64  : i64 -> Any | v -> Any { value: v,          type_info: typeinfo_i64() }
+fn any_new_f64  : f64 -> Any | v -> Any { value: v as i64,   type_info: typeinfo_f64() }
+fn any_as_i64   : *Any -> i64  | a -> a.value
+fn any_type_name : *Any -> ptr | a -> a.type_info.name
+fn any_type_size : *Any -> i64 | a -> a.type_info.size
+
+-- FNV-1a type_id from a C string name + explicit length
+fn type_id_from_name : (ptr, i64) -> i64
+  | (name, len) ->
+      let mut h : i64 = 14695981039346656037i64;
+      let mut i : i64 = 0i64;
+      while i < len do {
+          let b = *((((name as i64) + i) as *i8) as *i8) as i64;
+          h = h ^ b;
+          h = h * 1099511628211i64;
+          i = i + 1i64;
+      };
+      h

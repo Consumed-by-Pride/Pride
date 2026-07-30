@@ -1,0 +1,6 @@
+mod option
+
+use opt.option
+
+-- stdlib/option.pie — Re-exports opt.option (Option + Result types)
+-- Use `use option` for Option<T> and Result<T,E>.

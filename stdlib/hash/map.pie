@@ -1,0 +1,136 @@
+mod hash.map
+
+use os.linux
+
+-- stdlib/hash/map.pie — Robin Hood open-addressing HashMap<i64, i64>
+-- Migrated from compiler/stdlib/hashmap.pie; given a real module path.
+-- Bucket layout: key(8B) + val(8B) + dist(4B) + used(1B) + pad(3B) = 24B
+
+const HM_BUCKET : i64 = 24i64
+
+struct HashMap
+  buckets : ptr
+  cap     : i64
+  len     : i64
+
+fn hm_new : () -> HashMap
+  | () -> HashMap { buckets: null, cap: 0i64, len: 0i64 }
+
+fn hm_baddr    : (ptr, i64) -> i64   | (b, i) -> (b as i64) + i * HM_BUCKET
+fn hm_key_ptr  : (ptr, i64) -> *i64  | (b, i) -> hm_baddr(b, i) as *i64
+fn hm_val_ptr  : (ptr, i64) -> *i64  | (b, i) -> (hm_baddr(b, i) + 8i64)  as *i64
+fn hm_dist_ptr : (ptr, i64) -> *i32  | (b, i) -> (hm_baddr(b, i) + 16i64) as *i32
+fn hm_used_ptr : (ptr, i64) -> *bool | (b, i) -> (hm_baddr(b, i) + 20i64) as *bool
+
+fn hm_hash : (i64, i64) -> i64
+  | (k, cap) ->
+      let h  = 14695981039346656037i64;
+      let h2 = h ^ k;
+      (h2 * 1099511628211i64) % cap
+
+fn hm_grow : *HashMap -> ()
+  | m ->
+      let nc     = if m.cap == 0i64 then 16i64 else m.cap * 2i64;
+      let nbytes = nc * HM_BUCKET;
+      let nb     = os.linux.malloc(nbytes);
+      os.linux.memset(nb, 0i32, nbytes as u64);
+      if m.cap > 0i64 then {
+          let mut i : i64 = 0i64;
+          while i < m.cap do {
+              if *hm_used_ptr(m.buckets, i) then {
+                  let k2   = *hm_key_ptr(m.buckets, i);
+                  let v2   = *hm_val_ptr(m.buckets, i);
+                  let mut slot : i64 = hm_hash(k2, nc);
+                  let mut dist : i32 = 0i32;
+                  let mut ins  : bool = false;
+                  while !ins do {
+                      if !*hm_used_ptr(nb, slot) then {
+                          *hm_key_ptr(nb, slot)  = k2;
+                          *hm_val_ptr(nb, slot)  = v2;
+                          *hm_dist_ptr(nb, slot) = dist;
+                          *hm_used_ptr(nb, slot) = true;
+                          ins = true;
+                      } else {
+                          dist = dist + 1i32;
+                          slot = (slot + 1i64) % nc;
+                      };
+                  };
+              } else { () };
+              i = i + 1i64;
+          };
+          os.linux.free(m.buckets);
+      } else { () };
+      m.buckets = nb;
+      m.cap     = nc
+
+fn hm_insert : (*HashMap, i64, i64) -> ()
+  | (m, k, v) ->
+      if m.cap == 0i64 || m.len * 100i64 >= m.cap * 75i64 then hm_grow(m) else ();
+      let mut slot  : i64 = hm_hash(k, m.cap);
+      let mut dist  : i32 = 0i32;
+      let mut ins_k : i64 = k;
+      let mut ins_v : i64 = v;
+      let mut done  : bool = false;
+      while !done do {
+          if !*hm_used_ptr(m.buckets, slot) then {
+              *hm_key_ptr(m.buckets, slot)  = ins_k;
+              *hm_val_ptr(m.buckets, slot)  = ins_v;
+              *hm_dist_ptr(m.buckets, slot) = dist;
+              *hm_used_ptr(m.buckets, slot) = true;
+              m.len = m.len + 1i64;
+              done = true;
+          } else if *hm_key_ptr(m.buckets, slot) == ins_k then {
+              *hm_val_ptr(m.buckets, slot) = ins_v;
+              done = true;
+          } else {
+              if *hm_dist_ptr(m.buckets, slot) < dist then {
+                  let tk = *hm_key_ptr(m.buckets, slot);
+                  let tv = *hm_val_ptr(m.buckets, slot);
+                  let td = *hm_dist_ptr(m.buckets, slot);
+                  *hm_key_ptr(m.buckets, slot)  = ins_k;
+                  *hm_val_ptr(m.buckets, slot)  = ins_v;
+                  *hm_dist_ptr(m.buckets, slot) = dist;
+                  ins_k = tk;
+                  ins_v = tv;
+                  dist  = td;
+              } else { () };
+              dist = dist + 1i32;
+              slot = (slot + 1i64) % m.cap;
+          };
+      }
+
+fn hm_get : (*HashMap, i64) -> (bool, i64)
+  | (m, k) ->
+      if m.cap == 0i64 then (false, 0i64)
+      else {
+          let mut slot : i64 = hm_hash(k, m.cap);
+          let mut dist : i32 = 0i32;
+          let mut res  : (bool, i64) = (false, 0i64);
+          let mut srch : bool = true;
+          while srch do {
+              if !*hm_used_ptr(m.buckets, slot) || *hm_dist_ptr(m.buckets, slot) < dist then {
+                  srch = false;
+              } else if *hm_key_ptr(m.buckets, slot) == k then {
+                  res  = (true, *hm_val_ptr(m.buckets, slot));
+                  srch = false;
+              } else {
+                  dist = dist + 1i32;
+                  slot = (slot + 1i64) % m.cap;
+              };
+          };
+          res
+      }
+
+fn hm_contains : (*HashMap, i64) -> bool
+  | (m, k) ->
+      let (ok, _) = hm_get(m, k);
+      ok
+
+fn hm_len  : *HashMap -> i64 | m -> m.len
+
+fn hm_free : *HashMap -> ()
+  | m ->
+      if m.cap > 0i64 then os.linux.free(m.buckets) else ();
+      m.buckets = null;
+      m.cap     = 0i64;
+      m.len     = 0i64

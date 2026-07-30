@@ -1,292 +1,117 @@
 mod pride.effects
 
 -- stdlib/pride/effects.pie — Untyped Higher-Order & Scoped Effects (HOSE) Suite
--- Features:
---   1. Algebraic Effects (perform, resume, handler rows)
---   2. Hybrid Fiber + Untyped Prompt Engine (stack-switching fibers for fast
---      flat operations + lightweight untyped prompt markers for scoped ops)
---   3. Two-Part Functorial Delimited Continuations (k_in / k_out) with explicit
---      structured fusion verification (Wu, Schrijvers, Yang et al.).
+--
+-- This module is the Pride-language interface to the real HOSE runtime in
+-- runtime/compiler_rt.c.  Every function here forwards to a genuine C symbol;
+-- there are no fake struct returns or stub bodies.
+--
+-- Runtime C symbols (all in compiler_rt.c §4):
+--   §4a  Algebraic effects   — __pride_push_handler / __pride_perform / __pride_resume
+--   §4b  Fibers              — __pride_fiber_spawn / __pride_fiber_resume / __pride_fiber_yield
+--   §4c  Prompt markers      — __pride_prompt_install / __pride_prompt_unwind
+--   §4d  Scoped continuations— __pride_scoped_yield_in / out / __pride_split_cont / __pride_fuse_cont
+--   §4e  Dynamic-winding     — __pride_dynamic_wind_push/pop/enter/exit
+--   §4f  Reader/local        — __pride_local_bind / __pride_local_get
+--   §4g  Effect-row evidence — __pride_evidence_push / __pride_evidence_pop / __pride_perform_evidence
 
-struct HandlerRow {
-    id: i64,
-    depth: i64,
-    handled_op: i64,
-    parent: ptr
-}
+-- ── Opaque runtime handle types ────────────────────────────────────────────
+-- PrideFiber, PrideContinuation, PrideHandlerRow are C structs allocated by
+-- compiler_rt; Pride code only ever holds pointers to them (ptr).
 
-struct Fiber {
-    id: i64,
-    stack_size: i64,
-    handle: ptr,
-    completed: bool
-}
+-- ── §4a  Algebraic Effects ─────────────────────────────────────────────────
 
-struct PromptMarker {
-    id: i64,
-    active: bool
-}
+-- Push a handler frame.  Returns 0 on normal entry; returns op_id+1 when an
+-- effect arm fires (setjmp/getcontext style).
+fn push_handler : (i64, i64, i64, ptr) -> i64 #extern("__pride_push_handler") #cc(c)
 
-struct Continuation {
-    k_in: ptr,
-    k_out: ptr,
-    prompt_id: i64
-}
+-- Pop the top handler frame (called on normal completion via #defer).
+fn pop_handler : () -> () #extern("__pride_pop_handler") #cc(c)
 
-struct DynamicWind {
-    prompt_id: i64,
-    on_enter: ptr,
-    on_exit: ptr,
-    env: ptr
-}
+-- Signal that the enclosing handler completed normally.
+fn complete : () -> () #extern("__pride_complete") #cc(c)
 
-struct LocalEnv {
-    key_id: i64,
-    val_ptr: ptr,
-    prompt_id: i64
-}
+-- Perform an effect operation.  op is the op-code; arg is the single argument
+-- (as a ptr-sized integer); returns the resume value.
+fn perform : (i64, i64) -> i64 #extern("__pride_perform") #cc(c)
 
--- ── Standard Algebraic Effects ─────────────────────────────────────────────
+-- Resume the paused computation with value v.
+fn resume : i64 -> ptr #extern("__pride_resume") #cc(c)
 
-fn handler_row_new : () -> HandlerRow
-    | () ->
-        HandlerRow { id: 1i64, depth: 0i64, handled_op: 0i64, parent: null }
+-- Retrieve the idx-th argument delivered to the currently-executing handler arm.
+fn get_arm_arg : i64 -> i64 #extern("__pride_get_arm_arg") #cc(c)
 
-fn handler_row_destroy : *HandlerRow -> ()
-    | r ->
-        if r != null then {
-            r.depth = 0i64;
-            r.id = 0i64;
-        } else {
-            ()
-        }
+-- ── §4b  Stack-Switching Fibers ────────────────────────────────────────────
 
-fn effect_push_handler : (*HandlerRow, i64, i64, ptr) -> ()
-    | (r, h_id, op_id, env) ->
-        if r != null then {
-            r.id = h_id;
-            r.handled_op = op_id;
-            r.depth = r.depth + 1i64;
-            r.parent = env;
-        } else {
-            ()
-        }
+-- Allocate and initialise a new fiber.  entry_fn is a ptr to a C function
+-- `void* fn(void*)`.  Returns an opaque ptr to the PrideFiber heap object.
+fn fiber_spawn : (ptr, ptr) -> ptr #extern("__pride_fiber_spawn") #cc(c)
 
-fn effect_pop_handler : *HandlerRow -> bool
-    | r ->
-        if r != null && r.depth > 0i64 then {
-            r.depth = r.depth - 1i64;
-            true
-        } else {
-            false
-        }
+-- Switch into the fiber, passing arg as the resume value.
+-- Returns whatever the fiber yields (or its final return value once completed).
+fn fiber_resume : (ptr, i64) -> ptr #extern("__pride_fiber_resume") #cc(c)
 
-fn effect_is_handled : (*HandlerRow, i64) -> bool
-    | (r, op_id) ->
-        if r != null && r.handled_op == op_id && r.depth > 0i64 then {
-            true
-        } else {
-            false
-        }
+-- Yield from within a running fiber, passing arg back to the resumer.
+-- Returns the value passed to the next fiber_resume call.
+fn fiber_yield : i64 -> ptr #extern("__pride_fiber_yield") #cc(c)
 
-fn effect_handler_depth : *HandlerRow -> i64
-    | r ->
-        if r != null then r.depth else 0i64
+-- ── §4c  Untyped Prompt Markers ────────────────────────────────────────────
 
-fn effect_perform : (i64, i64) -> i64
-    | (op, a) ->
-        a
+-- Install a prompt marker identified by prompt_id.  Returns prompt_id.
+fn prompt_install : i64 -> i64 #extern("__pride_prompt_install") #cc(c)
 
-fn effect_resume : i64 -> i64
-    | v ->
-        v
+-- Unwind (deactivate) the prompt with the given id.
+fn prompt_unwind : i64 -> () #extern("__pride_prompt_unwind") #cc(c)
 
--- ── Hybrid Fiber Engine (Flat High-Throughput Operations) ──────────────────
+-- Check whether prompt_id's scope is currently active on this thread.
+fn is_in_scope : i64 -> bool #extern("__pride_is_in_scope") #cc(c)
 
-fn fiber_spawn : (ptr, ptr) -> Fiber
-    | (entry_fn, arg) ->
-        Fiber { id: 100i64, stack_size: 131072i64, handle: entry_fn, completed: false }
+-- ── §4d  Two-Part Functorial Delimited Continuations (k_in / k_out) ────────
 
-fn fiber_yield : i64 -> i64
-    | val ->
-        val
+-- Perform the in-scope half of a scoped operation (captures k_in).
+fn scoped_yield_in : (i64, i64, i64) -> ptr #extern("__pride_scoped_yield_in") #cc(c)
 
-fn fiber_resume : (*Fiber, i64) -> i64
-    | (fib, arg) ->
-        if fib != null && !fib.completed then {
-            fib.completed = true;
-            arg
-        } else {
-            0i64
-        }
+-- Perform the out-of-scope half of a scoped operation (captures k_out).
+fn scoped_yield_out : (i64, i64, i64) -> ptr #extern("__pride_scoped_yield_out") #cc(c)
 
--- ── Untyped Prompt Markers (Delimited Scopes) ──────────────────────────────
+-- Split the current handler frame's saved continuation into k_in / k_out halves.
+-- Returns a ptr to a heap-allocated PrideContinuation{k_in, k_out, prompt_id}.
+fn cont_split : ptr -> ptr #extern("__pride_split_cont") #cc(c)
 
-fn prompt_install : i64 -> PromptMarker
-    | prompt_id ->
-        PromptMarker { id: prompt_id, active: true }
+-- Fuse a PrideContinuation's k_in + k_out back into an executable continuation ptr.
+fn cont_fuse : ptr -> ptr #extern("__pride_fuse_cont") #cc(c)
 
-fn prompt_unwind : *PromptMarker -> ()
-    | pm ->
-        if pm != null then {
-            pm.active = false;
-        } else {
-            ()
-        }
+-- ── §4e  Dynamic-Winding ──────────────────────────────────────────────────
 
-fn is_in_scope : i64 -> bool
-    | prompt_id ->
-        if prompt_id > 0i64 then true else false
+-- Register on_enter/on_exit thunks around the prompt scope.  Both are `ptr`
+-- to C functions `void fn(void*)`.  env is passed through to both thunks.
+fn dynamic_wind_push : (i64, ptr, ptr, ptr) -> () #extern("__pride_dynamic_wind_push") #cc(c)
 
--- ── Two-Part Functorial Delimited Continuations (k_in / k_out) ─────────────
+-- Deregister the dynamic-wind entry for prompt_id.
+fn dynamic_wind_pop : i64 -> () #extern("__pride_dynamic_wind_pop") #cc(c)
 
-fn scoped_yield_in : (i64, i64, i64) -> i64
-    | (prompt_id, op_id, val) ->
-        if prompt_id > 0i64 then {
-            effect_perform(op_id, val)
-        } else {
-            0i64
-        }
+-- Fire all on_enter thunks up to prompt_id's scope (called on resume).
+fn dynamic_wind_enter : i64 -> () #extern("__pride_dynamic_wind_enter") #cc(c)
 
-fn scoped_yield_out : (i64, i64, i64) -> i64
-    | (prompt_id, op_id, val) ->
-        if prompt_id > 0i64 then {
-            effect_perform(op_id, val)
-        } else {
-            0i64
-        }
+-- Fire all on_exit thunks down from prompt_id's scope (called on yield/unwind).
+fn dynamic_wind_exit : i64 -> () #extern("__pride_dynamic_wind_exit") #cc(c)
 
-fn cont_split : ptr -> Continuation
-    | k_frame ->
-        Continuation { k_in: k_frame, k_out: k_frame, prompt_id: 1i64 }
+-- ── §4f  Reader / Local Scoping ───────────────────────────────────────────
 
-fn cont_fuse : *Continuation -> ptr
-    | c ->
-        if c != null && c.prompt_id > 0i64 then c.k_in else null
+-- Bind val_ptr under key_id within prompt_id's scope.  Returns key_id.
+fn local_bind : (i64, ptr, i64) -> i64 #extern("__pride_local_bind") #cc(c)
 
--- Verify structured fusion laws (Wu, Schrijvers, Yang et al.):
---   fuse(k_in, k_out) preserves composition across the scope boundary.
-fn cont_verify_fusion_law : (*Continuation, i64) -> bool
-    | (c, test_val) ->
-        if c == null then {
-            false
-        } else {
-            let mut i : i64 = 0i64;
-            let mut valid : bool = true;
-            while true do {
-                if i >= 4i64 then {
-                    break;
-                };
-                if c.prompt_id <= 0i64 then {
-                    valid = false;
-                    break;
-                };
-                i = i + 1i64;
-            };
-            valid
-        }
+-- Look up the innermost binding for key_id.  Returns null if not found.
+fn local_get : i64 -> ptr #extern("__pride_local_get") #cc(c)
 
--- ── Dynamic-Winding & Reader/Local Scoping (Untyped HOSE) ──────────────────
+-- ── §4g  Effect-Row Polymorphism Evidence ─────────────────────────────────
 
-fn dynamic_wind_push : (i64, ptr, ptr, ptr) -> ()
-    | (prompt_id, on_enter, on_exit, env) ->
-        if prompt_id > 0i64 && on_enter != null then {
-            ()
-        } else {
-            ()
-        }
+-- Push an evidence entry for op_tag onto the evidence stack.
+-- handler_frame is a ptr to the caller's handler state; returns the evidence index.
+fn evidence_push : (i64, ptr) -> i64 #extern("__pride_evidence_push") #cc(c)
 
-fn dynamic_wind_pop : i64 -> ()
-    | prompt_id ->
-        if prompt_id > 0i64 then () else ()
+-- Pop the evidence entry at idx.
+fn evidence_pop : i64 -> () #extern("__pride_evidence_pop") #cc(c)
 
-fn dynamic_wind_enter : i64 -> ()
-    | prompt_id ->
-        if prompt_id > 0i64 then () else ()
-
-fn dynamic_wind_exit : i64 -> ()
-    | prompt_id ->
-        if prompt_id > 0i64 then () else ()
-
-fn local_bind : (i64, ptr, i64) -> i64
-    | (key_id, val_ptr, prompt_id) ->
-        if prompt_id > 0i64 && val_ptr != null then key_id else 0i64
-
-fn local_get : i64 -> ptr
-    | key_id ->
-        if key_id > 0i64 then null else null
-
--- ── Effect-Trace Ledgers & Effect-Row Polymorphism Verification ─────────────
--- Records effect propagation traces across handler boundaries, verifying
--- effect-row polymorphism invariants at runtime.
-
-struct EffectTraceEntry {
-    op_code: i64,
-    handler_depth: i64,
-    prompt_id: i64,
-    is_resumed: bool
-}
-
-struct EffectTraceLedger {
-    count: i64,
-    entries: [EffectTraceEntry; 64],
-    max_depth: i64
-}
-
-fn effect_trace_new : () -> EffectTraceLedger
-    | () ->
-        EffectTraceLedger {
-            count: 0i64,
-            entries: [EffectTraceEntry { op_code: 0i64, handler_depth: 0i64, prompt_id: 0i64, is_resumed: false }; 64],
-            max_depth: 0i64
-        }
-
-fn effect_trace_push : (*EffectTraceLedger, i64, i64, i64, bool) -> bool
-    | (ledger, opcode, depth, pid, resumed) ->
-        if ledger != null && ledger.count < 64i64 then {
-            let idx : i64 = ledger.count;
-            ledger.entries[idx] = EffectTraceEntry {
-                op_code:       opcode,
-                handler_depth: depth,
-                prompt_id:     pid,
-                is_resumed:    resumed
-            };
-            ledger.count = idx + 1i64;
-            if depth > ledger.max_depth then {
-                ledger.max_depth = depth;
-            } else {
-                ();
-            };
-            true
-        } else {
-            false
-        }
-
-fn effect_trace_pop : *EffectTraceLedger -> bool
-    | ledger ->
-        if ledger != null && ledger.count > 0i64 then {
-            ledger.count = ledger.count - 1i64;
-            true
-        } else {
-            false
-        }
-
-fn effect_trace_verify_row : (*EffectTraceLedger, i64) -> bool
-    | (ledger, expected_op) ->
-        if ledger == null then {
-            false
-        } else {
-            let mut i : i64 = 0i64;
-            let mut found : bool = false;
-            while true do {
-                if i >= ledger.count then {
-                    break;
-                };
-                if ledger.entries[i].op_code == expected_op then {
-                    found = true;
-                    break;
-                };
-                i = i + 1i64;
-            };
-            found
-        }
+-- Perform op_tag via the evidence stack (used inside multi-handler dispatch).
+fn perform_evidence : (i64, ptr) -> ptr #extern("__pride_perform_evidence") #cc(c)

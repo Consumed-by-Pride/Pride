@@ -2,6 +2,7 @@ mod sys
 
 use sys.cpu
 use sys.memory
+use sys.mem_ops
 use sys.vdso_clock
 use sys.uname
 

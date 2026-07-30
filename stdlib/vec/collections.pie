@@ -1,0 +1,168 @@
+mod vec.collections
+
+use os.linux
+
+-- stdlib/vec/collections.pie — VecDeque (ring-buffer deque) and BinaryHeap (max-heap)
+-- Migrated from compiler/stdlib/collections.pie; given a real module name.
+
+-- ── VecDeque ─────────────────────────────────────────────────────────────────
+
+struct VecDeque
+  buf  : ptr
+  head : i64
+  len  : i64
+  cap  : i64
+
+fn vd_new : () -> VecDeque
+  | () -> VecDeque { buf: null, head: 0i64, len: 0i64, cap: 0i64 }
+
+fn vd_at : (ptr, i64) -> *i64
+  | (p, i) -> ((p as i64) + i * 8i64) as *i64
+
+fn vd_grow : *VecDeque -> ()
+  | q ->
+      let nc = if q.cap == 0i64 then 8i64 else q.cap * 2i64;
+      let nb = os.linux.malloc(nc * 8i64);
+      if q.len > 0i64 then {
+          let tail_space = q.cap - q.head;
+          if tail_space >= q.len then {
+              os.linux.memcpy(nb, ((q.buf as i64) + q.head * 8i64) as ptr, (q.len * 8i64) as u64);
+          } else {
+              os.linux.memcpy(nb, ((q.buf as i64) + q.head * 8i64) as ptr, (tail_space * 8i64) as u64);
+              os.linux.memcpy(((nb as i64) + tail_space * 8i64) as ptr, q.buf, ((q.len - tail_space) * 8i64) as u64);
+          };
+      } else { () };
+      if q.cap > 0i64 then os.linux.free(q.buf) else ();
+      q.buf  = nb;
+      q.head = 0i64;
+      q.cap  = nc
+
+fn vd_push_back : (*VecDeque, i64) -> ()
+  | (q, x) ->
+      if q.len >= q.cap then vd_grow(q) else ();
+      let slot = (q.head + q.len) % q.cap;
+      *vd_at(q.buf, slot) = x;
+      q.len = q.len + 1i64
+
+fn vd_push_front : (*VecDeque, i64) -> ()
+  | (q, x) ->
+      if q.len >= q.cap then vd_grow(q) else ();
+      q.head = (q.head + q.cap - 1i64) % q.cap;
+      *vd_at(q.buf, q.head) = x;
+      q.len = q.len + 1i64
+
+fn vd_pop_back : *VecDeque -> (bool, i64)
+  | q ->
+      if q.len == 0i64 then (false, 0i64)
+      else {
+          q.len = q.len - 1i64;
+          let slot = (q.head + q.len) % q.cap;
+          (true, *vd_at(q.buf, slot))
+      }
+
+fn vd_pop_front : *VecDeque -> (bool, i64)
+  | q ->
+      if q.len == 0i64 then (false, 0i64)
+      else {
+          let v  = *vd_at(q.buf, q.head);
+          q.head = (q.head + 1i64) % q.cap;
+          q.len  = q.len - 1i64;
+          (true, v)
+      }
+
+fn vd_len : *VecDeque -> i64
+  | q -> q.len
+
+fn vd_free : *VecDeque -> ()
+  | q ->
+      if q.cap > 0i64 then os.linux.free(q.buf) else ();
+      q.buf  = null;
+      q.head = 0i64;
+      q.len  = 0i64;
+      q.cap  = 0i64
+
+-- ── BinaryHeap (max-heap of i64) ─────────────────────────────────────────────
+
+struct BinaryHeap
+  data : ptr
+  len  : i64
+  cap  : i64
+
+fn heap_new : () -> BinaryHeap
+  | () -> BinaryHeap { data: null, len: 0i64, cap: 0i64 }
+
+fn heap_at : (ptr, i64) -> *i64
+  | (p, i) -> ((p as i64) + i * 8i64) as *i64
+
+fn heap_swap : (ptr, i64, i64) -> ()
+  | (p, i, j) ->
+      let a = heap_at(p, i);
+      let b = heap_at(p, j);
+      let t = *a;
+      *a = *b;
+      *b = t
+
+fn heap_grow : *BinaryHeap -> ()
+  | h ->
+      let nc = if h.cap == 0i64 then 8i64 else h.cap * 2i64;
+      let nb = os.linux.malloc(nc * 8i64);
+      if h.len > 0i64 then os.linux.memcpy(nb, h.data, (h.len * 8i64) as u64) else ();
+      if h.cap > 0i64 then os.linux.free(h.data) else ();
+      h.data = nb;
+      h.cap  = nc
+
+fn heap_push : (*BinaryHeap, i64) -> ()
+  | (h, x) ->
+      if h.len >= h.cap then heap_grow(h) else ();
+      *heap_at(h.data, h.len) = x;
+      let mut i : i64 = h.len;
+      h.len = h.len + 1i64;
+      while i > 0i64 do {
+          let parent = (i - 1i64) / 2i64;
+          if *heap_at(h.data, i) > *heap_at(h.data, parent) then {
+              heap_swap(h.data, i, parent);
+              i = parent;
+          } else {
+              i = 0i64;
+          };
+      }
+
+fn heap_pop : *BinaryHeap -> (bool, i64)
+  | h ->
+      if h.len == 0i64 then (false, 0i64)
+      else {
+          let top = *heap_at(h.data, 0i64);
+          h.len = h.len - 1i64;
+          if h.len > 0i64 then {
+              *heap_at(h.data, 0i64) = *heap_at(h.data, h.len);
+              let mut i : i64 = 0i64;
+              let mut go : bool = true;
+              while go do {
+                  let l = i * 2i64 + 1i64;
+                  let r = i * 2i64 + 2i64;
+                  let mut lg : i64 = i;
+                  if l < h.len && *heap_at(h.data, l) > *heap_at(h.data, lg) then lg = l else ();
+                  if r < h.len && *heap_at(h.data, r) > *heap_at(h.data, lg) then lg = r else ();
+                  if lg != i then {
+                      heap_swap(h.data, i, lg);
+                      i = lg;
+                  } else {
+                      go = false;
+                  };
+              };
+          } else { () };
+          (true, top)
+      }
+
+fn heap_peek : *BinaryHeap -> (bool, i64)
+  | h -> if h.len == 0i64 then (false, 0i64) else (true, *heap_at(h.data, 0i64))
+
+fn heap_len  : *BinaryHeap -> i64
+  | h -> h.len
+
+fn heap_free : *BinaryHeap -> ()
+  | h ->
+      if h.cap > 0i64 then os.linux.free(h.data) else ();
+      h.data = null;
+      h.len  = 0i64;
+      h.cap  = 0i64

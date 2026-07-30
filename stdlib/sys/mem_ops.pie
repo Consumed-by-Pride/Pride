@@ -1,0 +1,21 @@
+mod sys.mem_ops
+
+-- stdlib/sys/mem_ops.pie — Low-level memory operations: unaligned reads/writes,
+-- float bit-casting, and stride_of.
+-- Migrated from compiler/stdlib/memory.pie; given a real module path.
+-- All functions forward to __pride_* symbols in runtime/compiler_rt.c.
+
+fn stride_of_raw       : i64 -> i64 #extern("__pride_stride_of") #cc(c)
+
+fn read_unaligned_i64  : ptr -> i64  #extern("__pride_read_unaligned_i64")  #cc(c)
+fn read_unaligned_i32  : ptr -> i32  #extern("__pride_read_unaligned_i32")  #cc(c)
+fn read_unaligned_i16  : ptr -> i16  #extern("__pride_read_unaligned_i16")  #cc(c)
+fn write_unaligned_i64 : (ptr, i64) -> () #extern("__pride_write_unaligned_i64") #cc(c)
+fn write_unaligned_i32 : (ptr, i32) -> () #extern("__pride_write_unaligned_i32") #cc(c)
+fn write_unaligned_i16 : (ptr, i16) -> () #extern("__pride_write_unaligned_i16") #cc(c)
+
+fn f64_to_bits   : f64 -> i64 #extern("__pride_f64_to_bits")   #cc(c)
+fn f64_from_bits : i64 -> f64 #extern("__pride_f64_from_bits") #cc(c)
+fn f32_to_bits   : f32 -> i32 #extern("__pride_f32_to_bits")   #cc(c)
+fn f32_from_bits : i32 -> f32 #extern("__pride_f32_from_bits") #cc(c)
+fn f64_nan       : () -> f64  #extern("__pride_f64_nan")        #cc(c)

@@ -2,6 +2,7 @@ mod io
 
 use os.linux
 use mem
+use io.bufio
 
 -- §1  CORE CONSTANTS
 const DEFAULT_BUF_SIZE : i64 = 8192i64

@@ -3,6 +3,7 @@ mod hash
 use os.linux
 use mem
 use hash.ordered_map
+use hash.map
 
 -- §1  FNV-1a (32-bit and 64-bit)
 -- Fowler–Noll–Vo hash — fast, simple, decent distribution for strings/bytes
