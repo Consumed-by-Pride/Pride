@@ -1,0 +1,50 @@
+mod elf
+
+-- stdlib/elf.pie — Executable and Linkable Format (ELF64) Layout and Parser
+-- Binary layout mappings for ELF 64-bit headers, program headers, and sections.
+
+struct Elf64Hdr
+  ident0     : u32   -- 0x7F 'E' 'L' 'F'
+  ident_class: u8
+  ident_data : u8
+  ident_ver  : u8
+  type_      : u16
+  machine    : u16
+  version    : u32
+  entry      : u64
+  phoff      : u64
+  shoff      : u64
+  flags      : u32
+  ehsize     : u16
+  phentsize  : u16
+  phnum      : u16
+  shentsize  : u16
+  shnum      : u16
+  shstrndx   : u16
+
+struct Elf64Phdr
+  type_  : u32
+  flags  : u32
+  offset : u64
+  vaddr  : u64
+  paddr  : u64
+  filesz : u64
+  memsz  : u64
+  align  : u64
+
+const PT_LOAD : u32 = 1u32
+const PF_R    : u32 = 4u32
+const PF_W    : u32 = 2u32
+const PF_X    : u32 = 1u32
+
+fn elf_is_valid : ptr -> bool
+  | hdr_ptr ->
+    let magic = (hdr_ptr as *u32)[0i64]
+    magic == 1179403647u32   -- 0x464C457F ("\x7FELF" in little-endian)
+
+fn elf_entry_point : ptr -> u64
+  | hdr_ptr ->
+    if !elf_is_valid(hdr_ptr) then 0u64
+    else
+      let hdr = hdr_ptr as *Elf64Hdr
+      hdr.entry

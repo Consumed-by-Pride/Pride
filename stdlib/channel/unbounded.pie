@@ -1,0 +1,63 @@
+mod channel.unbounded
+
+use sync.mutex
+use sync.cond
+use vec.vec
+use os.linux
+
+-- stdlib/channel/unbounded.pie — Unbounded MPSC Communication Channel
+-- Multi-producer single-consumer thread queue with infinite capacity growth.
+
+struct UnboundedChannel
+  items : vec.Vec
+  mut   : mutex.Mutex
+  avail : cond.CondVar
+  closed: bool
+
+struct UnboundedSender
+  chan : *UnboundedChannel
+
+struct UnboundedReceiver
+  chan : *UnboundedChannel
+
+fn unbounded_channel_new : () -> (UnboundedSender, UnboundedReceiver)
+  | () ->
+    let ch = os.linux.malloc(48i64) as *UnboundedChannel
+    ch.items  = vec.vec_new(16i64)
+    ch.mut    = mutex.mutex_new()
+    ch.avail  = cond.condvar_new()
+    ch.closed = false
+    (UnboundedSender { chan: ch }, UnboundedReceiver { chan: ch })
+
+fn unbounded_send : (*UnboundedSender, ptr) -> bool
+  | (tx, msg_ptr) ->
+    mutex.mutex_lock(&tx.chan.mut)
+    if tx.chan.closed
+      mutex.mutex_unlock(&tx.chan.mut)
+      false
+    else
+      vec.vec_push(&tx.chan.items, msg_ptr)
+      cond.condvar_signal(&tx.chan.avail)
+      mutex.mutex_unlock(&tx.chan.mut)
+      true
+
+fn unbounded_recv : *UnboundedReceiver -> (ptr, bool)
+  | rx ->
+    mutex.mutex_lock(&rx.chan.mut)
+    while vec.vec_is_empty(&rx.chan.items) && !rx.chan.closed
+      cond.condvar_wait(&rx.chan.avail, &rx.chan.mut)
+    if vec.vec_is_empty(&rx.chan.items)
+      mutex.mutex_unlock(&rx.chan.mut)
+      (0 as ptr, false)
+    else
+      let val = vec.vec_get(&rx.chan.items, 0i64)
+      vec.vec_remove(&rx.chan.items, 0i64, 0 as ptr)
+      mutex.mutex_unlock(&rx.chan.mut)
+      (val, true)
+
+fn unbounded_close : *UnboundedChannel -> ()
+  | ch ->
+    mutex.mutex_lock(&ch.mut)
+    ch.closed = true
+    cond.condvar_broadcast(&ch.avail)
+    mutex.mutex_unlock(&ch.mut)

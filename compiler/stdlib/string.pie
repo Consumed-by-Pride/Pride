@@ -42,7 +42,7 @@ fn str_push_byte : (*String, u8) -> ()
       *dst = b as i64
       s.len = s.len + 1
 
-fn str_push_str : (*String, ptr, usize) -> ()
+fn str_concat_raw : (*String, ptr, usize) -> ()
   | (s, p, n) ->
       if n > 0
         str_reserve(s, n)
@@ -71,7 +71,7 @@ fn str_free : *String -> ()
       s.len = 0
       s.cap = 0
 
-fn str_eq : (*String, *String) -> bool
+fn str_ptr_eq : (*String, *String) -> bool
   | (a, b) ->
       if a.len != b.len then false
       else if a.len == 0 then true
@@ -80,8 +80,8 @@ fn str_eq : (*String, *String) -> bool
 fn str_concat : (*String, *String) -> String
   | (a, b) ->
       let s = str_new()
-      str_push_str(&s, a.ptr, a.len)
-      str_push_str(&s, b.ptr, b.len)
+      str_concat_raw(&s, a.ptr, a.len)
+      str_concat_raw(&s, b.ptr, b.len)
       s
 
 fn str_byte_at : (*String, usize) -> u8
@@ -90,7 +90,7 @@ fn str_byte_at : (*String, usize) -> u8
       (*p) as u8
 
 -- Append decimal representation of an i64.
-fn str_push_i64 : (*String, i64) -> ()
+fn str_append_i64 : (*String, i64) -> ()
   | (s, n) ->
       if n == 0
         str_push_byte(s, 48u8)

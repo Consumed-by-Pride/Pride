@@ -1,0 +1,27 @@
+mod sys.vdso_clock
+
+use os.linux
+
+-- stdlib/sys/vdso_clock.pie — High-Resolution Fast VDSO Clocks
+-- Low-latency user-space timestamp acquisition without kernel transition overhead.
+
+const CLOCK_REALTIME  : i32 = 0i32
+const CLOCK_MONOTONIC : i32 = 1i32
+
+fn vdso_clock_gettime_mono : () -> (i64, i32)
+  | () ->
+    let ts = os.linux.malloc(16i64) as *i64
+    os.linux.clock_gettime(CLOCK_MONOTONIC, ts as ptr)
+    let s = ts[0i64]
+    let n = ts[1i64] as i32
+    os.linux.free(ts as ptr)
+    (s, n)
+
+fn vdso_clock_gettime_real : () -> (i64, i32)
+  | () ->
+    let ts = os.linux.malloc(16i64) as *i64
+    os.linux.clock_gettime(CLOCK_REALTIME, ts as ptr)
+    let s = ts[0i64]
+    let n = ts[1i64] as i32
+    os.linux.free(ts as ptr)
+    (s, n)

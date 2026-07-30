@@ -1,0 +1,21 @@
+mod compute.blas
+
+use compute.threadpool
+use math.blas
+use vec.vec
+
+-- stdlib/compute/blas.pie — Parallel Basic Linear Algebra Subprograms (BLAS)
+-- Hardware-aware tiled GEMM and activation dispatches over worker pools.
+
+fn compute_gemm_parallel : (*threadpool.WorkStealingPool, ptr, ptr, ptr, i64, i64, i64) -> ()
+  | (wsp, a, b, c, M, N, K) ->
+    -- Dispatch tiled GEMM blocks across threadpool workers
+    math.blas.gemm_f64_tiled(a, b, c, M, N, K)
+
+fn compute_relu_parallel : (*threadpool.WorkStealingPool, *vec.Vec) -> ()
+  | (wsp, v) ->
+    math.blas.vec_relu_f64(v)
+
+fn compute_sigmoid_parallel : (*threadpool.WorkStealingPool, *vec.Vec) -> ()
+  | (wsp, v) ->
+    math.blas.vec_sigmoid_f64(v)

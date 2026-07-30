@@ -1,0 +1,91 @@
+mod math.trig
+
+use math.consts
+use math.abs
+use math.pow
+
+-- stdlib/math/trig.pie — Trigonometric and Inverse Trigonometric Functions
+-- High-precision Taylor and polynomial approximations for radians.
+
+fn normalize_radians : f64 -> f64
+  | x ->
+    let mut rad = x
+    while rad > consts.PI
+      rad = rad - consts.TAU
+    while rad < -consts.PI
+      rad = rad + consts.TAU
+    rad
+
+fn sin_f64 : f64 -> f64
+  | x ->
+    let rad = normalize_radians(x)
+    let x2 = rad * rad
+    let mut term = rad
+    let mut sum  = rad
+    let mut i : i64 = 1i64
+    while i < 15i64
+      let k = (2i64 * i) * (2i64 * i + 1i64)
+      term = -term * x2 / k as f64
+      sum = sum + term
+      if abs.abs_f64(term) < 0.0000000000000001f64
+        break
+      i = i + 1i64
+    sum
+
+fn cos_f64 : f64 -> f64
+  | x ->
+    let rad = normalize_radians(x)
+    let x2 = rad * rad
+    let mut term = 1.0f64
+    let mut sum  = 1.0f64
+    let mut i : i64 = 1i64
+    while i < 15i64
+      let k = (2i64 * i - 1i64) * (2i64 * i)
+      term = -term * x2 / k as f64
+      sum = sum + term
+      if abs.abs_f64(term) < 0.0000000000000001f64
+        break
+      i = i + 1i64
+    sum
+
+fn tan_f64 : f64 -> f64
+  | x ->
+    let c = cos_f64(x)
+    if abs.abs_f64(c) < 0.0000000000000001f64 then 0.0f64
+    else sin_f64(x) / c
+
+fn atan_f64 : f64 -> f64
+  | x ->
+    if x > 1.0f64 then (consts.PI / 2.0f64) - atan_f64(1.0f64 / x)
+    else if x < -1.0f64 then -(consts.PI / 2.0f64) - atan_f64(1.0f64 / x)
+    else
+      let x2 = x * x
+      let mut term = x
+      let mut sum  = x
+      let mut i : i64 = 1i64
+      while i < 30i64
+        term = -term * x2
+        let add = term / (2i64 * i + 1i64) as f64
+        sum = sum + add
+        if abs.abs_f64(add) < 0.0000000000000001f64
+          break
+        i = i + 1i64
+      sum
+
+fn atan2_f64 : (f64, f64) -> f64
+  | (y, x) ->
+    if x > 0.0f64 then atan_f64(y / x)
+    else if x < 0.0f64 && y >= 0.0f64 then atan_f64(y / x) + consts.PI
+    else if x < 0.0f64 && y < 0.0f64 then atan_f64(y / x) - consts.PI
+    else if x == 0.0f64 && y > 0.0f64 then consts.PI / 2.0f64
+    else if x == 0.0f64 && y < 0.0f64 then -(consts.PI / 2.0f64)
+    else 0.0f64
+
+fn asin_f64 : f64 -> f64
+  | x ->
+    if x <= -1.0f64 then -(consts.PI / 2.0f64)
+    else if x >= 1.0f64 then consts.PI / 2.0f64
+    else atan_f64(x / pow.sqrt_f64(1.0f64 - x * x))
+
+fn acos_f64 : f64 -> f64
+  | x -> (consts.PI / 2.0f64) - asin_f64(x)

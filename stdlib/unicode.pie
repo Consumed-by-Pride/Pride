@@ -1,0 +1,30 @@
+mod unicode
+
+use unicode.char
+use unicode.case
+use unicode.norm
+use unicode.width
+
+-- stdlib/unicode.pie — Standard Library Unicode Character & Normalization Suite
+-- Exports codepoint classification, case folding, NFC/NFD normalization, and terminal display width.
+
+-- Character properties
+fn is_ascii : i64 -> bool                            | cp -> char.char_is_ascii(cp)
+fn is_alpha : i64 -> bool                            | cp -> char.char_is_alphabetic(cp)
+fn is_numeric : i64 -> bool                          | cp -> char.char_is_numeric(cp)
+fn is_whitespace : i64 -> bool                       | cp -> char.char_is_whitespace(cp)
+fn is_control : i64 -> bool                          | cp -> char.char_is_control(cp)
+fn is_emoji : i64 -> bool                            | cp -> char.char_is_emoji(cp)
+
+-- Case folding
+fn to_upper : i64 -> i64                             | cp -> case.char_to_uppercase(cp)
+fn to_lower : i64 -> i64                             | cp -> case.char_to_lowercase(cp)
+fn to_title : i64 -> i64                             | cp -> case.char_to_titlecase(cp)
+
+-- Normalization
+fn normalize_nfc : ptr -> str.string.String          | s -> norm.str_normalize_nfc(s)
+fn normalize_nfd : ptr -> str.string.String          | s -> norm.str_normalize_nfd(s)
+
+-- Terminal display width
+fn char_width : i64 -> i64                           | cp -> width.char_display_width(cp)
+fn str_width : (ptr, i64) -> i64                     | (p, l) -> width.str_display_width(p, l)

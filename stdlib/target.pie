@@ -1,0 +1,16 @@
+mod target
+
+use target.abi
+use target.regalloc
+use target.mc_emitter
+use target.linker
+
+-- stdlib/target.pie — Standard Library Machine Target & Backend Suite
+-- Exports System V ABIs, linear scan register allocation, native machine code emitters, and object linkers.
+
+fn abi_classify : (*abi.TargetAbi, *ir.types.IrType) -> i64 | (a, t) -> abi.abi_classify_type(a, t)
+fn regalloc_new : i64 -> regalloc.RegAlloc                  | n -> regalloc.regalloc_new(n)
+fn regalloc_scan : (*regalloc.RegAlloc, *ir.func.IrFunction) -> i64 | (r, f) -> regalloc.regalloc_linear_scan(r, f)
+fn mc_emit_x86 : *ir.func.IrFunction -> codegen.x86_64.X86Asm | f -> mc_emitter.mc_emit_x86_64_function(f)
+fn linker_obj_new : () -> linker.NativeObject               | () -> linker.native_object_new()
+fn linker_obj_destroy : *linker.NativeObject -> ()          | o -> linker.native_object_destroy(o)

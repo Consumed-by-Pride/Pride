@@ -34,7 +34,7 @@ fn read_mantissa : *float_stream.FloatStream -> (u64, i64, i64)
     while !float_stream.stream_at_end(s)
       let c = float_stream.stream_peek(s)
       if c == 46i64   -- '.'
-        if has_dot then s.len   -- break: second dot not part of float
+        if has_dot then break   -- break: second dot not part of float
         else has_dot = true; dot_pos = n_digits; float_stream.stream_advance(s)
       else if c >= 48i64 && c <= 57i64
         float_stream.stream_advance(s)
@@ -49,7 +49,7 @@ fn read_mantissa : *float_stream.FloatStream -> (u64, i64, i64)
           else
             many = true
             if !has_dot then exp_adj = exp_adj + 1i64
-      else s.len   -- break: non-digit, non-dot
+      else break   -- break: non-digit, non-dot
 
     -- account for decimal point
     if has_dot && dot_pos >= 0i64
@@ -72,7 +72,7 @@ fn read_exponent : *float_stream.FloatStream -> i64
         let mut exp : i64 = 0i64
         while !float_stream.stream_at_end(s)
           let d = float_stream.stream_read_digit(s)
-          if d < 0i64 then s.len
+          if d < 0i64 then break
           else if exp < 99999i64 then exp = exp*10i64 + d
         if neg then -exp else exp
 

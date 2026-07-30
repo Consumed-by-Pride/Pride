@@ -1,0 +1,19 @@
+mod compute
+
+use compute.threadpool
+use compute.blas
+use vec.vec
+
+-- stdlib/compute.pie — Standard Library Compute Accelerators & Dispatches Suite
+-- Exports fork-join work-stealing thread pools and parallel BLAS kernel dispatches.
+
+-- Work-stealing pool
+fn wspool_new : i64 -> threadpool.WorkStealingPool           | n -> threadpool.wspool_new(n)
+fn wspool_destroy : *threadpool.WorkStealingPool -> ()       | p -> threadpool.wspool_destroy(p)
+fn wspool_submit : (*threadpool.WorkStealingPool, ptr) -> () | (p, t) -> threadpool.wspool_submit(p, t)
+fn wspool_parallel_for : (*threadpool.WorkStealingPool, i64, i64, ptr) -> () | (p, s, e, f) -> threadpool.wspool_parallel_for(p, s, e, f)
+
+-- Parallel BLAS
+fn gemm_parallel : (*threadpool.WorkStealingPool, ptr, ptr, ptr, i64, i64, i64) -> () | (p, a, b, c, m, n, k) -> blas.compute_gemm_parallel(p, a, b, c, m, n, k)
+fn relu_parallel : (*threadpool.WorkStealingPool, *vec.Vec) -> ()                    | (p, v) -> blas.compute_relu_parallel(p, v)
+fn sigmoid_parallel : (*threadpool.WorkStealingPool, *vec.Vec) -> ()                 | (p, v) -> blas.compute_sigmoid_parallel(p, v)

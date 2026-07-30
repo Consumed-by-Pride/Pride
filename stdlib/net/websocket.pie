@@ -1,0 +1,53 @@
+mod net.websocket
+
+use os.linux
+use str.string
+use str.slice
+
+-- stdlib/net/websocket.pie — RFC 6455 WebSocket Protocol Framing
+-- Encodes and decodes WebSocket text/binary frames, pings, and closing handshakes.
+
+const WS_OPCODE_CONT   : u8 = 0u8
+const WS_OPCODE_TEXT   : u8 = 1u8
+const WS_OPCODE_BINARY : u8 = 2u8
+const WS_OPCODE_CLOSE  : u8 = 8u8
+const WS_OPCODE_PING   : u8 = 9u8
+const WS_OPCODE_PONG   : u8 = 10u8
+
+struct WsFrame
+  fin      : bool
+  opcode   : u8
+  masked   : bool
+  payload  : string.String
+
+fn ws_frame_new : (u8, ptr, i64) -> WsFrame
+  | (opcode, data, len) ->
+    let mut s = string.string_with_cap(len)
+    string.string_push_slice(&s, data, len)
+    WsFrame { fin: true, opcode: opcode, masked: false, payload: s }
+
+fn ws_frame_destroy : *WsFrame -> ()
+  | f ->
+    string.string_destroy(&f.payload)
+    f.opcode = 0u8
+
+fn ws_frame_encode : *WsFrame -> string.String
+  | f ->
+    let len = string.string_len(&f.payload)
+    let mut out = string.string_with_cap(len + 16i64)
+    let b0 = (if f.fin then 128u8 else 0u8) | (f.opcode & 15u8)
+    string.string_push_byte(&out, b0)
+    if len < 126i64
+      string.string_push_byte(&out, len as u8)
+    else if len <= 65535i64
+      string.string_push_byte(&out, 126u8)
+      string.string_push_byte(&out, ((len >> 8i64) & 0xFFi64) as u8)
+      string.string_push_byte(&out, (len & 0xFFi64) as u8)
+    else
+      string.string_push_byte(&out, 127u8)
+      let mut shift : i64 = 56i64
+      while shift >= 0i64
+        string.string_push_byte(&out, ((len >> shift) & 0xFFi64) as u8)
+        shift = shift - 8i64
+    string.string_push_slice(&out, string.string_as_slice(&f.payload), len)
+    out

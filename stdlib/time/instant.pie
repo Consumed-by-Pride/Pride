@@ -1,0 +1,31 @@
+mod time.instant
+
+use time.duration
+use time.clock
+
+-- stdlib/time/instant.pie — Monotonic Time Points (Instant)
+-- Represents an opaque point in time on the monotonic clock, immune to
+-- wall-clock jumps or NTP adjustments.
+
+struct Instant
+  stamp : duration.Duration
+
+fn instant_now : () -> Instant
+  | () -> Instant { stamp: clock.clock_monotonic() }
+
+fn instant_duration_since : (Instant, Instant) -> duration.Duration
+  | (later, earlier) -> duration.duration_sub(later.stamp, earlier.stamp)
+
+fn instant_elapsed : Instant -> duration.Duration
+  | earlier ->
+    let now = instant_now()
+    instant_duration_since(now, earlier)
+
+fn instant_add_duration : (Instant, duration.Duration) -> Instant
+  | (inst, dur) -> Instant { stamp: duration.duration_add(inst.stamp, dur) }
+
+fn instant_sub_duration : (Instant, duration.Duration) -> Instant
+  | (inst, dur) -> Instant { stamp: duration.duration_sub(inst.stamp, dur) }
+
+fn instant_cmp : (Instant, Instant) -> i32
+  | (a, b) -> duration.duration_cmp(a.stamp, b.stamp)

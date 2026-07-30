@@ -1,0 +1,117 @@
+mod vec.deque
+
+use os.linux
+
+-- stdlib/vec/deque.pie — Double-Ended Ring Buffer (VecDeque)
+-- O(1) amortized push_front, push_back, pop_front, pop_back, and O(1) indexing
+-- via circular buffer index wrapping.
+
+struct VecDeque
+  data    : ptr
+  cap     : i64
+  head    : i64
+  len     : i64
+  elem_sz : i64
+
+fn vecdeque_new : i64 -> VecDeque
+  | elem_sz -> VecDeque { data: 0 as ptr, cap: 0i64, head: 0i64, len: 0i64, elem_sz: elem_sz }
+
+fn vecdeque_with_cap : (i64, i64) -> VecDeque
+  | (cap_hint, elem_sz) ->
+    let mut c = 8i64
+    while c < cap_hint
+      c = c * 2i64
+    let p = os.linux.malloc(c * elem_sz)
+    VecDeque { data: p, cap: c, head: 0i64, len: 0i64, elem_sz: elem_sz }
+
+fn vecdeque_destroy : *VecDeque -> ()
+  | vd ->
+    if vd.cap > 0i64 && vd.data as i64 != 0i64
+      os.linux.free(vd.data)
+    vd.data = 0 as ptr; vd.cap = 0i64; vd.head = 0i64; vd.len = 0i64
+
+fn vecdeque_len : *VecDeque -> i64
+  | vd -> vd.len
+
+fn vecdeque_cap : *VecDeque -> i64
+  | vd -> vd.cap
+
+fn vecdeque_is_empty : *VecDeque -> bool
+  | vd -> vd.len == 0i64
+
+fn vecdeque_get_raw_idx : (*VecDeque, i64) -> i64
+  | (vd, idx) -> (vd.head + idx) & (vd.cap - 1i64)
+
+fn vecdeque_get : (*VecDeque, i64) -> ptr
+  | (vd, idx) ->
+    if idx < 0i64 || idx >= vd.len || vd.cap == 0i64 then 0 as ptr
+    else
+      let ri = vecdeque_get_raw_idx(vd, idx)
+      (vd.data as i64 + ri * vd.elem_sz) as ptr
+
+fn vecdeque_set : (*VecDeque, i64, ptr) -> bool
+  | (vd, idx, val_ptr) ->
+    if idx < 0i64 || idx >= vd.len || vd.cap == 0i64 then false
+    else
+      let ri = vecdeque_get_raw_idx(vd, idx)
+      let dst = (vd.data as i64 + ri * vd.elem_sz) as ptr
+      os.linux.memcpy(dst, val_ptr, vd.elem_sz as u64)
+      true
+
+fn vecdeque_grow : *VecDeque -> ()
+  | vd ->
+    let old_cap = vd.cap
+    let new_cap = if old_cap == 0i64 then 8i64 else old_cap * 2i64
+    let new_p = os.linux.malloc(new_cap * vd.elem_sz)
+    if old_cap > 0i64 && vd.len > 0i64
+      let mut i : i64 = 0i64
+      while i < vd.len
+        let src = (vd.data as i64 + ((vd.head + i) & (old_cap - 1i64)) * vd.elem_sz) as ptr
+        let dst = (new_p as i64 + i * vd.elem_sz) as ptr
+        os.linux.memcpy(dst, src, vd.elem_sz as u64)
+        i = i + 1i64
+      os.linux.free(vd.data)
+    vd.data = new_p; vd.cap = new_cap; vd.head = 0i64
+
+fn vecdeque_push_back : (*VecDeque, ptr) -> ()
+  | (vd, val_ptr) ->
+    if vd.len >= vd.cap
+      vecdeque_grow(vd)
+    let tail = (vd.head + vd.len) & (vd.cap - 1i64)
+    let dst = (vd.data as i64 + tail * vd.elem_sz) as ptr
+    os.linux.memcpy(dst, val_ptr, vd.elem_sz as u64)
+    vd.len = vd.len + 1i64
+
+fn vecdeque_push_front : (*VecDeque, ptr) -> ()
+  | (vd, val_ptr) ->
+    if vd.len >= vd.cap
+      vecdeque_grow(vd)
+    vd.head = (vd.head - 1i64 + vd.cap) & (vd.cap - 1i64)
+    let dst = (vd.data as i64 + vd.head * vd.elem_sz) as ptr
+    os.linux.memcpy(dst, val_ptr, vd.elem_sz as u64)
+    vd.len = vd.len + 1i64
+
+fn vecdeque_pop_back : (*VecDeque, ptr) -> bool
+  | (vd, out_ptr) ->
+    if vd.len == 0i64 then false
+    else
+      vd.len = vd.len - 1i64
+      let tail = (vd.head + vd.len) & (vd.cap - 1i64)
+      let src = (vd.data as i64 + tail * vd.elem_sz) as ptr
+      if out_ptr as i64 != 0i64
+        os.linux.memcpy(out_ptr, src, vd.elem_sz as u64)
+      true
+
+fn vecdeque_pop_front : (*VecDeque, ptr) -> bool
+  | (vd, out_ptr) ->
+    if vd.len == 0i64 then false
+    else
+      let src = (vd.data as i64 + vd.head * vd.elem_sz) as ptr
+      if out_ptr as i64 != 0i64
+        os.linux.memcpy(out_ptr, src, vd.elem_sz as u64)
+      vd.head = (vd.head + 1i64) & (vd.cap - 1i64)
+      vd.len = vd.len - 1i64
+      true
+
+fn vecdeque_clear : *VecDeque -> ()
+  | vd -> vd.head = 0i64; vd.len = 0i64

@@ -1,0 +1,44 @@
+mod async.io_uring_rt
+
+use os.linux
+
+-- stdlib/async/io_uring_rt.pie — Linux io_uring Asynchronous Engine
+-- High-throughput kernel submission and completion queue runtime.
+
+struct IoUringRt
+  fd       : i64
+  entries  : u32
+  in_flight: i64
+
+fn uring_rt_new : u32 -> IoUringRt
+  | entries ->
+    let e = if entries == 0u32 then 64u32 else entries
+    let p = os.linux.malloc(128i64)
+    os.linux.memset(p, 0i32, 128u64)
+    let fd = os.linux.io_uring_setup(e, p)
+    os.linux.free(p)
+    IoUringRt { fd: fd, entries: e, in_flight: 0i64 }
+
+fn uring_rt_destroy : *IoUringRt -> ()
+  | rt ->
+    if rt.fd >= 0i64
+      os.linux.close(rt.fd)
+    rt.fd = -1i64; rt.in_flight = 0i64
+
+fn uring_rt_submit : *IoUringRt -> i64
+  | rt ->
+    if rt.fd < 0i64 then -1i64
+    else
+      let r = os.linux.io_uring_enter(rt.fd, 1u32, 0u32, 0u32, 0 as ptr, 0i64)
+      if r > 0i64
+        rt.in_flight = rt.in_flight + r
+      r
+
+fn uring_rt_poll : (*IoUringRt, u32) -> i64
+  | (rt, min_complete) ->
+    if rt.fd < 0i64 then -1i64
+    else
+      let r = os.linux.io_uring_enter(rt.fd, 0u32, min_complete, 1u32, 0 as ptr, 0i64)
+      if r > 0i64 && rt.in_flight >= r
+        rt.in_flight = rt.in_flight - r
+      r

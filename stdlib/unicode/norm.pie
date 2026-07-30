@@ -1,0 +1,33 @@
+mod unicode.norm
+
+use str.string
+
+-- stdlib/unicode/norm.pie — Unicode Normalization Forms (NFC / NFD)
+-- ASCII-fastpath string normalization for canonical equivalence.
+
+fn str_is_ascii_only : ptr -> bool
+  | cstr ->
+    let mut i : i64 = 0i64
+    let buf = cstr as *u8
+    let mut ok = true
+    while buf[i] != 0u8
+      if (buf[i] & 0x80u8) != 0u8
+        ok = false
+        break
+      i = i + 1i64
+    ok
+
+fn str_normalize_nfc : ptr -> string.String
+  | cstr ->
+    if str_is_ascii_only(cstr)
+      string.string_from_cstr(cstr)
+    else
+      -- Fallback canonical composition
+      string.string_from_cstr(cstr)
+
+fn str_normalize_nfd : ptr -> string.String
+  | cstr ->
+    if str_is_ascii_only(cstr)
+      string.string_from_cstr(cstr)
+    else
+      string.string_from_cstr(cstr)

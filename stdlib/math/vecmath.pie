@@ -1,0 +1,143 @@
+mod math.vecmath
+
+use math.pow
+
+-- stdlib/math/vecmath.pie — 2D, 3D, and 4D Vector/Matrix Mathematics
+-- Linear algebra primitives for graphics and physical simulations.
+
+struct Vec2
+  x : f64
+  y : f64
+
+fn vec2_new : (f64, f64) -> Vec2
+  | (x, y) -> Vec2 { x: x, y: y }
+
+fn vec2_add : (Vec2, Vec2) -> Vec2
+  | (a, b) -> Vec2 { x: a.x + b.x, y: a.y + b.y }
+
+fn vec2_sub : (Vec2, Vec2) -> Vec2
+  | (a, b) -> Vec2 { x: a.x - b.x, y: a.y - b.y }
+
+fn vec2_dot : (Vec2, Vec2) -> f64
+  | (a, b) -> a.x * b.x + a.y * b.y
+
+fn vec2_len : Vec2 -> f64
+  | v -> pow.hypot_f64(v.x, v.y)
+
+struct Vec3
+  x : f64
+  y : f64
+  z : f64
+
+fn vec3_new : (f64, f64, f64) -> Vec3
+  | (x, y, z) -> Vec3 { x: x, y: y, z: z }
+
+fn vec3_add : (Vec3, Vec3) -> Vec3
+  | (a, b) -> Vec3 { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }
+
+fn vec3_sub : (Vec3, Vec3) -> Vec3
+  | (a, b) -> Vec3 { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }
+
+fn vec3_dot : (Vec3, Vec3) -> f64
+  | (a, b) -> a.x * b.x + a.y * b.y + a.z * b.z
+
+fn vec3_cross : (Vec3, Vec3) -> Vec3
+  | (a, b) -> Vec3 {
+      x: a.y * b.z - a.z * b.y,
+      y: a.z * b.x - a.x * b.z,
+      z: a.x * b.y - a.y * b.x
+    }
+
+fn vec3_len : Vec3 -> f64
+  | v -> pow.sqrt_f64(v.x * v.x + v.y * v.y + v.z * v.z)
+
+struct Mat4
+  m : *f64
+
+fn mat4_identity : () -> Mat4
+  | () ->
+    let p = os.linux.malloc(16i64 * 8i64) as *f64
+    os.linux.memset(p as ptr, 0i32, 128u64)
+    p[0i64] = 1.0f64; p[5i64] = 1.0f64; p[10i64] = 1.0f64; p[15i64] = 1.0f64
+    Mat4 { m: p }
+
+fn mat4_destroy : *Mat4 -> ()
+  | mat ->
+    if mat.m as i64 != 0i64
+      os.linux.free(mat.m as ptr)
+    mat.m = 0 as *f64
+
+fn mat4_mul : (Mat4, Mat4) -> Mat4
+  | (a, b) ->
+    let out = mat4_identity()
+    let mut i : i64 = 0i64
+    while i < 4i64
+      let mut j : i64 = 0i64
+      while j < 4i64
+        let mut sum = 0.0f64
+        let mut k : i64 = 0i64
+        while k < 4i64
+          sum = sum + a.m[i * 4i64 + k] * b.m[k * 4i64 + j]
+          k = k + 1i64
+        out.m[i * 4i64 + j] = sum
+        j = j + 1i64
+      i = i + 1i64
+    out
+
+fn mat4_translation : (f64, f64, f64) -> Mat4
+  | (tx, ty, tz) ->
+    let mat = mat4_identity()
+    mat.m[3i64]  = tx
+    mat.m[7i64]  = ty
+    mat.m[11i64] = tz
+    mat
+
+fn mat4_scaling : (f64, f64, f64) -> Mat4
+  | (sx, sy, sz) ->
+    let mat = mat4_identity()
+    mat.m[0i64]  = sx
+    mat.m[5i64]  = sy
+    mat.m[10i64] = sz
+    mat
+
+struct Quat
+  x : f64
+  y : f64
+  z : f64
+  w : f64
+
+fn quat_identity : () -> Quat
+  | () -> Quat { x: 0.0f64, y: 0.0f64, z: 0.0f64, w: 1.0f64 }
+
+fn quat_conjugate : Quat -> Quat
+  | q -> Quat { x: -q.x, y: -q.y, z: -q.z, w: q.w }
+
+fn quat_norm : Quat -> f64
+  | q -> pow.sqrt_f64(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
+
+fn quat_mul : (Quat, Quat) -> Quat
+  | (a, b) -> Quat {
+      w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+      x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+      y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+      z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w
+    }
+
+fn vec2_normalize : Vec2 -> Vec2
+  | v ->
+    let l = vec2_len(v)
+    if l == 0.0f64 then Vec2 { x: 0.0f64, y: 0.0f64 }
+    else Vec2 { x: v.x / l, y: v.y / l }
+
+fn vec3_normalize : Vec3 -> Vec3
+  | v ->
+    let l = vec3_len(v)
+    if l == 0.0f64 then Vec3 { x: 0.0f64, y: 0.0f64, z: 0.0f64 }
+    else Vec3 { x: v.x / l, y: v.y / l, z: v.z / l }
+
+fn mat4_mul_vec3 : (Mat4, Vec3) -> Vec3
+  | (m, v) ->
+    let x = m.m[0i64] * v.x + m.m[4i64] * v.y + m.m[8i64]  * v.z + m.m[12i64]
+    let y = m.m[1i64] * v.x + m.m[5i64] * v.y + m.m[9i64]  * v.z + m.m[13i64]
+    let z = m.m[2i64] * v.x + m.m[6i64] * v.y + m.m[10i64] * v.z + m.m[14i64]
+    Vec3 { x: x, y: y, z: z }

@@ -1,0 +1,105 @@
+mod cli.arg_parser
+
+use os.linux
+use str.string
+use str.slice
+use vec.vec
+use cli.flag
+
+-- stdlib/cli/arg_parser.pie — Command-Line Argument and Flag Parser (ArgParser)
+-- Tokenizes argc/argv and long/short flags for CLI applications.
+
+struct ArgParser
+  prog_name : string.String
+  doc       : string.String
+  flags     : vec.Vec
+
+fn argparser_new : (ptr, ptr) -> ArgParser
+  | (prog_cstr, doc_cstr) ->
+    ArgParser {
+      prog_name: string.string_from_cstr(prog_cstr),
+      doc:       string.string_from_cstr(doc_cstr),
+      flags:     vec.vec_new(8i64)
+    }
+
+fn argparser_destroy : *ArgParser -> ()
+  | p ->
+    string.string_destroy(&p.prog_name)
+    string.string_destroy(&p.doc)
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&p.flags)
+    while i < len
+      flag.flag_destroy(vec.vec_get(&p.flags, i) as *flag.Flag)
+      i = i + 1i64
+    vec.vec_destroy(&p.flags)
+
+fn argparser_add_flag : (*ArgParser, *flag.Flag) -> ()
+  | (p, f) -> vec.vec_push(&p.flags, f as ptr)
+
+fn argparser_find_flag_by_name : (*ArgParser, ptr) -> *flag.Flag
+  | (p, name_cstr) ->
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&p.flags)
+    let mut found = 0 as *flag.Flag
+    while i < len
+      let f = vec.vec_get(&p.flags, i) as *flag.Flag
+      if slice.str_eq(string.string_as_slice(&f.name), string.string_len(&f.name), name_cstr, os.linux.strlen(name_cstr) as i64)
+        found = f
+        break
+      i = i + 1i64
+    found
+
+fn argparser_find_flag_by_short : (*ArgParser, u8) -> *flag.Flag
+  | (p, sh) ->
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&p.flags)
+    let mut found = 0 as *flag.Flag
+    while i < len
+      let f = vec.vec_get(&p.flags, i) as *flag.Flag
+      if f.short_c == sh
+        found = f
+        break
+      i = i + 1i64
+    found
+
+fn argparser_parse_args : (*ArgParser, i64, *ptr) -> flag.ArgResult
+  | (p, argc, argv) ->
+    let mut res = flag.ArgResult {
+      flags:    vec.vec_new(8i64),
+      pos_args: vec.vec_new(8i64)
+    }
+    let mut i : i64 = 1i64   -- skip prog name at argv[0]
+    while i < argc
+      let arg = argv[i]
+      let alen = os.linux.strlen(arg) as i64
+      let abuf = arg as *u8
+      if alen >= 2i64 && abuf[0i64] == 45u8 && abuf[1i64] == 45u8   -- '--'
+        let flag_name = (arg as i64 + 2i64) as ptr
+        let f = argparser_find_flag_by_name(p, flag_name)
+        if f as i64 != 0i64
+          if f.kind == flag.KIND_BOOL
+            f.b_val = true
+          else if i + 1i64 < argc
+            i = i + 1i64
+            if f.kind == flag.KIND_INT
+              -- simple atoi
+              let mut val : i64 = 0i64
+              let vstr = argv[i] as *u8
+              let vlen = os.linux.strlen(argv[i]) as i64
+              let mut j : i64 = 0i64
+              while j < vlen
+                val = val * 10i64 + (vstr[j] as i64 - 48i64)
+                j = j + 1i64
+              f.i_val = val
+            else
+              string.string_destroy(&f.s_val)
+              f.s_val = string.string_from_cstr(argv[i])
+      else if alen >= 2i64 && abuf[0i64] == 45u8   -- '-'
+        let f = argparser_find_flag_by_short(p, abuf[1i64])
+        if f as i64 != 0i64
+          f.b_val = true
+      else
+        let s = string.string_from_cstr(arg)
+        vec.vec_push(&res.pos_args, &s as ptr)
+      i = i + 1i64
+    res

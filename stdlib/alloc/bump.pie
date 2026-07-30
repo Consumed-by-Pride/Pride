@@ -1,0 +1,48 @@
+mod alloc.bump
+
+use os.linux
+use alloc.arena
+
+-- stdlib/alloc/bump.pie — Monotonic Bump Allocator (Bump)
+-- Extremely fast linear allocator for zero-allocation parsing patterns.
+
+struct Bump
+  base      : ptr
+  cap       : i64
+  pos       : i64
+  owns_mem  : bool
+
+fn bump_new : i64 -> Bump
+  | cap ->
+    let sz = if cap <= 0i64 then 65536i64 else cap
+    let p  = os.linux.malloc(sz)
+    Bump { base: p, cap: sz, pos: 0i64, owns_mem: true }
+
+fn bump_from_buffer : (ptr, i64) -> Bump
+  | (buf, len) -> Bump { base: buf, cap: len, pos: 0i64, owns_mem: false }
+
+fn bump_destroy : *Bump -> ()
+  | b ->
+    if b.owns_mem && b.base as i64 != 0i64
+      os.linux.free(b.base)
+    b.base = 0 as ptr; b.cap = 0i64; b.pos = 0i64
+
+fn bump_reset : *Bump -> ()
+  | b -> b.pos = 0i64
+
+fn bump_alloc : (*Bump, i64, i64) -> ptr
+  | (b, size, align_bytes) ->
+    let al = if align_bytes <= 0i64 then 8i64 else align_bytes
+    let aligned_pos = arena.align_up_i64(b.pos, al)
+    if aligned_pos + size > b.cap then 0 as ptr
+    else
+      let p = (b.base as i64 + aligned_pos) as ptr
+      b.pos = aligned_pos + size
+      p
+
+fn bump_alloc_zeroed : (*Bump, i64, i64) -> ptr
+  | (b, size, align_bytes) ->
+    let p = bump_alloc(b, size, align_bytes)
+    if p as i64 != 0i64
+      os.linux.memset(p, 0i32, size as u64)
+    p

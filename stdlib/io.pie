@@ -212,8 +212,8 @@ fn bufreader_read : (*BufReader, ptr, i64) -> i64
       let avail = r.end - r.pos
       if avail == 0i64
         let filled = bufreader_fill(r)
-        if filled < 0i64 then off
-        else if filled == 0i64 then off
+        if filled < 0i64 then break
+        else if filled == 0i64 then break
       let copy_n = if n - off < r.end - r.pos then n - off else r.end - r.pos
       os.linux.memcpy((dst as i64 + off) as ptr, (r.buf as i64 + r.pos) as ptr, copy_n as u64)
       r.pos = r.pos + copy_n; off = off + copy_n
@@ -234,7 +234,7 @@ fn bufreader_skip : (*BufReader, i64) -> i64
         r.pos = r.pos + skip; skipped = skipped + skip
       else
         let filled = bufreader_fill(r)
-        if filled <= 0i64 then skipped
+        if filled <= 0i64 then break
     skipped
 
 fn bufreader_read_line : (*BufReader, ptr, i64) -> i64
@@ -243,10 +243,10 @@ fn bufreader_read_line : (*BufReader, ptr, i64) -> i64
     let mut n : i64 = 0i64
     while n < max - 1i64
       let b = bufreader_read_byte(r)
-      if b < 0i64 then n   -- EOF or error
+      if b < 0i64 then break   -- EOF or error
       let byte = b as u8
       (dst as *u8)[n] = byte; n = n + 1i64
-      if byte == 10u8 then n   -- stop at newline
+      if byte == 10u8 then break   -- stop at newline
     (dst as *u8)[n] = 0u8; n
 
 fn bufreader_read_line_bvec : (*BufReader, *mem.ByteVec) -> i64
@@ -255,10 +255,10 @@ fn bufreader_read_line_bvec : (*BufReader, *mem.ByteVec) -> i64
     let mut n : i64 = 0i64
     while true
       let b = bufreader_read_byte(r)
-      if b < 0i64 then n
+      if b < 0i64 then break
       let byte = b as u8
       mem.bvec_push(out, byte); n = n + 1i64
-      if byte == 10u8 then n
+      if byte == 10u8 then break
     n
 
 fn bufreader_read_until : (*BufReader, u8, ptr, i64) -> i64
@@ -266,10 +266,10 @@ fn bufreader_read_until : (*BufReader, u8, ptr, i64) -> i64
     let mut n : i64 = 0i64
     while n < max - 1i64
       let b = bufreader_read_byte(r)
-      if b < 0i64 then n
+      if b < 0i64 then break
       let byte = b as u8
       (dst as *u8)[n] = byte; n = n + 1i64
-      if byte == delim then n
+      if byte == delim then break
     (dst as *u8)[n] = 0u8; n
 
 fn bufreader_read_all_bvec : (*BufReader, *mem.ByteVec) -> i64
@@ -278,11 +278,10 @@ fn bufreader_read_all_bvec : (*BufReader, *mem.ByteVec) -> i64
     let tmp : *u8 = os.linux.malloc(4096i64) as *u8
     while true
       let n = bufreader_read(r, tmp as ptr, 4096i64)
-      if n <= 0i64 then
-        os.linux.free(tmp as ptr); total
+      if n <= 0i64 then break
       mem.bvec_push_slice(out, tmp as ptr, n)
       total = total + n
-    total
+    os.linux.free(tmp as ptr); total
 
 fn bufreader_at_eof : *BufReader -> bool
   | r -> r.eof && r.pos >= r.end
@@ -467,9 +466,12 @@ fn copy_fd : (i64, i64, i64) -> i64
                    else if max_bytes - total < 65536i64 then max_bytes - total
                    else 65536i64
         let rn = os.linux.read(src_fd, buf as ptr, want)
-        if rn <= 0i64 then os.linux.free(buf as ptr); total
+        if rn <= 0i64
+          break
         let wn = os.linux.write_all(dst_fd, buf as ptr, rn)
-        if wn < rn then os.linux.free(buf as ptr); total + (if wn < 0i64 then 0i64 else wn)
+        if wn < rn
+          total = total + (if wn < 0i64 then 0i64 else wn)
+          break
         total = total + rn
       os.linux.free(buf as ptr); total
 
@@ -747,7 +749,7 @@ fn sendfile_all : (i64, i64, i64, i64) -> i64
     let mut sent : i64 = 0i64
     while sent < count
       let n = os.linux.sendfile(out_fd, in_fd, (off as i64 + sent * 0i64) as ptr, count - sent)
-      if n <= 0i64 then os.linux.free(off as ptr); sent
+      if n <= 0i64 then break
       sent = sent + n
     os.linux.free(off as ptr); sent
 

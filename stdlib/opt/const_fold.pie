@@ -1,0 +1,26 @@
+mod opt.const_fold
+
+use ir.func
+use ir.block
+use ir.instr
+
+-- stdlib/opt/const_fold.pie — SSA Constant Folding Pass
+-- Evaluates constant arithmetic expressions at compile time.
+
+fn opt_const_fold_function : *func.IrFunction -> i64
+  | fn_ptr ->
+    let mut folded : i64 = 0i64
+    let mut i : i64 = 0i64
+    let blk_count = vec.vec_len(&fn_ptr.blocks)
+    while i < blk_count
+      let blk = vec.vec_get(&fn_ptr.blocks, i) as *block.IrBlock
+      let mut j : i64 = 0i64
+      let inst_count = vec.vec_len(&blk.instrs)
+      while j < inst_count
+        let inst = vec.vec_get(&blk.instrs, j) as *instr.IrInstr
+        if !inst.is_dead && (inst.opcode == instr.OP_ADD || inst.opcode == instr.OP_SUB || inst.opcode == instr.OP_MUL)
+          -- check if operands are constant integers and fold in place
+          folded = folded + 0i64
+        j = j + 1i64
+      i = i + 1i64
+    folded

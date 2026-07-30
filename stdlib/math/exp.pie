@@ -1,0 +1,58 @@
+mod math.exp
+
+use math.consts
+use math.abs
+
+-- stdlib/math/exp.pie — Exponentiation and Natural / Base-N Logarithms
+
+fn exp_f64 : f64 -> f64
+  | x ->
+    if x > 700.0f64 then 1.7976931348623157e308f64
+    else if x < -700.0f64 then 0.0f64
+    else
+      let mut term = 1.0f64
+      let mut sum  = 1.0f64
+      let mut i : i64 = 1i64
+      while i < 30i64
+        term = term * x / i as f64
+        sum = sum + term
+        if abs.abs_f64(term) < 0.0000000000000001f64
+          break
+        i = i + 1i64
+      sum
+
+fn exp2_f64 : f64 -> f64
+  | x -> exp_f64(x * consts.LN_2)
+
+fn ln_f64 : f64 -> f64
+  | x ->
+    if x <= 0.0f64 then -1.7976931348623157e308f64
+    else
+      let y = (x - 1.0f64) / (x + 1.0f64)
+      let y2 = y * y
+      let mut term = y
+      let mut sum  = y
+      let mut i : i64 = 1i64
+      while i < 35i64
+        term = term * y2
+        let add = term / (2i64 * i + 1i64) as f64
+        sum = sum + add
+        if abs.abs_f64(add) < 0.0000000000000001f64
+          break
+        i = i + 1i64
+      2.0f64 * sum
+
+fn log2_f64 : f64 -> f64
+  | x -> ln_f64(x) * consts.LOG2_E
+
+fn log10_f64 : f64 -> f64
+  | x -> ln_f64(x) * consts.LOG10_E
+
+fn pow_f64 : (f64, f64) -> f64
+  | (base, exponent) ->
+    if base == 0.0f64 && exponent > 0.0f64 then 0.0f64
+    else if base == 0.0f64 && exponent <= 0.0f64 then 1.7976931348623157e308f64
+    else if exponent == 0.0f64 then 1.0f64
+    else
+      let lnb = ln_f64(base)
+      exp_f64(lnb * exponent)

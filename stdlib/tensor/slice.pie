@@ -1,0 +1,24 @@
+mod tensor.slice
+
+use tensor.ndarray
+
+-- stdlib/tensor/slice.pie — Zero-Copy Sub-Views and Reshaping
+-- Slices and transposes tensors without duplicating underlying memory buffers.
+
+struct TensorView
+  data   : *f64
+  layout : math.ndarray.NdArrayLayout
+
+fn tensor_slice_view : (*ndarray.Tensor, i64, i64, i64) -> TensorView
+  | (t, dim, start, end_) ->
+    let view_ly = math.ndarray.ndarray_layout_slice_view(&t.layout, dim, start, end_)
+    TensorView { data: t.data, layout: view_ly }
+
+fn tensor_transpose_2d : *ndarray.Tensor -> TensorView
+  | t ->
+    let sh = t.layout.shape as *i64
+    let st = t.layout.strides as *i64
+    let mut new_sh : [i64; 2] = [sh[1i64], sh[0i64]]
+    let mut new_st : [i64; 2] = [st[1i64], st[0i64]]
+    let new_ly = math.ndarray.ndarray_layout_new(2i64, &new_sh[0] as ptr, &new_st[0] as ptr, t.layout.offset)
+    TensorView { data: t.data, layout: new_ly }

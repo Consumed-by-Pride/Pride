@@ -1,0 +1,244 @@
+mod vec.algo
+
+use vec.vec
+
+-- stdlib/vec/algo.pie — Vector Algorithms
+-- In-place sorting, heap operations, binary search, deduplication, and set algebra.
+
+fn vec_is_sorted_u64 : *vec.Vec -> bool
+  | v ->
+    let len = vec.vec_len(v)
+    if len <= 1i64 then true
+    else
+      let data = vec.vec_as_slice(v) as *u64
+      let mut i : i64 = 1i64
+      let mut sorted = true
+      while i < len
+        if data[i] < data[i - 1i64]
+          sorted = false
+          break
+        i = i + 1i64
+      sorted
+
+fn vec_is_sorted_i64 : *vec.Vec -> bool
+  | v ->
+    let len = vec.vec_len(v)
+    if len <= 1i64 then true
+    else
+      let data = vec.vec_as_slice(v) as *i64
+      let mut i : i64 = 1i64
+      let mut sorted = true
+      while i < len
+        if data[i] < data[i - 1i64]
+          sorted = false
+          break
+        i = i + 1i64
+      sorted
+
+fn vec_sort_u64 : *vec.Vec -> ()
+  | v ->
+    let len = vec.vec_len(v)
+    if len > 1i64
+      let data = vec.vec_as_slice(v) as *u64
+      let mut i : i64 = 1i64
+      while i < len
+        let key = data[i]
+        let mut j = i - 1i64
+        while j >= 0i64 && data[j] > key
+          data[j + 1i64] = data[j]
+          j = j - 1i64
+        data[j + 1i64] = key
+        i = i + 1i64
+
+fn vec_sort_i64 : *vec.Vec -> ()
+  | v ->
+    let len = vec.vec_len(v)
+    if len > 1i64
+      let data = vec.vec_as_slice(v) as *i64
+      let mut i : i64 = 1i64
+      while i < len
+        let key = data[i]
+        let mut j = i - 1i64
+        while j >= 0i64 && data[j] > key
+          data[j + 1i64] = data[j]
+          j = j - 1i64
+        data[j + 1i64] = key
+        i = i + 1i64
+
+fn vec_binary_search_u64 : (*vec.Vec, u64) -> (i64, bool)
+  | (v, target) ->
+    let len = vec.vec_len(v)
+    let data = vec.vec_as_slice(v) as *u64
+    let mut lo : i64 = 0i64
+    let mut hi = len - 1i64
+    let mut found = false
+    let mut idx : i64 = 0i64
+    while lo <= hi
+      let mid = lo + (hi - lo) / 2i64
+      let val = data[mid]
+      if val == target
+        found = true; idx = mid
+        break
+      else if val < target
+        lo = mid + 1i64
+      else
+        hi = mid - 1i64
+    if found then (idx, true) else (lo, false)
+
+fn vec_binary_search_i64 : (*vec.Vec, i64) -> (i64, bool)
+  | (v, target) ->
+    let len = vec.vec_len(v)
+    let data = vec.vec_as_slice(v) as *i64
+    let mut lo : i64 = 0i64
+    let mut hi = len - 1i64
+    let mut found = false
+    let mut idx : i64 = 0i64
+    while lo <= hi
+      let mid = lo + (hi - lo) / 2i64
+      let val = data[mid]
+      if val == target
+        found = true; idx = mid
+        break
+      else if val < target
+        lo = mid + 1i64
+      else
+        hi = mid - 1i64
+    if found then (idx, true) else (lo, false)
+
+fn vec_dedup_u64 : *vec.Vec -> ()
+  | v ->
+    let len = vec.vec_len(v)
+    if len > 1i64
+      let data = vec.vec_as_slice(v) as *u64
+      let mut w : i64 = 1i64
+      let mut r : i64 = 1i64
+      while r < len
+        if data[r] != data[w - 1i64]
+          data[w] = data[r]
+          w = w + 1i64
+        r = r + 1i64
+      vec.vec_truncate(v, w)
+
+fn vec_dedup_i64 : *vec.Vec -> ()
+  | v ->
+    let len = vec.vec_len(v)
+    if len > 1i64
+      let data = vec.vec_as_slice(v) as *i64
+      let mut w : i64 = 1i64
+      let mut r : i64 = 1i64
+      while r < len
+        if data[r] != data[w - 1i64]
+          data[w] = data[r]
+          w = w + 1i64
+        r = r + 1i64
+      vec.vec_truncate(v, w)
+
+fn vec_push_heap_u64 : *vec.Vec -> ()
+  | v ->
+    let len = vec.vec_len(v)
+    if len > 1i64
+      let data = vec.vec_as_slice(v) as *u64
+      let mut idx = len - 1i64
+      let item = data[idx]
+      while idx > 0i64
+        let parent = (idx - 1i64) / 2i64
+        if data[parent] >= item
+          break
+        data[idx] = data[parent]
+        idx = parent
+      data[idx] = item
+
+fn vec_pop_heap_u64 : *vec.Vec -> bool
+  | v ->
+    let len = vec.vec_len(v)
+    if len == 0i64 then false
+    else if len == 1i64
+      vec.vec_truncate(v, 0i64)
+      true
+    else
+      let data = vec.vec_as_slice(v) as *u64
+      let first = data[0i64]
+      let last  = data[len - 1i64]
+      vec.vec_truncate(v, len - 1i64)
+      let n = len - 1i64
+      let mut idx : i64 = 0i64
+      while true
+        let left  = 2i64 * idx + 1i64
+        let right = 2i64 * idx + 2i64
+        let mut largest = idx
+        if left < n && data[left] > data[largest]
+          largest = left
+        if right < n && data[right] > data[largest]
+          largest = right
+        if largest == idx
+          break
+        data[idx] = data[largest]
+        idx = largest
+      data[idx] = last
+      true
+
+fn vec_set_union_u64 : (*vec.Vec, *vec.Vec) -> vec.Vec
+  | (a, b) ->
+    let mut out = vec.vec_with_cap(vec.vec_len(a) + vec.vec_len(b), 8i64)
+    let da = vec.vec_as_slice(a) as *u64
+    let db = vec.vec_as_slice(b) as *u64
+    let la = vec.vec_len(a); let lb = vec.vec_len(b)
+    let mut i : i64 = 0i64; let mut j : i64 = 0i64
+    while i < la && j < lb
+      if da[i] < db[j]
+        vec.vec_push(&out, (da as i64 + i * 8i64) as ptr); i = i + 1i64
+      else if db[j] < da[i]
+        vec.vec_push(&out, (db as i64 + j * 8i64) as ptr); j = j + 1i64
+      else
+        vec.vec_push(&out, (da as i64 + i * 8i64) as ptr); i = i + 1i64; j = j + 1i64
+    while i < la
+      vec.vec_push(&out, (da as i64 + i * 8i64) as ptr); i = i + 1i64
+    while j < lb
+      vec.vec_push(&out, (db as i64 + j * 8i64) as ptr); j = j + 1i64
+    out
+
+fn vec_set_intersection_u64 : (*vec.Vec, *vec.Vec) -> vec.Vec
+  | (a, b) ->
+    let mut out = vec.vec_with_cap(if vec.vec_len(a) < vec.vec_len(b) then vec.vec_len(a) else vec.vec_len(b), 8i64)
+    let da = vec.vec_as_slice(a) as *u64
+    let db = vec.vec_as_slice(b) as *u64
+    let la = vec.vec_len(a); let lb = vec.vec_len(b)
+    let mut i : i64 = 0i64; let mut j : i64 = 0i64
+    while i < la && j < lb
+      if da[i] < db[j]
+        i = i + 1i64
+      else if db[j] < da[i]
+        j = j + 1i64
+      else
+        vec.vec_push(&out, (da as i64 + i * 8i64) as ptr); i = i + 1i64; j = j + 1i64
+    out
+
+fn vec_sort_desc_u64 : *vec.Vec -> ()
+  | v ->
+    let len = vec.vec_len(v)
+    if len > 1i64
+      let data = vec.vec_as_slice(v) as *u64
+      let mut i : i64 = 1i64
+      while i < len
+        let key = data[i]
+        let mut j = i - 1i64
+        while j >= 0i64 && data[j] < key
+          data[j + 1i64] = data[j]
+          j = j - 1i64
+        data[j + 1i64] = key
+        i = i + 1i64
+
+fn vec_sort_desc_i64 : *vec.Vec -> ()
+  | v ->
+    let len = vec.vec_len(v)
+    if len > 1i64
+      let data = vec.vec_as_slice(v) as *i64
+      let mut i : i64 = 1i64
+      while i < len
+        let key = data[i]
+        let mut j = i - 1i64
+        while j >= 0i64 && data[j] < key
+          data[j + 1i64] = data[j]
+          j = j - 1i64
+        data[j + 1i64] = key
+        i = i + 1i64

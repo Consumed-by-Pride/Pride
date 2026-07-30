@@ -1,0 +1,48 @@
+mod hash.ordered_map
+
+use hash
+use vec.vec
+use os.linux
+
+-- stdlib/hash/ordered_map.pie — Insertion-Ordered Robin Hood Map (OrderedMap)
+-- Preserves entry insertion sequence while maintaining O(1) average lookups.
+
+struct OrderedMap
+  map  : hash.HashMap
+  keys : vec.Vec
+
+fn orderedmap_new : () -> OrderedMap
+  | () ->
+    OrderedMap { map: hash.hashmap_new(), keys: vec.vec_new(8i64) }
+
+fn orderedmap_destroy : *OrderedMap -> ()
+  | om ->
+    hash.hashmap_destroy(&om.map)
+    vec.vec_destroy(&om.keys)
+
+fn orderedmap_has : (*OrderedMap, ptr) -> bool
+  | (om, key) -> hash.hashmap_has(&om.map, key)
+
+fn orderedmap_get : (*OrderedMap, ptr) -> (i64, bool)
+  | (om, key) -> hash.hashmap_get(&om.map, key)
+
+fn orderedmap_set : (*OrderedMap, ptr, i64) -> ()
+  | (om, key, val) ->
+    let already = hash.hashmap_has(&om.map, key)
+    hash.hashmap_set(&om.map, key, val)
+    if !already
+      let klen = os.linux.strlen(key) as i64
+      let kdup = os.linux.malloc(klen + 1i64) as *u8
+      os.linux.memcpy(kdup as ptr, key, klen as u64); kdup[klen] = 0u8
+      vec.vec_push(&om.keys, &kdup as ptr)
+
+fn orderedmap_len : *OrderedMap -> i64
+  | om -> vec.vec_len(&om.keys)
+
+fn orderedmap_is_empty : *OrderedMap -> bool
+  | om -> vec.vec_len(&om.keys) == 0i64
+
+fn orderedmap_clear : *OrderedMap -> ()
+  | om ->
+    hash.hashmap_clear(&om.map)
+    vec.vec_clear(&om.keys)

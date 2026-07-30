@@ -1,0 +1,30 @@
+mod target.linker
+
+use str.string
+use vec.vec
+
+-- stdlib/target/linker.pie — Minimalist Native Object Symbol Resolver
+-- Relocates machine code buffers and builds ELF64 object symbols.
+
+struct SymbolReloc
+  name   : string.String
+  offset : i64
+  is_ext : bool
+
+struct NativeObject
+  code    : vec.Vec
+  symbols : vec.Vec
+
+fn native_object_new : () -> NativeObject
+  | () -> NativeObject { code: vec.vec_new(64i64), symbols: vec.vec_new(8i64) }
+
+fn native_object_destroy : *NativeObject -> ()
+  | obj ->
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&obj.symbols)
+    while i < len
+      let sym = vec.vec_get(&obj.symbols, i) as *SymbolReloc
+      string.string_destroy(&sym.name)
+      i = i + 1i64
+    vec.vec_destroy(&obj.symbols)
+    vec.vec_destroy(&obj.code)

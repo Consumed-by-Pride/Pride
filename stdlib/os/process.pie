@@ -1,0 +1,62 @@
+mod os.process
+
+use os.linux
+
+-- stdlib/os/process.pie — Process Spawning, Wait Status, and Signals
+-- Wraps fork, execve, wait4, and kill for child process lifecycle control.
+
+struct Process
+  pid : i64
+
+struct ExitStatus
+  code     : i64
+  signaled : bool
+  term_sig : i64
+
+const SIGINT  : i64 = 2i64
+const SIGKILL : i64 = 9i64
+const SIGTERM : i64 = 15i64
+const SIGCHLD : i64 = 17i64
+
+fn process_spawn : (ptr, ptr, ptr) -> (Process, i64)
+  | (pathname, argv, envp) ->
+    let pid = os.linux.fork()
+    if pid < 0i64 then (Process { pid: -1i64 }, pid)
+    else if pid == 0i64
+      -- Child process
+      os.linux.execve(pathname, argv, envp)
+      -- If execve returns, it failed — exit immediately with error code 127
+      os.linux.exit(127i64)
+      (Process { pid: 0i64 }, 0i64)
+    else
+      (Process { pid: pid }, 0i64)
+
+fn parse_wait_status : i32 -> ExitStatus
+  | status ->
+    let s = status as i64
+    let termsig  = s & 0x7Fi64
+    let signaled = (termsig != 0i64) && (termsig != 0x7Fi64)
+    let code     = if signaled then 0i64 else (s >> 8i64) & 0xFFi64
+    ExitStatus { code: code, signaled: signaled, term_sig: if signaled then termsig else 0i64 }
+
+fn process_wait : *Process -> (ExitStatus, i64)
+  | p ->
+    if p.pid <= 0i64
+      (ExitStatus { code: -1i64, signaled: false, term_sig: 0i64 }, -1i64)
+    else
+      let st_ptr = os.linux.malloc(8i64) as *i32
+      st_ptr[0i64] = 0i32
+      let r = os.linux.wait4(p.pid, st_ptr, 0i64, 0 as ptr)
+      let parsed = parse_wait_status(st_ptr[0i64])
+      os.linux.free(st_ptr as ptr)
+      (parsed, r)
+
+fn process_kill : (*Process, i64) -> i64
+  | (p, sig) ->
+    if p.pid <= 0i64 then -1i64
+    else os.linux.kill(p.pid, sig)
+
+fn process_is_running : *Process -> bool
+  | p ->
+    if p.pid <= 0i64 then false
+    else os.linux.kill(p.pid, 0i64) == 0i64

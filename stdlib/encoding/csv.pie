@@ -1,0 +1,71 @@
+mod encoding.csv
+
+use os.linux
+use str.string
+use vec.vec
+
+-- stdlib/encoding/csv.pie — RFC-4180 Comma-Separated Values (CSV) Table Parser
+-- Splits tabular records and unescapes quoted cells.
+
+struct CsvRecord
+  fields : vec.Vec
+
+struct CsvTable
+  records : vec.Vec
+
+fn csv_record_new : () -> CsvRecord
+  | () -> CsvRecord { fields: vec.vec_new(8i64) }
+
+fn csv_record_destroy : *CsvRecord -> ()
+  | rec ->
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&rec.fields)
+    while i < len
+      string.string_destroy(vec.vec_get(&rec.fields, i) as *string.String)
+      i = i + 1i64
+    vec.vec_destroy(&rec.fields)
+
+fn csv_parse_line : (ptr, i64, u8) -> CsvRecord
+  | (line_ptr, len, delim) ->
+    let mut rec = csv_record_new()
+    let buf = line_ptr as *u8
+    let mut i : i64 = 0i64
+    let mut cur = string.string_new()
+    let mut in_quote = false
+    while i < len
+      let b = buf[i]
+      if b == 34u8   -- '"'
+        in_quote = !in_quote
+      else if b == delim && !in_quote
+        vec.vec_push(&rec.fields, &cur as ptr)
+        cur = string.string_new()
+      else if b != 13u8   -- '\r'
+        string.string_push_byte(&cur, b)
+      i = i + 1i64
+    vec.vec_push(&rec.fields, &cur as ptr)
+    rec
+
+fn csv_parse_table : (ptr, i64, u8) -> CsvTable
+  | (data_ptr, len, delim) ->
+    let mut tab = CsvTable { records: vec.vec_new(16i64) }
+    let buf = data_ptr as *u8
+    let mut start : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i <= len
+      if i == len || buf[i] == 10u8   -- '\n'
+        let rlen = i - start
+        if rlen > 0i64
+          let mut rec = csv_parse_line((data_ptr as i64 + start) as ptr, rlen, delim)
+          vec.vec_push(&tab.records, &rec as ptr)
+        start = i + 1i64
+      i = i + 1i64
+    tab
+
+fn csv_table_destroy : *CsvTable -> ()
+  | tab ->
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&tab.records)
+    while i < len
+      csv_record_destroy(vec.vec_get(&tab.records, i) as *CsvRecord)
+      i = i + 1i64
+    vec.vec_destroy(&tab.records)

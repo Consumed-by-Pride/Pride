@@ -1,0 +1,63 @@
+mod vec.ring_buffer
+
+use os.linux
+
+-- stdlib/vec/ring_buffer.pie — Fixed-Capacity Single-Producer Single-Consumer (SPSC) RingBuffer
+-- Lock-free circular buffer for high-throughput streaming systems.
+
+struct RingBuffer
+  buf     : ptr
+  cap     : i64
+  head    : i64
+  tail    : i64
+  elem_sz : i64
+
+fn rb_new : (i64, i64) -> RingBuffer
+  | (cap_hint, elem_sz) ->
+    let mut c = 8i64
+    while c < cap_hint
+      c = c * 2i64
+    let p = os.linux.malloc(c * elem_sz)
+    os.linux.memset(p, 0i32, (c * elem_sz) as u64)
+    RingBuffer { buf: p, cap: c, head: 0i64, tail: 0i64, elem_sz: elem_sz }
+
+fn rb_destroy : *RingBuffer -> ()
+  | rb ->
+    if rb.cap > 0i64 && rb.buf as i64 != 0i64
+      os.linux.free(rb.buf)
+    rb.buf = 0 as ptr; rb.cap = 0i64; rb.head = 0i64; rb.tail = 0i64
+
+fn rb_len : *RingBuffer -> i64
+  | rb -> (rb.tail - rb.head + rb.cap) & (rb.cap - 1i64)
+
+fn rb_cap : *RingBuffer -> i64
+  | rb -> rb.cap - 1i64   -- 1 slot reserved to distinguish full from empty
+
+fn rb_is_empty : *RingBuffer -> bool
+  | rb -> rb.head == rb.tail
+
+fn rb_is_full : *RingBuffer -> bool
+  | rb -> ((rb.tail + 1i64) & (rb.cap - 1i64)) == rb.head
+
+fn rb_push : (*RingBuffer, ptr) -> bool
+  | (rb, val_ptr) ->
+    let next_tail = (rb.tail + 1i64) & (rb.cap - 1i64)
+    if next_tail == rb.head then false
+    else
+      let dst = (rb.buf as i64 + rb.tail * rb.elem_sz) as ptr
+      os.linux.memcpy(dst, val_ptr, rb.elem_sz as u64)
+      rb.tail = next_tail
+      true
+
+fn rb_pop : (*RingBuffer, ptr) -> bool
+  | (rb, out_ptr) ->
+    if rb.head == rb.tail then false
+    else
+      let src = (rb.buf as i64 + rb.head * rb.elem_sz) as ptr
+      if out_ptr as i64 != 0i64
+        os.linux.memcpy(out_ptr, src, rb.elem_sz as u64)
+      rb.head = (rb.head + 1i64) & (rb.cap - 1i64)
+      true
+
+fn rb_clear : *RingBuffer -> ()
+  | rb -> rb.head = 0i64; rb.tail = 0i64

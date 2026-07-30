@@ -1,0 +1,57 @@
+mod fs.temp
+
+use os.linux
+use str.string
+use fs.file
+use fs.dir
+
+-- stdlib/fs/temp.pie — Temporary Files and Directories
+-- Creates unique scratch files and directories using system randomness.
+
+fn push_u32_hex : (*string.String, u32) -> ()
+  | (s, val) ->
+    let hex = "0123456789abcdef" as *u8
+    let mut i : i64 = 7i64
+    while i >= 0i64
+      let shift = (i * 4i64) as u64
+      let nibble = ((val >> shift) & 0xFu32) as i64
+      string.string_push_byte(s, hex[nibble])
+      i = i - 1i64
+
+fn temp_file_create : ptr -> (file.File, string.String)
+  | prefix ->
+    let mut tries : i64 = 0i64
+    let mut res_f = file.File { fd: -1i64 }
+    let mut res_path = string.string_new()
+    while tries < 10i64
+      let r = os.linux.random_u32()
+      let mut p = string.string_from_cstr(prefix)
+      string.string_push_cstr(&p, ".tmp." as ptr)
+      push_u32_hex(&p, r)
+      let path_cstr = string.string_as_cstr(&p)
+      let fd = os.linux.open(path_cstr, file.O_RDWR | file.O_CREAT | os.linux.O_EXCL, 384i64)   -- 0600
+      if fd >= 0i64
+        res_f = file.File { fd: fd }
+        res_path = p
+        break
+      string.string_destroy(&p)
+      tries = tries + 1i64
+    (res_f, res_path)
+
+fn temp_dir_create : ptr -> string.String
+  | prefix ->
+    let mut tries : i64 = 0i64
+    let mut res_path = string.string_new()
+    while tries < 10i64
+      let r = os.linux.random_u32()
+      let mut p = string.string_from_cstr(prefix)
+      string.string_push_cstr(&p, ".tmpdir." as ptr)
+      push_u32_hex(&p, r)
+      let path_cstr = string.string_as_cstr(&p)
+      let err = dir.dir_create(path_cstr, 448i64)   -- 0700
+      if err == 0i64
+        res_path = p
+        break
+      string.string_destroy(&p)
+      tries = tries + 1i64
+    res_path

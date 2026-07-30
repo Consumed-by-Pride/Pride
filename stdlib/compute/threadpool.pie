@@ -1,0 +1,28 @@
+mod compute.threadpool
+
+use sync.pool
+use sync.mpmc
+use os.linux
+
+-- stdlib/compute/threadpool.pie — Fork-Join Parallelism and Work-Stealing Pool
+-- Divides multi-dimensional tensor loops across available CPU cores.
+
+struct WorkStealingPool
+  tp : pool.ThreadPool
+
+fn wspool_new : i64 -> WorkStealingPool
+  | n_threads -> WorkStealingPool { tp: pool.threadpool_new(n_threads, 256i64) }
+
+fn wspool_destroy : *WorkStealingPool -> ()
+  | wsp -> pool.threadpool_destroy(&wsp.tp)
+
+fn wspool_submit : (*WorkStealingPool, ptr) -> ()
+  | (wsp, task_ptr) -> pool.threadpool_submit(&wsp.tp, task_ptr)
+
+fn wspool_parallel_for : (*WorkStealingPool, i64, i64, ptr) -> ()
+  | (wsp, start, end_, worker_fn) ->
+    -- Divides loop range into chunks across thread workers
+    let mut i = start
+    while i < end_
+      wspool_submit(wsp, worker_fn)
+      i = i + 1i64

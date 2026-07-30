@@ -1,0 +1,55 @@
+mod encoding.hex_dump
+
+use str.string
+
+-- stdlib/encoding/hex_dump.pie — Canonical Hexadecimal Memory Dumper
+-- Formats raw memory into offset, hex columns, and ASCII character columns.
+
+fn push_hex_u8 : (*string.String, u8) -> ()
+  | (s, b) ->
+    let hex = "0123456789abcdef" as *u8
+    let v = b as i64
+    string.string_push_byte(s, hex[(v >> 4i64) & 0xFi64])
+    string.string_push_byte(s, hex[v & 0xFi64])
+
+fn push_hex_u64_addr : (*string.String, i64) -> ()
+  | (s, addr) ->
+    let hex = "0123456789abcdef" as *u8
+    let mut i : i64 = 7i64
+    while i >= 0i64
+      let shift = (i * 4i64) as u64
+      let nibble = ((addr as u64 >> shift) & 0xFu64) as i64
+      string.string_push_byte(s, hex[nibble])
+      i = i - 1i64
+
+fn hex_dump_format_slice : (ptr, i64) -> string.String
+  | (data, len) ->
+    let mut out = string.string_with_cap(len * 4i64)
+    let buf = data as *u8
+    let mut offset : i64 = 0i64
+    while offset < len
+      push_hex_u64_addr(&out, offset)
+      string.string_push_cstr(&out, "  " as ptr)
+      let row_len = if len - offset < 16i64 then len - offset else 16i64
+      let mut i : i64 = 0i64
+      while i < 16i64
+        if i < row_len
+          push_hex_u8(&out, buf[offset + i])
+        else
+          string.string_push_cstr(&out, "  " as ptr)
+        if i == 7i64
+          string.string_push_byte(&out, 32u8)   -- ' '
+        string.string_push_byte(&out, 32u8)   -- ' '
+        i = i + 1i64
+      string.string_push_cstr(&out, " |" as ptr)
+      let mut j : i64 = 0i64
+      while j < row_len
+        let c = buf[offset + j]
+        if c >= 32u8 && c < 127u8
+          string.string_push_byte(&out, c)
+        else
+          string.string_push_byte(&out, 46u8)   -- '.'
+        j = j + 1i64
+      string.string_push_cstr(&out, "|\n" as ptr)
+      offset = offset + 16i64
+    out

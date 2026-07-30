@@ -1,0 +1,54 @@
+mod db.sstable
+
+use os.linux
+use fs.file
+use str.string
+use db.memtable
+
+-- stdlib/db/sstable.pie — Immutable Sorted String Table (SSTable)
+-- Disk-backed sorted data block and index footer for LSM database queries.
+
+struct SsTable
+  file_h  : file.File
+  entries : i64
+
+fn sstable_create_from_memtable : (ptr, *memtable.MemTable) -> i64
+  | (path_cstr, mt) ->
+    let mut f = file.file_open_write(path_cstr)
+    if f.fd < 0i64 then -1i64
+    else
+      let len = vec.vec_len(&mt.entries)
+      let count_buf = os.linux.malloc(8i64) as *i64
+      count_buf[0i64] = len
+      file.file_write_all(&f, count_buf as ptr, 8i64)
+      let mut i : i64 = 0i64
+      while i < len
+        let e = vec.vec_get(&mt.entries, i) as *memtable.MemEntry
+        let klen = string.string_len(&e.key)
+        let vlen = string.string_len(&e.val)
+        count_buf[0i64] = klen
+        file.file_write_all(&f, count_buf as ptr, 8i64)
+        file.file_write_all(&f, string.string_as_slice(&e.key), klen)
+        count_buf[0i64] = vlen
+        file.file_write_all(&f, count_buf as ptr, 8i64)
+        file.file_write_all(&f, string.string_as_slice(&e.val), vlen)
+        i = i + 1i64
+      os.linux.free(count_buf as ptr)
+      file.file_close(&f)
+      0i64
+
+fn sstable_open : ptr -> SsTable
+  | path_cstr ->
+    let f = file.file_open_read(path_cstr)
+    if f.fd < 0i64 then SsTable { file_h: f, entries: 0i64 }
+    else
+      let count_buf = os.linux.malloc(8i64) as *i64
+      let rn = file.file_read(&f, count_buf as ptr, 8i64)
+      let cnt = if rn == 8i64 then count_buf[0i64] else 0i64
+      os.linux.free(count_buf as ptr)
+      SsTable { file_h: f, entries: cnt }
+
+fn sstable_close : *SsTable -> ()
+  | sst ->
+    file.file_close(&sst.file_h)
+    sst.entries = 0i64

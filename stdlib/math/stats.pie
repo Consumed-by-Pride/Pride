@@ -1,0 +1,74 @@
+mod math.stats
+
+use vec.vec
+use math.pow
+
+-- stdlib/math/stats.pie — Statistical Algorithms and Probability Metrics
+-- Computes means, variances, standard deviations, and correlations on vectors.
+
+fn mean_f64 : *vec.Vec -> f64
+  | v ->
+    let len = vec.vec_len(v)
+    if len == 0i64 then 0.0f64
+    else
+      let data = vec.vec_as_slice(v) as *f64
+      let mut sum = 0.0f64
+      let mut i : i64 = 0i64
+      while i < len
+        sum = sum + data[i]
+        i = i + 1i64
+      sum / len as f64
+
+fn variance_f64 : (*vec.Vec, bool) -> f64
+  | (v, sample) ->
+    let len = vec.vec_len(v)
+    if len == 0i64 || (sample && len == 1i64) then 0.0f64
+    else
+      let m = mean_f64(v)
+      let data = vec.vec_as_slice(v) as *f64
+      let mut sum_sq = 0.0f64
+      let mut i : i64 = 0i64
+      while i < len
+        let diff = data[i] - m
+        sum_sq = sum_sq + diff * diff
+        i = i + 1i64
+      let denom = if sample then (len - 1i64) as f64 else len as f64
+      sum_sq / denom
+
+fn stddev_f64 : (*vec.Vec, bool) -> f64
+  | (v, sample) -> pow.sqrt_f64(variance_f64(v, sample))
+
+fn min_max_f64 : *vec.Vec -> (f64, f64)
+  | v ->
+    let len = vec.vec_len(v)
+    if len == 0i64 then (0.0f64, 0.0f64)
+    else
+      let data = vec.vec_as_slice(v) as *f64
+      let mut min_val = data[0i64]
+      let mut max_val = data[0i64]
+      let mut i : i64 = 1i64
+      while i < len
+        if data[i] < min_val then min_val = data[i]
+        if data[i] > max_val then max_val = data[i]
+        i = i + 1i64
+      (min_val, max_val)
+
+fn pearson_correlation_f64 : (*vec.Vec, *vec.Vec) -> f64
+  | (a, b) ->
+    let len_a = vec.vec_len(a); let len_b = vec.vec_len(b)
+    if len_a != len_b || len_a <= 1i64 then 0.0f64
+    else
+      let mean_a = mean_f64(a); let mean_b = mean_f64(b)
+      let da = vec.vec_as_slice(a) as *f64
+      let db = vec.vec_as_slice(b) as *f64
+      let mut num = 0.0f64; let mut den_a = 0.0f64; let mut den_b = 0.0f64
+      let mut i : i64 = 0i64
+      while i < len_a
+        let diff_a = da[i] - mean_a
+        let diff_b = db[i] - mean_b
+        num = num + diff_a * diff_b
+        den_a = den_a + diff_a * diff_a
+        den_b = den_b + diff_b * diff_b
+        i = i + 1i64
+      let den = pow.sqrt_f64(den_a * den_b)
+      if den == 0.0f64 then 0.0f64 else num / den

@@ -1,0 +1,24 @@
+mod graph
+
+use graph.dfg
+use graph.autodiff
+use vec.vec
+
+-- stdlib/graph.pie — Standard Library Graph & Intermediate Representation Suite
+-- Exports Dataflow Graph (DFG) dependency tracking and reverse-mode AutoDiff DAG engines.
+
+-- DFG
+fn dfg_new : () -> dfg.DataflowGraph                      | () -> dfg.dfg_new()
+fn dfg_destroy : *dfg.DataflowGraph -> ()                 | g -> dfg.dfg_destroy(g)
+fn dfg_add_node : (*dfg.DataflowGraph, i64) -> i64        | (g, c) -> dfg.dfg_add_node(g, c)
+fn dfg_add_edge : (*dfg.DataflowGraph, i64, i64) -> ()    | (g, f, t) -> dfg.dfg_add_edge(g, f, t)
+fn dfg_topo_sort : *dfg.DataflowGraph -> vec.Vec          | g -> dfg.dfg_topo_sort(g)
+
+-- AutoDiff DAG
+fn autodiff_new : () -> autodiff.AutoDiffGraph            | () -> autodiff.autodiff_new()
+fn autodiff_destroy : *autodiff.AutoDiffGraph -> ()       | g -> autodiff.autodiff_destroy(g)
+fn autodiff_var : (*autodiff.AutoDiffGraph, f64) -> i64   | (g, v) -> autodiff.autodiff_var(g, v)
+fn autodiff_add : (*autodiff.AutoDiffGraph, i64, i64, f64) -> i64 | (g, a, b, v) -> autodiff.autodiff_add_op(g, a, b, v)
+fn autodiff_mul : (*autodiff.AutoDiffGraph, i64, i64, f64) -> i64 | (g, a, b, v) -> autodiff.autodiff_mul_op(g, a, b, v)
+fn autodiff_backward : (*autodiff.AutoDiffGraph, i64) -> ()       | (g, t) -> autodiff.autodiff_backward(g, t)
+fn autodiff_grad : (*autodiff.AutoDiffGraph, i64) -> f64          | (g, i) -> autodiff.autodiff_get_grad(g, i)

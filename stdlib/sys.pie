@@ -1,0 +1,31 @@
+mod sys
+
+use sys.cpu
+use sys.memory
+use sys.vdso_clock
+use sys.uname
+
+-- stdlib/sys.pie — Standard Library System Architecture and Hardware Suite
+-- Exports CPU feature detection, system memory statistics, high-resolution VDSO clocks,
+-- and kernel architecture identification.
+
+-- CPU
+fn cache_line_size : () -> i64                       | () -> cpu.cpu_cache_line_size()
+fn vendor_string : () -> str.string.String           | () -> cpu.cpu_vendor_string()
+fn has_sse41 : () -> bool                            | () -> cpu.cpu_has_sse41()
+fn has_avx2 : () -> bool                             | () -> cpu.cpu_has_avx2()
+fn has_bmi2 : () -> bool                             | () -> cpu.cpu_has_bmi2()
+
+-- Memory
+fn total_ram : () -> i64                             | () -> memory.sys_total_ram()
+fn free_ram : () -> i64                              | () -> memory.sys_free_ram()
+fn page_size : () -> i64                             | () -> memory.sys_page_size()
+fn memory_stats : () -> memory.MemoryStats           | () -> memory.sys_memory_stats()
+
+-- VDSO Clocks
+fn vdso_clock_mono : () -> (i64, i32)                | () -> vdso_clock.vdso_clock_gettime_mono()
+fn vdso_clock_real : () -> (i64, i32)                | () -> vdso_clock.vdso_clock_gettime_real()
+
+-- Uname
+fn uname_info : () -> uname.UnameInfo                | () -> uname.sys_uname_info()
+fn uname_destroy : *uname.UnameInfo -> ()            | i -> uname.uname_info_destroy(i)

@@ -1,0 +1,79 @@
+mod net.http
+
+use str.string
+use str.slice
+
+-- stdlib/net/http.pie — Lightweight HTTP/1.1 Protocol Builder and Parser
+-- Formats HTTP requests and responses and parses status lines.
+
+struct HttpRequest
+  method : string.String
+  path   : string.String
+  body   : string.String
+
+struct HttpResponse
+  status_code : i64
+  status_text : string.String
+  body        : string.String
+
+fn http_request_format : *HttpRequest -> string.String
+  | req ->
+    let mut out = string.string_with_cap(128i64)
+    string.string_concat(&out, &req.method)
+    string.string_push_byte(&out, 32u8)   -- ' '
+    string.string_concat(&out, &req.path)
+    string.string_push_cstr(&out, " HTTP/1.1\r\nConnection: close\r\n\r\n" as ptr)
+    if string.string_len(&req.body) > 0i64
+      string.string_concat(&out, &req.body)
+    out
+
+fn push_i64_decimal : (*string.String, i64) -> ()
+  | (s, val) ->
+    if val >= 10000i64
+      string.string_push_byte(s, (48i64 + val / 10000i64) as u8)
+      string.string_push_byte(s, (48i64 + (val / 1000i64) % 10i64) as u8)
+      string.string_push_byte(s, (48i64 + (val / 100i64) % 10i64) as u8)
+      string.string_push_byte(s, (48i64 + (val / 10i64) % 10i64) as u8)
+      string.string_push_byte(s, (48i64 + val % 10i64) as u8)
+    else if val >= 100i64
+      string.string_push_byte(s, (48i64 + val / 100i64) as u8)
+      string.string_push_byte(s, (48i64 + (val / 10i64) % 10i64) as u8)
+      string.string_push_byte(s, (48i64 + val % 10i64) as u8)
+    else if val >= 10i64
+      string.string_push_byte(s, (48i64 + val / 10i64) as u8)
+      string.string_push_byte(s, (48i64 + val % 10i64) as u8)
+    else
+      string.string_push_byte(s, (48i64 + val) as u8)
+
+fn http_response_format : *HttpResponse -> string.String
+  | resp ->
+    let mut out = string.string_with_cap(256i64)
+    string.string_push_cstr(&out, "HTTP/1.1 " as ptr)
+    push_i64_decimal(&out, resp.status_code)
+    string.string_push_byte(&out, 32u8)   -- ' '
+    string.string_concat(&out, &resp.status_text)
+    string.string_push_cstr(&out, "\r\nContent-Length: " as ptr)
+    push_i64_decimal(&out, string.string_len(&resp.body))
+    string.string_push_cstr(&out, "\r\nConnection: close\r\n\r\n" as ptr)
+    if string.string_len(&resp.body) > 0i64
+      string.string_concat(&out, &resp.body)
+    out
+
+fn http_parse_status_code : ptr -> (i64, bool)
+  | cstr ->
+    let prefix = "HTTP/1."
+    if !slice.str_starts_with(cstr, 7i64, prefix as ptr, 7i64) then (0i64, false)
+    else
+      let buf = cstr as *u8
+      let mut i : i64 = 8i64
+      while buf[i] != 32u8 && buf[i] != 0u8
+        i = i + 1i64
+      if buf[i] != 32u8 then (0i64, false)
+      else
+        let s0 = buf[i + 1i64] as i64 - 48i64
+        let s1 = buf[i + 2i64] as i64 - 48i64
+        let s2 = buf[i + 3i64] as i64 - 48i64
+        if s0 < 0i64 || s0 > 9i64 || s1 < 0i64 || s1 > 9i64 || s2 < 0i64 || s2 > 9i64
+          (0i64, false)
+        else
+          (s0 * 100i64 + s1 * 10i64 + s2, true)

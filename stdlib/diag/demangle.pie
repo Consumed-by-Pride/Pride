@@ -1,0 +1,48 @@
+mod diag.demangle
+
+use os.linux
+use str.string
+use str.slice
+
+-- stdlib/diag/demangle.pie — Symbol Demangler
+-- Decodes Itanium C++ and Rust/Pie mangled identifiers inside diagnostic stack traces.
+
+fn demangle_is_itanium : ptr -> bool
+  | cstr ->
+    let l = os.linux.strlen(cstr) as i64
+    if l < 3i64 then false
+    else
+      let b = cstr as *u8
+      b[0i64] == 95u8 && b[1i64] == 90u8   -- '_Z'
+
+fn demangle_symbol : ptr -> string.String
+  | cstr ->
+    let len = os.linux.strlen(cstr) as i64
+    if !demangle_is_itanium(cstr)
+      string.string_from_cstr(cstr)
+    else
+      let mut out = string.string_with_cap(len)
+      let buf = cstr as *u8
+      let mut i : i64 = 2i64   -- skip '_Z'
+      while i < len
+        if buf[i] == 78u8   -- 'N' nested name prefix
+          i = i + 1i64
+          let mut first = true
+          while i < len && buf[i] != 69u8   -- 'E' end of nested name
+            let mut name_len : i64 = 0i64
+            while i < len && buf[i] >= 48u8 && buf[i] <= 57u8
+              name_len = name_len * 10i64 + (buf[i] as i64 - 48i64)
+              i = i + 1i64
+            if name_len > 0i64 && i + name_len <= len
+              if !first
+                string.string_push_cstr(&out, "::" as ptr)
+              string.string_push_slice(&out, (cstr as i64 + i) as ptr, name_len)
+              first = false
+              i = i + name_len
+            else
+              break
+          break
+        else
+          string.string_push_slice(&out, (cstr as i64 + i) as ptr, len - i)
+          break
+      out

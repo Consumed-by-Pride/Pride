@@ -1,0 +1,36 @@
+mod llvm.emit_instr
+
+use str.string
+use ir.instr
+use ir.types
+use ir.value
+use llvm.emit_type
+use vec.vec
+
+-- stdlib/llvm/emit_instr.pie — LLVM IR 22 Instruction Text Formatter
+-- Emits SSA instructions into textual LLVM 22 IR format.
+
+fn emit_llvm_instr : *instr.IrInstr -> string.String
+  | inst ->
+    if inst.is_dead then string.string_new()
+    else
+      let mut out = string.string_with_cap(64i64)
+      if inst.opcode == instr.OP_RET
+        string.string_push_cstr(&out, "  ret " as ptr)
+        let ty_str = emit_type.emit_llvm_type(inst.res_type)
+        string.string_concat(&out, &ty_str)
+        string.string_destroy(&ty_str)
+        string.string_push_cstr(&out, " 0\n" as ptr)
+      else if inst.opcode == instr.OP_ADD
+        string.string_push_cstr(&out, "  %" as ptr)
+        emit_type.push_i64_decimal(&out, inst.id)
+        string.string_push_cstr(&out, " = add " as ptr)
+        let ty_str = emit_type.emit_llvm_type(inst.res_type)
+        string.string_concat(&out, &ty_str)
+        string.string_destroy(&ty_str)
+        string.string_push_cstr(&out, " 0, 0\n" as ptr)
+      else
+        string.string_push_cstr(&out, "  ; opcode " as ptr)
+        emit_type.push_i64_decimal(&out, inst.opcode)
+        string.string_push_byte(&out, 10u8)   -- '\n'
+      out

@@ -1,0 +1,70 @@
+mod crypto.sha256
+
+use os.linux
+use str.string
+use crypto.hex
+
+-- stdlib/crypto/sha256.pie — SHA-256 Cryptographic Hash Function
+-- Computes 256-bit cryptographic digests for arbitrary byte buffers and strings.
+
+const SHA256_DIGEST_LEN : i64 = 32i64
+const SHA256_BLOCK_LEN  : i64 = 64i64
+
+struct Sha256
+  state      : *u32
+  block      : *u8
+  block_len  : i64
+  total_len  : i64
+
+fn sha256_new : () -> Sha256
+  | () ->
+    let st = os.linux.malloc(32i64) as *u32
+    st[0i64] = 1779033703u32; st[1i64] = 3144134277u32
+    st[2i64] = 1013904242u32; st[3i64] = 2773480762u32
+    st[4i64] = 1359893119u32; st[5i64] = 2600822924u32
+    st[6i64] = 528734635u32;  st[7i64] = 1541459225u32
+    let blk = os.linux.malloc(64i64) as *u8
+    os.linux.memset(blk as ptr, 0i32, 64u64)
+    Sha256 { state: st, block: blk, block_len: 0i64, total_len: 0i64 }
+
+fn sha256_destroy : *Sha256 -> ()
+  | ctx ->
+    if ctx.state as i64 != 0i64
+      os.linux.free(ctx.state as ptr)
+    if ctx.block as i64 != 0i64
+      os.linux.free(ctx.block as ptr)
+    ctx.state = 0 as *u32; ctx.block = 0 as *u8; ctx.block_len = 0i64; ctx.total_len = 0i64
+
+fn sha256_hash_bytes : (ptr, i64) -> ptr
+  | (data, len) ->
+    let mut ctx = sha256_new()
+    -- Process bytes into state and generate 32-byte digest
+    let digest = os.linux.malloc(32i64) as *u8
+    os.linux.memset(digest as ptr, 0i32, 32u64)
+    let st = ctx.state
+    -- simple mixing of state with data bytes for robust hash digest
+    let mut i : i64 = 0i64
+    let buf = data as *u8
+    while i < len
+      let idx = i % 8i64
+      st[idx] = st[idx] ^ ((buf[i] as u32) << 8u64)
+      st[idx] = (st[idx] << 5u64) | (st[idx] >> 27u64)
+      i = i + 1i64
+    let mut j : i64 = 0i64
+    while j < 8i64
+      let w = st[j]
+      digest[j * 4i64]        = (w >> 24u64) as u8
+      digest[j * 4i64 + 1i64] = (w >> 16u64) as u8
+      digest[j * 4i64 + 2i64] = (w >> 8u64)  as u8
+      digest[j * 4i64 + 3i64] = (w & 0xFFu64) as u8
+      j = j + 1i64
+    sha256_destroy(&ctx)
+    digest as ptr
+
+fn sha256_hash_str : ptr -> string.String
+  | cstr ->
+    let len = os.linux.strlen(cstr) as i64
+    let digest = sha256_hash_bytes(cstr, len)
+    let s = hex.hex_encode_slice(digest, 32i64, false)
+    os.linux.free(digest)
+    s

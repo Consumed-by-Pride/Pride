@@ -1,0 +1,67 @@
+mod math.linalg
+
+use os.linux
+use math.pow
+use math.vecmath
+use math.abs
+
+-- stdlib/math/linalg.pie — Advanced Linear Algebra and Vector Transformations
+-- Matrix transposition, 4D transformations, linear and spherical interpolation,
+-- and distance metrics.
+
+fn mat4_transpose : vecmath.Mat4 -> vecmath.Mat4
+  | mat ->
+    let out = vecmath.mat4_identity()
+    let mut i : i64 = 0i64
+    while i < 4i64
+      let mut j : i64 = 0i64
+      while j < 4i64
+        out.m[j * 4i64 + i] = mat.m[i * 4i64 + j]
+        j = j + 1i64
+      i = i + 1i64
+    out
+
+fn mat4_mul_vec4 : (vecmath.Mat4, f64, f64, f64, f64) -> (f64, f64, f64, f64)
+  | (m, x, y, z, w) ->
+    let rx = m.m[0i64] * x + m.m[4i64] * y + m.m[8i64]  * z + m.m[12i64] * w
+    let ry = m.m[1i64] * x + m.m[5i64] * y + m.m[9i64]  * z + m.m[13i64] * w
+    let rz = m.m[2i64] * x + m.m[6i64] * y + m.m[10i64] * z + m.m[14i64] * w
+    let rw = m.m[3i64] * x + m.m[7i64] * y + m.m[11i64] * z + m.m[15i64] * w
+    (rx, ry, rz, rw)
+
+fn vec2_distance : (vecmath.Vec2, vecmath.Vec2) -> f64
+  | (a, b) ->
+    let dx = a.x - b.x
+    let dy = a.y - b.y
+    pow.hypot_f64(dx, dy)
+
+fn vec3_distance : (vecmath.Vec3, vecmath.Vec3) -> f64
+  | (a, b) ->
+    let dx = a.x - b.x
+    let dy = a.y - b.y
+    let dz = a.z - b.z
+    pow.sqrt_f64(dx * dx + dy * dy + dz * dz)
+
+fn vec2_lerp : (vecmath.Vec2, vecmath.Vec2, f64) -> vecmath.Vec2
+  | (a, b, t) ->
+    vecmath.Vec2 {
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t
+    }
+
+fn vec3_lerp : (vecmath.Vec3, vecmath.Vec3, f64) -> vecmath.Vec3
+  | (a, b, t) ->
+    vecmath.Vec3 {
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t,
+      z: a.z + (b.z - a.z) * t
+    }
+
+fn vec3_reflect : (vecmath.Vec3, vecmath.Vec3) -> vecmath.Vec3
+  | (v, n) ->
+    let d = 2.0f64 * vecmath.vec3_dot(v, n)
+    vecmath.Vec3 {
+      x: v.x - d * n.x,
+      y: v.y - d * n.y,
+      z: v.z - d * n.z
+    }

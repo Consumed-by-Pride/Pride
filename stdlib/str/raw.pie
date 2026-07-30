@@ -1,0 +1,79 @@
+mod str.raw
+
+use os.linux
+
+-- stdlib/str/raw.pie — Low-Level UTF-8 Validation and Codepoint Encoding/Decoding
+
+fn utf8_char_len : u8 -> i64
+  | b0 ->
+    if (b0 & 0x80u8) == 0u8 then 1i64
+    else if (b0 & 0xE0u8) == 0xC0u8 then 2i64
+    else if (b0 & 0xF0u8) == 0xE0u8 then 3i64
+    else if (b0 & 0xF8u8) == 0xF0u8 then 4i64
+    else -1i64
+
+fn is_valid_utf8 : (ptr, i64) -> bool
+  | (data, len) ->
+    let mut i : i64 = 0i64
+    let mut valid = true
+    let buf = data as *u8
+    while i < len
+      let clen = utf8_char_len(buf[i])
+      if clen < 0i64 || i + clen > len
+        valid = false
+        break
+      let mut j : i64 = 1i64
+      while j < clen
+        if (buf[i + j] & 0xC0u8) != 0x80u8
+          valid = false
+          break
+        j = j + 1i64
+      if !valid
+        break
+      i = i + clen
+    valid
+
+fn decode_utf8_char : (ptr, i64, *i64) -> i64
+  | (data, len, pos_ptr) ->
+    let pos = pos_ptr[0i64]
+    if pos >= len then -1i64
+    else
+      let buf = data as *u8
+      let b0 = buf[pos]
+      let clen = utf8_char_len(b0)
+      if clen <= 0i64 || pos + clen > len then -1i64
+      else
+        let mut cp : i64 = 0i64
+        if clen == 1i64
+          cp = b0 as i64
+        else if clen == 2i64
+          cp = ((b0 as i64 & 0x1Fi64) << 6i64) | (buf[pos + 1i64] as i64 & 0x3Fi64)
+        else if clen == 3i64
+          cp = ((b0 as i64 & 0x0Fi64) << 12i64) | ((buf[pos + 1i64] as i64 & 0x3Fi64) << 6i64) | (buf[pos + 2i64] as i64 & 0x3Fi64)
+        else
+          cp = ((b0 as i64 & 0x07i64) << 18i64) | ((buf[pos + 1i64] as i64 & 0x3Fi64) << 12i64) | ((buf[pos + 2i64] as i64 & 0x3Fi64) << 6i64) | (buf[pos + 3i64] as i64 & 0x3Fi64)
+        pos_ptr[0i64] = pos + clen
+        cp
+
+fn encode_utf8_char : (i64, ptr) -> i64
+  | (cp, out_buf) ->
+    let buf = out_buf as *u8
+    if cp < 0x80i64
+      buf[0i64] = cp as u8
+      1i64
+    else if cp < 0x800i64
+      buf[0i64] = (0xC0i64 | (cp >> 6i64)) as u8
+      buf[1i64] = (0x80i64 | (cp & 0x3Fi64)) as u8
+      2i64
+    else if cp < 0x10000i64
+      buf[0i64] = (0xE0i64 | (cp >> 12i64)) as u8
+      buf[1i64] = (0x80i64 | ((cp >> 6i64) & 0x3Fi64)) as u8
+      buf[2i64] = (0x80i64 | (cp & 0x3Fi64)) as u8
+      3i64
+    else if cp <= 0x10FFFFi64
+      buf[0i64] = (0xF0i64 | (cp >> 18i64)) as u8
+      buf[1i64] = (0x80i64 | ((cp >> 12i64) & 0x3Fi64)) as u8
+      buf[2i64] = (0x80i64 | ((cp >> 6i64) & 0x3Fi64)) as u8
+      buf[3i64] = (0x80i64 | (cp & 0x3Fi64)) as u8
+      4i64
+    else 0i64

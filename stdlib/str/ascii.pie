@@ -1,0 +1,25 @@
+mod str.ascii
+
+-- stdlib/str/ascii.pie — ASCII Classification and Transformation
+-- Basic character class predicates and case conversion for ASCII bytes.
+
+fn ascii_is_alpha : u8 -> bool
+  | c -> (c >= 65u8 && c <= 90u8) || (c >= 97u8 && c <= 122u8)
+
+fn ascii_is_digit : u8 -> bool
+  | c -> c >= 48u8 && c <= 57u8
+
+fn ascii_is_alphanumeric : u8 -> bool
+  | c -> ascii_is_alpha(c) || ascii_is_digit(c)
+
+fn ascii_is_space : u8 -> bool
+  | c -> c == 32u8 || c == 9u8 || c == 10u8 || c == 13u8 || c == 12u8
+
+fn ascii_is_hex_digit : u8 -> bool
+  | c -> ascii_is_digit(c) || (c >= 65u8 && c <= 70u8) || (c >= 97u8 && c <= 102u8)
+
+fn ascii_to_upper : u8 -> u8
+  | c -> if c >= 97u8 && c <= 122u8 then c - 32u8 else c
+
+fn ascii_to_lower : u8 -> u8
+  | c -> if c >= 65u8 && c <= 90u8 then c + 32u8 else c

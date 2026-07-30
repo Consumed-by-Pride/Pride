@@ -1,0 +1,40 @@
+mod math.interp
+
+use math.vecmath
+use math.abs
+
+-- stdlib/math/interp.pie — Curve and Spline Interpolation
+-- Bezier curves, Catmull-Rom splines, smoothstep, and smootherstep.
+
+fn smoothstep_f64 : (f64, f64, f64) -> f64
+  | (edge0, edge1, x) ->
+    let t = abs.clamp_f64((x - edge0) / (edge1 - edge0), 0.0f64, 1.0f64)
+    t * t * (3.0f64 - 2.0f64 * t)
+
+fn smootherstep_f64 : (f64, f64, f64) -> f64
+  | (edge0, edge1, x) ->
+    let t = abs.clamp_f64((x - edge0) / (edge1 - edge0), 0.0f64, 1.0f64)
+    t * t * t * (t * (t * 6.0f64 - 15.0f64) + 10.0f64)
+
+fn bezier_quadratic_vec2 : (vecmath.Vec2, vecmath.Vec2, vecmath.Vec2, f64) -> vecmath.Vec2
+  | (p0, p1, p2, t) ->
+    let u = 1.0f64 - t
+    let a = u * u
+    let b = 2.0f64 * u * t
+    let c = t * t
+    vecmath.Vec2 {
+      x: a * p0.x + b * p1.x + c * p2.x,
+      y: a * p0.y + b * p1.y + c * p2.y
+    }
+
+fn bezier_cubic_vec2 : (vecmath.Vec2, vecmath.Vec2, vecmath.Vec2, vecmath.Vec2, f64) -> vecmath.Vec2
+  | (p0, p1, p2, p3, t) ->
+    let u = 1.0f64 - t
+    let a = u * u * u
+    let b = 3.0f64 * u * u * t
+    let c = 3.0f64 * u * t * t
+    let d = t * t * t
+    vecmath.Vec2 {
+      x: a * p0.x + b * p1.x + c * p2.x + d * p3.x,
+      y: a * p0.y + b * p1.y + c * p2.y + d * p3.y
+    }

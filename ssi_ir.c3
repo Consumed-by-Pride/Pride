@@ -2847,7 +2847,8 @@ fn Node* find_impl_method(Node* program, char* iface_name, char* method_name, No
             if (fc == null) continue;
             if (fc.kind == Nk.NODE_DECL_FN) break;
             if (fc.kind == Nk.NODE_TYPE_PRIMITIVE || fc.kind == Nk.NODE_TYPEVAR
-                || fc.kind == Nk.NODE_TYPE_PTR || fc.kind == Nk.NODE_TYPE_TUPLE)
+                || fc.kind == Nk.NODE_TYPE_PTR || fc.kind == Nk.NODE_TYPE_TUPLE
+                || fc.kind == Nk.NODE_TYPE_UNION || fc.kind == Nk.NODE_TYPE_INTERSECT)
             { for_type = fc; break; }
         }
 
@@ -2857,7 +2858,8 @@ fn Node* find_impl_method(Node* program, char* iface_name, char* method_name, No
         {
             char* ftn = null; usz ftl = 0;
             if (for_type.kind == Nk.NODE_TYPEVAR || for_type.kind == Nk.NODE_TYPE_PRIMITIVE
-                || for_type.kind == Nk.NODE_IDENT)
+                || for_type.kind == Nk.NODE_IDENT
+                || for_type.kind == Nk.NODE_TYPE_UNION || for_type.kind == Nk.NODE_TYPE_INTERSECT)
             {
                 ftn = for_type.p.ident.name_ptr;
                 ftl = for_type.p.ident.name_len;
@@ -3670,7 +3672,8 @@ fn IrVal* SsiModule.lower_expr_body(SsiModule* m, Node* n)
                         alloc_nbytes = (ulong)sizeof_prim(aty.p.ident.name_ptr, aty.p.ident.name_len);
                     }
                     else if (aty.kind == Nk.NODE_TYPE_PTR || aty.kind == Nk.NODE_TYPE_REF
-                          || aty.kind == Nk.NODE_TYPE_MUT_REF)
+                          || aty.kind == Nk.NODE_TYPE_MUT_REF
+                          || aty.kind == Nk.NODE_TYPE_UNION || aty.kind == Nk.NODE_TYPE_INTERSECT)
                     {
                         alloc_nbytes = 8;
                     }

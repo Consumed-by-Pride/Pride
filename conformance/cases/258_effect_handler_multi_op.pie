@@ -1,0 +1,22 @@
+-- EXPECT-CLEAN
+-- Algebraic effect handler rows with multiple distinct operations.
+
+effect Ask
+  op ask : () -> i64
+
+effect Tell
+  op tell : i64 -> ()
+
+fn computation : () -> i64 ! [Ask, Tell]
+  | () ->
+      let v = perform Ask.ask()
+      perform Tell.tell(v * 2i64)
+      v + 100i64
+
+fn main : () -> i64
+  | () ->
+      let mut log_val : i64 = 0i64
+      handle computation()
+        | Ask.ask() -> resume(42i64)
+        | Tell.tell(msg) -> log_val = msg; resume(())
+        | return(x) -> x + log_val

@@ -1,0 +1,71 @@
+mod fs
+
+use fs.path
+use fs.file
+use fs.dir
+use fs.meta
+use fs.dir_iter
+use fs.temp
+use fs.archive_tar
+
+-- stdlib/fs.pie — Standard Library File System Suite
+-- Exports POSIX file descriptors, directory creation/deletion, path parsing,
+-- and file status/metadata inspection.
+
+-- Path
+fn is_absolute : ptr -> bool                        | p -> path.path_is_absolute(p)
+fn is_relative : ptr -> bool                        | p -> path.path_is_relative(p)
+fn basename : ptr -> str.string.String              | p -> path.path_basename(p)
+fn dirname : ptr -> str.string.String               | p -> path.path_dirname(p)
+fn extension : ptr -> str.string.String             | p -> path.path_extension(p)
+fn join : (ptr, ptr) -> str.string.String           | (a, b) -> path.path_join(a, b)
+
+-- File
+fn open : (ptr, i64, i64) -> file.File              | (p, f, m) -> file.file_open(p, f, m)
+fn open_read : ptr -> file.File                     | p -> file.file_open_read(p)
+fn open_write : ptr -> file.File                    | p -> file.file_open_write(p)
+fn open_append : ptr -> file.File                   | p -> file.file_open_append(p)
+fn read : (*file.File, ptr, i64) -> i64             | (f, b, c) -> file.file_read(f, b, c)
+fn write : (*file.File, ptr, i64) -> i64            | (f, b, c) -> file.file_write(f, b, c)
+fn seek : (*file.File, i64, i64) -> i64             | (f, off, wh) -> file.file_seek(f, off, wh)
+fn tell : *file.File -> i64                         | f -> file.file_tell(f)
+fn truncate : (*file.File, i64) -> i64              | (f, len) -> file.file_truncate(f, len)
+fn sync : *file.File -> i64                         | f -> file.file_sync(f)
+fn close : *file.File -> ()                         | f -> file.file_close(f)
+
+-- Dir & Existence
+fn exists : ptr -> bool                             | p -> dir.file_exists(p)
+fn create_dir : (ptr, i64) -> i64                   | (p, m) -> dir.dir_create(p, m)
+fn create_dir_all : (ptr, i64) -> i64               | (p, m) -> dir.dir_create_all(p, m)
+fn remove_dir : ptr -> i64                          | p -> dir.dir_remove(p)
+fn remove_file : ptr -> i64                         | p -> dir.file_remove(p)
+fn rename : (ptr, ptr) -> i64                       | (old_p, new_p) -> dir.fs_rename(old_p, new_p)
+
+-- Metadata
+fn stat_path : ptr -> (meta.Metadata, i64)          | p -> meta.meta_from_path(p)
+fn stat_fd : i64 -> (meta.Metadata, i64)            | fd -> meta.meta_from_fd(fd)
+fn meta_size : *meta.Metadata -> i64                | m -> meta.meta_size(m)
+fn meta_is_dir : *meta.Metadata -> bool             | m -> meta.meta_is_dir(m)
+fn meta_is_file : *meta.Metadata -> bool            | m -> meta.meta_is_file(m)
+fn meta_is_symlink : *meta.Metadata -> bool         | m -> meta.meta_is_symlink(m)
+fn meta_permissions : *meta.Metadata -> i64         | m -> meta.meta_permissions(m)
+
+-- Higher-level file utilities
+fn copy : (ptr, ptr) -> i64                         | (src, dst) -> file.file_copy(src, dst)
+fn read_to_string : ptr -> str.string.String        | path -> file.file_read_to_string(path)
+fn write_string : (ptr, *str.string.String) -> i64  | (path, s) -> file.file_write_string(path, s)
+
+-- Directory Iteration
+fn list_dir : ptr -> vec.vec.Vec                    | p -> dir_iter.dir_list_paths(p)
+fn dir_iter_open : ptr -> dir_iter.DirIter          | p -> dir_iter.dir_iter_open(p)
+fn dir_iter_next : *dir_iter.DirIter -> str.string.String | it -> dir_iter.dir_iter_next_name(it)
+fn dir_iter_close : *dir_iter.DirIter -> ()         | it -> dir_iter.dir_iter_close(it)
+
+-- Temporary Files & Directories
+fn temp_file : ptr -> (file.File, str.string.String)| prefix -> temp.temp_file_create(prefix)
+fn temp_dir : ptr -> str.string.String              | prefix -> temp.temp_dir_create(prefix)
+fn file_size : ptr -> i64                           | p -> file.file_size_from_path(p)
+fn touch : ptr -> i64                               | p -> file.file_touch(p)
+
+-- TAR Archiving
+fn tar_write_file : (*file.File, ptr, i64, ptr, i64) -> i64 | (f, n, m, d, l) -> archive_tar.tar_write_file_entry(f, n, m, d, l)

@@ -1,0 +1,78 @@
+mod str
+
+use str.ascii
+use str.raw
+use str.string
+use str.slice
+use str.split
+use str.pattern
+use str.regex_lite
+
+-- stdlib/str.pie — Standard Library UTF-8 String & Text Suite
+-- Exports ASCII utilities, low-level UTF-8 decoding, dynamic String builder,
+-- slice searching/trimming, and splitting/joining operations.
+
+-- ASCII character class & case conversion
+fn is_alpha : u8 -> bool             | c -> ascii.ascii_is_alpha(c)
+fn is_digit : u8 -> bool             | c -> ascii.ascii_is_digit(c)
+fn is_alphanumeric : u8 -> bool      | c -> ascii.ascii_is_alphanumeric(c)
+fn is_space : u8 -> bool             | c -> ascii.ascii_is_space(c)
+fn is_hex_digit : u8 -> bool         | c -> ascii.ascii_is_hex_digit(c)
+fn ascii_to_upper : u8 -> u8         | c -> ascii.ascii_to_upper(c)
+fn ascii_to_lower : u8 -> u8         | c -> ascii.ascii_to_lower(c)
+
+-- UTF-8 utilities
+fn utf8_char_len : u8 -> i64         | b -> raw.utf8_char_len(b)
+fn is_valid_utf8 : (ptr, i64) -> bool| (data, len) -> raw.is_valid_utf8(data, len)
+fn decode_char : (ptr, i64, *i64) -> i64 | (d, l, p) -> raw.decode_utf8_char(d, l, p)
+fn encode_char : (i64, ptr) -> i64   | (cp, b) -> raw.encode_utf8_char(cp, b)
+
+-- String constructors & operations
+fn new : () -> string.String                   | () -> string.string_new()
+fn with_cap : i64 -> string.String             | cap -> string.string_with_cap(cap)
+fn from_cstr : ptr -> string.String            | cstr -> string.string_from_cstr(cstr)
+fn from_slice : (ptr, i64) -> string.String    | (d, len) -> string.string_from_slice(d, len)
+fn destroy : *string.String -> ()              | s -> string.string_destroy(s)
+fn len : *string.String -> i64                 | s -> string.string_len(s)
+fn cap : *string.String -> i64                 | s -> string.string_cap(s)
+fn is_empty : *string.String -> bool           | s -> string.string_is_empty(s)
+fn as_cstr : *string.String -> *u8             | s -> string.string_as_cstr(s)
+fn as_slice : *string.String -> ptr            | s -> string.string_as_slice(s)
+fn push_byte : (*string.String, u8) -> ()      | (s, b) -> string.string_push_byte(s, b)
+fn push_char : (*string.String, i64) -> i64    | (s, cp) -> string.string_push_char(s, cp)
+fn push_slice : (*string.String, ptr, i64) -> () | (s, d, len) -> string.string_push_slice(s, d, len)
+fn push_cstr : (*string.String, ptr) -> ()     | (s, c) -> string.string_push_cstr(s, c)
+fn concat : (*string.String, *string.String) -> string.String | (a, b) -> string.string_concat(a, b)
+fn clone : *string.String -> string.String     | s -> string.string_clone(s)
+fn clear : *string.String -> ()                | s -> string.string_clear(s)
+
+-- Slice operations
+fn eq : (ptr, i64, ptr, i64) -> bool           | (a, al, b, bl) -> slice.str_eq(a, al, b, bl)
+fn cmp : (ptr, i64, ptr, i64) -> i32           | (a, al, b, bl) -> slice.str_cmp(a, al, b, bl)
+fn starts_with : (ptr, i64, ptr, i64) -> bool  | (a, al, b, bl) -> slice.str_starts_with(a, al, b, bl)
+fn ends_with : (ptr, i64, ptr, i64) -> bool    | (a, al, b, bl) -> slice.str_ends_with(a, al, b, bl)
+fn find : (ptr, i64, ptr, i64) -> i64          | (a, al, b, bl) -> slice.str_find(a, al, b, bl)
+fn rfind : (ptr, i64, ptr, i64) -> i64         | (a, al, b, bl) -> slice.str_rfind(a, al, b, bl)
+fn contains : (ptr, i64, ptr, i64) -> bool     | (a, al, b, bl) -> slice.str_contains(a, al, b, bl)
+fn trim_start : (ptr, i64) -> (ptr, i64)       | (s, l) -> slice.str_trim_start(s, l)
+fn trim_end : (ptr, i64) -> (ptr, i64)         | (s, l) -> slice.str_trim_end(s, l)
+fn trim : (ptr, i64) -> (ptr, i64)             | (s, l) -> slice.str_trim(s, l)
+fn to_upper : (ptr, i64) -> string.String      | (s, l) -> slice.str_to_upper(s, l)
+fn to_lower : (ptr, i64) -> string.String      | (s, l) -> slice.str_to_lower(s, l)
+
+-- Split & Join
+fn split_char : (ptr, i64, u8) -> vec.Vec      | (s, l, d) -> split.str_split_char(s, l, d)
+fn split_lines : (ptr, i64) -> vec.Vec         | (s, l) -> split.str_split_lines(s, l)
+fn join : (*vec.Vec, ptr, i64) -> string.String| (v, s, l) -> split.str_join(v, s, l)
+fn count_matches : (ptr, i64, ptr, i64) -> i64 | (hay, hay_l, ned, ned_l) -> slice.str_count_matches(hay, hay_l, ned, ned_l)
+fn split_at : (ptr, i64, i64) -> (ptr, i64, ptr, i64) | (s, l, m) -> slice.str_split_at(s, l, m)
+fn repeat : (*string.String, i64) -> string.String | (s, t) -> string.string_repeat(s, t)
+fn make_ascii_uppercase : *string.String -> () | s -> string.string_make_ascii_uppercase(s)
+fn make_ascii_lowercase : *string.String -> () | s -> string.string_make_ascii_lowercase(s)
+fn char_count : *string.String -> i64          | s -> string.string_char_count(s)
+
+-- Fast Substring Searching & Glob Matching
+fn kmp_search : (ptr, i64, ptr, i64) -> i64    | (hay, hl, ned, nl) -> pattern.kmp_search(hay, hl, ned, nl)
+fn bm_search : (ptr, i64, ptr, i64) -> i64     | (hay, hl, ned, nl) -> pattern.bm_search(hay, hl, ned, nl)
+fn glob_match : (ptr, i64, ptr, i64) -> bool   | (p, pl, t, tl) -> regex_lite.glob_match(p, pl, t, tl)
+fn glob_match_ci : (ptr, i64, ptr, i64) -> bool| (p, pl, t, tl) -> regex_lite.wildcard_match_ci(p, pl, t, tl)

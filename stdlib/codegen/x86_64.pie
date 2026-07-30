@@ -1,0 +1,50 @@
+mod codegen.x86_64
+
+use os.linux
+use vec.vec
+
+-- stdlib/codegen/x86_64.pie — Minimalist x86-64 Machine Code Assembler
+-- Emits raw instruction bytes, prefixes, and ModR/M bytes for x86-64.
+
+struct X86Asm
+  buf : vec.Vec
+
+const REG_RAX : u8 = 0u8
+const REG_RCX : u8 = 1u8
+const REG_RDX : u8 = 2u8
+const REG_RBX : u8 = 3u8
+const REG_RSP : u8 = 4u8
+const REG_RBP : u8 = 5u8
+const REG_RSI : u8 = 6u8
+const REG_RDI : u8 = 7u8
+
+fn x86_new : () -> X86Asm
+  | () -> X86Asm { buf: vec.vec_new(1i64) }
+
+fn x86_destroy : *X86Asm -> ()
+  | a -> vec.vec_destroy(&a.buf)
+
+fn x86_emit_byte : (*X86Asm, u8) -> ()
+  | (a, b) ->
+    let mut val = b
+    vec.vec_push(&a.buf, &val as ptr)
+
+fn x86_emit_nop : *X86Asm -> ()
+  | a -> x86_emit_byte(a, 144u8)   -- 0x90
+
+fn x86_emit_ret : *X86Asm -> ()
+  | a -> x86_emit_byte(a, 195u8)   -- 0xC3
+
+fn x86_emit_mov_eax_imm32 : (*X86Asm, i64) -> ()
+  | (a, imm) ->
+    x86_emit_byte(a, 184u8)        -- 0xB8
+    x86_emit_byte(a, (imm & 0xFFi64) as u8)
+    x86_emit_byte(a, ((imm >> 8i64) & 0xFFi64) as u8)
+    x86_emit_byte(a, ((imm >> 16i64) & 0xFFi64) as u8)
+    x86_emit_byte(a, ((imm >> 24i64) & 0xFFi64) as u8)
+
+fn x86_len : *X86Asm -> i64
+  | a -> vec.vec_len(&a.buf)
+
+fn x86_ptr : *X86Asm -> ptr
+  | a -> vec.vec_as_slice(&a.buf)

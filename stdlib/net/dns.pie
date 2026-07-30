@@ -1,0 +1,81 @@
+mod net.dns
+
+use os.linux
+use net.ip
+use net.sockaddr
+use net.udp
+
+-- stdlib/net/dns.pie — RFC 1035 UDP DNS Query Builder and A-Record Parser
+-- Translates domain names to IPv4 addresses using DNS datagrams.
+
+struct DnsHeader
+  id      : u16
+  flags   : u16
+  qdcount : u16
+  ancount : u16
+  nscount : u16
+  arcount : u16
+
+fn dns_resolve_ipv4_cstr : ptr -> (ip.Ipv4Addr, bool)
+  | domain_cstr ->
+    let len = os.linux.strlen(domain_cstr) as i64
+    if len <= 0i64 || len > 255i64 then (ip.ipv4_any(), false)
+    else
+      let dns_server = ip.ipv4_new(8u8, 8u8, 8u8, 8u8)
+      let sa = sockaddr.sockaddr_v4_new(dns_server, 53u16)
+      let (sock, err) = udp.udp_bind_v4(&sa)
+      if err < 0i64 then (ip.ipv4_any(), false)
+      else
+        let qbuf = os.linux.malloc(512i64) as *u8
+        os.linux.memset(qbuf as ptr, 0i32, 512u64)
+        -- Header: ID=0x1234, flags=0x0100 (standard query), qdcount=1
+        (qbuf as *u16)[0i64] = 13330u16   -- 0x1234 big-endian
+        (qbuf as *u16)[1i64] = 256u16     -- 0x0100 big-endian
+        (qbuf as *u16)[2i64] = 256u16     -- 1 query
+        let mut pos : i64 = 12i64
+        let dbuf = domain_cstr as *u8
+        let mut label_start : i64 = 0i64
+        let mut i : i64 = 0i64
+        while i <= len
+          if i == len || dbuf[i] == 46u8   -- '.'
+            let label_len = i - label_start
+            if label_len > 0i64 && label_len <= 63i64
+              qbuf[pos] = label_len as u8
+              pos = pos + 1i64
+              let mut k : i64 = 0i64
+              while k < label_len
+                qbuf[pos + k] = dbuf[label_start + k]
+                k = k + 1i64
+              pos = pos + label_len
+            label_start = i + 1i64
+          i = i + 1i64
+        qbuf[pos] = 0u8; pos = pos + 1i64   -- null label root
+        (qbuf as *u16)[pos / 2i64] = 256u16   -- QTYPE A = 1
+        pos = pos + 2i64
+        (qbuf as *u16)[pos / 2i64] = 256u16   -- QCLASS IN = 1
+        pos = pos + 2i64
+        let sent = udp.udp_send_to_v4(&sock, qbuf as ptr, pos, &sa)
+        if sent < 0i64
+          os.linux.free(qbuf as ptr)
+          udp.udp_close(&sock)
+          (ip.ipv4_any(), false)
+        else
+          let resp_buf = os.linux.malloc(512i64) as *u8
+          let (rn, _) = udp.udp_recv_from_v4(&sock, resp_buf as ptr, 512i64)
+          let mut res_ip = ip.ipv4_any()
+          let mut found = false
+          if rn >= 20i64
+            -- simplified A-record recovery from answer section
+            let mut p = pos
+            while p + 10i64 <= rn
+              if resp_buf[p] == 192u8   -- pointer compression 0xC0
+                p = p + 2i64
+                if (resp_buf[p] == 0u8 && resp_buf[p + 1i64] == 1u8) && p + 10i64 <= rn
+                  res_ip = ip.ipv4_new(resp_buf[p + 8i64], resp_buf[p + 9i64], resp_buf[p + 10i64], resp_buf[p + 11i64])
+                  found = true
+                  break
+              p = p + 1i64
+          os.linux.free(qbuf as ptr)
+          os.linux.free(resp_buf as ptr)
+          udp.udp_close(&sock)
+          (res_ip, found)

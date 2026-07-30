@@ -1,0 +1,33 @@
+mod sync.cond
+
+use os.linux
+use sync.mutex
+
+-- stdlib/sync/cond.pie — POSIX Condition Variable (CondVar)
+-- 48-byte pthread_cond_t wrapper for thread notification and waiting.
+
+struct CondVar
+  handle : ptr
+
+fn condvar_new : () -> CondVar
+  | () ->
+    let p = os.linux.malloc(48i64)
+    os.linux.memset(p, 0i32, 48u64)
+    os.linux.pthread_cond_init(p, 0 as ptr)
+    CondVar { handle: p }
+
+fn condvar_wait : (*CondVar, *mutex.Mutex) -> i64
+  | (cv, m) -> os.linux.pthread_cond_wait(cv.handle, m.handle)
+
+fn condvar_signal : *CondVar -> i64
+  | cv -> os.linux.pthread_cond_signal(cv.handle)
+
+fn condvar_broadcast : *CondVar -> i64
+  | cv -> os.linux.pthread_cond_broadcast(cv.handle)
+
+fn condvar_destroy : *CondVar -> ()
+  | cv ->
+    if cv.handle as i64 != 0i64
+      os.linux.pthread_cond_destroy(cv.handle)
+      os.linux.free(cv.handle)
+    cv.handle = 0 as ptr

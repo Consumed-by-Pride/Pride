@@ -1,0 +1,31 @@
+mod llvm.emit_module
+
+use str.string
+use ir.module
+use ir.func
+use llvm.emit_func
+use vec.vec
+
+-- stdlib/llvm/emit_module.pie — LLVM IR 22 Complete Module Formatter
+-- Generates full .ll textual IR for an IrModule ready for llvm-as and llc.
+
+fn emit_llvm_module : *module.IrModule -> string.String
+  | mod_ptr ->
+    let mut out = string.string_with_cap(1024i64)
+    string.string_push_cstr(&out, "; ModuleID = '" as ptr)
+    string.string_concat(&out, &mod_ptr.name)
+    string.string_push_cstr(&out, "'\nsource_filename = \"" as ptr)
+    string.string_concat(&out, &mod_ptr.name)
+    string.string_push_cstr(&out, "\"\ntarget datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\ntarget triple = \"x86_64-unknown-linux-gnu\"\n\n" as ptr)
+
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&mod_ptr.functions)
+    while i < len
+      let fn_ptr = vec.vec_get(&mod_ptr.functions, i) as *func.IrFunction
+      let fn_str = emit_func.emit_llvm_function(fn_ptr)
+      string.string_concat(&out, &fn_str)
+      string.string_destroy(&fn_str)
+      i = i + 1i64
+
+    string.string_push_cstr(&out, "attributes #0 = { nounwind }\n" as ptr)
+    out

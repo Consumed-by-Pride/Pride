@@ -1,0 +1,27 @@
+mod compress
+
+use compress.rle
+use compress.adler32_stream
+use compress.lz4
+use compress.snappy_lite
+
+-- stdlib/compress.pie — Standard Library Compression & Checksum Suite
+-- Exports RLE, LZ4, Snappy-lite block compression, and rolling Adler-32 checksums.
+
+-- RLE
+fn rle_encode : (ptr, i64) -> (ptr, i64)             | (d, l) -> rle.rle_encode_slice(d, l)
+fn rle_decode : (ptr, i64) -> (ptr, i64, bool)       | (d, l) -> rle.rle_decode_slice(d, l)
+
+-- Adler-32
+fn adler32_new : () -> adler32_stream.Adler32Stream  | () -> adler32_stream.adler32_stream_new()
+fn adler32_update : (*adler32_stream.Adler32Stream, ptr, i64) -> u32 | (s, d, l) -> adler32_stream.adler32_stream_update(s, d, l)
+fn adler32_value : *adler32_stream.Adler32Stream -> u32 | s -> adler32_stream.adler32_stream_value(s)
+
+-- LZ4
+fn lz4_bound : i64 -> i64                            | l -> lz4.lz4_compress_bound(l)
+fn lz4_compress : (ptr, i64) -> (ptr, i64)           | (d, l) -> lz4.lz4_compress_slice(d, l)
+fn lz4_decompress : (ptr, i64, i64) -> (ptr, i64, bool) | (d, l, m) -> lz4.lz4_decompress_slice(d, l, m)
+
+-- Snappy-lite
+fn snappy_encode : (ptr, i64) -> (ptr, i64)          | (d, l) -> snappy_lite.snappy_encode_slice(d, l)
+fn snappy_decode : (ptr, i64) -> (ptr, i64, bool)    | (d, l) -> snappy_lite.snappy_decode_slice(d, l)

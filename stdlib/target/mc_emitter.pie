@@ -1,0 +1,15 @@
+mod target.mc_emitter
+
+use ir.func
+use codegen.x86_64
+
+-- stdlib/target/mc_emitter.pie — Native Machine Code Emitter
+-- Translates register-allocated SSA instructions directly to x86-64 machine bytes.
+
+fn mc_emit_x86_64_function : *func.IrFunction -> x86_64.X86Asm
+  | fn_ptr ->
+    let mut asm = x86_64.x86_new()
+    -- Function prologue and epilogue placeholder
+    x86_64.x86_emit_nop(&asm)
+    x86_64.x86_emit_ret(&asm)
+    asm

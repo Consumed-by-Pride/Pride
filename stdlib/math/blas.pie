@@ -1,0 +1,76 @@
+mod math.blas
+
+use os.linux
+use math.abs
+use math.exp
+use vec.vec
+
+-- stdlib/math/blas.pie — Cache-Friendly Basic Linear Algebra Subprograms (BLAS)
+-- Tiled GEMM matrix multiplication kernels and linear vectorized activations.
+
+const TILE_SIZE : i64 = 16i64   -- 16x16 block tiling for L1 cache localization
+
+fn gemm_f64_tiled : (ptr, ptr, ptr, i64, i64, i64) -> ()
+  | (a_ptr, b_ptr, c_ptr, M, N, K) ->
+    let a = a_ptr as *f64
+    let b = b_ptr as *f64
+    let c = c_ptr as *f64
+    let mut i0 : i64 = 0i64
+    while i0 < M
+      let mut j0 : i64 = 0i64
+      while j0 < N
+        let mut k0 : i64 = 0i64
+        while k0 < K
+          let i_max = if i0 + TILE_SIZE < M then i0 + TILE_SIZE else M
+          let j_max = if j0 + TILE_SIZE < N then j0 + TILE_SIZE else N
+          let k_max = if k0 + TILE_SIZE < K then k0 + TILE_SIZE else K
+          let mut i = i0
+          while i < i_max
+            let mut j = j0
+            while j < j_max
+              let mut sum = c[i * N + j]
+              let mut k = k0
+              while k < k_max
+                sum = sum + a[i * K + k] * b[k * N + j]
+                k = k + 1i64
+              c[i * N + j] = sum
+              j = j + 1i64
+            i = i + 1i64
+          k0 = k0 + TILE_SIZE
+        j0 = j0 + TILE_SIZE
+      i0 = i0 + TILE_SIZE
+
+fn vec_relu_f64 : *vec.Vec -> ()
+  | v ->
+    let len  = vec.vec_len(v)
+    let data = vec.vec_as_slice(v) as *f64
+    let mut i : i64 = 0i64
+    while i < len
+      if data[i] < 0.0f64
+        data[i] = 0.0f64
+      i = i + 1i64
+
+fn vec_sigmoid_f64 : *vec.Vec -> ()
+  | v ->
+    let len  = vec.vec_len(v)
+    let data = vec.vec_as_slice(v) as *f64
+    let mut i : i64 = 0i64
+    while i < len
+      let e = exp.exp_f64(-data[i])
+      data[i] = 1.0f64 / (1.0f64 + e)
+      i = i + 1i64
+
+fn vec_hardswish_f64 : *vec.Vec -> ()
+  | v ->
+    let len  = vec.vec_len(v)
+    let data = vec.vec_as_slice(v) as *f64
+    let mut i : i64 = 0i64
+    while i < len
+      let x = data[i]
+      if x <= -3.0f64
+        data[i] = 0.0f64
+      else if x >= 3.0f64
+        data[i] = x
+      else
+        data[i] = x * (x + 3.0f64) / 6.0f64
+      i = i + 1i64

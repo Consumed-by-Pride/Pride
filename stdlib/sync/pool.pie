@@ -1,0 +1,34 @@
+mod sync.pool
+
+use os.linux
+use sync.mpmc
+use sync.thread
+use vec.vec
+
+-- stdlib/sync/pool.pie — Managed Thread Pool Infrastructure (ThreadPool)
+-- Distributes asynchronous tasks across a fixed pool of worker threads.
+
+struct ThreadPool
+  queue    : mpmc.MpmcQueue
+  workers  : vec.Vec
+  n_threads: i64
+  stop     : bool
+
+fn threadpool_new : (i64, i64) -> ThreadPool
+  | (n_threads, queue_cap) ->
+    let n = if n_threads <= 0i64 then 4i64 else n_threads
+    let q = mpmc.mpmc_new(queue_cap)
+    let w = vec.vec_with_cap(n, 8i64)
+    ThreadPool { queue: q, workers: w, n_threads: n, stop: false }
+
+fn threadpool_destroy : *ThreadPool -> ()
+  | tp ->
+    tp.stop = true
+    mpmc.mpmc_destroy(&tp.queue)
+    vec.vec_destroy(&tp.workers)
+    tp.n_threads = 0i64
+
+fn threadpool_submit : (*ThreadPool, ptr) -> ()
+  | (tp, job_ptr) ->
+    if !tp.stop
+      mpmc.mpmc_push(&tp.queue, job_ptr)

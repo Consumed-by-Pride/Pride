@@ -1,0 +1,22 @@
+mod target.abi
+
+use ir.types
+
+-- stdlib/target/abi.pie — System V AMD64 and AArch64 ABI Classification
+-- Assigns function parameters and return values to physical registers or stack slots.
+
+const ABI_CLASS_INTEGER : i64 = 1i64
+const ABI_CLASS_SSE     : i64 = 2i64
+const ABI_CLASS_MEMORY  : i64 = 3i64
+
+struct TargetAbi
+  is_aarch64 : bool
+
+fn abi_classify_type : (*TargetAbi, *types.IrType) -> i64
+  | (abi, ty) ->
+    if ty as i64 == 0i64 then ABI_CLASS_INTEGER
+    else if ty.kind == types.IR_TYPE_FLOAT then ABI_CLASS_SSE
+    else if ty.kind == types.IR_TYPE_STRUCT || ty.kind == types.IR_TYPE_ARRAY
+      let sz = types.ir_type_sizeof(ty)
+      if sz > 16i64 then ABI_CLASS_MEMORY else ABI_CLASS_INTEGER
+    else ABI_CLASS_INTEGER

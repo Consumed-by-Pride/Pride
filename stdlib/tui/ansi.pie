@@ -1,0 +1,89 @@
+mod tui.ansi
+
+use str.string
+use os.linux
+
+-- stdlib/tui/ansi.pie — Terminal ANSI Escape Constants and Color Formatting
+-- Standard escape sequences for terminal control, 16/256 color palettes, and RGB TrueColor.
+
+const ANSI_RESET         : ptr = "\x1B[0m" as ptr
+const ANSI_BOLD          : ptr = "\x1B[1m" as ptr
+const ANSI_UNDERLINE     : ptr = "\x1B[4m" as ptr
+const ANSI_REVERSE       : ptr = "\x1B[7m" as ptr
+
+const ANSI_CLEAR_SCREEN  : ptr = "\x1B[2J" as ptr
+const ANSI_CLEAR_LINE    : ptr = "\x1B[2K" as ptr
+const ANSI_HIDE_CURSOR   : ptr = "\x1B[?25l" as ptr
+const ANSI_SHOW_CURSOR   : ptr = "\x1B[?25h" as ptr
+
+-- Standard Foreground Colors
+const COLOR_FG_BLACK     : ptr = "\x1B[30m" as ptr
+const COLOR_FG_RED       : ptr = "\x1B[31m" as ptr
+const COLOR_FG_GREEN     : ptr = "\x1B[32m" as ptr
+const COLOR_FG_YELLOW    : ptr = "\x1B[33m" as ptr
+const COLOR_FG_BLUE      : ptr = "\x1B[34m" as ptr
+const COLOR_FG_MAGENTA   : ptr = "\x1B[35m" as ptr
+const COLOR_FG_CYAN      : ptr = "\x1B[36m" as ptr
+const COLOR_FG_WHITE     : ptr = "\x1B[37m" as ptr
+
+-- Standard Background Colors
+const COLOR_BG_BLACK     : ptr = "\x1B[40m" as ptr
+const COLOR_BG_RED       : ptr = "\x1B[41m" as ptr
+const COLOR_BG_GREEN     : ptr = "\x1B[42m" as ptr
+const COLOR_BG_YELLOW    : ptr = "\x1B[43m" as ptr
+const COLOR_BG_BLUE      : ptr = "\x1B[44m" as ptr
+const COLOR_BG_MAGENTA   : ptr = "\x1B[45m" as ptr
+const COLOR_BG_CYAN      : ptr = "\x1B[46m" as ptr
+const COLOR_BG_WHITE     : ptr = "\x1B[47m" as ptr
+
+fn push_i64_decimal : (*string.String, i64) -> ()
+  | (s, val) ->
+    if val >= 100i64
+      string.string_push_byte(s, (48i64 + val / 100i64) as u8)
+      string.string_push_byte(s, (48i64 + (val / 10i64) % 10i64) as u8)
+      string.string_push_byte(s, (48i64 + val % 10i64) as u8)
+    else if val >= 10i64
+      string.string_push_byte(s, (48i64 + val / 10i64) as u8)
+      string.string_push_byte(s, (48i64 + val % 10i64) as u8)
+    else
+      string.string_push_byte(s, (48i64 + val) as u8)
+
+fn ansi_palette_fg : i64 -> string.String
+  | color_idx ->
+    let mut out = string.string_with_cap(16i64)
+    string.string_push_cstr(&out, "\x1B[38;5;" as ptr)
+    push_i64_decimal(&out, color_idx & 255i64)
+    string.string_push_byte(&out, 109u8)   -- 'm'
+    out
+
+fn ansi_palette_bg : i64 -> string.String
+  | color_idx ->
+    let mut out = string.string_with_cap(16i64)
+    string.string_push_cstr(&out, "\x1B[48;5;" as ptr)
+    push_i64_decimal(&out, color_idx & 255i64)
+    string.string_push_byte(&out, 109u8)   -- 'm'
+    out
+
+fn ansi_rgb_fg : (i64, i64, i64) -> string.String
+  | (r, g, b) ->
+    let mut out = string.string_with_cap(24i64)
+    string.string_push_cstr(&out, "\x1B[38;2;" as ptr)
+    push_i64_decimal(&out, r & 255i64)
+    string.string_push_byte(&out, 59u8)    -- ';'
+    push_i64_decimal(&out, g & 255i64)
+    string.string_push_byte(&out, 59u8)    -- ';'
+    push_i64_decimal(&out, b & 255i64)
+    string.string_push_byte(&out, 109u8)   -- 'm'
+    out
+
+fn ansi_rgb_bg : (i64, i64, i64) -> string.String
+  | (r, g, b) ->
+    let mut out = string.string_with_cap(24i64)
+    string.string_push_cstr(&out, "\x1B[48;2;" as ptr)
+    push_i64_decimal(&out, r & 255i64)
+    string.string_push_byte(&out, 59u8)    -- ';'
+    push_i64_decimal(&out, g & 255i64)
+    string.string_push_byte(&out, 59u8)    -- ';'
+    push_i64_decimal(&out, b & 255i64)
+    string.string_push_byte(&out, 109u8)   -- 'm'
+    out

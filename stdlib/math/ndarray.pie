@@ -1,0 +1,89 @@
+mod math.ndarray
+
+use os.linux
+
+-- stdlib/math/ndarray.pie — N-Dimensional Array Geometric Layout (NdArrayLayout)
+-- Separates flat buffer storage from shape and stride metadata for C- and Fortran-order.
+
+struct NdArrayLayout
+  ndim    : i64
+  shape   : ptr
+  strides : ptr
+  offset  : i64
+
+fn ndarray_layout_new : (i64, ptr, ptr, i64) -> NdArrayLayout
+  | (ndim, shape_ptr, strides_ptr, offset) ->
+    let sh = os.linux.malloc(ndim * 8i64) as *i64
+    let st = os.linux.malloc(ndim * 8i64) as *i64
+    os.linux.memcpy(sh as ptr, shape_ptr, (ndim * 8i64) as u64)
+    os.linux.memcpy(st as ptr, strides_ptr, (ndim * 8i64) as u64)
+    NdArrayLayout { ndim: ndim, shape: sh as ptr, strides: st as ptr, offset: offset }
+
+fn ndarray_layout_destroy : *NdArrayLayout -> ()
+  | ly ->
+    if ly.shape as i64 != 0i64
+      os.linux.free(ly.shape)
+    if ly.strides as i64 != 0i64
+      os.linux.free(ly.strides)
+    ly.shape = 0 as ptr; ly.strides = 0 as ptr; ly.ndim = 0i64
+
+fn ndarray_layout_c_order : (i64, ptr) -> NdArrayLayout
+  | (ndim, shape_ptr) ->
+    let sh = os.linux.malloc(ndim * 8i64) as *i64
+    let st = os.linux.malloc(ndim * 8i64) as *i64
+    os.linux.memcpy(sh as ptr, shape_ptr, (ndim * 8i64) as u64)
+    let mut stride : i64 = 1i64
+    let mut i = ndim - 1i64
+    while i >= 0i64
+      st[i] = stride
+      stride = stride * sh[i]
+      i = i - 1i64
+    NdArrayLayout { ndim: ndim, shape: sh as ptr, strides: st as ptr, offset: 0i64 }
+
+fn ndarray_layout_f_order : (i64, ptr) -> NdArrayLayout
+  | (ndim, shape_ptr) ->
+    let sh = os.linux.malloc(ndim * 8i64) as *i64
+    let st = os.linux.malloc(ndim * 8i64) as *i64
+    os.linux.memcpy(sh as ptr, shape_ptr, (ndim * 8i64) as u64)
+    let mut stride : i64 = 1i64
+    let mut i : i64 = 0i64
+    while i < ndim
+      st[i] = stride
+      stride = stride * sh[i]
+      i = i + 1i64
+    NdArrayLayout { ndim: ndim, shape: sh as ptr, strides: st as ptr, offset: 0i64 }
+
+fn ndarray_layout_is_c_contiguous : *NdArrayLayout -> bool
+  | ly ->
+    let sh = ly.shape as *i64
+    let st = ly.strides as *i64
+    let mut expected_stride : i64 = 1i64
+    let mut ok = true
+    let mut i = ly.ndim - 1i64
+    while i >= 0i64
+      if st[i] != expected_stride
+        ok = false
+        break
+      expected_stride = expected_stride * sh[i]
+      i = i - 1i64
+    ok
+
+fn ndarray_layout_offset : (*NdArrayLayout, ptr) -> i64
+  | (ly, index_ptr) ->
+    let idx = index_ptr as *i64
+    let st  = ly.strides as *i64
+    let mut total = ly.offset
+    let mut i : i64 = 0i64
+    while i < ly.ndim
+      total = total + idx[i] * st[i]
+      i = i + 1i64
+    total
+
+fn ndarray_layout_slice_view : (*NdArrayLayout, i64, i64, i64) -> NdArrayLayout
+  | (ly, dim, start, end_) ->
+    let new_ly = ndarray_layout_new(ly.ndim, ly.shape, ly.strides, ly.offset)
+    let sh = new_ly.shape as *i64
+    let st = new_ly.strides as *i64
+    sh[dim] = end_ - start
+    new_ly.offset = new_ly.offset + start * st[dim]
+    new_ly

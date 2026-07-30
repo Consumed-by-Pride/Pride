@@ -1,0 +1,46 @@
+mod async.reactor
+
+use os.linux
+use os.poll
+use vec.vec
+
+-- stdlib/async/reactor.pie — Asynchronous Event Reactor (Reactor)
+-- Epoll-based event loop multiplexing non-blocking socket I/O events.
+
+struct Reactor
+  epfd     : i64
+  max_evs  : i64
+  ready_fds: vec.Vec
+
+fn reactor_new : i64 -> Reactor
+  | max_evs ->
+    let ep = poll.epoll_create()
+    let mx = if max_evs <= 0i64 then 64i64 else max_evs
+    Reactor { epfd: ep, max_evs: mx, ready_fds: vec.vec_new(8i64) }
+
+fn reactor_destroy : *Reactor -> ()
+  | r ->
+    if r.epfd >= 0i64
+      os.linux.close(r.epfd)
+    vec.vec_destroy(&r.ready_fds)
+    r.epfd = -1i64
+
+fn reactor_add : (*Reactor, i64, u32) -> i64
+  | (r, fd, ev_mask) -> poll.epoll_add(r.epfd, fd, ev_mask, fd as u64)
+
+fn reactor_del : (*Reactor, i64) -> i64
+  | (r, fd) -> poll.epoll_del(r.epfd, fd)
+
+fn reactor_step : (*Reactor, i64) -> i64
+  | (r, timeout_ms) ->
+    vec.vec_clear(&r.ready_fds)
+    let ev_array = os.linux.malloc(r.max_evs * 16i64) as *u32
+    let n_ready  = os.linux.epoll_wait(r.epfd, ev_array as ptr, r.max_evs, timeout_ms)
+    let mut i : i64 = 0i64
+    while i < n_ready
+      let data_ptr = (ev_array as i64 + i * 16i64 + 8i64) as *u64
+      let fd = data_ptr[0i64] as i64
+      vec.vec_push(&r.ready_fds, &fd as ptr)
+      i = i + 1i64
+    os.linux.free(ev_array as ptr)
+    n_ready

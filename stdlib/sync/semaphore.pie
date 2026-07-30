@@ -1,0 +1,32 @@
+mod sync.semaphore
+
+use os.linux
+
+-- stdlib/sync/semaphore.pie — POSIX Semaphore Wrapper (Semaphore)
+-- 32-byte sem_t allocation and counter synchronization.
+
+struct Semaphore
+  handle : ptr
+
+fn semaphore_new : i32 -> Semaphore
+  | initial_val ->
+    let p = os.linux.malloc(32i64)
+    os.linux.memset(p, 0i32, 32u64)
+    os.linux.sem_init(p, 0i32, initial_val)
+    Semaphore { handle: p }
+
+fn semaphore_post : *Semaphore -> i32
+  | sem -> os.linux.sem_post(sem.handle)
+
+fn semaphore_wait : *Semaphore -> i32
+  | sem -> os.linux.sem_wait(sem.handle)
+
+fn semaphore_trywait : *Semaphore -> i32
+  | sem -> os.linux.sem_trywait(sem.handle)
+
+fn semaphore_destroy : *Semaphore -> ()
+  | sem ->
+    if sem.handle as i64 != 0i64
+      os.linux.sem_destroy(sem.handle)
+      os.linux.free(sem.handle)
+    sem.handle = 0 as ptr

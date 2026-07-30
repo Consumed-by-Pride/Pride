@@ -1,0 +1,25 @@
+mod effect_async
+
+use effect_async.driver
+use effect_async.epoll_handler
+use effect_async.uring_handler
+
+-- stdlib/effect_async.pie — Standard Library Algebraic Effect-Driven Async I/O Suite
+-- Replaces colored async/await futures with stack-reifying Algebraic Effect Handlers
+-- driven natively by Linux epoll reactors and io_uring completion queues.
+
+-- Driver
+fn new_read_req : (i64, i64, ptr, i64) -> driver.AsyncRequest  | (i, f, b, l) -> driver.asyncreq_new_read(i, f, b, l)
+fn new_write_req : (i64, i64, ptr, i64) -> driver.AsyncRequest | (i, f, b, l) -> driver.asyncreq_new_write(i, f, b, l)
+
+-- Epoll Handler
+fn epoll_handler_new : i64 -> epoll_handler.EpollEffectHandler | max -> epoll_handler.epoll_handler_new(max)
+fn epoll_handler_destroy : *epoll_handler.EpollEffectHandler -> () | h -> epoll_handler.epoll_handler_destroy(h)
+fn epoll_submit : (*epoll_handler.EpollEffectHandler, i64, ptr, i64, i64) -> i64 | (h, f, b, l, k) -> epoll_handler.epoll_handler_submit(h, f, b, l, k)
+fn epoll_step : (*epoll_handler.EpollEffectHandler, i64) -> i64 | (h, t) -> epoll_handler.epoll_handler_step(h, t)
+
+-- io_uring Handler
+fn uring_handler_new : u32 -> uring_handler.UringEffectHandler | e -> uring_handler.uring_handler_new(e)
+fn uring_handler_destroy : *uring_handler.UringEffectHandler -> () | h -> uring_handler.uring_handler_destroy(h)
+fn uring_submit_read : (*uring_handler.UringEffectHandler, i64, ptr, i64) -> i64 | (h, f, b, l) -> uring_handler.uring_handler_submit_read(h, f, b, l)
+fn uring_poll : (*uring_handler.UringEffectHandler, u32) -> i64 | (h, m) -> uring_handler.uring_handler_poll_completions(h, m)

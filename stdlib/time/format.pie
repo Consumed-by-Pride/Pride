@@ -1,0 +1,78 @@
+mod time.format
+
+use time.date
+use str.string
+
+-- stdlib/time/format.pie — RFC-3339 and RFC-2822 Date/Time Formatting
+-- Standard timestamp formatting for protocols and logs.
+
+fn weekday_name_short : i64 -> ptr
+  | wday ->
+    if wday == 0i64 then "Sun" as ptr
+    else if wday == 1i64 then "Mon" as ptr
+    else if wday == 2i64 then "Tue" as ptr
+    else if wday == 3i64 then "Wed" as ptr
+    else if wday == 4i64 then "Thu" as ptr
+    else if wday == 5i64 then "Fri" as ptr
+    else "Sat" as ptr
+
+fn month_name_short : i64 -> ptr
+  | month ->
+    if month == 1i64 then "Jan" as ptr
+    else if month == 2i64 then "Feb" as ptr
+    else if month == 3i64 then "Mar" as ptr
+    else if month == 4i64 then "Apr" as ptr
+    else if month == 5i64 then "May" as ptr
+    else if month == 6i64 then "Jun" as ptr
+    else if month == 7i64 then "Jul" as ptr
+    else if month == 8i64 then "Aug" as ptr
+    else if month == 9i64 then "Sep" as ptr
+    else if month == 10i64 then "Oct" as ptr
+    else if month == 11i64 then "Nov" as ptr
+    else "Dec" as ptr
+
+fn push_2_digits : (*string.String, i64) -> ()
+  | (s, val) ->
+    string.string_push_byte(s, (48i64 + (val / 10i64) % 10i64) as u8)
+    string.string_push_byte(s, (48i64 + val % 10i64) as u8)
+
+fn push_4_digits : (*string.String, i64) -> ()
+  | (s, val) ->
+    string.string_push_byte(s, (48i64 + (val / 1000i64) % 10i64) as u8)
+    string.string_push_byte(s, (48i64 + (val / 100i64) % 10i64) as u8)
+    string.string_push_byte(s, (48i64 + (val / 10i64) % 10i64) as u8)
+    string.string_push_byte(s, (48i64 + val % 10i64) as u8)
+
+fn datetime_format_rfc3339 : *date.DateTime -> string.String
+  | dt -> date.datetime_to_iso8601(dt)
+
+fn datetime_format_rfc2822 : *date.DateTime -> string.String
+  | dt ->
+    let mut out = string.string_with_cap(32i64)
+    string.string_push_cstr(&out, weekday_name_short(dt.wday))
+    string.string_push_cstr(&out, ", " as ptr)
+    push_2_digits(&out, dt.date.day)
+    string.string_push_byte(&out, 32u8)   -- ' '
+    string.string_push_cstr(&out, month_name_short(dt.date.month))
+    string.string_push_byte(&out, 32u8)   -- ' '
+    push_4_digits(&out, dt.date.year)
+    string.string_push_byte(&out, 32u8)   -- ' '
+    push_2_digits(&out, dt.time.hour)
+    string.string_push_byte(&out, 58u8)   -- ':'
+    push_2_digits(&out, dt.time.minute)
+    string.string_push_byte(&out, 58u8)   -- ':'
+    push_2_digits(&out, dt.time.second)
+    string.string_push_cstr(&out, " +0000" as ptr)
+    out
+
+fn datetime_add_days : (*date.DateTime, i64) -> date.DateTime
+  | (dt, days) ->
+    let ts = date.datetime_to_unix_timestamp(dt)
+    let new_ts = ts + days * 86400i64
+    date.datetime_from_unix_timestamp(new_ts)
+
+fn datetime_diff_days : (*date.DateTime, *date.DateTime) -> i64
+  | (later, earlier) ->
+    let t1 = date.datetime_to_unix_timestamp(later)
+    let t2 = date.datetime_to_unix_timestamp(earlier)
+    (t1 - t2) / 86400i64

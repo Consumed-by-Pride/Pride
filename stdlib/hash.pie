@@ -2,6 +2,7 @@ mod hash
 
 use os.linux
 use mem
+use hash.ordered_map
 
 -- §1  FNV-1a (32-bit and 64-bit)
 -- Fowler–Noll–Vo hash — fast, simple, decent distribution for strings/bytes
@@ -497,7 +498,7 @@ fn hashmap_find_slot : (*HashMap, ptr, u64) -> *HashMapEntry
   | (m, key, h) ->
     let mut slot = hashmap_slot(m, h)
     while slot.state == HASHMAP_OCCUPIED
-      if slot.hash == h && hashmap_keys_eq(slot.key as ptr, key) then slot
+      if slot.hash == h && hashmap_keys_eq(slot.key as ptr, key) then break
       slot = hashmap_next_slot(m, slot)
     slot   -- returns empty slot if not found
 
@@ -599,11 +600,16 @@ fn hashmap_clear : *HashMap -> ()
 -- iterate: returns key and value at bucket index, or (null,0) if empty
 fn hashmap_iter_next : (*HashMap, *i64) -> (*u8, i64, bool)
   | (m, idx_ptr) ->
+    let mut k : *u8 = 0 as *u8
+    let mut v : i64 = 0i64
+    let mut found : bool = false
     while idx_ptr[0i64] < m.cap
       let e = (m.entries as i64 + idx_ptr[0i64] * 64i64) as *HashMapEntry
       idx_ptr[0i64] = idx_ptr[0i64] + 1i64
-      if e.state == HASHMAP_OCCUPIED then (e.key, e.value, true)
-    (0 as *u8, 0i64, false)
+      if e.state == HASHMAP_OCCUPIED
+        k = e.key; v = e.value; found = true
+        break
+    (k, v, found)
 
 -- §11  HASH MAP (u64 key → i64 value, no string copies)
 struct U64MapEntry
@@ -666,10 +672,10 @@ fn u64map_set : (*U64Map, u64, i64) -> ()
       let e = (m.entries as i64 + i * 32i64) as *U64MapEntry
       if e.state == HASHMAP_EMPTY
         e.key = key; e.value = value; e.state = HASHMAP_OCCUPIED; m.count = m.count + 1i64
-        i = m.mask + 1i64   -- sentinel: break out of loop
+        break
       else if e.key == key
         e.value = value
-        i = m.mask + 1i64   -- sentinel: break
+        break
       else
         i = (i + 1i64) & m.mask
 
@@ -679,13 +685,19 @@ fn u64map_get : (*U64Map, u64) -> (i64, bool)
     else
       let mut i = u64map_hash(key) as i64 & m.mask
       let start = i
+      let mut res_v : i64 = 0i64
+      let mut found : bool = false
       while true
         let e = (m.entries as i64 + i * 32i64) as *U64MapEntry
-        if e.state == HASHMAP_EMPTY then (0i64, false)
-        else if e.key == key then (e.value, true)
+        if e.state == HASHMAP_EMPTY
+          break
+        else if e.key == key
+          res_v = e.value; found = true
+          break
         i = (i + 1i64) & m.mask
-        if i == start then (0i64, false)
-      (0i64, false)
+        if i == start
+          break
+      (res_v, found)
 
 fn u64map_has    : (*U64Map, u64) -> bool | (m, k) -> let (_,f) = u64map_get(m,k); f
 fn u64map_count  : *U64Map -> i64         | m -> m.count
@@ -752,7 +764,7 @@ fn multimap_destroy : *HashMap -> ()
       let (_, val, found) = hashmap_iter_next(m, &idx)
       if !found
         hashmap_destroy(m)
-        idx = -1i64   -- break sentinel
+        break
       else
         let v = val as *mem.Vec
         mem.vec_destroy(v); os.linux.free(v as ptr)
@@ -1073,3 +1085,9 @@ fn hash_bytes_to_u32 : (ptr, i64) -> u32
 
 fn hash_str_to_u32 : ptr -> u32
   | s -> hash_bytes_to_u32(s, os.linux.strlen(s) as i64)
+
+-- OrderedMap exports
+fn orderedmap_new : () -> ordered_map.OrderedMap             | () -> ordered_map.orderedmap_new()
+fn orderedmap_destroy : *ordered_map.OrderedMap -> ()        | om -> ordered_map.orderedmap_destroy(om)
+fn orderedmap_set : (*ordered_map.OrderedMap, ptr, i64) -> ()| (om, k, v) -> ordered_map.orderedmap_set(om, k, v)
+fn orderedmap_get : (*ordered_map.OrderedMap, ptr) -> (i64, bool) | (om, k) -> ordered_map.orderedmap_get(om, k)

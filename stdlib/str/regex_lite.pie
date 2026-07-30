@@ -1,0 +1,60 @@
+mod str.regex_lite
+
+use str.ascii
+
+-- stdlib/str/regex_lite.pie — Lightweight Wildcard and Glob Matching
+-- Supports '*' (zero or more bytes) and '?' (any single byte) wildcards.
+
+fn glob_match : (ptr, i64, ptr, i64) -> bool
+  | (pattern, pat_len, text, txt_len) ->
+    let pbuf = pattern as *u8
+    let tbuf = text as *u8
+    let mut pi : i64 = 0i64
+    let mut ti : i64 = 0i64
+    let mut star_p : i64 = -1i64
+    let mut star_t : i64 = -1i64
+    while ti < txt_len
+      if pi < pat_len && (pbuf[pi] == 63u8 || pbuf[pi] == tbuf[ti])   -- '?'
+        pi = pi + 1i64
+        ti = ti + 1i64
+      else if pi < pat_len && pbuf[pi] == 42u8   -- '*'
+        star_p = pi
+        star_t = ti
+        pi = pi + 1i64
+      else if star_p >= 0i64
+        pi = star_p + 1i64
+        star_t = star_t + 1i64
+        ti = star_t
+      else
+        break
+    while pi < pat_len && pbuf[pi] == 42u8
+      pi = pi + 1i64
+    pi == pat_len && ti == txt_len
+
+fn wildcard_match_ci : (ptr, i64, ptr, i64) -> bool
+  | (pattern, pat_len, text, txt_len) ->
+    let pbuf = pattern as *u8
+    let tbuf = text as *u8
+    let mut pi : i64 = 0i64
+    let mut ti : i64 = 0i64
+    let mut star_p : i64 = -1i64
+    let mut star_t : i64 = -1i64
+    while ti < txt_len
+      let p_char = if pi < pat_len then ascii.ascii_to_lower(pbuf[pi]) else 0u8
+      let t_char = ascii.ascii_to_lower(tbuf[ti])
+      if pi < pat_len && (pbuf[pi] == 63u8 || p_char == t_char)   -- '?'
+        pi = pi + 1i64
+        ti = ti + 1i64
+      else if pi < pat_len && pbuf[pi] == 42u8   -- '*'
+        star_p = pi
+        star_t = ti
+        pi = pi + 1i64
+      else if star_p >= 0i64
+        pi = star_p + 1i64
+        star_t = star_t + 1i64
+        ti = star_t
+      else
+        break
+    while pi < pat_len && pbuf[pi] == 42u8
+      pi = pi + 1i64
+    pi == pat_len && ti == txt_len

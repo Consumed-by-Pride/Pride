@@ -1,0 +1,50 @@
+mod vec.set
+
+use vec.vec
+use vec.algo
+
+-- stdlib/vec/set.pie — Ordered Array-Backed Set (OrderedSet)
+-- Maintains sorted unique elements with O(log N) lookup and O(N) insertion.
+
+struct OrderedSet
+  items : vec.Vec
+
+fn orderedset_new : () -> OrderedSet
+  | () -> OrderedSet { items: vec.vec_new(8i64) }
+
+fn orderedset_with_cap : i64 -> OrderedSet
+  | cap -> OrderedSet { items: vec.vec_with_cap(cap, 8i64) }
+
+fn orderedset_destroy : *OrderedSet -> ()
+  | s -> vec.vec_destroy(&s.items)
+
+fn orderedset_len : *OrderedSet -> i64
+  | s -> vec.vec_len(&s.items)
+
+fn orderedset_is_empty : *OrderedSet -> bool
+  | s -> vec.vec_is_empty(&s.items)
+
+fn orderedset_contains_u64 : (*OrderedSet, u64) -> bool
+  | (s, val) ->
+    let (_, found) = algo.vec_binary_search_u64(&s.items, val)
+    found
+
+fn orderedset_insert_u64 : (*OrderedSet, u64) -> bool
+  | (s, val) ->
+    let (idx, found) = algo.vec_binary_search_u64(&s.items, val)
+    if found then false
+    else
+      let mut v = val
+      vec.vec_insert(&s.items, idx, &v as ptr)
+      true
+
+fn orderedset_remove_u64 : (*OrderedSet, u64) -> bool
+  | (s, val) ->
+    let (idx, found) = algo.vec_binary_search_u64(&s.items, val)
+    if !found then false
+    else
+      vec.vec_remove(&s.items, idx, 0 as ptr)
+      true
+
+fn orderedset_clear : *OrderedSet -> ()
+  | s -> vec.vec_clear(&s.items)

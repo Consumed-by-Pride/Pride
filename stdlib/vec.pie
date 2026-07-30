@@ -1,0 +1,110 @@
+mod vec
+
+use vec.raw
+use vec.vec
+use vec.smallvec
+use vec.bitvec
+use vec.deque
+use vec.iter
+use vec.algo
+use vec.priority_queue
+use vec.ring_buffer
+use vec.btree
+use vec.set
+use vec.lru
+
+-- stdlib/vec.pie — Standard Library Vector Module
+-- Exports dynamic array (Vec), small vector (SmallVec), bit vector (BitVec),
+-- double-ended ring queue (VecDeque), iterators, and algorithmic primitives.
+
+-- Top-level Vec constructors & accessors
+fn new : i64 -> vec.Vec                           | elem_sz -> vec.vec_new(elem_sz)
+fn with_cap : (i64, i64) -> vec.Vec               | (cap, elem_sz) -> vec.vec_with_cap(cap, elem_sz)
+fn destroy : *vec.Vec -> ()                       | v -> vec.vec_destroy(v)
+fn len : *vec.Vec -> i64                          | v -> vec.vec_len(v)
+fn cap : *vec.Vec -> i64                          | v -> vec.vec_cap(v)
+fn elem_size : *vec.Vec -> i64                    | v -> vec.vec_elem_size(v)
+fn is_empty : *vec.Vec -> bool                    | v -> vec.vec_is_empty(v)
+fn as_slice : *vec.Vec -> ptr                     | v -> vec.vec_as_slice(v)
+fn get : (*vec.Vec, i64) -> ptr                   | (v, idx) -> vec.vec_get(v, idx)
+fn set : (*vec.Vec, i64, ptr) -> bool             | (v, idx, val_ptr) -> vec.vec_set(v, idx, val_ptr)
+fn push : (*vec.Vec, ptr) -> ()                   | (v, val_ptr) -> vec.vec_push(v, val_ptr)
+fn pop : (*vec.Vec, ptr) -> bool                  | (v, out_ptr) -> vec.vec_pop(v, out_ptr)
+fn insert : (*vec.Vec, i64, ptr) -> bool          | (v, idx, val_ptr) -> vec.vec_insert(v, idx, val_ptr)
+fn remove : (*vec.Vec, i64, ptr) -> bool          | (v, idx, out_ptr) -> vec.vec_remove(v, idx, out_ptr)
+fn swap_remove : (*vec.Vec, i64, ptr) -> bool     | (v, idx, out_ptr) -> vec.vec_swap_remove(v, idx, out_ptr)
+fn clear : *vec.Vec -> ()                         | v -> vec.vec_clear(v)
+fn clone : *vec.Vec -> vec.Vec                    | v -> vec.vec_clone(v)
+
+-- SmallVec exports
+fn smallvec_new : (i64, i64) -> smallvec.SmallVec | (ic, esz) -> smallvec.smallvec_new(ic, esz)
+fn smallvec_destroy : *smallvec.SmallVec -> ()    | sv -> smallvec.smallvec_destroy(sv)
+fn smallvec_push : (*smallvec.SmallVec, ptr) -> ()| (sv, p) -> smallvec.smallvec_push(sv, p)
+fn smallvec_pop : (*smallvec.SmallVec, ptr) -> bool| (sv, p) -> smallvec.smallvec_pop(sv, p)
+
+-- BitVec exports
+fn bitvec_new : () -> bitvec.BitVec               | () -> bitvec.bitvec_new()
+fn bitvec_destroy : *bitvec.BitVec -> ()          | bv -> bitvec.bitvec_destroy(bv)
+fn bitvec_push : (*bitvec.BitVec, bool) -> ()     | (bv, b) -> bitvec.bitvec_push(bv, b)
+fn bitvec_pop : *bitvec.BitVec -> bool            | bv -> bitvec.bitvec_pop(bv)
+fn bitvec_get : (*bitvec.BitVec, i64) -> bool     | (bv, i) -> bitvec.bitvec_get(bv, i)
+fn bitvec_set : (*bitvec.BitVec, i64, bool) -> bool | (bv, i, b) -> bitvec.bitvec_set(bv, i, b)
+
+-- VecDeque exports
+fn deque_new : i64 -> deque.VecDeque              | esz -> deque.vecdeque_new(esz)
+fn deque_destroy : *deque.VecDeque -> ()          | vd -> deque.vecdeque_destroy(vd)
+fn deque_push_back : (*deque.VecDeque, ptr) -> ()    | (vd, p) -> deque.vecdeque_push_back(vd, p)
+fn deque_push_front : (*deque.VecDeque, ptr) -> ()   | (vd, p) -> deque.vecdeque_push_front(vd, p)
+fn deque_pop_back : (*deque.VecDeque, ptr) -> bool   | (vd, p) -> deque.vecdeque_pop_back(vd, p)
+fn deque_pop_front : (*deque.VecDeque, ptr) -> bool  | (vd, p) -> deque.vecdeque_pop_front(vd, p)
+
+-- Algorithms
+fn sort_u64 : *vec.Vec -> ()                      | v -> algo.vec_sort_u64(v)
+fn sort_i64 : *vec.Vec -> ()                      | v -> algo.vec_sort_i64(v)
+fn is_sorted_u64 : *vec.Vec -> bool               | v -> algo.vec_is_sorted_u64(v)
+fn is_sorted_i64 : *vec.Vec -> bool               | v -> algo.vec_is_sorted_i64(v)
+fn binary_search_u64 : (*vec.Vec, u64) -> (i64, bool) | (v, t) -> algo.vec_binary_search_u64(v, t)
+fn binary_search_i64 : (*vec.Vec, i64) -> (i64, bool) | (v, t) -> algo.vec_binary_search_i64(v, t)
+fn dedup_u64 : *vec.Vec -> ()                     | v -> algo.vec_dedup_u64(v)
+fn dedup_i64 : *vec.Vec -> ()                     | v -> algo.vec_dedup_i64(v)
+fn set_union_u64 : (*vec.Vec, *vec.Vec) -> vec.Vec    | (a, b) -> algo.vec_set_union_u64(a, b)
+fn set_intersection_u64 : (*vec.Vec, *vec.Vec) -> vec.Vec | (a, b) -> algo.vec_set_intersection_u64(a, b)
+fn sort_desc_u64 : *vec.Vec -> ()                 | v -> algo.vec_sort_desc_u64(v)
+fn sort_desc_i64 : *vec.Vec -> ()                 | v -> algo.vec_sort_desc_i64(v)
+
+-- PriorityQueue exports
+fn pq_new : () -> priority_queue.PriorityQueue        | () -> priority_queue.pq_new()
+fn pq_destroy : *priority_queue.PriorityQueue -> ()   | pq -> priority_queue.pq_destroy(pq)
+fn pq_push : (*priority_queue.PriorityQueue, u64) -> ()| (pq, v) -> priority_queue.pq_push(pq, v)
+fn pq_pop : *priority_queue.PriorityQueue -> (u64, bool)| pq -> priority_queue.pq_pop(pq)
+fn pq_peek : *priority_queue.PriorityQueue -> (u64, bool)| pq -> priority_queue.pq_peek(pq)
+
+-- RingBuffer exports
+fn rb_new : (i64, i64) -> ring_buffer.RingBuffer          | (cap, esz) -> ring_buffer.rb_new(cap, esz)
+fn rb_destroy : *ring_buffer.RingBuffer -> ()             | rb -> ring_buffer.rb_destroy(rb)
+fn rb_push : (*ring_buffer.RingBuffer, ptr) -> bool       | (rb, v) -> ring_buffer.rb_push(rb, v)
+fn rb_pop : (*ring_buffer.RingBuffer, ptr) -> bool        | (rb, o) -> ring_buffer.rb_pop(rb, o)
+fn rb_len : *ring_buffer.RingBuffer -> i64                | rb -> ring_buffer.rb_len(rb)
+
+-- BTreeMap exports
+fn btree_new : () -> btree.BTreeMap                       | () -> btree.btree_new()
+fn btree_destroy : *btree.BTreeMap -> ()                  | m -> btree.btree_destroy(m)
+fn btree_insert : (*btree.BTreeMap, u64, i64) -> bool     | (m, k, v) -> btree.btree_insert(m, k, v)
+fn btree_get : (*btree.BTreeMap, u64) -> (i64, bool)      | (m, k) -> btree.btree_get(m, k)
+fn btree_contains : (*btree.BTreeMap, u64) -> bool        | (m, k) -> btree.btree_contains(m, k)
+fn btree_len : *btree.BTreeMap -> i64                     | m -> btree.btree_len(m)
+
+-- OrderedSet exports
+fn orderedset_new : () -> set.OrderedSet                  | () -> set.orderedset_new()
+fn orderedset_destroy : *set.OrderedSet -> ()             | s -> set.orderedset_destroy(s)
+fn orderedset_insert : (*set.OrderedSet, u64) -> bool     | (s, v) -> set.orderedset_insert_u64(s, v)
+fn orderedset_contains : (*set.OrderedSet, u64) -> bool   | (s, v) -> set.orderedset_contains_u64(s, v)
+fn orderedset_remove : (*set.OrderedSet, u64) -> bool     | (s, v) -> set.orderedset_remove_u64(s, v)
+fn orderedset_len : *set.OrderedSet -> i64                | s -> set.orderedset_len(s)
+
+-- LRU List exports
+fn lrulist_new : i64 -> lru.LruList                       | cap -> lru.lrulist_new(cap)
+fn lrulist_destroy : *lru.LruList -> ()                   | lru_l -> lru.lrulist_destroy(lru_l)
+fn lrulist_access : (*lru.LruList, i64) -> bool           | (lru_l, i) -> lru.lrulist_access(lru_l, i)
+fn lrulist_push : (*lru.LruList, u64, i64) -> i64         | (lru_l, k, v) -> lru.lrulist_push_head(lru_l, k, v)
+fn lrulist_evict : *lru.LruList -> (u64, i64, bool)       | lru_l -> lru.lrulist_evict_tail(lru_l)

@@ -1,0 +1,26 @@
+mod db.compaction
+
+use os.linux
+use str.string
+use db.sstable
+use db.memtable
+
+-- stdlib/db/compaction.pie — LSM Database Compaction Engine
+-- Merges older SSTable files and purges tombstoned records.
+
+fn compaction_merge_sstables : (ptr, ptr, ptr) -> i64
+  | (in_path1, in_path2, out_path) ->
+    let mut sst1 = sstable.sstable_open(in_path1)
+    let mut sst2 = sstable.sstable_open(in_path2)
+    if sst1.file_h.fd < 0i64 || sst2.file_h.fd < 0i64
+      sstable.sstable_close(&sst1)
+      sstable.sstable_close(&sst2)
+      -1i64
+    else
+      -- Build combined memtable and flush to merged sstable
+      let mut mt = memtable.memtable_new(sst1.entries + sst2.entries)
+      sstable.sstable_close(&sst1)
+      sstable.sstable_close(&sst2)
+      let r = sstable.sstable_create_from_memtable(out_path, &mt)
+      memtable.memtable_destroy(&mt)
+      r

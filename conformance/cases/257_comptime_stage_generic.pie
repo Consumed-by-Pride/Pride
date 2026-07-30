@@ -1,0 +1,11 @@
+-- EXPECT-CLEAN
+-- Multi-stage programming (#stage / comptime) and const expressions.
+
+fn power_two : i64 -> i64
+  | n -> 1i64 << n
+
+fn main : () -> ()
+  | () ->
+      let c = comptime { 10 + 20 * 3 }
+      let p = comptime { power_two(10i64) }
+      let _sum = c + p

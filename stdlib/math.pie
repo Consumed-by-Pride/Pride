@@ -1,0 +1,163 @@
+mod math
+
+use math.consts
+use math.abs
+use math.pow
+use math.trig
+use math.exp
+use math.round
+use math.bits
+use math.rand
+use math.complex
+use math.vecmath
+use math.stats
+use math.linalg
+use math.ndarray
+use math.quant
+use math.blas
+use math.grad
+use math.interp
+
+-- stdlib/math.pie — Standard Library Mathematical and Numerical Suite
+-- Exports IEEE constants, number theory, floating-point transcendental functions,
+-- pseudorandom number generators, complex numbers, and linear algebra primitives.
+
+const PI            : f64 = consts.PI
+const TAU           : f64 = consts.TAU
+const E             : f64 = consts.E
+const SQRT_2        : f64 = consts.SQRT_2
+const LN_2          : f64 = consts.LN_2
+const LN_10         : f64 = consts.LN_10
+const INT64_MAX     : i64 = consts.INT64_MAX
+const INT64_MIN     : i64 = consts.INT64_MIN
+const INT32_MAX     : i64 = consts.INT32_MAX
+const INT32_MIN     : i64 = consts.INT32_MIN
+
+-- Absolute value, signum, min/max, clamping
+fn abs_i64 : i64 -> i64                             | x -> abs.abs_i64(x)
+fn abs_f64 : f64 -> f64                             | x -> abs.abs_f64(x)
+fn signum_i64 : i64 -> i64                          | x -> abs.signum_i64(x)
+fn signum_f64 : f64 -> f64                          | x -> abs.signum_f64(x)
+fn min_i64 : (i64, i64) -> i64                      | (a, b) -> abs.min_i64(a, b)
+fn max_i64 : (i64, i64) -> i64                      | (a, b) -> abs.max_i64(a, b)
+fn clamp_i64 : (i64, i64, i64) -> i64               | (x, lo, hi) -> abs.clamp_i64(x, lo, hi)
+fn min_f64 : (f64, f64) -> f64                      | (a, b) -> abs.min_f64(a, b)
+fn max_f64 : (f64, f64) -> f64                      | (a, b) -> abs.max_f64(a, b)
+fn clamp_f64 : (f64, f64, f64) -> f64               | (x, lo, hi) -> abs.clamp_f64(x, lo, hi)
+
+-- Exponentiation & roots
+fn pow_i64 : (i64, i64) -> i64                      | (b, e) -> pow.pow_i64(b, e)
+fn pow_u64 : (u64, u64) -> u64                      | (b, e) -> pow.pow_u64(b, e)
+fn pow_mod_u64 : (u64, u64, u64) -> u64             | (b, e, m) -> pow.pow_mod_u64(b, e, m)
+fn sqrt_u64 : u64 -> u64                            | x -> pow.sqrt_u64(x)
+fn sqrt_f64 : f64 -> f64                            | x -> pow.sqrt_f64(x)
+fn cbrt_f64 : f64 -> f64                            | x -> pow.cbrt_f64(x)
+fn hypot_f64 : (f64, f64) -> f64                    | (x, y) -> pow.hypot_f64(x, y)
+
+-- Trigonometry
+fn sin_f64 : f64 -> f64                             | x -> trig.sin_f64(x)
+fn cos_f64 : f64 -> f64                             | x -> trig.cos_f64(x)
+fn tan_f64 : f64 -> f64                             | x -> trig.tan_f64(x)
+fn asin_f64 : f64 -> f64                            | x -> trig.asin_f64(x)
+fn acos_f64 : f64 -> f64                            | x -> trig.acos_f64(x)
+fn atan_f64 : f64 -> f64                            | x -> trig.atan_f64(x)
+fn atan2_f64 : (f64, f64) -> f64                    | (y, x) -> trig.atan2_f64(y, x)
+
+-- Exponential & Logarithm
+fn exp_f64 : f64 -> f64                             | x -> exp.exp_f64(x)
+fn exp2_f64 : f64 -> f64                            | x -> exp.exp2_f64(x)
+fn ln_f64 : f64 -> f64                              | x -> exp.ln_f64(x)
+fn log2_f64 : f64 -> f64                            | x -> exp.log2_f64(x)
+fn log10_f64 : f64 -> f64                           | x -> exp.log10_f64(x)
+fn pow_f64 : (f64, f64) -> f64                      | (b, e) -> exp.pow_f64(b, e)
+
+-- Rounding & Euclidean division
+fn floor_f64 : f64 -> f64                           | x -> round.floor_f64(x)
+fn ceil_f64 : f64 -> f64                            | x -> round.ceil_f64(x)
+fn trunc_f64 : f64 -> f64                           | x -> round.trunc_f64(x)
+fn round_f64 : f64 -> f64                           | x -> round.round_f64(x)
+fn div_floor_i64 : (i64, i64) -> i64                | (a, b) -> round.div_floor_i64(a, b)
+fn div_ceil_i64 : (i64, i64) -> i64                 | (a, b) -> round.div_ceil_i64(a, b)
+fn rem_euclid_i64 : (i64, i64) -> i64               | (a, b) -> round.rem_euclid_i64(a, b)
+
+-- Bitwise algorithms & Number theory
+fn gcd_u64 : (u64, u64) -> u64                      | (a, b) -> bits.gcd_u64(a, b)
+fn gcd_i64 : (i64, i64) -> i64                      | (a, b) -> bits.gcd_i64(a, b)
+fn lcm_u64 : (u64, u64) -> u64                      | (a, b) -> bits.lcm_u64(a, b)
+fn is_power_of_two_u64 : u64 -> bool                | x -> bits.is_power_of_two_u64(x)
+fn next_power_of_two_u64 : u64 -> u64               | x -> bits.next_power_of_two_u64(x)
+fn popcount_u64 : u64 -> i64                        | x -> bits.popcount_u64(x)
+fn reverse_bits_u64 : u64 -> u64                    | x -> bits.reverse_bits_u64(x)
+fn sqrt_i64 : i64 -> i64                            | x -> bits.sqrt_i64(x)
+fn cbrt_u64 : u64 -> u64                            | x -> bits.cbrt_u64(x)
+fn log10_u64 : u64 -> i64                           | x -> bits.log10_u64(x)
+fn is_prime_u64 : u64 -> bool                       | x -> bits.is_prime_u64(x)
+fn next_prime_u64 : u64 -> u64                      | x -> bits.next_prime_u64(x)
+
+-- Matrix & Linear Algebra
+fn mat4_mul : (vecmath.Mat4, vecmath.Mat4) -> vecmath.Mat4 | (a, b) -> vecmath.mat4_mul(a, b)
+fn mat4_translation : (f64, f64, f64) -> vecmath.Mat4      | (x, y, z) -> vecmath.mat4_translation(x, y, z)
+fn mat4_scaling : (f64, f64, f64) -> vecmath.Mat4          | (x, y, z) -> vecmath.mat4_scaling(x, y, z)
+
+-- Complex
+fn complex_exp : complex.Complex -> complex.Complex        | c -> complex.complex_exp(c)
+fn complex_ln : complex.Complex -> complex.Complex         | c -> complex.complex_ln(c)
+fn complex_pow : (complex.Complex, complex.Complex) -> complex.Complex | (z, w) -> complex.complex_pow(z, w)
+fn complex_arg : complex.Complex -> f64                    | c -> complex.complex_arg(c)
+fn vec2_normalize : vecmath.Vec2 -> vecmath.Vec2           | v -> vecmath.vec2_normalize(v)
+fn vec3_normalize : vecmath.Vec3 -> vecmath.Vec3           | v -> vecmath.vec3_normalize(v)
+fn mat4_mul_vec3 : (vecmath.Mat4, vecmath.Vec3) -> vecmath.Vec3 | (m, v) -> vecmath.mat4_mul_vec3(m, v)
+
+-- Pseudorandom numbers
+fn xorshift_new : u64 -> rand.XorShift64            | seed -> rand.xorshift_new(seed)
+fn wyrand_new : u64 -> rand.WyRand                  | seed -> rand.wyrand_new(seed)
+fn rand_range_i64 : (*rand.XorShift64, i64, i64) -> i64 | (r, lo, hi) -> rand.rand_range_i64(r, lo, hi)
+fn rand_f64_01 : *rand.XorShift64 -> f64            | r -> rand.rand_f64_01(r)
+
+-- Statistics & Probability
+fn mean_f64 : *vec.vec.Vec -> f64                   | v -> stats.mean_f64(v)
+fn variance_f64 : (*vec.vec.Vec, bool) -> f64       | (v, s) -> stats.variance_f64(v, s)
+fn stddev_f64 : (*vec.vec.Vec, bool) -> f64         | (v, s) -> stats.stddev_f64(v, s)
+fn min_max_f64 : *vec.vec.Vec -> (f64, f64)         | v -> stats.min_max_f64(v)
+fn pearson_correlation_f64 : (*vec.vec.Vec, *vec.vec.Vec) -> f64 | (a, b) -> stats.pearson_correlation_f64(a, b)
+
+-- Linear Algebra Transformations & Interpolation
+fn mat4_transpose : vecmath.Mat4 -> vecmath.Mat4    | m -> linalg.mat4_transpose(m)
+fn mat4_mul_vec4 : (vecmath.Mat4, f64, f64, f64, f64) -> (f64, f64, f64, f64) | (m, x, y, z, w) -> linalg.mat4_mul_vec4(m, x, y, z, w)
+fn vec2_distance : (vecmath.Vec2, vecmath.Vec2) -> f64 | (a, b) -> linalg.vec2_distance(a, b)
+fn vec3_distance : (vecmath.Vec3, vecmath.Vec3) -> f64 | (a, b) -> linalg.vec3_distance(a, b)
+fn vec2_lerp : (vecmath.Vec2, vecmath.Vec2, f64) -> vecmath.Vec2 | (a, b, t) -> linalg.vec2_lerp(a, b, t)
+fn vec3_lerp : (vecmath.Vec3, vecmath.Vec3, f64) -> vecmath.Vec3 | (a, b, t) -> linalg.vec3_lerp(a, b, t)
+fn vec3_reflect : (vecmath.Vec3, vecmath.Vec3) -> vecmath.Vec3 | (v, n) -> linalg.vec3_reflect(v, n)
+
+-- NdArray geometric layout
+fn ndarray_layout_c : (i64, ptr) -> ndarray.NdArrayLayout      | (n, s) -> ndarray.ndarray_layout_c_order(n, s)
+fn ndarray_layout_f : (i64, ptr) -> ndarray.NdArrayLayout      | (n, s) -> ndarray.ndarray_layout_f_order(n, s)
+fn ndarray_is_c_contig : *ndarray.NdArrayLayout -> bool        | ly -> ndarray.ndarray_layout_is_c_contiguous(ly)
+
+-- Quantization & low-precision numerics
+fn bf16_from_f32 : f32 -> u16                                  | x -> quant.bfloat16_from_f32(x)
+fn f32_from_bf16 : u16 -> f32                                  | bf -> quant.f32_from_bfloat16(bf)
+fn fp8_e4m3_from_f32 : f32 -> u8                               | x -> quant.fp8_e4m3_from_f32(x)
+fn f32_from_fp8_e4m3 : u8 -> f32                               | fp -> quant.f32_from_fp8_e4m3(fp)
+fn int4_pack : (u8, u8) -> u8                                  | (l, h) -> quant.int4_pack(l, h)
+
+-- Cache-friendly BLAS kernels & Vectorized activations
+fn gemm_f64 : (ptr, ptr, ptr, i64, i64, i64) -> ()             | (a, b, c, m, n, k) -> blas.gemm_f64_tiled(a, b, c, m, n, k)
+fn vec_relu : *vec.vec.Vec -> ()                               | v -> blas.vec_relu_f64(v)
+fn vec_sigmoid : *vec.vec.Vec -> ()                            | v -> blas.vec_sigmoid_f64(v)
+fn vec_hardswish : *vec.vec.Vec -> ()                          | v -> blas.vec_hardswish_f64(v)
+
+-- Reverse-Mode Auto-Diff (GradTape)
+fn grad_new : () -> grad.GradTape                              | () -> grad.grad_tape_new()
+fn grad_destroy : *grad.GradTape -> ()                         | gt -> grad.grad_tape_destroy(gt)
+fn grad_push_var : (*grad.GradTape, f64) -> i64                | (gt, v) -> grad.grad_tape_push_var(gt, v)
+fn grad_push_op : (*grad.GradTape, i64, i64, i64, f64) -> i64  | (gt, op, a0, a1, v) -> grad.grad_tape_push_op(gt, op, a0, a1, v)
+fn grad_backward : (*grad.GradTape, i64) -> ()                 | (gt, id) -> grad.grad_tape_backward(gt, id)
+fn grad_get : (*grad.GradTape, i64) -> f64                     | (gt, id) -> grad.grad_tape_get_grad(gt, id)
+
+-- Interpolation & Splines
+fn smoothstep : (f64, f64, f64) -> f64                         | (e0, e1, x) -> interp.smoothstep_f64(e0, e1, x)
+fn smootherstep : (f64, f64, f64) -> f64                       | (e0, e1, x) -> interp.smootherstep_f64(e0, e1, x)
+fn bezier_quad : (vecmath.Vec2, vecmath.Vec2, vecmath.Vec2, f64) -> vecmath.Vec2 | (p0, p1, p2, t) -> interp.bezier_quadratic_vec2(p0, p1, p2, t)
+fn bezier_cube : (vecmath.Vec2, vecmath.Vec2, vecmath.Vec2, vecmath.Vec2, f64) -> vecmath.Vec2 | (p0, p1, p2, p3, t) -> interp.bezier_cubic_vec2(p0, p1, p2, p3, t)

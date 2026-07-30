@@ -1,0 +1,42 @@
+mod ir.module
+
+use os.linux
+use vec.vec
+use str.string
+use ir.func
+
+-- stdlib/ir/module.pie — SSA Compiler Module
+-- Top-level container for global functions, variables, and type definitions.
+
+struct IrModule
+  name      : string.String
+  functions : vec.Vec
+  globals   : vec.Vec
+  types     : vec.Vec
+
+fn ir_module_new : ptr -> *IrModule
+  | name_cstr ->
+    let m = os.linux.malloc(48i64) as *IrModule
+    m.name      = string.string_from_cstr(name_cstr)
+    m.functions = vec.vec_new(16i64)
+    m.globals   = vec.vec_new(16i64)
+    m.types     = vec.vec_new(16i64)
+    m
+
+fn ir_module_add_func : (*IrModule, *func.IrFunction) -> ()
+  | (m, fn_ptr) -> vec.vec_push(&m.functions, fn_ptr as ptr)
+
+fn ir_module_destroy : *IrModule -> ()
+  | m ->
+    if m as i64 == 0i64 then ()
+    else
+      string.string_destroy(&m.name)
+      let mut i : i64 = 0i64
+      let flen = vec.vec_len(&m.functions)
+      while i < flen
+        func.ir_func_destroy(vec.vec_get(&m.functions, i) as *func.IrFunction)
+        i = i + 1i64
+      vec.vec_destroy(&m.functions)
+      vec.vec_destroy(&m.globals)
+      vec.vec_destroy(&m.types)
+      os.linux.free(m as ptr)

@@ -1,0 +1,68 @@
+mod sync.mpmc
+
+use os.linux
+use sync.mutex
+use sync.cond
+
+-- stdlib/sync/mpmc.pie — Multi-Producer Multi-Consumer Bounded Queue (MpmcQueue)
+-- Thread-safe concurrent queue for thread pool job distribution.
+
+struct MpmcQueue
+  items : ptr
+  cap   : i64
+  head  : i64
+  tail  : i64
+  count : i64
+  mut   : mutex.Mutex
+  not_empty : cond.CondVar
+  not_full  : cond.CondVar
+
+fn mpmc_new : i64 -> MpmcQueue
+  | cap ->
+    let c = if cap <= 0i64 then 64i64 else cap
+    let p = os.linux.malloc(c * 8i64)
+    os.linux.memset(p, 0i32, (c * 8i64) as u64)
+    MpmcQueue {
+      items: p,
+      cap: c,
+      head: 0i64,
+      tail: 0i64,
+      count: 0i64,
+      mut: mutex.mutex_new(),
+      not_empty: cond.condvar_new(),
+      not_full:  cond.condvar_new()
+    }
+
+fn mpmc_destroy : *MpmcQueue -> ()
+  | q ->
+    mutex.mutex_destroy(&q.mut)
+    cond.condvar_destroy(&q.not_empty)
+    cond.condvar_destroy(&q.not_full)
+    if q.items as i64 != 0i64
+      os.linux.free(q.items)
+    q.items = 0 as ptr; q.cap = 0i64; q.count = 0i64
+
+fn mpmc_push : (*MpmcQueue, ptr) -> ()
+  | (q, val_ptr) ->
+    mutex.mutex_lock(&q.mut)
+    while q.count >= q.cap
+      cond.condvar_wait(&q.not_full, &q.mut)
+    let idx = q.tail
+    (q.items as *ptr)[idx] = val_ptr
+    q.tail  = (q.tail + 1i64) % q.cap
+    q.count = q.count + 1i64
+    cond.condvar_signal(&q.not_empty)
+    mutex.mutex_unlock(&q.mut)
+
+fn mpmc_pop : *MpmcQueue -> ptr
+  | q ->
+    mutex.mutex_lock(&q.mut)
+    while q.count == 0i64
+      cond.condvar_wait(&q.not_empty, &q.mut)
+    let idx = q.head
+    let val = (q.items as *ptr)[idx]
+    q.head  = (q.head + 1i64) % q.cap
+    q.count = q.count - 1i64
+    cond.condvar_signal(&q.not_full)
+    mutex.mutex_unlock(&q.mut)
+    val

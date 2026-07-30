@@ -1,0 +1,58 @@
+mod os.mmap
+
+use os.linux
+
+-- stdlib/os/mmap.pie — Virtual Memory Mapping (MmapRegion)
+-- Wraps mmap, munmap, mprotect, and msync syscalls.
+
+struct MmapRegion
+  ptr   : ptr
+  size  : i64
+  prot  : i64
+  flags : i64
+
+const PROT_NONE  : i64 = 0i64
+const PROT_READ  : i64 = 1i64
+const PROT_WRITE : i64 = 2i64
+const PROT_EXEC  : i64 = 4i64
+
+const MAP_SHARED    : i64 = 1i64
+const MAP_PRIVATE   : i64 = 2i64
+const MAP_ANONYMOUS : i64 = 32i64
+const MAP_FAILED    : i64 = -1i64
+
+fn mmap_anon : (i64, i64) -> (MmapRegion, i64)
+  | (size, prot) ->
+    let p = os.linux.mmap(0 as ptr, size, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1i64, 0i64)
+    if p as i64 == MAP_FAILED
+      (MmapRegion { ptr: 0 as ptr, size: 0i64, prot: 0i64, flags: 0i64 }, -1i64)
+    else
+      (MmapRegion { ptr: p, size: size, prot: prot, flags: MAP_PRIVATE | MAP_ANONYMOUS }, 0i64)
+
+fn mmap_file : (i64, i64, i64, i64, i64) -> (MmapRegion, i64)
+  | (size, prot, flags, fd, offset) ->
+    let p = os.linux.mmap(0 as ptr, size, prot, flags, fd, offset)
+    if p as i64 == MAP_FAILED
+      (MmapRegion { ptr: 0 as ptr, size: 0i64, prot: 0i64, flags: 0i64 }, -1i64)
+    else
+      (MmapRegion { ptr: p, size: size, prot: prot, flags: flags }, 0i64)
+
+fn mmap_protect : (*MmapRegion, i64) -> i64
+  | (region, new_prot) ->
+    let r = os.linux.mprotect(region.ptr, region.size, new_prot)
+    if r == 0i64
+      region.prot = new_prot
+    r
+
+fn mmap_sync : (*MmapRegion, bool) -> i64
+  | (region, sync_wait) ->
+    let flags = if sync_wait then 4i64 else 1i64   -- MS_SYNC = 4, MS_ASYNC = 1
+    os.linux.msync(region.ptr, region.size, flags)
+
+fn mmap_destroy : *MmapRegion -> i64
+  | region ->
+    if region.ptr as i64 == 0i64 || region.size <= 0i64 then 0i64
+    else
+      let r = os.linux.munmap(region.ptr, region.size)
+      region.ptr = 0 as ptr; region.size = 0i64
+      r

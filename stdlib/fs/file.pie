@@ -1,0 +1,148 @@
+mod fs.file
+
+use os.linux
+use str.string
+use fs.meta
+
+-- stdlib/fs/file.pie — Standard File System I/O Handle (File)
+-- Wraps Linux file descriptors with read/write/seek/truncate operations.
+
+struct File
+  fd : i64
+
+const O_RDONLY   : i64 = 0i64
+const O_WRONLY   : i64 = 1i64
+const O_RDWR     : i64 = 2i64
+const O_CREAT    : i64 = 64i64
+const O_TRUNC    : i64 = 512i64
+const O_APPEND   : i64 = 1024i64
+
+const SEEK_SET   : i64 = 0i64
+const SEEK_CUR   : i64 = 1i64
+const SEEK_END   : i64 = 2i64
+
+fn file_open : (ptr, i64, i64) -> File
+  | (path, flags, mode) ->
+    let fd = os.linux.open(path, flags, mode)
+    File { fd: fd }
+
+fn file_open_read : ptr -> File
+  | path -> file_open(path, O_RDONLY, 0i64)
+
+fn file_open_write : ptr -> File
+  | path -> file_open(path, O_WRONLY | O_CREAT | O_TRUNC, 420i64)   -- 0644
+
+fn file_open_append : ptr -> File
+  | path -> file_open(path, O_WRONLY | O_CREAT | O_APPEND, 420i64)  -- 0644
+
+fn file_read : (*File, ptr, i64) -> i64
+  | (f, buf, count) ->
+    if f.fd < 0i64 then -1i64
+    else os.linux.read(f.fd, buf, count)
+
+fn file_write : (*File, ptr, i64) -> i64
+  | (f, buf, count) ->
+    if f.fd < 0i64 then -1i64
+    else os.linux.write(f.fd, buf, count)
+
+fn file_write_all : (*File, ptr, i64) -> i64
+  | (f, buf, count) ->
+    if f.fd < 0i64 then -1i64
+    else os.linux.write_all(f.fd, buf, count)
+
+fn file_seek : (*File, i64, i64) -> i64
+  | (f, offset, whence) ->
+    if f.fd < 0i64 then -1i64
+    else os.linux.lseek(f.fd, offset, whence)
+
+fn file_tell : *File -> i64
+  | f -> file_seek(f, 0i64, SEEK_CUR)
+
+fn file_truncate : (*File, i64) -> i64
+  | (f, length) ->
+    if f.fd < 0i64 then -1i64
+    else os.linux.ftruncate(f.fd, length)
+
+fn file_sync : *File -> i64
+  | f ->
+    if f.fd < 0i64 then -1i64
+    else os.linux.fsync(f.fd)
+
+fn file_close : *File -> ()
+  | f ->
+    if f.fd >= 0i64
+      os.linux.close(f.fd)
+      f.fd = -1i64
+
+fn file_copy : (ptr, ptr) -> i64
+  | (src_path, dst_path) ->
+    let mut in_f  = file_open_read(src_path)
+    if in_f.fd < 0i64 then -1i64
+    else
+      let mut out_f = file_open_write(dst_path)
+      if out_f.fd < 0i64
+        file_close(&in_f)
+        -1i64
+      else
+        let buf = os.linux.malloc(65536i64)
+        let mut total : i64 = 0i64
+        let mut err : i64 = 0i64
+        while true
+          let rn = file_read(&in_f, buf, 65536i64)
+          if rn <= 0i64
+            if rn < 0i64
+              err = rn
+            break
+          let wn = file_write_all(&out_f, buf, rn)
+          if wn < rn
+            err = -1i64
+            break
+          total = total + rn
+        os.linux.free(buf)
+        file_close(&in_f)
+        file_close(&out_f)
+        if err != 0i64 then err else total
+
+fn file_read_to_string : ptr -> string.String
+  | path ->
+    let mut f = file_open_read(path)
+    if f.fd < 0i64 then string.string_new()
+    else
+      let mut out = string.string_with_cap(4096i64)
+      let buf = os.linux.malloc(4096i64)
+      while true
+        let rn = file_read(&f, buf, 4096i64)
+        if rn <= 0i64
+          break
+        string.string_push_slice(&out, buf, rn)
+      os.linux.free(buf)
+      file_close(&f)
+      out
+
+fn file_write_string : (ptr, *string.String) -> i64
+  | (path, s) ->
+    let mut f = file_open_write(path)
+    if f.fd < 0i64 then -1i64
+    else
+      let slice = string.string_as_slice(s)
+      let len   = string.string_len(s)
+      let res   = file_write_all(&f, slice, len)
+      file_close(&f)
+      res
+
+fn file_size_from_path : ptr -> i64
+  | path ->
+    let (m, err) = meta.meta_from_path(path)
+    if err != 0i64 then -1i64
+    else
+      let sz = meta.meta_size(&m)
+      meta.meta_destroy(&m)
+      sz
+
+fn file_touch : ptr -> i64
+  | path ->
+    let mut f = file_open(path, O_WRONLY | O_CREAT, 420i64)   -- 0644
+    if f.fd < 0i64 then -1i64
+    else
+      file_close(&f)
+      0i64

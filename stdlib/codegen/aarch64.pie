@@ -1,0 +1,33 @@
+mod codegen.aarch64
+
+use os.linux
+use vec.vec
+
+-- stdlib/codegen/aarch64.pie — AArch64 Machine Code Encoder
+-- Emits 32-bit little-endian ARMv8-A instruction words.
+
+struct Aarch64Asm
+  buf : vec.Vec
+
+fn aarch64_new : () -> Aarch64Asm
+  | () -> Aarch64Asm { buf: vec.vec_new(4i64) }
+
+fn aarch64_destroy : *Aarch64Asm -> ()
+  | a -> vec.vec_destroy(&a.buf)
+
+fn aarch64_emit_word : (*Aarch64Asm, u32) -> ()
+  | (a, word) ->
+    let mut w = word
+    vec.vec_push(&a.buf, &w as ptr)
+
+fn aarch64_emit_nop : *Aarch64Asm -> ()
+  | a -> aarch64_emit_word(a, 3573751839u32)   -- 0xD503201F
+
+fn aarch64_emit_ret : *Aarch64Asm -> ()
+  | a -> aarch64_emit_word(a, 3596559296u32)   -- 0xD65F03C0
+
+fn aarch64_len : *Aarch64Asm -> i64
+  | a -> vec.vec_len(&a.buf) * 4i64
+
+fn aarch64_ptr : *Aarch64Asm -> ptr
+  | a -> vec.vec_as_slice(&a.buf)

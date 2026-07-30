@@ -1,0 +1,66 @@
+mod fs.meta
+
+use os.linux
+
+-- stdlib/fs/meta.pie — File Status and Metadata (Metadata)
+-- Stat buffer inspection for file types, permissions, sizes, and timestamps.
+
+struct Metadata
+  buf : *u8
+
+const S_IFMT   : i64 = 61440i64   -- 00170000 bitmask for file type
+const S_IFDIR  : i64 = 16384i64   -- 0040000 directory
+const S_IFREG  : i64 = 32768i64   -- 0100000 regular file
+const S_IFLNK  : i64 = 40960i64   -- 0120000 symbolic link
+
+fn meta_from_path : ptr -> (Metadata, i64)
+  | path ->
+    let p = os.linux.malloc(144i64) as *u8
+    let r = os.linux.stat(path, p as ptr)
+    if r < 0i64
+      os.linux.free(p as ptr)
+      (Metadata { buf: 0 as *u8 }, r)
+    else
+      (Metadata { buf: p }, 0i64)
+
+fn meta_from_fd : i64 -> (Metadata, i64)
+  | fd ->
+    let p = os.linux.malloc(144i64) as *u8
+    let r = os.linux.fstat(fd, p as ptr)
+    if r < 0i64
+      os.linux.free(p as ptr)
+      (Metadata { buf: 0 as *u8 }, r)
+    else
+      (Metadata { buf: p }, 0i64)
+
+fn meta_destroy : *Metadata -> ()
+  | m ->
+    if m.buf as i64 != 0i64
+      os.linux.free(m.buf as ptr)
+    m.buf = 0 as *u8
+
+fn meta_mode : *Metadata -> i64
+  | m ->
+    if m.buf as i64 == 0i64 then 0i64
+    else
+      let mode_ptr = (m.buf as i64 + 24i64) as *u32
+      mode_ptr[0i64] as i64
+
+fn meta_size : *Metadata -> i64
+  | m ->
+    if m.buf as i64 == 0i64 then 0i64
+    else
+      let sz_ptr = (m.buf as i64 + 48i64) as *i64
+      sz_ptr[0i64]
+
+fn meta_is_dir : *Metadata -> bool
+  | m -> (meta_mode(m) & S_IFMT) == S_IFDIR
+
+fn meta_is_file : *Metadata -> bool
+  | m -> (meta_mode(m) & S_IFMT) == S_IFREG
+
+fn meta_is_symlink : *Metadata -> bool
+  | m -> (meta_mode(m) & S_IFMT) == S_IFLNK
+
+fn meta_permissions : *Metadata -> i64
+  | m -> meta_mode(m) & 511i64   -- 0777 octal

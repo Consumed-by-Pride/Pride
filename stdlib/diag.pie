@@ -1,0 +1,17 @@
+mod diag
+
+use diag.source
+use diag.demangle
+
+-- stdlib/diag.pie — Standard Library Diagnostics & Error Squiggle Suite
+-- Exports source code maps, byte-offset ledgers, and Itanium/Rust symbol demanglers.
+
+-- Source Map
+fn sourcemap_new : () -> source.SourceMap            | () -> source.sourcemap_new()
+fn sourcemap_destroy : *source.SourceMap -> ()       | sm -> source.sourcemap_destroy(sm)
+fn sourcemap_add_file : (*source.SourceMap, ptr, i64, i64) -> *source.SourceFile | (sm, n, b, e) -> source.sourcemap_add_file(sm, n, b, e)
+fn sourcemap_lookup : (*source.SourceMap, i64) -> source.SourceLoc | (sm, off) -> source.sourcemap_lookup_offset(sm, off)
+
+-- Symbol Demangler
+fn is_itanium : ptr -> bool                          | s -> demangle.demangle_is_itanium(s)
+fn demangle : ptr -> str.string.String               | s -> demangle.demangle_symbol(s)

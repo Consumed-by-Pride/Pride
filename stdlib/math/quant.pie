@@ -1,0 +1,90 @@
+mod math.quant
+
+use os.linux
+
+-- stdlib/math/quant.pie — Low-Precision Numerics and Weight Quantization
+-- Direct bit-shifting conversions for bfloat16, FP8 (E4M3/E5M2), and packed 4-bit weights.
+
+fn bfloat16_from_f32 : f32 -> u16
+  | x ->
+    let bits_ptr = &x as *u32
+    let bits = bits_ptr[0i64]
+    -- Rounding to nearest even for bfloat16
+    let lsb = (bits >> 16u64) & 1u32
+    let rounded = bits + 0x7FFFu32 + lsb
+    (rounded >> 16u64) as u16
+
+fn f32_from_bfloat16 : u16 -> f32
+  | bf16 ->
+    let mut bits = (bf16 as u32) << 16u64
+    let float_ptr = &bits as *f32
+    float_ptr[0i64]
+
+fn fp8_e4m3_from_f32 : f32 -> u8
+  | x ->
+    let bits_ptr = &x as *u32
+    let bits = bits_ptr[0i64]
+    let sign = ((bits >> 24u64) & 0x80u32) as u8
+    let exp32 = ((bits >> 23u64) & 0xFFu32) as i64
+    let mant32 = (bits & 0x007FFFFFu32) as i64
+    let new_exp = exp32 - 127i64 + 7i64   -- E4 bias = 7
+    if new_exp <= 0i64 then sign
+    else if new_exp >= 15i64 then sign | 0x7Fu8
+    else
+      let mant8 = ((mant32 >> 20i64) & 0x7i64) as u8
+      sign | ((new_exp as u8) << 3u64) | mant8
+
+fn f32_from_fp8_e4m3 : u8 -> f32
+  | fp8 ->
+    let sign = ((fp8 & 0x80u8) as u32) << 24u64
+    let exp8 = ((fp8 >> 3u8) & 0xFu8) as i64
+    let mant8 = (fp8 & 0x7u8) as i64
+    if exp8 == 0i64 && mant8 == 0i64
+      let mut res_zero = sign
+      let p = &res_zero as *f32
+      p[0i64]
+    else
+      let exp32 = ((exp8 - 7i64 + 127i64) as u32) << 23u64
+      let mant32 = (mant8 as u32) << 20u64
+      let mut bits = sign | exp32 | mant32
+      let p = &bits as *f32
+      p[0i64]
+
+fn fp8_e5m2_from_f32 : f32 -> u8
+  | x ->
+    let bits_ptr = &x as *u32
+    let bits = bits_ptr[0i64]
+    let sign = ((bits >> 24u64) & 0x80u32) as u8
+    let exp32 = ((bits >> 23u64) & 0xFFu32) as i64
+    let mant32 = (bits & 0x007FFFFFu32) as i64
+    let new_exp = exp32 - 127i64 + 15i64   -- E5 bias = 15
+    if new_exp <= 0i64 then sign
+    else if new_exp >= 31i64 then sign | 0x7Fu8
+    else
+      let mant8 = ((mant32 >> 21i64) & 0x3i64) as u8
+      sign | ((new_exp as u8) << 2u64) | mant8
+
+fn f32_from_fp8_e5m2 : u8 -> f32
+  | fp8 ->
+    let sign = ((fp8 & 0x80u8) as u32) << 24u64
+    let exp8 = ((fp8 >> 2u8) & 0x1Fu8) as i64
+    let mant8 = (fp8 & 0x3u8) as i64
+    if exp8 == 0i64 && mant8 == 0i64
+      let mut res_zero = sign
+      let p = &res_zero as *f32
+      p[0i64]
+    else
+      let exp32 = ((exp8 - 15i64 + 127i64) as u32) << 23u64
+      let mant32 = (mant8 as u32) << 21u64
+      let mut bits = sign | exp32 | mant32
+      let p = &bits as *f32
+      p[0i64]
+
+fn int4_pack : (u8, u8) -> u8
+  | (lo, hi) -> (lo & 0x0Fu8) | ((hi & 0x0Fu8) << 4u8)
+
+fn int4_unpack_lo : u8 -> u8
+  | packed -> packed & 0x0Fu8
+
+fn int4_unpack_hi : u8 -> u8
+  | packed -> (packed >> 4u8) & 0x0Fu8

@@ -1,0 +1,43 @@
+mod codegen.jit
+
+use os.linux
+use os.mmap
+
+-- stdlib/codegen/jit.pie — Just-In-Time (JIT) Dual-Mapped Memory Manager
+-- Enforces W^X (Write XOR Execute) safety by toggling mprotect flags.
+
+struct JitMemory
+  region   : mmap.MmapRegion
+  is_exec  : bool
+
+fn jit_mem_new : i64 -> JitMemory
+  | size ->
+    let sz = if size <= 0i64 then 4096i64 else size
+    let (reg, err) = mmap.mmap_anon(sz, mmap.PROT_READ | mmap.PROT_WRITE)
+    if err < 0i64
+      JitMemory { region: reg, is_exec: false }
+    else
+      JitMemory { region: reg, is_exec: false }
+
+fn jit_mem_make_exec : *JitMemory -> i64
+  | jm ->
+    let r = mmap.mmap_protect(&jm.region, mmap.PROT_READ | mmap.PROT_EXEC)
+    if r == 0i64
+      jm.is_exec = true
+    r
+
+fn jit_mem_make_writable : *JitMemory -> i64
+  | jm ->
+    let r = mmap.mmap_protect(&jm.region, mmap.PROT_READ | mmap.PROT_WRITE)
+    if r == 0i64
+      jm.is_exec = false
+    r
+
+fn jit_mem_destroy : *JitMemory -> i64
+  | jm ->
+    let r = mmap.mmap_destroy(&jm.region)
+    jm.is_exec = false
+    r
+
+fn jit_mem_ptr : *JitMemory -> ptr
+  | jm -> jm.region.ptr

@@ -1,0 +1,32 @@
+mod compress.adler32_stream
+
+use os.linux
+
+-- stdlib/compress/adler32_stream.pie — Rolling Adler-32 Checksum Stream
+-- High-speed rolling checksum for compressed stream verification.
+
+const ADLER32_BASE : u64 = 65521u64
+
+struct Adler32Stream
+  s1 : u64
+  s2 : u64
+
+fn adler32_stream_new : () -> Adler32Stream
+  | () -> Adler32Stream { s1: 1u64, s2: 0u64 }
+
+fn adler32_stream_update : (*Adler32Stream, ptr, i64) -> u32
+  | (st, data, len) ->
+    let buf = data as *u8
+    let mut i : i64 = 0i64
+    let mut s1 = st.s1
+    let mut s2 = st.s2
+    while i < len
+      s1 = (s1 + buf[i] as u64) % ADLER32_BASE
+      s2 = (s2 + s1) % ADLER32_BASE
+      i = i + 1i64
+    st.s1 = s1
+    st.s2 = s2
+    ((s2 << 16u64) | s1) as u32
+
+fn adler32_stream_value : *Adler32Stream -> u32
+  | st -> ((st.s2 << 16u64) | st.s1) as u32

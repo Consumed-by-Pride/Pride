@@ -1,0 +1,89 @@
+mod str.pattern
+
+use os.linux
+use vec.vec
+
+-- stdlib/str/pattern.pie — Knuth-Morris-Pratt and Boyer-Moore Substring Searching
+-- Algorithmic string matching for large haystacks and needles.
+
+fn kmp_search : (ptr, i64, ptr, i64) -> i64
+  | (hay, hay_len, needle, needle_len) ->
+    if needle_len == 0i64 then 0i64
+    else if needle_len > hay_len then -1i64
+    else
+      let lps = os.linux.malloc(needle_len * 8i64) as *i64
+      lps[0i64] = 0i64
+      let mut len : i64 = 0i64
+      let mut i : i64 = 1i64
+      let n_buf = needle as *u8
+      while i < needle_len
+        if n_buf[i] == n_buf[len]
+          len = len + 1i64
+          lps[i] = len
+          i = i + 1i64
+        else if len != 0i64
+          len = lps[len - 1i64]
+        else
+          lps[i] = 0i64
+          i = i + 1i64
+
+      let mut j : i64 = 0i64
+      let mut k : i64 = 0i64
+      let mut found : i64 = -1i64
+      let h_buf = hay as *u8
+      while j < hay_len
+        if n_buf[k] == h_buf[j]
+          j = j + 1i64
+          k = k + 1i64
+        if k == needle_len
+          found = j - k
+          break
+        else if j < hay_len && n_buf[k] != h_buf[j]
+          if k != 0i64 then k = lps[k - 1i64]
+          else j = j + 1i64
+      os.linux.free(lps as ptr)
+      found
+
+fn kmp_find_all : (ptr, i64, ptr, i64) -> vec.Vec
+  | (hay, hay_len, needle, needle_len) ->
+    let mut out = vec.vec_new(8i64)
+    if needle_len > 0i64 && needle_len <= hay_len
+      let mut offset : i64 = 0i64
+      while offset <= hay_len - needle_len
+        let idx = kmp_search((hay as i64 + offset) as ptr, hay_len - offset, needle, needle_len)
+        if idx < 0i64
+          break
+        let abs_idx = offset + idx
+        vec.vec_push(&out, &abs_idx as ptr)
+        offset = abs_idx + 1i64
+    out
+
+fn bm_search : (ptr, i64, ptr, i64) -> i64
+  | (hay, hay_len, needle, needle_len) ->
+    if needle_len == 0i64 then 0i64
+    else if needle_len > hay_len then -1i64
+    else
+      let table = os.linux.malloc(256i64 * 8i64) as *i64
+      let mut i : i64 = 0i64
+      while i < 256i64
+        table[i] = needle_len
+        i = i + 1i64
+      let n_buf = needle as *u8
+      let mut j : i64 = 0i64
+      while j < needle_len - 1i64
+        table[n_buf[j] as i64] = needle_len - 1i64 - j
+        j = j + 1i64
+
+      let h_buf = hay as *u8
+      let mut skip : i64 = 0i64
+      let mut found : i64 = -1i64
+      while skip <= hay_len - needle_len
+        let mut k = needle_len - 1i64
+        while k >= 0i64 && n_buf[k] == h_buf[skip + k]
+          k = k - 1i64
+        if k < 0i64
+          found = skip
+          break
+        skip = skip + table[h_buf[skip + needle_len - 1i64] as i64]
+      os.linux.free(table as ptr)
+      found

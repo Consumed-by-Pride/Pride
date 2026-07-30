@@ -1,0 +1,83 @@
+mod fs.path
+
+use os.linux
+use str.string
+use str.slice
+
+-- stdlib/fs/path.pie — Pathname Parsing, Manipulation, and Joining
+-- POSIX path parsing, basename/dirname extraction, and joining.
+
+fn path_is_absolute : ptr -> bool
+  | path_str ->
+    let p = path_str as *u8
+    p[0i64] == 47u8   -- '/'
+
+fn path_is_relative : ptr -> bool
+  | path_str -> !path_is_absolute(path_str)
+
+fn path_basename : ptr -> string.String
+  | path_str ->
+    let len = os.linux.strlen(path_str) as i64
+    if len == 0i64 then string.string_from_cstr("." as ptr)
+    else
+      let mut end = len
+      let buf = path_str as *u8
+      while end > 1i64 && buf[end - 1i64] == 47u8
+        end = end - 1i64
+      if end == 1i64 && buf[0i64] == 47u8
+        string.string_from_cstr("/" as ptr)
+      else
+        let mut i = end - 1i64
+        while i >= 0i64
+          if buf[i] == 47u8
+            break
+          i = i - 1i64
+        let start = i + 1i64
+        string.string_from_slice((path_str as i64 + start) as ptr, end - start)
+
+fn path_dirname : ptr -> string.String
+  | path_str ->
+    let len = os.linux.strlen(path_str) as i64
+    if len == 0i64 then string.string_from_cstr("." as ptr)
+    else
+      let mut end = len
+      let buf = path_str as *u8
+      while end > 1i64 && buf[end - 1i64] == 47u8
+        end = end - 1i64
+      let mut i = end - 1i64
+      while i >= 0i64
+        if buf[i] == 47u8
+          break
+        i = i - 1i64
+      if i < 0i64 then string.string_from_cstr("." as ptr)
+      else if i == 0i64 then string.string_from_cstr("/" as ptr)
+      else
+        let mut trim_i = i
+        while trim_i > 0i64 && buf[trim_i - 1i64] == 47u8
+          trim_i = trim_i - 1i64
+        string.string_from_slice(path_str, if trim_i == 0i64 then 1i64 else trim_i)
+
+fn path_extension : ptr -> string.String
+  | path_str ->
+    let base = path_basename(path_str)
+    let blen = string.string_len(&base)
+    let bbuf = string.string_as_slice(&base) as *u8
+    let mut i = blen - 1i64
+    while i > 0i64
+      if bbuf[i] == 46u8   -- '.'
+        break
+      i = i - 1i64
+    let res = if i > 0i64 then string.string_from_slice((bbuf as i64 + i + 1i64) as ptr, blen - i - 1i64)
+              else string.string_new()
+    string.string_destroy(&base)
+    res
+
+fn path_join : (ptr, ptr) -> string.String
+  | (dir_path, sub_path) ->
+    let mut out = string.string_from_cstr(dir_path)
+    let len = string.string_len(&out)
+    let buf = string.string_as_slice(&out) as *u8
+    if len > 0i64 && buf[len - 1i64] != 47u8
+      string.string_push_byte(&out, 47u8)
+    string.string_push_cstr(&out, sub_path)
+    out

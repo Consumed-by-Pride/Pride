@@ -2,18 +2,18 @@
 -- All backed by POSIX primitives via the Pride runtime.
 
 -- ─── Atomics (i64) ───────────────────────────────────────────────────────────
-fn atomic_load    : *i64 -> i64           #extern("__pride_atomic_load_i64")  #cc(c)
-fn atomic_store   : (*i64, i64) -> ()     #extern("__pride_atomic_store_i64") #cc(c)
-fn atomic_add     : (*i64, i64) -> i64    #extern("__pride_atomic_add_i64")   #cc(c)
-fn atomic_sub     : (*i64, i64) -> i64    #extern("__pride_atomic_sub_i64")   #cc(c)
-fn atomic_and     : (*i64, i64) -> i64    #extern("__pride_atomic_and_i64")   #cc(c)
-fn atomic_or      : (*i64, i64) -> i64    #extern("__pride_atomic_or_i64")    #cc(c)
-fn atomic_xor     : (*i64, i64) -> i64    #extern("__pride_atomic_xor_i64")   #cc(c)
-fn atomic_swap    : (*i64, i64) -> i64    #extern("__pride_atomic_swap_i64")  #cc(c)
-fn atomic_cas     : (*i64, *i64, i64) -> bool #extern("__pride_atomic_cas_i64") #cc(c)
-fn fence_seq_cst  : () -> ()              #extern("__pride_atomic_fence_seq") #cc(c)
-fn fence_acquire  : () -> ()              #extern("__pride_atomic_fence_acq") #cc(c)
-fn fence_release  : () -> ()              #extern("__pride_atomic_fence_rel") #cc(c)
+fn sync_atomic_load : *i64 -> i64           #extern("__pride_atomic_load_i64")  #cc(c)
+fn sync_atomic_store: (*i64, i64) -> ()     #extern("__pride_atomic_store_i64") #cc(c)
+fn sync_atomic_add  : (*i64, i64) -> i64    #extern("__pride_atomic_add_i64")   #cc(c)
+fn sync_atomic_sub  : (*i64, i64) -> i64    #extern("__pride_atomic_sub_i64")   #cc(c)
+fn sync_atomic_and  : (*i64, i64) -> i64    #extern("__pride_atomic_and_i64")   #cc(c)
+fn sync_atomic_or   : (*i64, i64) -> i64    #extern("__pride_atomic_or_i64")    #cc(c)
+fn sync_atomic_xor  : (*i64, i64) -> i64    #extern("__pride_atomic_xor_i64")   #cc(c)
+fn sync_atomic_swap : (*i64, i64) -> i64    #extern("__pride_atomic_swap_i64")  #cc(c)
+fn sync_atomic_cas  : (*i64, *i64, i64) -> bool #extern("__pride_atomic_cas_i64") #cc(c)
+fn sync_fence_seq   : () -> ()              #extern("__pride_atomic_fence_seq") #cc(c)
+fn sync_fence_acq   : () -> ()              #extern("__pride_atomic_fence_acq") #cc(c)
+fn sync_fence_rel   : () -> ()              #extern("__pride_atomic_fence_rel") #cc(c)
 
 -- i32 atomics
 fn atomic_load_i32 : *i32 -> i32         #extern("__pride_atomic_load_i32")  #cc(c)

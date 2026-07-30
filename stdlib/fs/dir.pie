@@ -1,0 +1,51 @@
+mod fs.dir
+
+use os.linux
+use str.string
+use str.slice
+use fs.path
+
+-- stdlib/fs/dir.pie — Directory Creation, Removal, and Existence Predicates
+-- Wraps Linux mkdir, rmdir, unlink, rename, and access syscalls.
+
+const F_OK : i64 = 0i64
+
+fn file_exists : ptr -> bool
+  | path ->
+    let r = os.linux.access(path, F_OK)
+    r == 0i64
+
+fn dir_create : (ptr, i64) -> i64
+  | (path, mode) -> os.linux.mkdir(path, mode)
+
+fn dir_create_all : (ptr, i64) -> i64
+  | (path, mode) ->
+    let mut s = string.string_from_cstr(path)
+    let len = string.string_len(&s)
+    let buf = string.string_as_slice(&s) as *u8
+    let mut i : i64 = 1i64
+    let mut err : i64 = 0i64
+    while i < len
+      if buf[i] == 47u8   -- '/'
+        buf[i] = 0u8
+        let res = os.linux.mkdir(buf as ptr, mode)
+        buf[i] = 47u8
+        if res < 0i64 && res != -17i64   -- -EEXIST (-17) is ok
+          err = res
+          break
+      i = i + 1i64
+    if err == 0i64
+      let r2 = os.linux.mkdir(path, mode)
+      if r2 < 0i64 && r2 != -17i64 then r2 else 0i64
+    else
+      string.string_destroy(&s)
+      err
+
+fn dir_remove : ptr -> i64
+  | path -> os.linux.rmdir(path)
+
+fn file_remove : ptr -> i64
+  | path -> os.linux.unlink(path)
+
+fn fs_rename : (ptr, ptr) -> i64
+  | (old_path, new_path) -> os.linux.rename(old_path, new_path)

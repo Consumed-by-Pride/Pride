@@ -1,0 +1,35 @@
+mod simd
+
+use simd.f32x4
+use simd.f64x2
+use simd.i32x4
+use simd.i64x2
+
+-- stdlib/simd.pie — Standard Library Explicit SIMD Vectorization Suite
+-- Exports 128-bit packed floating-point and integer vector lanes.
+
+-- F32x4
+fn f32x4_new : (f32, f32, f32, f32) -> f32x4.F32x4       | (a, b, c, d) -> f32x4.f32x4_new(a, b, c, d)
+fn f32x4_splat : f32 -> f32x4.F32x4                      | v -> f32x4.f32x4_splat(v)
+fn f32x4_add : (f32x4.F32x4, f32x4.F32x4) -> f32x4.F32x4 | (a, b) -> f32x4.f32x4_add(a, b)
+fn f32x4_sub : (f32x4.F32x4, f32x4.F32x4) -> f32x4.F32x4 | (a, b) -> f32x4.f32x4_sub(a, b)
+fn f32x4_mul : (f32x4.F32x4, f32x4.F32x4) -> f32x4.F32x4 | (a, b) -> f32x4.f32x4_mul(a, b)
+fn f32x4_div : (f32x4.F32x4, f32x4.F32x4) -> f32x4.F32x4 | (a, b) -> f32x4.f32x4_div(a, b)
+fn f32x4_dot : (f32x4.F32x4, f32x4.F32x4) -> f32         | (a, b) -> f32x4.f32x4_dot(a, b)
+
+-- F64x2
+fn f64x2_new : (f64, f64) -> f64x2.F64x2                 | (a, b) -> f64x2.f64x2_new(a, b)
+fn f64x2_splat : f64 -> f64x2.F64x2                      | v -> f64x2.f64x2_splat(v)
+fn f64x2_add : (f64x2.F64x2, f64x2.F64x2) -> f64x2.F64x2 | (a, b) -> f64x2.f64x2_add(a, b)
+fn f64x2_sub : (f64x2.F64x2, f64x2.F64x2) -> f64x2.F64x2 | (a, b) -> f64x2.f64x2_sub(a, b)
+fn f64x2_dot : (f64x2.F64x2, f64x2.F64x2) -> f64         | (a, b) -> f64x2.f64x2_dot(a, b)
+
+-- I32x4
+fn i32x4_new : (i64, i64, i64, i64) -> i32x4.I32x4       | (a, b, c, d) -> i32x4.i32x4_new(a, b, c, d)
+fn i32x4_splat : i64 -> i32x4.I32x4                      | v -> i32x4.i32x4_splat(v)
+fn i32x4_add : (i32x4.I32x4, i32x4.I32x4) -> i32x4.I32x4 | (a, b) -> i32x4.i32x4_add(a, b)
+
+-- I64x2
+fn i64x2_new : (i64, i64) -> i64x2.I64x2                 | (a, b) -> i64x2.i64x2_new(a, b)
+fn i64x2_splat : i64 -> i64x2.I64x2                      | v -> i64x2.i64x2_splat(v)
+fn i64x2_add : (i64x2.I64x2, i64x2.I64x2) -> i64x2.I64x2 | (a, b) -> i64x2.i64x2_add(a, b)

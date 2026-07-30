@@ -1,0 +1,53 @@
+mod os.pipe
+
+use os.linux
+
+-- stdlib/os/pipe.pie — Inter-Process Communication Pipes (Pipe)
+-- POSIX pipe2 bindings for unidirectional IPC streams.
+
+struct Pipe
+  read_fd  : i64
+  write_fd : i64
+
+const O_CLOEXEC  : i64 = 524288i64
+const O_NONBLOCK : i64 = 2048i64
+
+fn pipe_new : () -> (Pipe, i64)
+  | () ->
+    let fds = os.linux.malloc(16i64) as *i32
+    let r = os.linux.pipe2(fds, O_CLOEXEC)
+    if r < 0i64
+      os.linux.free(fds as ptr)
+      (Pipe { read_fd: -1i64, write_fd: -1i64 }, r)
+    else
+      let rf = fds[0i64] as i64
+      let wf = fds[1i64] as i64
+      os.linux.free(fds as ptr)
+      (Pipe { read_fd: rf, write_fd: wf }, 0i64)
+
+fn pipe_read : (*Pipe, ptr, i64) -> i64
+  | (p, buf, count) ->
+    if p.read_fd < 0i64 then -1i64
+    else os.linux.read(p.read_fd, buf, count)
+
+fn pipe_write : (*Pipe, ptr, i64) -> i64
+  | (p, buf, count) ->
+    if p.write_fd < 0i64 then -1i64
+    else os.linux.write(p.write_fd, buf, count)
+
+fn pipe_close_read : *Pipe -> ()
+  | p ->
+    if p.read_fd >= 0i64
+      os.linux.close(p.read_fd)
+      p.read_fd = -1i64
+
+fn pipe_close_write : *Pipe -> ()
+  | p ->
+    if p.write_fd >= 0i64
+      os.linux.close(p.write_fd)
+      p.write_fd = -1i64
+
+fn pipe_close_all : *Pipe -> ()
+  | p ->
+    pipe_close_read(p)
+    pipe_close_write(p)

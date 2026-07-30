@@ -56,7 +56,7 @@ fn bv_set : (*BitVec, usize, bool) -> ()
         if v
           *wp = *wp | (1 as u64 << bit_i)
         else
-          *wp = *wp & !(1 as u64 << bit_i)
+          *wp = *wp & ~(1 as u64 << bit_i)
 
 fn bv_push : (*BitVec, bool) -> ()
   | (bv, v) ->

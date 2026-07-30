@@ -1,0 +1,122 @@
+mod math.bits
+
+use math.abs
+
+-- stdlib/math/bits.pie — Number Theory and Bitwise Algorithms
+
+fn gcd_u64 : (u64, u64) -> u64
+  | (a, b) ->
+    let mut x = a
+    let mut y = b
+    while y != 0u64
+      let t = y
+      y = x % y
+      x = t
+    x
+
+fn gcd_i64 : (i64, i64) -> i64
+  | (a, b) ->
+    let ua = abs.abs_i64(a) as u64
+    let ub = abs.abs_i64(b) as u64
+    gcd_u64(ua, ub) as i64
+
+fn lcm_u64 : (u64, u64) -> u64
+  | (a, b) ->
+    if a == 0u64 || b == 0u64 then 0u64
+    else (a / gcd_u64(a, b)) * b
+
+fn is_power_of_two_u64 : u64 -> bool
+  | x -> (x != 0u64) && ((x & (x -% 1u64)) == 0u64)
+
+fn next_power_of_two_u64 : u64 -> u64
+  | x ->
+    if x <= 1u64 then 1u64
+    else
+      let mut v = x - 1u64
+      v = v | (v >> 1u64)
+      v = v | (v >> 2u64)
+      v = v | (v >> 4u64)
+      v = v | (v >> 8u64)
+      v = v | (v >> 16u64)
+      v = v | (v >> 32u64)
+      v + 1u64
+
+fn popcount_u64 : u64 -> i64
+  | x ->
+    let mut v = x
+    let mut count : i64 = 0i64
+    while v != 0u64
+      count = count + 1i64
+      v = v & (v -% 1u64)
+    count
+
+fn reverse_bits_u64 : u64 -> u64
+  | x ->
+    let mut v = x
+    let mut res : u64 = 0u64
+    let mut i : i64 = 0i64
+    while i < 64i64
+      res = (res << 1u64) | (v & 1u64)
+      v = v >> 1u64
+      i = i + 1i64
+    res
+
+fn sqrt_i64 : i64 -> i64
+  | n ->
+    if n <= 0i64 then 0i64
+    else if n == 1i64 then 1i64
+    else
+      let mut x = n
+      let mut y = (x + 1i64) / 2i64
+      while y < x
+        x = y
+        y = (x + n / x) / 2i64
+      x
+
+fn cbrt_u64 : u64 -> u64
+  | n ->
+    if n <= 1u64 then n
+    else
+      let mut x = n
+      let mut y = (2u64 * x + n / (x * x)) / 3u64
+      while y < x
+        x = y
+        y = (2u64 * x + n / (x * x)) / 3u64
+      x
+
+fn log10_u64 : u64 -> i64
+  | n ->
+    if n < 10u64 then 0i64
+    else
+      let mut v = n
+      let mut res : i64 = 0i64
+      while v >= 10u64
+        v = v / 10u64
+        res = res + 1i64
+      res
+
+fn is_prime_u64 : u64 -> bool
+  | n ->
+    if n <= 1u64 then false
+    else if n <= 3u64 then true
+    else if (n % 2u64) == 0u64 || (n % 3u64) == 0u64 then false
+    else
+      let mut i : u64 = 5u64
+      let mut prime = true
+      while i * i <= n
+        if (n % i) == 0u64 || (n % (i + 2u64)) == 0u64
+          prime = false
+          break
+        i = i + 6u64
+      prime
+
+fn next_prime_u64 : u64 -> u64
+  | n ->
+    if n <= 2u64 then 2u64
+    else
+      let mut cand = if (n & 1u64) == 0u64 then n + 1u64 else n
+      while true
+        if is_prime_u64(cand)
+          break
+        cand = cand + 2u64
+      cand

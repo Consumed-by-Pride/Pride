@@ -1,0 +1,53 @@
+mod regex.dfa
+
+use os.linux
+use vec.vec
+use regex.nfa
+
+-- stdlib/regex/dfa.pie — Deterministic Finite Automaton (DFA)
+-- Converts NFAs into deterministic transition tables for linear-time string matching.
+
+struct DfaState
+  id          : i64
+  transitions : *i64   -- 256 transition targets
+  is_match    : bool
+
+struct Dfa
+  states   : vec.Vec
+  start_id : i64
+
+fn dfa_new : () -> Dfa
+  | () -> Dfa { states: vec.vec_new(16i64), start_id: 0i64 }
+
+fn dfa_destroy : *Dfa -> ()
+  | dfa ->
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&dfa.states)
+    while i < len
+      let st = vec.vec_get(&dfa.states, i) as *DfaState
+      os.linux.free(st.transitions as ptr)
+      os.linux.free(st as ptr)
+      i = i + 1i64
+    vec.vec_destroy(&dfa.states)
+
+fn dfa_match_slice : (*Dfa, ptr, i64) -> bool
+  | (dfa, data, len) ->
+    let mut cur = dfa.start_id
+    let buf = data as *u8
+    let mut i : i64 = 0i64
+    let mut ok = true
+    while i < len
+      if cur < 0i64 || cur >= vec.vec_len(&dfa.states)
+        ok = false
+        break
+      let st = vec.vec_get(&dfa.states, cur) as *DfaState
+      let next_id = st.transitions[buf[i] as i64]
+      if next_id < 0i64
+        ok = false
+        break
+      cur = next_id
+      i = i + 1i64
+    if !ok || cur < 0i64 || cur >= vec.vec_len(&dfa.states) then false
+    else
+      let st = vec.vec_get(&dfa.states, cur) as *DfaState
+      st.is_match

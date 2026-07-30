@@ -1,0 +1,35 @@
+mod codegen
+
+use codegen.jit
+use codegen.x86_64
+use codegen.aarch64
+use codegen.riscv64
+
+-- stdlib/codegen.pie — Standard Library Code Generation & Execution Engine Suite
+-- Exports W^X JIT memory management and x86-64, AArch64, RISC-V assemblers.
+
+-- JIT
+fn jit_new : i64 -> jit.JitMemory                 | sz -> jit.jit_mem_new(sz)
+fn jit_destroy : *jit.JitMemory -> i64            | j -> jit.jit_mem_destroy(j)
+fn jit_exec : *jit.JitMemory -> i64               | j -> jit.jit_mem_make_exec(j)
+fn jit_writable : *jit.JitMemory -> i64           | j -> jit.jit_mem_make_writable(j)
+fn jit_ptr : *jit.JitMemory -> ptr                | j -> jit.jit_mem_ptr(j)
+
+-- x86-64
+fn x86_new : () -> x86_64.X86Asm                  | () -> x86_64.x86_new()
+fn x86_destroy : *x86_64.X86Asm -> ()             | a -> x86_64.x86_destroy(a)
+fn x86_nop : *x86_64.X86Asm -> ()                 | a -> x86_64.x86_emit_nop(a)
+fn x86_ret : *x86_64.X86Asm -> ()                 | a -> x86_64.x86_emit_ret(a)
+fn x86_mov_eax : (*x86_64.X86Asm, i64) -> ()      | (a, i) -> x86_64.x86_emit_mov_eax_imm32(a, i)
+
+-- AArch64
+fn aarch64_new : () -> aarch64.Aarch64Asm         | () -> aarch64.aarch64_new()
+fn aarch64_destroy : *aarch64.Aarch64Asm -> ()    | a -> aarch64.aarch64_destroy(a)
+fn aarch64_nop : *aarch64.Aarch64Asm -> ()        | a -> aarch64.aarch64_emit_nop(a)
+fn aarch64_ret : *aarch64.Aarch64Asm -> ()        | a -> aarch64.aarch64_emit_ret(a)
+
+-- RISC-V 64
+fn riscv_new : () -> riscv64.RiscvAsm             | () -> riscv64.riscv_new()
+fn riscv_destroy : *riscv64.RiscvAsm -> ()        | a -> riscv64.riscv_destroy(a)
+fn riscv_nop : *riscv64.RiscvAsm -> ()            | a -> riscv64.riscv_emit_nop(a)
+fn riscv_ret : *riscv64.RiscvAsm -> ()            | a -> riscv64.riscv_emit_ret(a)

@@ -1,0 +1,84 @@
+-- EXPECT: 1\n2\n3\n4\n3\n5\n6\n6\n
+
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let mut neg = false
+        if x < 0
+          neg = true
+          x = -x
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        if neg
+          tmp[tlen] = 45u8
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+
+fn utf8_char_len : u8 -> i64
+  | b0 ->
+    if (b0 & 0x80u8) == 0u8 then 1i64
+    else if (b0 & 0xE0u8) == 0xC0u8 then 2i64
+    else if (b0 & 0xF0u8) == 0xE0u8 then 3i64
+    else if (b0 & 0xF8u8) == 0xF0u8 then 4i64
+    else -1i64
+
+fn split_count : (ptr, i64, u8) -> i64
+  | (s, len, delim) ->
+    let buf = s as *u8
+    let mut count : i64 = 1i64
+    let mut i : i64 = 0i64
+    while i < len
+      if buf[i] == delim
+        count = count + 1i64
+      i = i + 1i64
+    count
+
+fn chunk_len_at : (ptr, i64, u8, i64) -> i64
+  | (s, len, delim, idx) ->
+    let buf = s as *u8
+    let mut cur : i64 = 0i64
+    let mut start : i64 = 0i64
+    let mut i : i64 = 0i64
+    let mut clen : i64 = 0i64
+    while i <= len
+      if i == len || buf[i] == delim
+        if cur == idx
+          clen = i - start
+          break
+        start = i + 1i64
+        cur = cur + 1i64
+      i = i + 1i64
+    clen
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      print_i64_nl(utf8_char_len(0x41u8))
+      print_i64_nl(utf8_char_len(0xC3u8))
+      print_i64_nl(utf8_char_len(0xE2u8))
+      print_i64_nl(utf8_char_len(0xF0u8))
+
+      let str_data = "apple,banana,cherry"
+      let slen = 19i64
+      print_i64_nl(split_count(str_data as ptr, slen, 44u8))
+      print_i64_nl(chunk_len_at(str_data as ptr, slen, 44u8, 0i64))
+      print_i64_nl(chunk_len_at(str_data as ptr, slen, 44u8, 1i64))
+      print_i64_nl(chunk_len_at(str_data as ptr, slen, 44u8, 2i64))
+      syscall(231, 0)

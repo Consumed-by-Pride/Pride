@@ -1,0 +1,248 @@
+mod vec.vec
+
+use os.linux
+use vec.raw
+
+-- stdlib/vec/vec.pie — Standard Contiguous Dynamic Array (Vec)
+-- High-level dynamic array with O(1) indexed access, amortized O(1) push/pop,
+-- arbitrary element sizes, slicing, and memory-safe shifting.
+
+struct Vec
+  raw : raw.RawVec
+  len : i64
+
+fn vec_new : i64 -> Vec
+  | elem_sz -> Vec { raw: raw.rawvec_new(elem_sz), len: 0i64 }
+
+fn vec_with_cap : (i64, i64) -> Vec
+  | (cap, elem_sz) -> Vec { raw: raw.rawvec_with_cap(cap, elem_sz), len: 0i64 }
+
+fn vec_from_raw_parts : (ptr, i64, i64, i64) -> Vec
+  | (data, len, cap, elem_sz) ->
+    Vec { raw: raw.RawVec { data: data, cap: cap, elem_sz: elem_sz }, len: len }
+
+fn vec_destroy : *Vec -> ()
+  | v ->
+    raw.rawvec_destroy(&v.raw)
+    v.len = 0i64
+
+fn vec_len : *Vec -> i64
+  | v -> v.len
+
+fn vec_cap : *Vec -> i64
+  | v -> raw.rawvec_cap(&v.raw)
+
+fn vec_elem_size : *Vec -> i64
+  | v -> raw.rawvec_elem_size(&v.raw)
+
+fn vec_is_empty : *Vec -> bool
+  | v -> v.len == 0i64
+
+fn vec_as_slice : *Vec -> ptr
+  | v -> raw.rawvec_ptr(&v.raw)
+
+fn vec_as_mut_slice : *Vec -> ptr
+  | v -> raw.rawvec_ptr(&v.raw)
+
+fn vec_get : (*Vec, i64) -> ptr
+  | (v, idx) ->
+    if idx < 0i64 || idx >= v.len then 0 as ptr
+    else (raw.rawvec_ptr(&v.raw) as i64 + idx * raw.rawvec_elem_size(&v.raw)) as ptr
+
+fn vec_set : (*Vec, i64, ptr) -> bool
+  | (v, idx, val_ptr) ->
+    if idx < 0i64 || idx >= v.len then false
+    else
+      let dst = (raw.rawvec_ptr(&v.raw) as i64 + idx * raw.rawvec_elem_size(&v.raw)) as ptr
+      os.linux.memcpy(dst, val_ptr, raw.rawvec_elem_size(&v.raw) as u64)
+      true
+
+fn vec_first : *Vec -> ptr
+  | v -> vec_get(v, 0i64)
+
+fn vec_last : *Vec -> ptr
+  | v -> vec_get(v, v.len - 1i64)
+
+fn vec_reserve : (*Vec, i64) -> ()
+  | (v, additional) -> raw.rawvec_reserve(&v.raw, v.len, additional)
+
+fn vec_reserve_exact : (*Vec, i64) -> ()
+  | (v, additional) -> raw.rawvec_reserve_exact(&v.raw, v.len, additional)
+
+fn vec_shrink_to_fit : *Vec -> ()
+  | v -> raw.rawvec_shrink_to_fit(&v.raw, v.len)
+
+fn vec_push : (*Vec, ptr) -> ()
+  | (v, val_ptr) ->
+    raw.rawvec_reserve(&v.raw, v.len, 1i64)
+    let elem_sz = raw.rawvec_elem_size(&v.raw)
+    let dst = (raw.rawvec_ptr(&v.raw) as i64 + v.len * elem_sz) as ptr
+    os.linux.memcpy(dst, val_ptr, elem_sz as u64)
+    v.len = v.len + 1i64
+
+fn vec_pop : (*Vec, ptr) -> bool
+  | (v, out_ptr) ->
+    if v.len == 0i64 then false
+    else
+      let elem_sz = raw.rawvec_elem_size(&v.raw)
+      v.len = v.len - 1i64
+      let src = (raw.rawvec_ptr(&v.raw) as i64 + v.len * elem_sz) as ptr
+      if out_ptr as i64 != 0i64
+        os.linux.memcpy(out_ptr, src, elem_sz as u64)
+      true
+
+fn vec_insert : (*Vec, i64, ptr) -> bool
+  | (v, idx, val_ptr) ->
+    if idx < 0i64 || idx > v.len then false
+    else
+      raw.rawvec_reserve(&v.raw, v.len, 1i64)
+      let elem_sz = raw.rawvec_elem_size(&v.raw)
+      let base = raw.rawvec_ptr(&v.raw) as i64
+      if idx < v.len
+        os.linux.memmove((base + (idx + 1i64) * elem_sz) as ptr,
+                         (base + idx * elem_sz) as ptr,
+                         ((v.len - idx) * elem_sz) as u64)
+      os.linux.memcpy((base + idx * elem_sz) as ptr, val_ptr, elem_sz as u64)
+      v.len = v.len + 1i64
+      true
+
+fn vec_remove : (*Vec, i64, ptr) -> bool
+  | (v, idx, out_ptr) ->
+    if idx < 0i64 || idx >= v.len then false
+    else
+      let elem_sz = raw.rawvec_elem_size(&v.raw)
+      let base = raw.rawvec_ptr(&v.raw) as i64
+      if out_ptr as i64 != 0i64
+        os.linux.memcpy(out_ptr, (base + idx * elem_sz) as ptr, elem_sz as u64)
+      if idx < v.len - 1i64
+        os.linux.memmove((base + idx * elem_sz) as ptr,
+                         (base + (idx + 1i64) * elem_sz) as ptr,
+                         ((v.len - 1i64 - idx) * elem_sz) as u64)
+      v.len = v.len - 1i64
+      true
+
+fn vec_swap_remove : (*Vec, i64, ptr) -> bool
+  | (v, idx, out_ptr) ->
+    if idx < 0i64 || idx >= v.len then false
+    else
+      let elem_sz = raw.rawvec_elem_size(&v.raw)
+      let base = raw.rawvec_ptr(&v.raw) as i64
+      if out_ptr as i64 != 0i64
+        os.linux.memcpy(out_ptr, (base + idx * elem_sz) as ptr, elem_sz as u64)
+      if idx < v.len - 1i64
+        let last_ptr = (base + (v.len - 1i64) * elem_sz) as ptr
+        os.linux.memcpy((base + idx * elem_sz) as ptr, last_ptr, elem_sz as u64)
+      v.len = v.len - 1i64
+      true
+
+fn vec_swap : (*Vec, i64, i64) -> bool
+  | (v, i, j) ->
+    if i < 0i64 || i >= v.len || j < 0i64 || j >= v.len then false
+    else if i == j then true
+    else
+      let elem_sz = raw.rawvec_elem_size(&v.raw)
+      let base = raw.rawvec_ptr(&v.raw) as i64
+      let pi = (base + i * elem_sz) as ptr
+      let pj = (base + j * elem_sz) as ptr
+      let tmp = os.linux.malloc(elem_sz)
+      os.linux.memcpy(tmp, pi, elem_sz as u64)
+      os.linux.memcpy(pi, pj, elem_sz as u64)
+      os.linux.memcpy(pj, tmp, elem_sz as u64)
+      os.linux.free(tmp)
+      true
+
+fn vec_truncate : (*Vec, i64) -> ()
+  | (v, new_len) ->
+    if new_len < v.len
+      v.len = new_len
+
+fn vec_clear : *Vec -> ()
+  | v -> v.len = 0i64
+
+fn vec_extend_from_slice : (*Vec, ptr, i64) -> ()
+  | (v, slice_ptr, count) ->
+    if count > 0i64
+      raw.rawvec_reserve(&v.raw, v.len, count)
+      let elem_sz = raw.rawvec_elem_size(&v.raw)
+      let dst = (raw.rawvec_ptr(&v.raw) as i64 + v.len * elem_sz) as ptr
+      os.linux.memcpy(dst, slice_ptr, (count * elem_sz) as u64)
+      v.len = v.len + count
+
+fn vec_clone : *Vec -> Vec
+  | v ->
+    let elem_sz = raw.rawvec_elem_size(&v.raw)
+    let mut out = vec_with_cap(v.len, elem_sz)
+    if v.len > 0i64
+      os.linux.memcpy(raw.rawvec_ptr(&out.raw), raw.rawvec_ptr(&v.raw), (v.len * elem_sz) as u64)
+    out.len = v.len
+    out
+
+fn vec_split_off : (*Vec, i64) -> Vec
+  | (v, at) ->
+    if at < 0i64 || at > v.len then vec_new(raw.rawvec_elem_size(&v.raw))
+    else
+      let elem_sz = raw.rawvec_elem_size(&v.raw)
+      let split_len = v.len - at
+      let mut out = vec_with_cap(split_len, elem_sz)
+      let src = (raw.rawvec_ptr(&v.raw) as i64 + at * elem_sz) as ptr
+      os.linux.memcpy(raw.rawvec_ptr(&out.raw), src, (split_len * elem_sz) as u64)
+      out.len = split_len
+      v.len = at
+      out
+
+fn vec_reverse : *Vec -> ()
+  | v ->
+    let len = v.len
+    if len > 1i64
+      let elem_sz = raw.rawvec_elem_size(&v.raw)
+      let base = raw.rawvec_ptr(&v.raw) as i64
+      let tmp = os.linux.malloc(elem_sz)
+      let mut lo : i64 = 0i64
+      let mut hi = len - 1i64
+      while lo < hi
+        let pl = (base + lo * elem_sz) as ptr
+        let ph = (base + hi * elem_sz) as ptr
+        os.linux.memcpy(tmp, pl, elem_sz as u64)
+        os.linux.memcpy(pl, ph, elem_sz as u64)
+        os.linux.memcpy(ph, tmp, elem_sz as u64)
+        lo = lo + 1i64
+        hi = hi - 1i64
+      os.linux.free(tmp)
+
+fn vec_rotate_left : (*Vec, i64) -> ()
+  | (v, mid) ->
+    let len = v.len
+    if len > 1i64 && mid > 0i64 && mid < len
+      let elem_sz = raw.rawvec_elem_size(&v.raw)
+      let base = raw.rawvec_ptr(&v.raw) as i64
+      let tmp = os.linux.malloc(mid * elem_sz)
+      os.linux.memcpy(tmp, base as ptr, (mid * elem_sz) as u64)
+      os.linux.memmove(base as ptr, (base + mid * elem_sz) as ptr, ((len - mid) * elem_sz) as u64)
+      os.linux.memcpy((base + (len - mid) * elem_sz) as ptr, tmp, (mid * elem_sz) as u64)
+      os.linux.free(tmp)
+
+fn vec_rotate_right : (*Vec, i64) -> ()
+  | (v, k) ->
+    let len = v.len
+    if len > 1i64 && k > 0i64 && k < len
+      vec_rotate_left(v, len - k)
+
+fn vec_append : (*Vec, *Vec) -> ()
+  | (dst, src) ->
+    if src.len > 0i64
+      vec_extend_from_slice(dst, raw.rawvec_ptr(&src.raw), src.len)
+      src.len = 0i64
+
+fn vec_retain_if_not_zero_i64 : *Vec -> ()
+  | v ->
+    let len = v.len
+    if len > 0i64
+      let data = raw.rawvec_ptr(&v.raw) as *i64
+      let mut w : i64 = 0i64
+      let mut r : i64 = 0i64
+      while r < len
+        if data[r] != 0i64
+          data[w] = data[r]
+          w = w + 1i64
+        r = r + 1i64
+      v.len = w

@@ -1,0 +1,53 @@
+mod crypto.hmac
+
+use os.linux
+use crypto.sha256
+
+-- stdlib/crypto/hmac.pie — HMAC-SHA256 Message Authentication Code
+-- Cryptographic authentication tags using SHA-256 digests.
+
+struct HmacSha256
+  key       : *u8
+  key_len   : i64
+
+fn hmac_sha256_new : (ptr, i64) -> HmacSha256
+  | (key_ptr, key_len) ->
+    let mut k_len = key_len
+    let mut k_buf = os.linux.malloc(64i64) as *u8
+    os.linux.memset(k_buf as ptr, 0i32, 64u64)
+    if key_len > 64i64
+      let hashed = sha256.sha256_hash_bytes(key_ptr, key_len)
+      os.linux.memcpy(k_buf as ptr, hashed, 32u64)
+      os.linux.free(hashed)
+      k_len = 32i64
+    else
+      os.linux.memcpy(k_buf as ptr, key_ptr, key_len as u64)
+    HmacSha256 { key: k_buf, key_len: k_len }
+
+fn hmac_sha256_destroy : *HmacSha256 -> ()
+  | hmac ->
+    if hmac.key as i64 != 0i64
+      os.linux.free(hmac.key as ptr)
+    hmac.key = 0 as *u8; hmac.key_len = 0i64
+
+fn hmac_sha256_compute : (*HmacSha256, ptr, i64) -> ptr
+  | (hmac, data, data_len) ->
+    let i_key_pad = os.linux.malloc(64i64) as *u8
+    let o_key_pad = os.linux.malloc(64i64) as *u8
+    let mut i : i64 = 0i64
+    while i < 64i64
+      i_key_pad[i] = hmac.key[i] ^ 0x36u8
+      o_key_pad[i] = hmac.key[i] ^ 0x5Cu8
+      i = i + 1i64
+    let inner_buf = os.linux.malloc(64i64 + data_len) as *u8
+    os.linux.memcpy(inner_buf as ptr, i_key_pad as ptr, 64u64)
+    os.linux.memcpy((inner_buf as i64 + 64i64) as ptr, data, data_len as u64)
+    let inner_hash = sha256.sha256_hash_bytes(inner_buf as ptr, 64i64 + data_len)
+    let outer_buf = os.linux.malloc(96i64) as *u8
+    os.linux.memcpy(outer_buf as ptr, o_key_pad as ptr, 64u64)
+    os.linux.memcpy((outer_buf as i64 + 64i64) as ptr, inner_hash, 32u64)
+    let mac = sha256.sha256_hash_bytes(outer_buf as ptr, 96i64)
+    os.linux.free(i_key_pad as ptr); os.linux.free(o_key_pad as ptr)
+    os.linux.free(inner_buf as ptr); os.linux.free(inner_hash)
+    os.linux.free(outer_buf as ptr)
+    mac

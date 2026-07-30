@@ -1,0 +1,17 @@
+mod opt
+
+use opt.dce
+use opt.const_fold
+use opt.cfg_simplify
+use opt.mem2reg
+use opt.inline
+
+-- stdlib/opt.pie — Standard Library SSA Optimization Suite
+-- Exports Dead Code Elimination (DCE), Constant Folding, CFG Simplification,
+-- Memory-to-Register (mem2reg) promotion, and Function Inlining passes.
+
+fn dce : *ir.func.IrFunction -> i64                  | f -> dce.opt_dce_function(f)
+fn const_fold : *ir.func.IrFunction -> i64           | f -> const_fold.opt_const_fold_function(f)
+fn simplify_cfg : *ir.func.IrFunction -> i64         | f -> cfg_simplify.opt_cfg_simplify_function(f)
+fn mem2reg : *ir.func.IrFunction -> i64              | f -> mem2reg.opt_mem2reg_function(f)
+fn inline_calls : *ir.module.IrModule -> i64         | m -> inline.opt_inline_calls(m)

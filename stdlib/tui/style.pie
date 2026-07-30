@@ -1,0 +1,61 @@
+mod tui.style
+
+use str.string
+use tui.ansi
+
+-- stdlib/tui/style.pie — Styled Text Builder (StyledString)
+-- Combines ANSI foreground, background, and text decoration attributes.
+
+struct StyledString
+  text       : string.String
+  fg_escape  : string.String
+  bg_escape  : string.String
+  bold       : bool
+  underline  : bool
+
+fn style_new : ptr -> StyledString
+  | cstr ->
+    StyledString {
+      text:      string.string_from_cstr(cstr),
+      fg_escape: string.string_new(),
+      bg_escape: string.string_new(),
+      bold:      false,
+      underline: false
+    }
+
+fn style_destroy : *StyledString -> ()
+  | st ->
+    string.string_destroy(&st.text)
+    string.string_destroy(&st.fg_escape)
+    string.string_destroy(&st.bg_escape)
+
+fn style_set_fg_rgb : (*StyledString, i64, i64, i64) -> ()
+  | (st, r, g, b) ->
+    string.string_destroy(&st.fg_escape)
+    st.fg_escape = ansi.ansi_rgb_fg(r, g, b)
+
+fn style_set_bg_rgb : (*StyledString, i64, i64, i64) -> ()
+  | (st, r, g, b) ->
+    string.string_destroy(&st.bg_escape)
+    st.bg_escape = ansi.ansi_rgb_bg(r, g, b)
+
+fn style_set_bold : (*StyledString, bool) -> ()
+  | (st, enabled) -> st.bold = enabled
+
+fn style_set_underline : (*StyledString, bool) -> ()
+  | (st, enabled) -> st.underline = enabled
+
+fn style_render : *StyledString -> string.String
+  | st ->
+    let mut out = string.string_with_cap(string.string_len(&st.text) + 32i64)
+    if st.bold
+      string.string_push_cstr(&out, ansi.ANSI_BOLD)
+    if st.underline
+      string.string_push_cstr(&out, ansi.ANSI_UNDERLINE)
+    if string.string_len(&st.fg_escape) > 0i64
+      string.string_concat(&out, &st.fg_escape)
+    if string.string_len(&st.bg_escape) > 0i64
+      string.string_concat(&out, &st.bg_escape)
+    string.string_concat(&out, &st.text)
+    string.string_push_cstr(&out, ansi.ANSI_RESET)
+    out

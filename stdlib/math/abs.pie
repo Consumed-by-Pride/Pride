@@ -1,0 +1,35 @@
+mod math.abs
+
+-- stdlib/math/abs.pie — Absolute Value, Signum, Min/Max, and Clamping
+
+fn abs_i64 : i64 -> i64
+  | x -> if x < 0i64 then -x else x
+
+fn abs_f64 : f64 -> f64
+  | x -> if x < 0.0f64 then -x else x
+
+fn signum_i64 : i64 -> i64
+  | x -> if x < 0i64 then -1i64 else if x > 0i64 then 1i64 else 0i64
+
+fn signum_f64 : f64 -> f64
+  | x -> if x < 0.0f64 then -1.0f64 else if x > 0.0f64 then 1.0f64 else 0.0f64
+
+fn min_i64 : (i64, i64) -> i64
+  | (a, b) -> if a < b then a else b
+
+fn max_i64 : (i64, i64) -> i64
+  | (a, b) -> if a > b then a else b
+
+fn clamp_i64 : (i64, i64, i64) -> i64
+  | (x, min_val, max_val) ->
+    if x < min_val then min_val else if x > max_val then max_val else x
+
+fn min_f64 : (f64, f64) -> f64
+  | (a, b) -> if a < b then a else b
+
+fn max_f64 : (f64, f64) -> f64
+  | (a, b) -> if a > b then a else b
+
+fn clamp_f64 : (f64, f64, f64) -> f64
+  | (x, min_val, max_val) ->
+    if x < min_val then min_val else if x > max_val then max_val else x

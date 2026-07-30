@@ -1,0 +1,18 @@
+mod cli
+
+use cli.flag
+use cli.arg_parser
+
+-- stdlib/cli.pie — Standard Library CLI Argument & Flag Suite
+-- Exports command-line parser, short/long flag definitions, and positional arguments.
+
+fn flag_bool : (ptr, u8, bool, ptr) -> *flag.Flag   | (n, s, d, c) -> flag.flag_new_bool(n, s, d, c)
+fn flag_int : (ptr, u8, i64, ptr) -> *flag.Flag     | (n, s, d, c) -> flag.flag_new_int(n, s, d, c)
+fn flag_str : (ptr, u8, ptr, ptr) -> *flag.Flag     | (n, s, d, c) -> flag.flag_new_string(n, s, d, c)
+fn flag_destroy : *flag.Flag -> ()                  | f -> flag.flag_destroy(f)
+
+fn parser_new : (ptr, ptr) -> arg_parser.ArgParser  | (p, d) -> arg_parser.argparser_new(p, d)
+fn parser_destroy : *arg_parser.ArgParser -> ()     | p -> arg_parser.argparser_destroy(p)
+fn parser_add : (*arg_parser.ArgParser, *flag.Flag) -> () | (p, f) -> arg_parser.argparser_add_flag(p, f)
+fn parse_argv : (*arg_parser.ArgParser, i64, *ptr) -> flag.ArgResult | (p, c, v) -> arg_parser.argparser_parse_args(p, c, v)
+fn res_destroy : *flag.ArgResult -> ()              | r -> flag.argresult_destroy(r)

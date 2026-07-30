@@ -1,0 +1,135 @@
+mod net.tcp
+
+use os.linux
+use net.ip
+use net.sockaddr
+
+-- stdlib/net/tcp.pie — TCP Client Stream and Server Listener
+-- Linux socket, connect, bind, listen, and accept syscall wrappers.
+
+const AF_INET     : i64 = 2i64
+const SOCK_STREAM : i64 = 1i64
+const SOL_TCP     : i64 = 6i64
+const TCP_NODELAY : i64 = 1i64
+
+struct TcpStream
+  fd : i64
+
+struct TcpListener
+  fd : i64
+
+fn tcp_connect_v4 : *sockaddr.SocketAddrV4 -> (TcpStream, i64)
+  | sa ->
+    let fd = os.linux.socket(AF_INET, SOCK_STREAM, 0i64)
+    if fd < 0i64 then (TcpStream { fd: -1i64 }, fd)
+    else
+      let addr_buf = os.linux.malloc(16i64) as *u8
+      os.linux.memset(addr_buf as ptr, 0i32, 16u64)
+      (addr_buf as *u16)[0i64] = AF_INET as u16
+      -- port in network byte order (big-endian)
+      let p = sa.port
+      (addr_buf as *u8)[2i64] = (p >> 8u64) as u8
+      (addr_buf as *u8)[3i64] = (p & 0xFFu64) as u8
+      (addr_buf as *u8)[4i64] = sa.ip.a
+      (addr_buf as *u8)[5i64] = sa.ip.b
+      (addr_buf as *u8)[6i64] = sa.ip.c
+      (addr_buf as *u8)[7i64] = sa.ip.d
+      let r = os.linux.connect(fd, addr_buf as ptr, 16i64)
+      os.linux.free(addr_buf as ptr)
+      if r < 0i64
+        os.linux.close(fd)
+        (TcpStream { fd: -1i64 }, r)
+      else
+        (TcpStream { fd: fd }, 0i64)
+
+fn tcp_listen_v4 : (*sockaddr.SocketAddrV4, i64) -> (TcpListener, i64)
+  | (sa, backlog) ->
+    let fd = os.linux.socket(AF_INET, SOCK_STREAM, 0i64)
+    if fd < 0i64 then (TcpListener { fd: -1i64 }, fd)
+    else
+      let addr_buf = os.linux.malloc(16i64) as *u8
+      os.linux.memset(addr_buf as ptr, 0i32, 16u64)
+      (addr_buf as *u16)[0i64] = AF_INET as u16
+      let p = sa.port
+      (addr_buf as *u8)[2i64] = (p >> 8u64) as u8
+      (addr_buf as *u8)[3i64] = (p & 0xFFu64) as u8
+      (addr_buf as *u8)[4i64] = sa.ip.a
+      (addr_buf as *u8)[5i64] = sa.ip.b
+      (addr_buf as *u8)[6i64] = sa.ip.c
+      (addr_buf as *u8)[7i64] = sa.ip.d
+      let r = os.linux.bind(fd, addr_buf as ptr, 16i64)
+      os.linux.free(addr_buf as ptr)
+      if r < 0i64
+        os.linux.close(fd)
+        (TcpListener { fd: -1i64 }, r)
+      else
+        let r2 = os.linux.listen(fd, backlog)
+        if r2 < 0i64
+          os.linux.close(fd)
+          (TcpListener { fd: -1i64 }, r2)
+        else
+          (TcpListener { fd: fd }, 0i64)
+
+fn tcp_accept : *TcpListener -> (TcpStream, i64)
+  | listener ->
+    if listener.fd < 0i64 then (TcpStream { fd: -1i64 }, -1i64)
+    else
+      let client_fd = os.linux.accept(listener.fd, 0 as ptr, 0 as ptr)
+      if client_fd < 0i64 then (TcpStream { fd: -1i64 }, client_fd)
+      else (TcpStream { fd: client_fd }, 0i64)
+
+fn tcp_read : (*TcpStream, ptr, i64) -> i64
+  | (s, buf, count) ->
+    if s.fd < 0i64 then -1i64
+    else os.linux.read(s.fd, buf, count)
+
+fn tcp_write : (*TcpStream, ptr, i64) -> i64
+  | (s, buf, count) ->
+    if s.fd < 0i64 then -1i64
+    else os.linux.write(s.fd, buf, count)
+
+fn tcp_set_nodelay : (*TcpStream, bool) -> i64
+  | (s, enabled) ->
+    if s.fd < 0i64 then -1i64
+    else
+      let val_ptr = os.linux.malloc(4i64) as *i32
+      val_ptr[0i64] = if enabled then 1i32 else 0i32
+      let r = os.linux.setsockopt(s.fd, SOL_TCP, TCP_NODELAY, val_ptr as ptr, 4i64)
+      os.linux.free(val_ptr as ptr)
+      r
+
+fn tcp_stream_close : *TcpStream -> ()
+  | s ->
+    if s.fd >= 0i64
+      os.linux.close(s.fd)
+      s.fd = -1i64
+
+fn tcp_listener_close : *TcpListener -> ()
+  | l ->
+    if l.fd >= 0i64
+      os.linux.close(l.fd)
+      l.fd = -1i64
+
+const SOL_SOCKET   : i64 = 1i64
+const SO_REUSEADDR : i64 = 2i64
+const SO_KEEPALIVE : i64 = 9i64
+
+fn tcp_set_keepalive : (*TcpStream, bool) -> i64
+  | (s, enabled) ->
+    if s.fd < 0i64 then -1i64
+    else
+      let val_ptr = os.linux.malloc(4i64) as *i32
+      val_ptr[0i64] = if enabled then 1i32 else 0i32
+      let r = os.linux.setsockopt(s.fd, SOL_SOCKET, SO_KEEPALIVE, val_ptr as ptr, 4i64)
+      os.linux.free(val_ptr as ptr)
+      r
+
+fn tcp_set_reuseaddr : (*TcpListener, bool) -> i64
+  | (l, enabled) ->
+    if l.fd < 0i64 then -1i64
+    else
+      let val_ptr = os.linux.malloc(4i64) as *i32
+      val_ptr[0i64] = if enabled then 1i32 else 0i32
+      let r = os.linux.setsockopt(l.fd, SOL_SOCKET, SO_REUSEADDR, val_ptr as ptr, 4i64)
+      os.linux.free(val_ptr as ptr)
+      r

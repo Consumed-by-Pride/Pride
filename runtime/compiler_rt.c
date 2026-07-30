@@ -1808,7 +1808,12 @@ void pride_str_push_f64(PrideString* s, double v)
 
 #include <stdatomic.h>
 #include <threads.h>
-#include <stdbit.h>
+#if defined(__has_include)
+#  if __has_include(<stdbit.h>)
+#    include <stdbit.h>
+#    define PRIDE_HAS_STDBIT_H 1
+#  endif
+#endif
 
 #ifndef PRIDE_RT_HAS_ATOMIC_CAS_I64
 #define PRIDE_RT_HAS_ATOMIC_CAS_I64
@@ -1864,6 +1869,7 @@ void __pride_atomic_fence(void)
 
 /* ── C23 stdc_count_ones / bit operations (stdbit.h) ─────────────────────── */
 
+#ifdef PRIDE_HAS_STDBIT_H
 uint32_t __pride_stdc_count_ones_u32(uint32_t x) { return stdc_count_ones_ui(x); }
 uint32_t __pride_stdc_count_zeros_u32(uint32_t x) { return stdc_count_zeros_ui(x); }
 uint32_t __pride_stdc_leading_zeros_u32(uint32_t x) { return stdc_leading_zeros_ui(x); }
@@ -1878,6 +1884,22 @@ uint32_t __pride_stdc_bit_width_u32(uint32_t x) { return stdc_bit_width_ui(x); }
 uint32_t __pride_stdc_bit_floor_u32(uint32_t x) { return stdc_bit_floor_ui(x); }
 uint32_t __pride_stdc_bit_ceil_u32(uint32_t x)  { return stdc_bit_ceil_ui(x); }
 int      __pride_stdc_has_single_bit_u32(uint32_t x) { return stdc_has_single_bit_ui(x); }
+#else
+uint32_t __pride_stdc_count_ones_u32(uint32_t x) { return (uint32_t)__builtin_popcount(x); }
+uint32_t __pride_stdc_count_zeros_u32(uint32_t x) { return (uint32_t)(32 - __builtin_popcount(x)); }
+uint32_t __pride_stdc_leading_zeros_u32(uint32_t x) { return x == 0 ? 32 : (uint32_t)__builtin_clz(x); }
+uint32_t __pride_stdc_trailing_zeros_u32(uint32_t x) { return x == 0 ? 32 : (uint32_t)__builtin_ctz(x); }
+uint32_t __pride_stdc_leading_ones_u32(uint32_t x) { return ~x == 0 ? 32 : (uint32_t)__builtin_clz(~x); }
+uint32_t __pride_stdc_trailing_ones_u32(uint32_t x) { return ~x == 0 ? 32 : (uint32_t)__builtin_ctz(~x); }
+uint32_t __pride_stdc_first_leading_zero_u32(uint32_t x) { return ~x == 0 ? 0 : (uint32_t)__builtin_clz(~x) + 1; }
+uint32_t __pride_stdc_first_leading_one_u32(uint32_t x)  { return x == 0 ? 0 : (uint32_t)__builtin_clz(x) + 1; }
+uint32_t __pride_stdc_first_trailing_zero_u32(uint32_t x){ return ~x == 0 ? 0 : (uint32_t)__builtin_ctz(~x) + 1; }
+uint32_t __pride_stdc_first_trailing_one_u32(uint32_t x) { return x == 0 ? 0 : (uint32_t)__builtin_ctz(x) + 1; }
+uint32_t __pride_stdc_bit_width_u32(uint32_t x) { return x == 0 ? 0 : (uint32_t)(32 - __builtin_clz(x)); }
+uint32_t __pride_stdc_bit_floor_u32(uint32_t x) { return x == 0 ? 0 : (1U << (31 - __builtin_clz(x))); }
+uint32_t __pride_stdc_bit_ceil_u32(uint32_t x)  { return x <= 1 ? x : (1U << (32 - __builtin_clz(x - 1))); }
+int      __pride_stdc_has_single_bit_u32(uint32_t x) { return x != 0 && (x & (x - 1)) == 0; }
+#endif
 
 /* ── 128-bit arithmetic helpers ──────────────────────────────────────────── */
 
@@ -2033,6 +2055,8 @@ uint64_t __pride_fnv1a_64(const void* data, int64_t n)
     return h;
 }
 
+static inline uint32_t __pride_rotl32(uint32_t x, int r) { return (x << r) | (x >> (32 - r)); }
+
 /* xxHash32 (simplified, no special SIMD path). */
 uint32_t __pride_xxhash32(const void* data, int64_t n, uint32_t seed)
 {
@@ -2046,21 +2070,22 @@ uint32_t __pride_xxhash32(const void* data, int64_t n, uint32_t seed)
         uint32_t v3 = seed, v4 = seed - P1;
         const uint8_t* end = p + n - 16;
         do {
-            uint32_t t; memcpy(&t, p, 4); v1 = ((v1+(t*P2)>>0u)*P1); p+=4;
-            memcpy(&t, p, 4); v2 = ((v2+(t*P2)>>0u)*P1); p+=4;
-            memcpy(&t, p, 4); v3 = ((v3+(t*P2)>>0u)*P1); p+=4;
-            memcpy(&t, p, 4); v4 = ((v4+(t*P2)>>0u)*P1); p+=4;
+            uint32_t t;
+            memcpy(&t, p, 4); v1 = __pride_rotl32(v1 + t * P2, 13) * P1; p+=4;
+            memcpy(&t, p, 4); v2 = __pride_rotl32(v2 + t * P2, 13) * P1; p+=4;
+            memcpy(&t, p, 4); v3 = __pride_rotl32(v3 + t * P2, 13) * P1; p+=4;
+            memcpy(&t, p, 4); v4 = __pride_rotl32(v4 + t * P2, 13) * P1; p+=4;
         } while (p <= end);
-        h32 = ((v1<<1)|(v1>>31)) + ((v2<<7)|(v2>>25)) +
-              ((v3<<12)|(v3>>20)) + ((v4<<18)|(v4>>14));
+        h32 = __pride_rotl32(v1, 1) + __pride_rotl32(v2, 7) +
+              __pride_rotl32(v3, 12) + __pride_rotl32(v4, 18);
     } else { h32 = seed + P5; }
     h32 += (uint32_t)n;
     while (p + 4 <= (uint8_t*)data + n) {
         uint32_t t; memcpy(&t, p, 4);
-        h32 = (((h32 + t*P3)<<17)|(((h32+t*P3)>>15))) * P4; p += 4;
+        h32 = __pride_rotl32(h32 + t * P3, 17) * P4; p += 4;
     }
     while (p < (uint8_t*)data + n) {
-        h32 = ((((h32 + (*p)*P5)<<11)|(((h32+(*p)*P5)>>21))) * P1); p++;
+        h32 = __pride_rotl32(h32 + (*p) * P5, 11) * P1; p++;
     }
     h32 ^= h32 >> 15; h32 *= 2246822519u; h32 ^= h32 >> 13;
     h32 *= 3266489917u; h32 ^= h32 >> 16;

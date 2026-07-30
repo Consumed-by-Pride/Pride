@@ -1,0 +1,29 @@
+mod net.sockaddr
+
+use net.ip
+
+-- stdlib/net/sockaddr.pie — Socket Address Wrappers
+-- IPv4 and IPv6 socket endpoint pairs (IP address + 16-bit port).
+
+struct SocketAddrV4
+  ip   : ip.Ipv4Addr
+  port : u16
+
+struct SocketAddrV6
+  ip   : ip.Ipv6Addr
+  port : u16
+
+fn sockaddr_v4_new : (ip.Ipv4Addr, u16) -> SocketAddrV4
+  | (ip_addr, port) -> SocketAddrV4 { ip: ip_addr, port: port }
+
+fn sockaddr_v4_port : *SocketAddrV4 -> u16
+  | sa -> sa.port
+
+fn sockaddr_v4_ip : *SocketAddrV4 -> ip.Ipv4Addr
+  | sa -> sa.ip
+
+fn sockaddr_v6_new : (ip.Ipv6Addr, u16) -> SocketAddrV6
+  | (ip_addr, port) -> SocketAddrV6 { ip: ip_addr, port: port }
+
+fn sockaddr_v6_port : *SocketAddrV6 -> u16
+  | sa -> sa.port

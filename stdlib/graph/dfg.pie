@@ -1,0 +1,90 @@
+mod graph.dfg
+
+use os.linux
+use vec.vec
+
+-- stdlib/graph/dfg.pie — Array-Backed Dataflow Graph (DataflowGraph)
+-- Represents computational DAG dependencies without pointer chasing.
+
+struct DfgNode
+  id        : i64
+  op_code   : i64
+  in_degree : i64
+
+struct DfgEdge
+  from_id : i64
+  to_id   : i64
+
+struct DataflowGraph
+  nodes : vec.Vec
+  edges : vec.Vec
+
+fn dfg_new : () -> DataflowGraph
+  | () -> DataflowGraph { nodes: vec.vec_new(16i64), edges: vec.vec_new(32i64) }
+
+fn dfg_destroy : *DataflowGraph -> ()
+  | g ->
+    let mut i : i64 = 0i64
+    let nlen = vec.vec_len(&g.nodes)
+    while i < nlen
+      os.linux.free(vec.vec_get(&g.nodes, i))
+      i = i + 1i64
+    i = 0i64
+    let elen = vec.vec_len(&g.edges)
+    while i < elen
+      os.linux.free(vec.vec_get(&g.edges, i))
+      i = i + 1i64
+    vec.vec_destroy(&g.nodes)
+    vec.vec_destroy(&g.edges)
+
+fn dfg_add_node : (*DataflowGraph, i64) -> i64
+  | (g, op_code) ->
+    let id = vec.vec_len(&g.nodes)
+    let n = os.linux.malloc(24i64) as *DfgNode
+    n.id        = id
+    n.op_code   = op_code
+    n.in_degree = 0i64
+    vec.vec_push(&g.nodes, n as ptr)
+    id
+
+fn dfg_add_edge : (*DataflowGraph, i64, i64) -> ()
+  | (g, from_id, to_id) ->
+    let e = os.linux.malloc(16i64) as *DfgEdge
+    e.from_id = from_id
+    e.to_id   = to_id
+    vec.vec_push(&g.edges, e as ptr)
+    if to_id >= 0i64 && to_id < vec.vec_len(&g.nodes)
+      let n = vec.vec_get(&g.nodes, to_id) as *DfgNode
+      n.in_degree = n.in_degree + 1i64
+
+fn dfg_topo_sort : *DataflowGraph -> vec.Vec
+  | g ->
+    let mut out = vec.vec_new(16i64)
+    let n_nodes = vec.vec_len(&g.nodes)
+    let degrees = os.linux.malloc(n_nodes * 8i64) as *i64
+    let mut i : i64 = 0i64
+    while i < n_nodes
+      let n = vec.vec_get(&g.nodes, i) as *DfgNode
+      degrees[i] = n.in_degree
+      i = i + 1i64
+
+    let mut added = true
+    while added
+      added = false
+      i = 0i64
+      while i < n_nodes
+        if degrees[i] == 0i64
+          degrees[i] = -1i64   -- marked visited
+          added = true
+          vec.vec_push(&out, &i as ptr)
+          -- decrement children in-degrees
+          let mut j : i64 = 0i64
+          let n_edges = vec.vec_len(&g.edges)
+          while j < n_edges
+            let e = vec.vec_get(&g.edges, j) as *DfgEdge
+            if e.from_id == i && e.to_id >= 0i64 && e.to_id < n_nodes
+              degrees[e.to_id] = degrees[e.to_id] - 1i64
+            j = j + 1i64
+        i = i + 1i64
+    os.linux.free(degrees as ptr)
+    out

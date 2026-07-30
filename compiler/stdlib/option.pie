@@ -11,10 +11,10 @@ enum Option
   Some(i64),
 
 fn option_some : i64 -> Option
-  | (x) -> Some(x)
+  | (x) -> Option.Some(x)
 
 fn option_none : () -> Option
-  | () -> None
+  | () -> Option.None
 
 fn option_is_some : Option -> bool
   | (o) ->
@@ -42,9 +42,9 @@ fn option_unwrap_or : (Option, i64) -> i64
 
 
 fn result_ok  : i64 -> Result
-  | (v) -> Ok(v)
+  | (v) -> Result.Ok(v)
 fn result_err : i64 -> Result
-  | (e) -> Err(e)
+  | (e) -> Result.Err(e)
 
 fn result_is_ok  : Result -> bool
   | (r) ->

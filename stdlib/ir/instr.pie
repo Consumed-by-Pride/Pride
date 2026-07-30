@@ -1,0 +1,60 @@
+mod ir.instr
+
+use os.linux
+use vec.vec
+use ir.types
+use ir.value
+
+-- stdlib/ir/instr.pie — SSA Instruction Representation
+-- Encodes SSA arithmetic, memory, control flow, phis, and algebraic effect operations.
+
+const OP_ADD     : i64 = 1i64
+const OP_SUB     : i64 = 2i64
+const OP_MUL     : i64 = 3i64
+const OP_DIV     : i64 = 4i64
+const OP_REM     : i64 = 5i64
+const OP_ICMP    : i64 = 6i64
+const OP_FCMP    : i64 = 7i64
+const OP_AND     : i64 = 8i64
+const OP_OR      : i64 = 9i64
+const OP_XOR     : i64 = 10i64
+const OP_ALLOCA  : i64 = 11i64
+const OP_LOAD    : i64 = 12i64
+const OP_STORE   : i64 = 13i64
+const OP_GEP     : i64 = 14i64
+const OP_BR      : i64 = 15i64
+const OP_COND_BR : i64 = 16i64
+const OP_CALL    : i64 = 17i64
+const OP_RET     : i64 = 18i64
+const OP_PHI     : i64 = 19i64
+const OP_PERFORM : i64 = 20i64
+const OP_RESUME  : i64 = 21i64
+
+struct IrInstr
+  id        : i64
+  opcode    : i64
+  res_type  : *types.IrType
+  operands  : vec.Vec
+  pred_cmp  : i64       -- for icmp/fcmp predicate (e.g. EQ=0, NE=1, SLT=2, etc.)
+  is_dead   : bool
+
+fn ir_instr_new : (i64, i64, *types.IrType) -> *IrInstr
+  | (id, opcode, res_ty) ->
+    let i = os.linux.malloc(48i64) as *IrInstr
+    i.id       = id
+    i.opcode   = opcode
+    i.res_type = res_ty
+    i.operands = vec.vec_new(4i64)
+    i.pred_cmp = 0i64
+    i.is_dead  = false
+    i
+
+fn ir_instr_add_operand : (*IrInstr, *value.IrValue) -> ()
+  | (instr, val) -> vec.vec_push(&instr.operands, val as ptr)
+
+fn ir_instr_destroy : *IrInstr -> ()
+  | instr ->
+    if instr as i64 == 0i64 then ()
+    else
+      vec.vec_destroy(&instr.operands)
+      os.linux.free(instr as ptr)

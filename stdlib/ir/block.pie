@@ -1,0 +1,50 @@
+mod ir.block
+
+use os.linux
+use vec.vec
+use str.string
+use ir.instr
+
+-- stdlib/ir/block.pie — SSA Basic Block Representation
+-- Sequential list of SSA instructions terminated by a branch or return.
+
+struct IrBlock
+  id        : i64
+  name      : string.String
+  instrs    : vec.Vec
+  preds     : vec.Vec
+  succs     : vec.Vec
+
+fn ir_block_new : (i64, ptr) -> *IrBlock
+  | (id, name_cstr) ->
+    let b = os.linux.malloc(64i64) as *IrBlock
+    b.id     = id
+    b.name   = string.string_from_cstr(name_cstr)
+    b.instrs = vec.vec_new(16i64)
+    b.preds  = vec.vec_new(4i64)
+    b.succs  = vec.vec_new(4i64)
+    b
+
+fn ir_block_append : (*IrBlock, *instr.IrInstr) -> ()
+  | (blk, inst) -> vec.vec_push(&blk.instrs, inst as ptr)
+
+fn ir_block_terminator : *IrBlock -> *instr.IrInstr
+  | blk ->
+    let len = vec.vec_len(&blk.instrs)
+    if len == 0i64 then 0 as *instr.IrInstr
+    else vec.vec_get(&blk.instrs, len - 1i64) as *instr.IrInstr
+
+fn ir_block_destroy : *IrBlock -> ()
+  | blk ->
+    if blk as i64 == 0i64 then ()
+    else
+      string.string_destroy(&blk.name)
+      let mut i : i64 = 0i64
+      let len = vec.vec_len(&blk.instrs)
+      while i < len
+        instr.ir_instr_destroy(vec.vec_get(&blk.instrs, i) as *instr.IrInstr)
+        i = i + 1i64
+      vec.vec_destroy(&blk.instrs)
+      vec.vec_destroy(&blk.preds)
+      vec.vec_destroy(&blk.succs)
+      os.linux.free(blk as ptr)

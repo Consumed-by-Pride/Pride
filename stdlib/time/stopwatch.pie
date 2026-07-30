@@ -1,0 +1,49 @@
+mod time.stopwatch
+
+use time.duration
+use time.instant
+
+-- stdlib/time/stopwatch.pie — High-Precision Timer (Stopwatch)
+-- Stateful timer for benchmarking and performance profiling.
+
+struct Stopwatch
+  start_time  : instant.Instant
+  elapsed_dur : duration.Duration
+  running     : bool
+
+fn stopwatch_new : () -> Stopwatch
+  | () ->
+    Stopwatch {
+      start_time:  instant.instant_now(),
+      elapsed_dur: duration.duration_from_secs(0i64),
+      running:     false
+    }
+
+fn stopwatch_start : *Stopwatch -> ()
+  | sw ->
+    if !sw.running
+      sw.start_time = instant.instant_now()
+      sw.running = true
+
+fn stopwatch_stop : *Stopwatch -> ()
+  | sw ->
+    if sw.running
+      let dur = instant.instant_elapsed(sw.start_time)
+      sw.elapsed_dur = duration.duration_add(sw.elapsed_dur, dur)
+      sw.running = false
+
+fn stopwatch_reset : *Stopwatch -> ()
+  | sw ->
+    sw.elapsed_dur = duration.duration_from_secs(0i64)
+    if sw.running
+      sw.start_time = instant.instant_now()
+
+fn stopwatch_elapsed : *Stopwatch -> duration.Duration
+  | sw ->
+    if sw.running
+      let cur = instant.instant_elapsed(sw.start_time)
+      duration.duration_add(sw.elapsed_dur, cur)
+    else sw.elapsed_dur
+
+fn stopwatch_is_running : *Stopwatch -> bool
+  | sw -> sw.running

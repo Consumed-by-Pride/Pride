@@ -1,0 +1,53 @@
+mod tui.cursor
+
+use str.string
+use tui.ansi
+
+-- stdlib/tui/cursor.pie — Terminal Cursor Movement and Positioning
+-- Generates VT100/ANSI escape sequences for cursor navigation.
+
+const CURSOR_SAVE    : ptr = "\x1B[s" as ptr
+const CURSOR_RESTORE : ptr = "\x1B[u" as ptr
+const CURSOR_HOME    : ptr = "\x1B[H" as ptr
+
+fn cursor_move_to : (i64, i64) -> string.String
+  | (row, col) ->
+    let mut out = string.string_with_cap(16i64)
+    string.string_push_cstr(&out, "\x1B[" as ptr)
+    ansi.push_i64_decimal(&out, if row <= 0i64 then 1i64 else row)
+    string.string_push_byte(&out, 59u8)   -- ';'
+    ansi.push_i64_decimal(&out, if col <= 0i64 then 1i64 else col)
+    string.string_push_byte(&out, 72u8)   -- 'H'
+    out
+
+fn cursor_up : i64 -> string.String
+  | n ->
+    let mut out = string.string_with_cap(12i64)
+    string.string_push_cstr(&out, "\x1B[" as ptr)
+    ansi.push_i64_decimal(&out, if n <= 0i64 then 1i64 else n)
+    string.string_push_byte(&out, 65u8)   -- 'A'
+    out
+
+fn cursor_down : i64 -> string.String
+  | n ->
+    let mut out = string.string_with_cap(12i64)
+    string.string_push_cstr(&out, "\x1B[" as ptr)
+    ansi.push_i64_decimal(&out, if n <= 0i64 then 1i64 else n)
+    string.string_push_byte(&out, 66u8)   -- 'B'
+    out
+
+fn cursor_forward : i64 -> string.String
+  | n ->
+    let mut out = string.string_with_cap(12i64)
+    string.string_push_cstr(&out, "\x1B[" as ptr)
+    ansi.push_i64_decimal(&out, if n <= 0i64 then 1i64 else n)
+    string.string_push_byte(&out, 67u8)   -- 'C'
+    out
+
+fn cursor_backward : i64 -> string.String
+  | n ->
+    let mut out = string.string_with_cap(12i64)
+    string.string_push_cstr(&out, "\x1B[" as ptr)
+    ansi.push_i64_decimal(&out, if n <= 0i64 then 1i64 else n)
+    string.string_push_byte(&out, 68u8)   -- 'D'
+    out

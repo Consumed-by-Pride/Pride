@@ -1,0 +1,90 @@
+mod vec.smallvec
+
+use os.linux
+
+-- stdlib/vec/smallvec.pie — Small Vector with Inline Optimization (SmallVec)
+-- Stores up to inline_cap elements in an initial inline/stack buffer, automatically
+-- spilling to dynamic heap memory only when capacity is exceeded.
+
+struct SmallVec
+  inline_buf : ptr
+  data       : ptr
+  len        : i64
+  cap        : i64
+  elem_sz    : i64
+  spilled    : bool
+
+fn smallvec_new : (i64, i64) -> SmallVec
+  | (inline_cap, elem_sz) ->
+    let bytes = inline_cap * elem_sz
+    let ibuf = os.linux.malloc(if bytes > 0i64 then bytes else elem_sz)
+    SmallVec { inline_buf: ibuf, data: ibuf, len: 0i64, cap: inline_cap, elem_sz: elem_sz, spilled: false }
+
+fn smallvec_destroy : *SmallVec -> ()
+  | sv ->
+    if sv.spilled && sv.data as i64 != 0i64
+      os.linux.free(sv.data)
+    if sv.inline_buf as i64 != 0i64
+      os.linux.free(sv.inline_buf)
+    sv.data = 0 as ptr; sv.inline_buf = 0 as ptr; sv.len = 0i64; sv.cap = 0i64; sv.spilled = false
+
+fn smallvec_len : *SmallVec -> i64
+  | sv -> sv.len
+
+fn smallvec_cap : *SmallVec -> i64
+  | sv -> sv.cap
+
+fn smallvec_is_spilled : *SmallVec -> bool
+  | sv -> sv.spilled
+
+fn smallvec_as_slice : *SmallVec -> ptr
+  | sv -> sv.data
+
+fn smallvec_get : (*SmallVec, i64) -> ptr
+  | (sv, idx) ->
+    if idx < 0i64 || idx >= sv.len then 0 as ptr
+    else (sv.data as i64 + idx * sv.elem_sz) as ptr
+
+fn smallvec_set : (*SmallVec, i64, ptr) -> bool
+  | (sv, idx, val_ptr) ->
+    if idx < 0i64 || idx >= sv.len then false
+    else
+      let dst = (sv.data as i64 + idx * sv.elem_sz) as ptr
+      os.linux.memcpy(dst, val_ptr, sv.elem_sz as u64)
+      true
+
+fn smallvec_spill : (*SmallVec, i64) -> ()
+  | (sv, min_cap) ->
+    let mut new_cap = if sv.cap == 0i64 then 4i64 else sv.cap * 2i64
+    while new_cap < min_cap
+      new_cap = new_cap * 2i64
+    let bytes = new_cap * sv.elem_sz
+    let new_heap = os.linux.malloc(bytes)
+    if sv.len > 0i64
+      os.linux.memcpy(new_heap, sv.data, (sv.len * sv.elem_sz) as u64)
+    if sv.spilled
+      os.linux.free(sv.data)
+    sv.data = new_heap
+    sv.cap = new_cap
+    sv.spilled = true
+
+fn smallvec_push : (*SmallVec, ptr) -> ()
+  | (sv, val_ptr) ->
+    if sv.len >= sv.cap
+      smallvec_spill(sv, sv.len + 1i64)
+    let dst = (sv.data as i64 + sv.len * sv.elem_sz) as ptr
+    os.linux.memcpy(dst, val_ptr, sv.elem_sz as u64)
+    sv.len = sv.len + 1i64
+
+fn smallvec_pop : (*SmallVec, ptr) -> bool
+  | (sv, out_ptr) ->
+    if sv.len == 0i64 then false
+    else
+      sv.len = sv.len - 1i64
+      let src = (sv.data as i64 + sv.len * sv.elem_sz) as ptr
+      if out_ptr as i64 != 0i64
+        os.linux.memcpy(out_ptr, src, sv.elem_sz as u64)
+      true
+
+fn smallvec_clear : *SmallVec -> ()
+  | sv -> sv.len = 0i64

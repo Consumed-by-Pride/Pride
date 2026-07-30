@@ -1,0 +1,87 @@
+mod time.duration
+
+-- stdlib/time/duration.pie — Time Span and Duration (Duration)
+-- Normalized representation of time spans in seconds and nanoseconds.
+
+struct Duration
+  secs  : i64
+  nanos : i32
+
+fn duration_new : (i64, i64) -> Duration
+  | (s, n) ->
+    let mut total_s = s + (n / 1000000000i64)
+    let mut rem_n   = (n % 1000000000i64) as i32
+    if rem_n < 0i32
+      total_s = total_s - 1i64
+      rem_n = rem_n + 1000000000i32
+    Duration { secs: total_s, nanos: rem_n }
+
+fn duration_from_secs : i64 -> Duration
+  | s -> Duration { secs: s, nanos: 0i32 }
+
+fn duration_from_millis : i64 -> Duration
+  | ms -> duration_new(ms / 1000i64, (ms % 1000i64) * 1000000i64)
+
+fn duration_from_micros : i64 -> Duration
+  | us -> duration_new(us / 1000000i64, (us % 1000000i64) * 1000i64)
+
+fn duration_from_nanos : i64 -> Duration
+  | ns -> duration_new(ns / 1000000000i64, ns % 1000000000i64)
+
+fn duration_add : (Duration, Duration) -> Duration
+  | (a, b) ->
+    let s = a.secs + b.secs
+    let n = a.nanos as i64 + b.nanos as i64
+    duration_new(s, n)
+
+fn duration_sub : (Duration, Duration) -> Duration
+  | (a, b) ->
+    let mut s = a.secs - b.secs
+    let mut n = a.nanos - b.nanos
+    if n < 0i32
+      s = s - 1i64
+      n = n + 1000000000i32
+    if s < 0i64 then Duration { secs: 0i64, nanos: 0i32 }
+    else Duration { secs: s, nanos: n }
+
+fn duration_mul : (Duration, i64) -> Duration
+  | (d, factor) ->
+    if factor <= 0i64 then Duration { secs: 0i64, nanos: 0i32 }
+    else
+      let s = d.secs * factor
+      let n = d.nanos as i64 * factor
+      duration_new(s, n)
+
+fn duration_div : (Duration, i64) -> Duration
+  | (d, divisor) ->
+    if divisor <= 0i64 then Duration { secs: 0i64, nanos: 0i32 }
+    else
+      let total_ns = d.secs * 1000000000i64 + d.nanos as i64
+      let res_ns   = total_ns / divisor
+      duration_from_nanos(res_ns)
+
+fn duration_as_secs : Duration -> i64
+  | d -> d.secs
+
+fn duration_as_millis : Duration -> i64
+  | d -> d.secs * 1000i64 + (d.nanos as i64 / 1000000i64)
+
+fn duration_as_micros : Duration -> i64
+  | d -> d.secs * 1000000i64 + (d.nanos as i64 / 1000i64)
+
+fn duration_as_nanos : Duration -> i64
+  | d -> d.secs * 1000000000i64 + d.nanos as i64
+
+fn duration_is_zero : Duration -> bool
+  | d -> d.secs == 0i64 && d.nanos == 0i32
+
+fn duration_eq : (Duration, Duration) -> bool
+  | (a, b) -> a.secs == b.secs && a.nanos == b.nanos
+
+fn duration_cmp : (Duration, Duration) -> i32
+  | (a, b) ->
+    if a.secs < b.secs then -1i32
+    else if a.secs > b.secs then 1i32
+    else if a.nanos < b.nanos then -1i32
+    else if a.nanos > b.nanos then 1i32
+    else 0i32
