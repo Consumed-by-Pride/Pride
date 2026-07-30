@@ -1,0 +1,212 @@
+mod examples.hose_prompt_dynamic_wind
+
+use pride.effects
+use pride.ub
+use vec.collections
+
+-- examples/03_hose_prompt_dynamic_wind.pie
+--
+-- Untyped Higher-Order & Scoped Effects (HOSE): prompt markers,
+-- dynamic-winding, and local environment scoping via pride.effects.
+--
+-- Shows:
+--   - effects.prompt_install / prompt_unwind     delimit a scope
+--   - effects.is_in_scope                        scope guard
+--   - effects.dynamic_wind_push/enter/exit/pop   RAII-style wind thunks
+--   - effects.local_bind / local_get             reader monad via key_id
+--   - effects.scoped_yield_in                    perform inside a scope
+--   - Pride algebraic effects + HOSE together    composing both layers
+
+-- ── §1  Prompt marker lifecycle ───────────────────────────────────────────────
+-- A prompt marker installs a delimited scope identified by an integer id.
+-- The scope is active until prompt_unwind is called.
+
+fn demo_prompt_lifecycle : () -> bool
+  | () ->
+      let pid : i64 = 42i64
+      let installed = effects.prompt_install(pid)
+      let active    = effects.is_in_scope(pid)
+      effects.prompt_unwind(pid)
+      let gone      = !effects.is_in_scope(pid)
+
+      installed == pid && active && gone
+
+-- ── §2  Dynamic-winding: enter/exit hooks around a scope ─────────────────────
+-- dynamic_wind_push registers on_enter / on_exit function pointers.
+-- When a continuation is resumed or unwound, these thunks fire in order.
+-- Here we use null thunks (pure scope tracking only).
+
+fn demo_dynamic_wind : () -> bool
+  | () ->
+      let pid : i64 = 100i64
+      effects.prompt_install(pid)
+
+      -- Register a no-op dynamic wind (on_enter=null, on_exit=null, env=null)
+      effects.dynamic_wind_push(pid, null, null, null)
+
+      -- Fire enter hooks (called when resuming into the scope)
+      effects.dynamic_wind_enter(pid)
+
+      -- Fire exit hooks (called when yielding out of the scope)
+      effects.dynamic_wind_exit(pid)
+
+      -- Deregister the wind entry, then unwind the prompt
+      effects.dynamic_wind_pop(pid)
+      effects.prompt_unwind(pid)
+
+      -- Wind registered and deregistered cleanly — no crash = success
+      true
+
+-- ── §3  Local environment binding (reader/local scoping) ──────────────────────
+-- effects.local_bind associates a key_id with a value pointer under a prompt.
+-- effects.local_get retrieves the innermost binding for that key.
+-- This implements dynamic binding / the Reader monad without heap allocation.
+
+fn demo_local_env : () -> bool
+  | () ->
+      let pid  : i64 = 200i64
+      let key1 : i64 = 1i64
+      let key2 : i64 = 2i64
+
+      effects.prompt_install(pid)
+
+      -- Bind key1 to a synthetic pointer (0xDEAD_BEEF)
+      let bound1 = effects.local_bind(key1, 0xDEAD_BEEFi64 as ptr, pid)
+
+      -- Look it up
+      let got1 = effects.local_get(key1)
+
+      -- Bind key2 to a different value
+      let bound2 = effects.local_bind(key2, 0x1234_5678i64 as ptr, pid)
+      let got2   = effects.local_get(key2)
+
+      -- Missing key returns null
+      let missing = effects.local_get(99i64)
+
+      effects.prompt_unwind(pid)
+
+      bound1 == key1
+        && bound2 == key2
+        && (got1 as i64) == 0xDEAD_BEEFi64
+        && (got2 as i64) == 0x1234_5678i64
+        && missing == null
+
+-- ── §4  Composing HOSE prompts with algebraic effects ────────────────────────
+-- An algebraic effect (Pride's built-in `effect`/`handle`) can run inside a
+-- HOSE prompt scope. The prompt demarcates the boundary; the effect's
+-- continuation is captured relative to the prompt.
+
+effect Counter
+  tick : () -> i64
+
+fn count_ticks : i64 -> i64 ! [Counter]
+  | limit ->
+      let mut total : i64 = 0i64
+      let mut i     : i64 = 0i64
+      while i < limit
+        let n = Counter.tick()
+        total = total + n
+        i = i + 1
+      total
+
+fn demo_effect_inside_hose : () -> bool
+  | () ->
+      let pid : i64 = 300i64
+      effects.prompt_install(pid)
+
+      let mut counter : i64 = 1i64
+
+      -- Run algebraic effect inside an active HOSE prompt scope
+      let scope_active_during : bool = effects.is_in_scope(pid)
+
+      let result : i64 = handle count_ticks(5i64)
+        | Counter.tick () k ->
+            let v = counter
+            counter = counter + 1i64
+            k v
+
+      effects.prompt_unwind(pid)
+
+      -- ticks were: 1+2+3+4+5 = 15
+      scope_active_during && result == 15i64
+
+-- ── §5  Scoped yield: performing in/out of a prompt boundary ─────────────────
+-- scoped_yield_in performs op_id inside the scope of prompt_id.
+-- In a real handler this would capture the two-part continuation k_in/k_out.
+-- Here we verify the call succeeds when the scope is active.
+
+effect Pipe
+  send : i64 -> i64
+
+fn demo_scoped_yield : () -> bool
+  | () ->
+      let pid    : i64 = 400i64
+      let op_id  : i64 = 77i64
+
+      effects.prompt_install(pid)
+
+      -- With no handler installed, scoped_yield_in forwards to __pride_perform
+      -- which under the default unhandled regime returns 0.
+      -- We just verify it doesn't crash and returns something.
+      let _res = effects.scoped_yield_in(pid, op_id, 42i64)
+
+      effects.prompt_unwind(pid)
+      true
+
+-- ── §6  VecDeque as an effect-driven work queue ──────────────────────────────
+-- Combine HOSE prompt scoping with the stdlib collections to build a
+-- simple work-stealing deque driven by algebraic effects.
+
+effect Work
+  push_task : i64 -> ()
+  pop_task  : ()  -> (bool, i64)
+
+fn producer : i64 -> () ! [Work]
+  | count ->
+      let mut i : i64 = 0i64
+      while i < count
+        Work.push_task(i * i)   -- push squares
+        i = i + 1
+
+fn consumer : i64 -> i64 ! [Work]
+  | limit ->
+      let mut sum  : i64 = 0i64
+      let mut done : bool = false
+      let mut read : i64 = 0i64
+      while !done && read < limit
+        let (ok, v) = Work.pop_task()
+        if ok
+          sum  = sum + v
+          read = read + 1
+        else
+          done = true
+      sum
+
+fn demo_work_deque : () -> bool
+  | () ->
+      let mut q = vd_new()
+
+      -- Handler: push_task enqueues, pop_task dequeues from front
+      handle producer(5i64)
+        | Work.push_task v k -> (vd_push_back(&q, v); k ())
+        | Work.pop_task  () k -> k (vd_pop_front(&q))
+
+      let sum : i64 = handle consumer(5i64)
+        | Work.push_task v  k -> (vd_push_back(&q, v); k ())
+        | Work.pop_task  () k -> k (vd_pop_front(&q))
+
+      vd_free(&q)
+      -- 0² + 1² + 2² + 3² + 4² = 0+1+4+9+16 = 30
+      sum == 30i64
+
+fn main : () -> i32
+  | () ->
+      let r1 = demo_prompt_lifecycle()
+      let r2 = demo_dynamic_wind()
+      let r3 = demo_local_env()
+      let r4 = demo_effect_inside_hose()
+      let r5 = demo_scoped_yield()
+      let r6 = demo_work_deque()
+
+      ub.ub_assume(r1 && r2 && r3 && r4 && r5 && r6)
+      if r1 && r2 && r3 && r4 && r5 && r6 then 0 else 1

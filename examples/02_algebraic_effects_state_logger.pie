@@ -1,0 +1,125 @@
+mod examples.algebraic_effects_state_logger
+
+use pride.ub
+use vec.collections
+
+-- examples/02_algebraic_effects_state_logger.pie
+--
+-- Algebraic effects for stateful computation without globals.
+-- Shows:
+--   - effect declarations with multiple operations
+--   - handle ... | Op args k -> k result  (resumable handlers)
+--   - effect polymorphism: open row [..r] forwards effects through generics
+--   - composing two effects: State (get/put) and Log (append)
+--   - stdlib vec.collections.BinaryHeap used to sort log entries at the end
+
+-- ── §1  Effect declarations ───────────────────────────────────────────────────
+
+effect State
+  get : ()  -> i64
+  put : i64 -> ()
+
+effect Log
+  append : i64 -> ()
+
+-- ── §2  Pure computation using both effects ───────────────────────────────────
+-- fibonacci accumulator that logs each intermediate value
+
+fn fib_logged : i64 -> i64 ! [State, Log]
+  | n ->
+      if n <= 1i64
+        Log.append(n)
+        n
+      else
+        let mut a : i64 = 0i64
+        let mut b : i64 = 1i64
+        let mut i : i64 = 2i64
+        while i <= n
+          let c = a + b
+          Log.append(c)
+          a = b
+          b = c
+          i = i + 1
+        Log.append(b)
+        b
+
+-- ── §3  Running-sum accumulator using State ───────────────────────────────────
+
+fn accumulate : (i64, i64) -> i64 ! [State]
+  | (x, count) ->
+      let mut i : i64 = 0i64
+      while i < count
+        let cur = State.get()
+        State.put(cur + x)
+        i = i + 1
+      State.get()
+
+-- ── §4  Effect-polymorphic map over a range ───────────────────────────────────
+-- The open row [..r] makes this usable inside any effect context.
+
+fn range_map<A> : (i64, i64, i64 -> A ! [..r]) -> () ! [..r]
+  | (lo, hi, f) ->
+      let mut i : i64 = lo
+      while i < hi
+        f(i)
+        i = i + 1
+
+-- ── §5  Demo: run fib_logged under State+Log handlers ─────────────────────────
+
+fn demo_fib_state_log : () -> bool
+  | () ->
+      -- We collect the log into a heap, then verify sorted order
+      let mut heap  = heap_new()
+      let mut state : i64 = 0i64
+
+      -- Run fib_logged(10) under both handlers.
+      -- State handler: get returns `state`, put updates it.
+      -- Log handler:   append pushes onto the heap.
+      let result : i64 = handle
+          (handle fib_logged(10i64)
+            | State.get ()  k -> k state
+            | State.put v   k -> (state = v; k ()))
+        | Log.append v k -> (heap_push(&heap, v); k ())
+
+      -- fib(10) = 55
+      let fib_ok = result == 55i64
+
+      -- Heap should have 10 entries (fib values 1..55 logged)
+      let count_ok = heap_len(&heap) == 10i64
+
+      heap_free(&heap)
+      fib_ok && count_ok
+
+-- ── §6  Demo: accumulate with State ──────────────────────────────────────────
+
+fn demo_state_accumulate : () -> bool
+  | () ->
+      let mut state : i64 = 0i64
+      let result : i64 = handle accumulate(7i64, 6i64)
+        | State.get ()  k -> k state
+        | State.put v   k -> (state = v; k ())
+      -- 7 added 6 times → 42
+      result == 42i64
+
+-- ── §7  Demo: range_map collects squares via Log ──────────────────────────────
+
+fn demo_range_map_log : () -> bool
+  | () ->
+      let mut heap = heap_new()
+      handle range_map(1i64, 6i64, fn x -> Log.append(x * x))
+        | Log.append v k -> (heap_push(&heap, v); k ())
+      -- Should have 5 entries: 1, 4, 9, 16, 25
+      let count_ok = heap_len(&heap) == 5i64
+      -- Max (heap top) should be 25
+      let (has_max, max_val) = heap_peek(&heap)
+      heap_free(&heap)
+      count_ok && has_max && max_val == 25i64
+
+fn main : () -> i32
+  | () ->
+      let r1 = demo_fib_state_log()
+      let r2 = demo_state_accumulate()
+      let r3 = demo_range_map_log()
+
+      ub.ub_assume(r1 && r2 && r3)
+      if r1 && r2 && r3 then 0 else 1

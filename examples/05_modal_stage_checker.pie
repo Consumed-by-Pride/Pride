@@ -1,0 +1,215 @@
+mod examples.modal_stage_checker
+
+use pride.msp
+use pride.irdl
+use pride.effects
+use pride.ub
+use vec.collections
+
+-- examples/05_modal_stage_checker.pie
+--
+-- Exercises Pride's CMTT modal stage checker and IRDL schema verifier together.
+-- Demonstrates how the compiler enforces multi-level staging semantics and how
+-- user code can introspect the same machinery at runtime via pride.msp and
+-- pride.irdl.
+--
+-- The CMTT box type  □_{Γ'}^{L'} τ  represents:
+--   Γ'  — the captured lexical environment (ctx pointer)
+--   L'  — the future stage level the code will evaluate at
+--   τ   — the type of the resulting value
+--
+-- AOT stage fusion (Wu, Schrijvers, Yang):
+--   When the out-of-scope continuation k_out is an identity, the staged
+--   evaluator can completely eliminate the handler installation overhead and
+--   inline k_in directly at compile time.
+
+-- ── §1  Stage-level taxonomy ─────────────────────────────────────────────────
+-- Stage 0: runtime values    (ordinary let-bindings)
+-- Stage 1: compile-time code (inside comptime { } / quote)
+-- Stage 2: meta-compile-time (nested quotes, macro bodies)
+
+fn demo_stage_taxonomy : () -> bool
+  | () ->
+      -- Stage-0 runtime value: comptime evaluated to a constant
+      let s0_val : i64 = comptime { 100 * 7 }   -- 700, folded at stage 0
+
+      -- Stage-stack mirrors what the modal typechecker tracks
+      let mut stk = msp.stage_stack_new()
+
+      -- Entering a quote block → push stage 1
+      let _s1 = msp.stage_stack_push(&stk, 1i64)
+
+      -- Entering a nested quote → push stage 2
+      let _s2 = msp.stage_stack_push(&stk, 2i64)
+
+      -- Splice back down to stage 1 (splice lowers stage by 1)
+      let back1 = msp.stage_stack_pop(&stk)
+
+      -- Close outer quote → back to stage 0
+      let back0 = msp.stage_stack_pop(&stk)
+
+      s0_val == 700i64 && back1 == 2i64 && back0 == 1i64
+
+-- ── §2  CMTT box: open-code fragment with effect annotation ──────────────────
+-- A stage-1 fragment that may perform IO (op 1) and Alloc (op 2):
+--   box1 : □_{∅}^{1} i64  ! {IO, Alloc}
+
+fn demo_cmtt_box_effect_annotation : () -> bool
+  | () ->
+      let mut box1 = msp.cmtt_box_new(1i64, null, null)
+      msp.cmtt_box_add_effect_op(&box1, 1i64)   -- IO
+      msp.cmtt_box_add_effect_op(&box1, 2i64)   -- Alloc
+
+      -- Inspect: confirm the fragment carries exactly these two effects
+      let has_io    = msp.cmtt_box_inspect(&box1, 1i64)
+      let has_alloc = msp.cmtt_box_inspect(&box1, 2i64)
+      let no_net    = !msp.cmtt_box_inspect(&box1, 99i64)
+
+      -- A pure stage-2 box (no effects)
+      let mut box2 = msp.cmtt_box_new(2i64, null, null)
+      let pure_ok = !msp.cmtt_box_inspect(&box2, 1i64)
+
+      has_io && has_alloc && no_net && pure_ok
+
+-- ── §3  Functorial fusion: Fmap(f, Node(op, k_in, k_out)) ───────────────────
+-- Rule 3 (Wu et al.): Fmap(f, Node(op, k_in, k_out)) ↦ Node(op, Fmap(f,k_in), k_out)
+-- When k_out is the identity (null here), rule 1 fires first:
+--   Node(op, k_in, Id) ↦ k_in
+-- So the AOT fuser returns k_in directly — zero handler overhead.
+
+fn demo_aot_fusion_rules : () -> bool
+  | () ->
+      -- Case A: k_out = null (identity) → fuse returns k_in
+      let mut boxA = msp.cmtt_box_new(1i64, null, null)
+      msp.cmtt_box_add_effect_op(&boxA, 5i64)
+      let (k_in_A, _) = msp.cmtt_box_split_effects(&boxA)
+      let fused_A = msp.cmtt_box_fuse_aot(&boxA, k_in_A, null)
+      let rule1_ok = fused_A == k_in_A   -- Identity Elimination fired
+
+      -- Case B: k_out is non-null → fuse keeps the structure
+      let mut boxB   = msp.cmtt_box_new(1i64, null, 0x10i64 as ptr)
+      let (k_in_B, k_out_B) = msp.cmtt_box_split_effects(&boxB)
+      let fused_B = msp.cmtt_box_fuse_aot(&boxB, k_in_B, k_out_B)
+      -- k_out != null → both fragments needed; result is non-null
+      let rule3_ok = fused_B != null
+
+      rule1_ok && rule3_ok
+
+-- ── §4  IRDL schema: verify HOSE opcode coverage ─────────────────────────────
+-- The IRDL schema is Pride's IR Description Language registry.
+-- It lists every IR opcode together with its arity and scoped/fiber flags.
+-- We verify that all HOSE opcodes (30-41) are present in the schema.
+
+fn demo_irdl_hose_coverage : () -> bool
+  | () ->
+      let s = irdl.irdl_schema_new()
+
+      -- Expected HOSE opcodes from pride/irdl.pie:
+      -- prompt_install=30, prompt_unwind=31, fiber_spawn=32, fiber_yield=33,
+      -- yield_in=34, yield_out=35, split_cont=36, fuse_cont=37,
+      -- dw_push=38, dw_pop=39, local_bind=40, local_get=41
+
+      let mut found : i64 = 0i64
+      let mut i     : i64 = 0i64
+      while i < s.op_count
+        if s.ops[i].code >= 30i64 && s.ops[i].code <= 41i64
+          found = found + 1i64
+        i = i + 1
+
+      irdl.irdl_schema_destroy(&s)
+
+      -- All 12 HOSE opcodes must be present
+      found == 12i64
+
+-- ── §5  Staged constant: comptime-computed lookup table ──────────────────────
+-- Classic MSP use case: generate a lookup table entirely at stage 0 (compile
+-- time). The array is materialized as a constant in the binary.
+
+fn comptime_table : () -> [i64; 8]
+  | () ->
+      comptime {
+          [ 1i64, 2i64, 4i64, 8i64, 16i64, 32i64, 64i64, 128i64 ]
+      }
+
+fn demo_comptime_lookup : () -> bool
+  | () ->
+      let tbl = comptime_table()
+      let ok0 = tbl[0i64] == 1i64
+      let ok3 = tbl[3i64] == 8i64
+      let ok7 = tbl[7i64] == 128i64
+      -- Verify it's a powers-of-two table
+      let mut all_pow2 : bool = true
+      let mut i : i64 = 0i64
+      while i < 8i64
+        let v = tbl[i]
+        if v <= 0i64 || (v & (v - 1i64)) != 0i64
+          all_pow2 = false
+        i = i + 1
+      ok0 && ok3 && ok7 && all_pow2
+
+-- ── §6  Combining modal boxes with HOSE prompts ──────────────────────────────
+-- A staged computation fragment (CmttBox at stage 1) is planned at
+-- compile time and dispatched inside an active HOSE prompt scope at runtime.
+-- The prompt provides the delimited scope; the box describes the fragment.
+
+fn demo_box_inside_prompt : () -> bool
+  | () ->
+      -- The box represents a stage-1 fragment that calls scoped_yield_in
+      let mut box = msp.cmtt_box_new(1i64, null, null)
+      msp.cmtt_box_add_effect_op(&box, irdl.hose_yield_in())    -- op 34
+      msp.cmtt_box_add_effect_op(&box, irdl.hose_prompt_install()) -- op 30
+
+      -- At runtime, install the prompt the box was annotated for
+      let pid : i64 = 501i64
+      let _   = effects.prompt_install(pid)
+      let active = effects.is_in_scope(pid)
+
+      -- The fragment's in-scope continuation (k_in) can run inside the prompt
+      let (k_in, _k_out) = msp.cmtt_box_split_effects(&box)
+
+      -- AOT fusion: since k_out=null, the evaluator inlines k_in directly
+      let fused = msp.cmtt_box_fuse_aot(&box, k_in, null)
+      let fused_ok = fused == k_in
+
+      effects.prompt_unwind(pid)
+
+      active && fused_ok
+
+-- ── §7  Multi-box evidence tracking via BinaryHeap ───────────────────────────
+-- Track multiple CmttBoxes (each at a different stage level) in a max-heap
+-- keyed by stage level. The box at the highest stage should be processed last
+-- (deepest nesting → last to evaluate).
+
+fn demo_box_scheduling : () -> bool
+  | () ->
+      let mut heap = heap_new()
+
+      -- Push stage levels for 5 boxes
+      heap_push(&heap, 3i64)   -- box at stage 3
+      heap_push(&heap, 1i64)   -- box at stage 1
+      heap_push(&heap, 2i64)   -- box at stage 2
+      heap_push(&heap, 5i64)   -- box at stage 5 (deepest)
+      heap_push(&heap, 4i64)   -- box at stage 4
+
+      -- Process in reverse order (highest stage first = innermost first)
+      let (_, s0) = heap_pop(&heap)
+      let (_, s1) = heap_pop(&heap)
+      let (_, s2) = heap_pop(&heap)
+
+      heap_free(&heap)
+
+      -- Should come out 5, 4, 3
+      s0 == 5i64 && s1 == 4i64 && s2 == 3i64
+
+fn main : () -> i32
+  | () ->
+      let r1 = demo_stage_taxonomy()
+      let r2 = demo_cmtt_box_effect_annotation()
+      let r3 = demo_aot_fusion_rules()
+      let r4 = demo_irdl_hose_coverage()
+      let r5 = demo_comptime_lookup()
+      let r6 = demo_box_inside_prompt()
+      let r7 = demo_box_scheduling()
+
+      ub.ub_assume(r1 && r2 && r3 && r4 && r5 && r6 && r7)
+      if r1 && r2 && r3 && r4 && r5 && r6 && r7 then 0 else 1

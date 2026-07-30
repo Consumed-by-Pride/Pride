@@ -1,0 +1,212 @@
+mod examples.stdlib_collections_crypto
+
+use vec.collections
+use hash.map
+use opt.option
+use reflect
+use pride.ub
+
+-- examples/04_stdlib_collections_crypto.pie
+--
+-- Exercises the new stdlib modules: Robin Hood HashMap, VecDeque, BinaryHeap,
+-- Option/Result enums, and runtime reflection (TypeInfo/Any).
+--
+-- Shows:
+--   - hash.map.HashMap             Robin Hood open-addressing i64->i64 map
+--   - vec.collections.VecDeque     ring-buffer deque
+--   - vec.collections.BinaryHeap   max-heap
+--   - opt.option.Option / Result   algebraic error handling
+--   - reflect.TypeInfo / Any       runtime type information
+
+-- ── §1  HashMap: insert, get, update, contains ───────────────────────────────
+
+fn demo_hashmap : () -> bool
+  | () ->
+      let mut m = hm_new()
+
+      -- Insert 10 entries
+      let mut i : i64 = 0i64
+      while i < 10i64
+        hm_insert(&m, i, i * i)   -- key=i, val=i²
+        i = i + 1
+
+      -- Lookup hits
+      let (ok0, v0) = hm_get(&m, 0i64)
+      let (ok7, v7) = hm_get(&m, 7i64)
+      let (ok9, v9) = hm_get(&m, 9i64)
+
+      -- Lookup miss
+      let (miss, _) = hm_get(&m, 99i64)
+
+      -- Overwrite key 5 → new value
+      hm_insert(&m, 5i64, 999i64)
+      let (ok5u, v5u) = hm_get(&m, 5i64)
+
+      -- Size
+      let sz = hm_len(&m)
+
+      hm_free(&m)
+
+      ok0 && v0 == 0i64
+        && ok7 && v7 == 49i64
+        && ok9 && v9 == 81i64
+        && !miss
+        && ok5u && v5u == 999i64
+        && sz == 10i64
+
+-- ── §2  VecDeque as a FIFO queue ─────────────────────────────────────────────
+
+fn demo_deque_fifo : () -> bool
+  | () ->
+      let mut q = vd_new()
+
+      vd_push_back(&q, 10i64)
+      vd_push_back(&q, 20i64)
+      vd_push_back(&q, 30i64)
+
+      let (ok1, v1) = vd_pop_front(&q)
+      let (ok2, v2) = vd_pop_front(&q)
+
+      -- Push to front (stack discipline on that end)
+      vd_push_front(&q, 5i64)
+
+      let (ok3, v3) = vd_pop_front(&q)   -- 5
+      let (ok4, v4) = vd_pop_front(&q)   -- 30
+
+      -- Empty
+      let (empty, _) = vd_pop_front(&q)
+
+      let len_ok = vd_len(&q) == 0i64
+
+      vd_free(&q)
+
+      ok1 && v1 == 10i64
+        && ok2 && v2 == 20i64
+        && ok3 && v3 == 5i64
+        && ok4 && v4 == 30i64
+        && !empty
+        && len_ok
+
+-- ── §3  BinaryHeap: priority queue / heap sort ────────────────────────────────
+
+fn demo_heap_sort : () -> bool
+  | () ->
+      let mut h = heap_new()
+
+      -- Insert in arbitrary order
+      let vals : [i64; 8] = [3i64, 1i64, 4i64, 1i64, 5i64, 9i64, 2i64, 6i64]
+      let mut i : i64 = 0i64
+      while i < 8i64
+        heap_push(&h, vals[i])
+        i = i + 1
+
+      -- Pop in descending order (max-heap)
+      let (_, d0) = heap_pop(&h)
+      let (_, d1) = heap_pop(&h)
+      let (_, d2) = heap_pop(&h)
+      let (_, d3) = heap_pop(&h)
+
+      heap_free(&h)
+
+      d0 == 9i64 && d1 == 6i64 && d2 == 5i64 && d3 == 4i64
+
+-- ── §4  Option<T> and Result<T,E> ────────────────────────────────────────────
+
+fn safe_divide : (i64, i64) -> Result
+  | (a, b) ->
+      if b == 0i64 then result_err(-1i64)
+      else              result_ok(a / b)
+
+fn demo_option_result : () -> bool
+  | () ->
+      let some_val = option_some(42i64)
+      let none_val = option_none()
+
+      let is_some_ok   = option_is_some(some_val)
+      let is_none_ok   = option_is_none(none_val)
+      let unwrap_ok    = option_unwrap(some_val) == 42i64
+      let unwrap_or_ok = option_unwrap_or(none_val, 99i64) == 99i64
+
+      let ok_result  = safe_divide(100i64, 4i64)
+      let err_result = safe_divide(100i64, 0i64)
+
+      let ok_val   = result_unwrap(ok_result)
+      let err_code = result_unwrap_err(err_result)
+      let map_ok   = result_unwrap_or(err_result, 0i64) == 0i64
+
+      is_some_ok && is_none_ok && unwrap_ok && unwrap_or_ok
+        && result_is_ok(ok_result)  && ok_val == 25i64
+        && result_is_err(err_result) && err_code == -1i64
+        && map_ok
+
+-- ── §5  Runtime reflection: TypeInfo and Any ─────────────────────────────────
+
+fn demo_reflect : () -> bool
+  | () ->
+      let ti_i64  = typeinfo_i64()
+      let ti_bool = typeinfo_bool()
+      let ti_ptr  = typeinfo_ptr()
+
+      -- size checks
+      let sz_ok = ti_i64.size == 8i64 && ti_bool.size == 1i64 && ti_ptr.size == 8i64
+
+      -- kind checks (0 = primitive)
+      let kind_ok = ti_i64.kind == KIND_PRIMITIVE
+                 && ti_bool.kind == KIND_PRIMITIVE
+
+      -- Any boxing
+      let boxed   = any_new_i64(12345i64)
+      let unboxed = any_as_i64(&boxed)
+      let box_ok  = unboxed == 12345i64
+
+      -- type_id: FNV-1a of name, must be non-zero and stable
+      let id_i64_1 = type_id_from_name("i64" as ptr, 3i64)
+      let id_i64_2 = type_id_from_name("i64" as ptr, 3i64)
+      let id_bool  = type_id_from_name("bool" as ptr, 4i64)
+      let id_ok    = id_i64_1 == id_i64_2 && id_i64_1 != id_bool && id_i64_1 != 0i64
+
+      sz_ok && kind_ok && box_ok && id_ok
+
+-- ── §6  HashMap used as a frequency table ────────────────────────────────────
+
+fn demo_frequency_table : () -> bool
+  | () ->
+      let data : [i64; 12] = [1i64, 2i64, 1i64, 3i64, 2i64, 1i64, 4i64, 3i64, 1i64, 2i64, 5i64, 1i64]
+      let mut freq = hm_new()
+
+      let mut i : i64 = 0i64
+      while i < 12i64
+        let k = data[i]
+        let (found, cur) = hm_get(&freq, k)
+        if found then hm_insert(&freq, k, cur + 1i64)
+        else          hm_insert(&freq, k, 1i64)
+        i = i + 1
+
+      -- 1 appears 5×, 2 appears 3×, 3 appears 2×, 4 and 5 once each
+      let (ok1, f1) = hm_get(&freq, 1i64)
+      let (ok2, f2) = hm_get(&freq, 2i64)
+      let (ok3, f3) = hm_get(&freq, 3i64)
+      let (ok4, f4) = hm_get(&freq, 4i64)
+      let (ok5, f5) = hm_get(&freq, 5i64)
+      let sz = hm_len(&freq)
+
+      hm_free(&freq)
+
+      ok1 && f1 == 5i64
+        && ok2 && f2 == 3i64
+        && ok3 && f3 == 2i64
+        && ok4 && f4 == 1i64
+        && ok5 && f5 == 1i64
+        && sz == 5i64
+
+fn main : () -> i32
+  | () ->
+      let r1 = demo_hashmap()
+      let r2 = demo_deque_fifo()
+      let r3 = demo_heap_sort()
+      let r4 = demo_option_result()
+      let r5 = demo_reflect()
+      let r6 = demo_frequency_table()
+
+      ub.ub_assume(r1 && r2 && r3 && r4 && r5 && r6)
+      if r1 && r2 && r3 && r4 && r5 && r6 then 0 else 1

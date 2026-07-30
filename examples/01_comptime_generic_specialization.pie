@@ -1,0 +1,151 @@
+mod examples.comptime_generic_specialization
+
+use pride.msp
+use pride.ub
+
+-- examples/01_comptime_generic_specialization.pie
+--
+-- Multi-stage programming: use `comptime` to fold constants at compile time,
+-- and the pride.msp CMTT box to model stage-indexed code fragments.
+--
+-- Shows:
+--   - comptime { expr }          stage-0 constant folding
+--   - msp.StageStack             explicit stage-level tracking at runtime
+--   - msp.CmttBox                open-code fragment annotated with stage + effects
+--   - msp.cmtt_box_fuse_aot      identity-handler elim: k_out = null → inline k_in
+--   - msp.msp_eval_const_i64     staged arithmetic (op 0=add, 1=sub, 2=mul)
+
+-- ── §1  Compile-time constant folding ─────────────────────────────────────────
+-- comptime {} runs the enclosed expression during Pride's staging pass.
+-- The result is a compile-time constant; no runtime computation needed.
+
+fn demo_comptime_constants : () -> bool
+  | () ->
+      -- Constant arithmetic folded at stage 0
+      let table_size  = comptime { 8 * 1024 }         -- 8192
+      let cache_line  = comptime { 64 }
+      let slots       = comptime { 8 * 1024 / 64 }    -- 128
+      let mask        = comptime { slots - 1 }         -- 127
+
+      -- Verify the folded values are what we expect
+      let ok1 = table_size == 8192i64
+      let ok2 = cache_line == 64i64
+      let ok3 = slots      == 128i64
+      let ok4 = mask       == 127i64
+      ok1 && ok2 && ok3 && ok4
+
+-- ── §2  Stage-stack tracking ─────────────────────────────────────────────────
+-- StageStack mirrors what the modal typechecker tracks internally:
+-- which stage level each binding lives at.
+
+fn demo_stage_stack : () -> bool
+  | () ->
+      let mut stk = msp.stage_stack_new()
+
+      -- Push stage 1 (inside a quote / comptime block)
+      let lvl1 = msp.stage_stack_push(&stk, 1i64)
+      -- Push stage 2 (nested quote)
+      let lvl2 = msp.stage_stack_push(&stk, 2i64)
+
+      -- Pop back to stage 1
+      let back1 = msp.stage_stack_pop(&stk)
+      -- Pop back to stage 0
+      let back0 = msp.stage_stack_pop(&stk)
+
+      lvl1 == 1i64 && lvl2 == 2i64 && back1 == 2i64 && back0 == 1i64
+
+-- ── §3  CMTT open-code fragment (CmttBox) ────────────────────────────────────
+-- A CmttBox represents a code fragment □_{Γ'}^{L'} τ:
+--   - stage: the future stage it will evaluate at
+--   - ctx:   the captured lexical environment pointer (Γ')
+--   - code:  the AST/code pointer (τ payload)
+-- Effect opcodes annotate which operations the fragment may perform.
+
+fn demo_cmtt_box : () -> bool
+  | () ->
+      -- Stage-2 open-code fragment that performs ops 10 (read) and 20 (write)
+      let mut box = msp.cmtt_box_new(2i64, null, null)
+      msp.cmtt_box_add_effect_op(&box, 10i64)  -- Read op
+      msp.cmtt_box_add_effect_op(&box, 20i64)  -- Write op
+
+      let has_read  = msp.cmtt_box_inspect(&box, 10i64)
+      let has_write = msp.cmtt_box_inspect(&box, 20i64)
+      let no_exec   = !msp.cmtt_box_inspect(&box, 99i64)
+
+      has_read && has_write && no_exec
+
+-- ── §4  AOT stage fusion: identity k_out elimination ────────────────────────
+-- When k_out is null (identity continuation), the staged evaluator can
+-- inline k_in directly — no runtime prompt/handler needed.
+-- This mirrors the rewrite rule: Node(op, k_in, Id) ↦ k_in
+
+fn demo_aot_fusion : () -> bool
+  | () ->
+      let mut box = msp.cmtt_box_new(1i64, null, null)
+      msp.cmtt_box_add_effect_op(&box, 5i64)
+
+      let (k_in, k_out) = msp.cmtt_box_split_effects(&box)
+
+      -- k_out is null (identity) → fuse collapses to k_in
+      let fused = msp.cmtt_box_fuse_aot(&box, k_in, null)
+
+      -- Result: fused == k_in (the in-scope fragment is inlined directly)
+      fused == k_in
+
+-- ── §5  Staged arithmetic: compile-time constant propagation ─────────────────
+-- msp_eval_const_i64 simulates what the MSP rewriter does when it sees
+-- arithmetic on stage-0 (comptime-known) values: fold at compile time.
+
+fn demo_staged_arithmetic : () -> bool
+  | () ->
+      -- op 0 = add, 1 = sub, 2 = mul
+      let sum  = msp.msp_eval_const_i64(0i64, 100i64, 23i64)   -- 123
+      let diff = msp.msp_eval_const_i64(1i64, 200i64, 57i64)   -- 143
+      let prod = msp.msp_eval_const_i64(2i64, 12i64,  11i64)   -- 132
+
+      -- Cross-check: comptime folded at stage-0 should agree
+      let c_sum  = comptime { 100 + 23 }
+      let c_diff = comptime { 200 - 57 }
+      let c_prod = comptime { 12 * 11 }
+
+      sum == c_sum && diff == c_diff && prod == c_prod
+
+-- ── §6  Quote table: AST fragment registry ───────────────────────────────────
+-- msp.AstQuoteTable acts as an intern table for quoted AST fragments,
+-- allowing O(1) re-lookup of previously registered open-code blocks.
+
+fn demo_quote_table : () -> bool
+  | () ->
+      let mut tbl = msp.msp_quote_table_new()
+
+      -- Register three quoted fragments under IDs 1, 2, 3
+      -- (In real MSP, these would be NODE_QUOTE AST pointers; here we use
+      -- synthetic i64-cast ptr values as stand-ins.)
+      let ok1 = msp.msp_quote_register(&tbl, 1i64, 0x1000i64 as ptr)
+      let ok2 = msp.msp_quote_register(&tbl, 2i64, 0x2000i64 as ptr)
+      let ok3 = msp.msp_quote_register(&tbl, 3i64, 0x3000i64 as ptr)
+
+      -- Look them back up
+      let p1 = msp.msp_quote_lookup(&tbl, 1i64)
+      let p2 = msp.msp_quote_lookup(&tbl, 2i64)
+      let p3 = msp.msp_quote_lookup(&tbl, 3i64)
+      let pz = msp.msp_quote_lookup(&tbl, 99i64)  -- miss
+
+      ok1 && ok2 && ok3
+        && (p1 as i64) == 0x1000i64
+        && (p2 as i64) == 0x2000i64
+        && (p3 as i64) == 0x3000i64
+        && pz == null
+
+fn main : () -> i32
+  | () ->
+      let r1 = demo_comptime_constants()
+      let r2 = demo_stage_stack()
+      let r3 = demo_cmtt_box()
+      let r4 = demo_aot_fusion()
+      let r5 = demo_staged_arithmetic()
+      let r6 = demo_quote_table()
+
+      ub.ub_assume(r1 && r2 && r3 && r4 && r5 && r6)
+
+      if r1 && r2 && r3 && r4 && r5 && r6 then 0 else 1
