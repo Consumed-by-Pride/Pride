@@ -67,7 +67,10 @@ fn irdl_schema_new : () -> IrdlSchema
         s.ops[10] = IrdlOpcode { code: 39, name: "hose.dynamic_wind_pop", operand_count: 1, is_scoped: true, is_fiber: false };
         s.ops[11] = IrdlOpcode { code: 40, name: "hose.local_bind", operand_count: 3, is_scoped: true, is_fiber: false };
         s.ops[12] = IrdlOpcode { code: 41, name: "hose.local_get", operand_count: 1, is_scoped: true, is_fiber: false };
-        s.op_count = 13;
+        s.ops[13] = IrdlOpcode { code: 42, name: "mlcee.cmtt_box_new", operand_count: 3, is_scoped: false, is_fiber: false };
+        s.ops[14] = IrdlOpcode { code: 43, name: "mlcee.cmtt_box_inspect", operand_count: 2, is_scoped: true, is_fiber: false };
+        s.ops[15] = IrdlOpcode { code: 44, name: "mlcee.cmtt_fuse_aot", operand_count: 3, is_scoped: true, is_fiber: false };
+        s.op_count = 16;
         s
 
 fn irdl_schema_destroy : *IrdlSchema -> ()

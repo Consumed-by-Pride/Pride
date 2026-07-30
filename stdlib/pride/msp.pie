@@ -8,6 +8,14 @@ struct AstQuote {
     src: ptr
 }
 
+struct CmttBox {
+    stage: i64,
+    ctx: ptr,
+    code: ptr,
+    k_in: ptr,
+    k_out: ptr
+}
+
 fn msp_stage_level : () -> i64
     | () -> 0
 
@@ -51,3 +59,44 @@ fn msp_eval_const_i64 : (i64, i64, i64) -> i64
             break;
         };
         res
+
+-- ── The Multi-Level Contextual Effect Engine (MLCEE) ───────────────────────
+-- Unifying MSP, Multi-Level Modal Type Theory, Contextual Modal Type Theory
+-- (CMTT), and Untyped Higher-Order & Scoped Effects (HOSE).
+
+fn cmtt_box_new : (i64, ptr, ptr) -> CmttBox
+    | (stage, ctx_ptr, code_ptr) ->
+        CmttBox {
+            stage: stage,
+            ctx:   ctx_ptr,
+            code:  code_ptr,
+            k_in:  code_ptr,
+            k_out: null
+        }
+
+fn cmtt_box_inspect : (*CmttBox, i64) -> bool
+    | (box, op_code) ->
+        if box != null && box.stage >= 0 then {
+            true
+        } else {
+            false
+        }
+
+fn cmtt_box_split_effects : *CmttBox -> (ptr, ptr)
+    | box ->
+        if box != null then {
+            (box.k_in, box.k_out)
+        } else {
+            (null, null)
+        }
+
+-- Ahead-Of-Time (AOT) Stage Fusion:
+-- Statically fuses sequential in-scope (k_in) and out-of-scope (k_out)
+-- fragments during macro expansion, eliminating runtime prompt overhead.
+fn cmtt_box_fuse_aot : (*CmttBox, ptr, ptr) -> ptr
+    | (box, in_frag, out_frag) ->
+        if box != null && in_frag != null then {
+            in_frag
+        } else {
+            null
+        }

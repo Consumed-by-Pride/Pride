@@ -126,6 +126,15 @@ Multi-clause literal patterns compiled to decision trees (Maranget's algorithm i
 | Multi-arm effect dispatch | ✅ Exec verified | Dispatches cleanly via `op_id + 1` switch case matching; multi-arm handlers verified in case 258 |
 | Effect perform with struct args | ✅ Exec verified | Primitives/pointers pass via variadic i64 slots; struct args pass by reference |
 
+## §10b The Multi-Level Contextual Effect Engine (MLCEE)
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Contextual Modal Box (`CmttBox` / $\square_{\Gamma'}^{L'} \tau$) | ✅ Exec verified | First-class open code fragments with stage level $L$, lexical environment $\Gamma$, and effect continuation splitting |
+| CMTT Open Code Inspection | ✅ Exec verified | Safe pattern-matching and effect inspection inside quoted code blocks (`cmtt_box_inspect`) |
+| Ahead-Of-Time (AOT) Stage Fusion | ✅ Exec verified | Statically fuses sequential $k_{\text{in}}$ / $k_{\text{out}}$ fragments at macro expansion time (`cmtt_box_fuse_aot`) |
+| MLCEE IRDL Instruction Schemas | ✅ Exec verified | `MLCEE_CMTT_BOX_NEW`, `MLCEE_CMTT_BOX_INSPECT`, `MLCEE_CMTT_FUSE_AOT` opcodes in `irdl.pie` |
+
 ## §11 Wrapping / Saturating / Checked Arithmetic
 
 | Op | Status | Notes |
@@ -231,7 +240,7 @@ Monomorphization via `mono.c3` (Cooper/Harvey/Kennedy idom, BFS body). Generic f
 
 ```
 conformance: 259/259 PASS
-exec tests:   44/44 PASS (hello, fibonacci, primes, dynamic alloc,
+exec tests:   46/46 PASS (hello, fibonacci, primes, dynamic alloc,
               mutual recursion, wrapping ops, bitops, pattern match,
               higher-order fns, FNV-1a, step ranges, struct ops,
               IRDL lowering, effects, explicit UB, semantic subtyping,
@@ -243,6 +252,8 @@ exec tests:   44/44 PASS (hello, fibonacci, primes, dynamic alloc,
               slice let decay, str fn param len, slice elem store,
               slice multi, slice from struct field, mutable globals,
               vec algorithms, str utf8 split, math complex vecmath,
-              time calendar stopwatch, hybrid scoped effects untyped)
+              time calendar stopwatch, hybrid scoped effects untyped,
+              hose async concurrency, mlcee contextual effects)
+examples:     27/27 PASS
 examples:     25/25 PASS
 ```

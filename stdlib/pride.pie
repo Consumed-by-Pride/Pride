@@ -17,6 +17,10 @@ fn is_comptime : () -> bool                            | () -> msp.msp_is_compti
 fn quote_ast : (i64, ptr) -> msp.AstQuote              | (id, src) -> msp.msp_quote_ast(id, src)
 fn quote_destroy : *msp.AstQuote -> ()                 | q -> msp.msp_quote_destroy(q)
 fn eval_const_i64 : (i64, i64, i64) -> i64             | (op, l, r) -> msp.msp_eval_const_i64(op, l, r)
+fn cmtt_box_new : (i64, ptr, ptr) -> msp.CmttBox       | (s, c, k) -> msp.cmtt_box_new(s, c, k)
+fn cmtt_box_inspect : (*msp.CmttBox, i64) -> bool      | (b, o) -> msp.cmtt_box_inspect(b, o)
+fn cmtt_box_split_effects : *msp.CmttBox -> (ptr, ptr) | b -> msp.cmtt_box_split_effects(b)
+fn cmtt_box_fuse_aot : (*msp.CmttBox, ptr, ptr) -> ptr | (b, i, o) -> msp.cmtt_box_fuse_aot(b, i, o)
 
 -- Algebraic Effects
 fn handler_row_new : () -> effects.HandlerRow          | () -> effects.handler_row_new()
