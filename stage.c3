@@ -28,6 +28,7 @@ module stage;
 
 import lexer;
 import ast;
+import modal;
 
 // C runtime functions for compile-time macro evaluation
 extern fn char* getenv(char* name);
@@ -972,6 +973,14 @@ fn Node* Stager.ctfe_eval(Stager* s, Node* n)
 fn Node* Stager.try_fuse_scoped_effect_aot(Stager* s, Node* n, int level)
 {
     if (n == null) return n;
+    // Call modal::modal_try_aot_fuse_effect_node to build ContTree and
+    // normalize via functorial algebra rules (Wu, Schrijvers, Yang et al.)
+    Node* modal_fused = modal::modal_try_aot_fuse_effect_node(s.arena, n);
+    if (modal_fused != null && modal_fused != n)
+    {
+        s.folded++;
+        return s.transform(modal_fused, level);
+    }
     // Inspect NODE_EFFECT_HANDLE: if there's exactly 1 arm and its body is an
     // immediate return/resume of the computation value (identity handler),
     // algebraically fuse by unwrapping the computation child[0] directly.

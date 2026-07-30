@@ -18,6 +18,7 @@ module typecheck;
 
 import lexer;
 import ast;
+import modal;
 
 extern fn void* malloc(usz size);
 extern fn void  free(void* ptr);
@@ -56,6 +57,7 @@ struct TypeChecker
     Node* current_self_type; // Self = implementing type in impl blocks
     Node* audit_fn_root;     // current check_fn node — r52 arm audit uses it
                              // to tell fn-local bindings from module globals
+    modal::ModalLattice modal_lat; // Contextual Modal Type Theory stage checker
 
     // Cached canonical primitive type nodes (built lazily, interned by us).
     Node*[16] prim_cache;
@@ -3457,6 +3459,7 @@ fn bool enum_payload_fits(Node* ty)
 fn void TypeChecker.check_program(TypeChecker* self, Node* program)
 {
     if (program == null) return;
+    self.modal_lat.init();
     for (usz i = 0; i < program.child_count; i++)
     {
         self.check_decl(program.children[i]);
@@ -3797,6 +3800,12 @@ fn void TypeChecker.check_fn(TypeChecker* self, Node* fn_node)
     Node* prev_audit_root = self.audit_fn_root;
     self.audit_fn_root = fn_node;
     defer self.audit_fn_root = prev_audit_root;
+
+    modal::check_well_staged_expr(&self.modal_lat, fn_node, 0, 0);
+    if (self.modal_lat.errors > 0)
+    {
+        self.diag((char*)"modal stage inference error in function", fn_node);
+    }
 
     Node* sig = self.fn_signature_type(fn_node);
 
