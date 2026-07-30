@@ -1,0 +1,53 @@
+mod pride.msp
+
+-- stdlib/pride/msp.pie — Multi-Stage Programming (MSP) Metaprogramming Suite
+-- Supports compile-time stage levels, AST quotation, and constant evaluation.
+
+struct AstQuote {
+    id: i64,
+    src: ptr
+}
+
+fn msp_stage_level : () -> i64
+    | () -> 0
+
+fn msp_is_comptime : () -> bool
+    | () ->
+        if msp_stage_level() > 0 then true else false
+
+fn msp_quote_ast : (i64, ptr) -> AstQuote
+    | (id, src) ->
+        AstQuote { id: id, src: src }
+
+fn msp_quote_destroy : *AstQuote -> ()
+    | q ->
+        if q != null then {
+            q.id = 0;
+            q.src = null;
+        } else {
+            ()
+        }
+
+fn msp_eval_const_i64 : (i64, i64, i64) -> i64
+    | (op, l, r) ->
+        let mut res : i64 = 0;
+        let mut done : bool = false;
+        while true do {
+            if op == 0 then {
+                res = l + r;
+                done = true;
+                break;
+            };
+            if op == 1 then {
+                res = l - r;
+                done = true;
+                break;
+            };
+            if op == 2 then {
+                res = l * r;
+                done = true;
+                break;
+            };
+            break;
+        };
+        res

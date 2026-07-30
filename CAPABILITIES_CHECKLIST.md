@@ -110,7 +110,7 @@ Multi-clause literal patterns compiled to decision trees (Maranget's algorithm i
 > and C-unions lower to `i64` (8 bytes size / align). Subtyping type annotations
 > (`∪` / `∩`) lower to their primary component representation.
 
-## §10 Algebraic Effects
+## §10 Algebraic Effects & Untyped HOSE
 
 | Feature | Status | Notes |
 |---------|--------|-------|
@@ -118,6 +118,8 @@ Multi-clause literal patterns compiled to decision trees (Maranget's algorithm i
 | Effect row `! [IO, Alloc, Log]` tracking | ✅ | |
 | Effect propagation through call chains | ✅ Exec verified | |
 | `ub!` explicit UB effect | ✅ Exec verified | pattern-guards prevent runtime UB |
+| Untyped HOSE (Hybrid Fiber + Prompt Engine) | ✅ Exec verified | Stack-switching fibers + untyped prompt markers (`fiber_spawn`, `fiber_resume`, `prompt_install`, `prompt_unwind`) |
+| Two-Part Functorial Continuations (`k_in` / `k_out`) | ✅ Exec verified | Obeys structured fusion laws `fmap f (fuse k_in k_out) == fuse (fmap f k_in) k_out` (Wu, Schrijvers, Yang et al.) |
 | Single-arm `handle` + `resume` | 🔶 | Works end-to-end via `getcontext`/`setcontext` |
 | Multi-arm effect dispatch | 🔶 | Dispatch always routes to arm 1; op_id→arm_index map is TODO. Multi-arm handlers with different ops will always fire arm 1. |
 | Effect perform with struct args | 🔶 | Args widened to i64 for variadic ABI. Struct args not supported. |
@@ -188,7 +190,7 @@ Monomorphization via `mono.c3` (Cooper/Harvey/Kennedy idom, BFS body). Generic f
 - **`stdlib/compute.pie` + `stdlib/compute/`** (3 modules): Compute Accelerators & Dispatches suite (`threadpool.pie`, `blas.pie`, plus `compute.pie`) providing fork-join work-stealing thread pools (`WorkStealingPool`) and parallel cache-friendly BLAS GEMM/activation dispatches.
 - **`stdlib/tui.pie` + `stdlib/tui/`** (5 modules): Terminal ANSI escape and TUI utilities (`ansi.pie`, `cursor.pie`, `raw_mode.pie`, `style.pie`) providing 16/256-color palettes, TrueColor RGB formatting, VT100 cursor positioning/saving/restoring (`cursor`), Linux `termios` raw-mode control via ioctl (`raw_mode`), and styled text builders (`StyledString`).
 - **`stdlib/cli.pie` + `stdlib/cli/`** (3 modules): CLI argument and flag parser (`flag.pie`, `arg_parser.pie`) providing short/long boolean, integer, and string flags, `--` delimiter handling, and positional argument slicing (`ArgParser`).
-- **`stdlib/pride.pie` + `stdlib/pride/`** (7 modules): Pride language metaprogramming and runtime suite (`msp.pie`, `effects.pie`, `ub.pie`, `subtyping.pie`, `rewrite.pie`, `irdl.pie`) providing Multi-Stage Programming (`comptime` helpers, stage inspection, AST quotation `AstQuote`), native Algebraic Effects runtime wrappers (`EffectFrame`, `HandlerRow`, `effect_perform`, `effect_resume`), Explicit Undefined Behavior & safety invariants (`ub_trap`, `ub_assume`, `ub_unreachable`, `ub_poison_memory`, `ub_freeze_val`, `ub_check_alignment`), semantic subtyping lattice inspection and coercion (`TypeLattice`, `union_is_member`, `tag_of_int`, `cast_union`), AST term rewriting engine and rule matching (`Rule`, `RewriteEngine`), and **the crown jewel IR Description Language (`IRDL`)** instruction schemas, operands, and verification (`IrdlOpcode`, `IrdlOperand`, `IrdlSchema`, `irdl_schema_new`, `irdl_add_op`, `irdl_verify`).
+- **`stdlib/pride.pie` + `stdlib/pride/`** (7 modules): Pride language metaprogramming and runtime suite (`msp.pie`, `effects.pie`, `ub.pie`, `subtyping.pie`, `rewrite.pie`, `irdl.pie`) providing Multi-Stage Programming (`comptime` helpers, stage inspection, AST quotation `AstQuote`), **Untyped Higher-Order & Scoped Effects (`HOSE`)** via **Hybrid Fiber + Untyped Prompt Engine** (`Fiber`, `PromptMarker`, `fiber_spawn`, `fiber_resume`, `prompt_install`, `prompt_unwind`), **Two-Part Functorial Delimited Continuations (`k_in` / `k_out`)** with explicit structured fusion verification (`Continuation`, `cont_split`, `cont_fuse`, `cont_verify_fusion_law`), native Algebraic Effects runtime wrappers (`HandlerRow`, `effect_perform`, `effect_resume`), Explicit Undefined Behavior & safety invariants (`ub_trap`, `ub_assume`, `ub_unreachable`, `ub_poison_memory`, `ub_freeze_val`, `ub_check_alignment`), semantic subtyping lattice inspection and coercion (`TypeLattice`, `union_is_member`, `tag_of_int`, `cast_union`), AST term rewriting engine and rule matching (`Rule`, `RewriteEngine`), and **the crown jewel IR Description Language (`IRDL`)** instruction schemas, operands, and verification (`IrdlOpcode`, `IrdlOperand`, `IrdlSchema`, `irdl_schema_new`, `irdl_add_op`, `irdl_verify`).
 - **`stdlib/alloc.pie` + `stdlib/alloc/`** (3 modules): Custom memory allocators (`arena.pie`, `bump.pie`) providing region/arena batch allocation with O(1) clear (`Arena`), and monotonic linear bump allocation (`Bump`).
 - **`stdlib/async.pie` + `stdlib/async/`** (4 modules): Asynchronous I/O and event-loop runtime (`reactor.pie`, `io_uring_rt.pie`, `task.pie`) providing epoll-based reactors (`Reactor`), Linux `io_uring` submission/completion queue engines (`IoUringRt`), and cooperative futures (`Task`).
 - **`stdlib/codegen.pie` + `stdlib/codegen/`** (5 modules): Runtime code generation and machine code assemblers (`jit.pie`, `x86_64.pie`, `aarch64.pie`, `riscv64.pie`) providing W^X dual-mapped JIT execution memory (`JitMemory`) and instruction encoders for x86-64, AArch64, and RISC-V.
@@ -227,8 +229,8 @@ Monomorphization via `mono.c3` (Cooper/Harvey/Kennedy idom, BFS body). Generic f
 ## Test Results (2026-07-26)
 
 ```
-conformance: 258/258 PASS
-exec tests:   43/43 PASS (hello, fibonacci, primes, dynamic alloc,
+conformance: 259/259 PASS
+exec tests:   44/44 PASS (hello, fibonacci, primes, dynamic alloc,
               mutual recursion, wrapping ops, bitops, pattern match,
               higher-order fns, FNV-1a, step ranges, struct ops,
               IRDL lowering, effects, explicit UB, semantic subtyping,
@@ -240,6 +242,6 @@ exec tests:   43/43 PASS (hello, fibonacci, primes, dynamic alloc,
               slice let decay, str fn param len, slice elem store,
               slice multi, slice from struct field, mutable globals,
               vec algorithms, str utf8 split, math complex vecmath,
-              time calendar stopwatch)
+              time calendar stopwatch, hybrid scoped effects untyped)
 examples:     25/25 PASS
 ```

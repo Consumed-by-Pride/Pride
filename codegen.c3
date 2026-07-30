@@ -8679,6 +8679,10 @@ const char*[*] RUNTIME_DECL_NAMES = {
     "__pride_perform", "__pride_push_handler", "__pride_pop_handler",
     "__pride_resume", "__pride_drop", "__pride_panic", "__pride_get_arm_arg",
     "__pride_complete",
+    "__pride_fiber_spawn", "__pride_fiber_yield", "__pride_fiber_resume",
+    "__pride_prompt_install", "__pride_prompt_unwind", "__pride_is_in_scope",
+    "__pride_scoped_yield_in", "__pride_scoped_yield_out", "__pride_split_cont",
+    "__pride_fuse_cont",
     // Tensor runtime (`@` matmul, elemwise ops, vector dot)
     "__pride_matmul", "__pride_tensor_elemwise", "__pride_vecdot",
     // Str runtime helpers
@@ -9144,6 +9148,17 @@ fn void CgenModule.emit_runtime_decls(CgenModule* cg)
     cg.out.writes("declare void @__pride_drop(ptr)\n");
     cg.out.writes("declare void @__pride_panic(ptr, i64)\n");
     cg.out.writes("declare i64  @__pride_get_arm_arg(i64)\n");
+    // Untyped HOSE (Hybrid Fiber + Prompt Engine)
+    cg.out.writes("declare ptr  @__pride_fiber_spawn(ptr, ptr)\n");
+    cg.out.writes("declare ptr  @__pride_fiber_yield(ptr)\n");
+    cg.out.writes("declare ptr  @__pride_fiber_resume(ptr, ptr)\n");
+    cg.out.writes("declare i64  @__pride_prompt_install(i64)\n");
+    cg.out.writes("declare void @__pride_prompt_unwind(i64)\n");
+    cg.out.writes("declare i1   @__pride_is_in_scope(i64)\n");
+    cg.out.writes("declare ptr  @__pride_scoped_yield_in(i64, i64, ptr)\n");
+    cg.out.writes("declare ptr  @__pride_scoped_yield_out(i64, i64, ptr)\n");
+    cg.out.writes("declare ptr  @__pride_split_cont(ptr)\n");
+    cg.out.writes("declare ptr  @__pride_fuse_cont(ptr)\n");
     // Tensor matmul (`@` operator) — implemented in runtime/compiler_rt.c
     cg.out.writes("declare ptr  @__pride_matmul(ptr, ptr)\n");
     cg.out.writes("declare ptr  @__pride_tensor_elemwise(ptr, ptr, i32)\n");

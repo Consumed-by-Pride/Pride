@@ -1,0 +1,126 @@
+mod pride.irdl
+
+use str.string
+
+-- stdlib/pride/irdl.pie — IR Description Language (IRDL) The Crown Jewel
+-- Formal instruction schemas, operands, and verification engine for Pride SSA IR
+-- and Untyped Higher-Order & Scoped Effects (HOSE).
+
+struct IrdlOpcode {
+    code: i64,
+    name: ptr,
+    operand_count: i64,
+    is_scoped: bool,
+    is_fiber: bool
+}
+
+struct IrdlSchema {
+    version: i64,
+    op_count: i64,
+    ops: [IrdlOpcode; 64]
+}
+
+-- ── IRDL Opcodes ───────────────────────────────────────────────────────────
+
+fn op_add : () -> i64          | () -> 1
+fn op_sub : () -> i64          | () -> 2
+fn op_mul : () -> i64          | () -> 3
+fn op_call : () -> i64         | () -> 4
+fn op_load : () -> i64         | () -> 5
+fn op_store : () -> i64        | () -> 6
+
+-- Untyped Higher-Order & Scoped Effects (HOSE) Opcodes
+fn hose_prompt_install : () -> i64 | () -> 30
+fn hose_prompt_unwind : () -> i64  | () -> 31
+fn hose_fiber_spawn : () -> i64    | () -> 32
+fn hose_fiber_yield : () -> i64    | () -> 33
+fn hose_yield_in : () -> i64       | () -> 34
+fn hose_yield_out : () -> i64      | () -> 35
+fn hose_split_cont : () -> i64     | () -> 36
+fn hose_fuse_cont : () -> i64      | () -> 37
+
+-- ── Schema Construction ────────────────────────────────────────────────────
+
+fn irdl_schema_new : () -> IrdlSchema
+    | () ->
+        let mut s : IrdlSchema = IrdlSchema {
+            version: 1,
+            op_count: 0,
+            ops: [IrdlOpcode { code: 0, name: null, operand_count: 0, is_scoped: false, is_fiber: false }; 64]
+        };
+        -- Register standard ops
+        s.ops[0] = IrdlOpcode { code: 1, name: "add", operand_count: 2, is_scoped: false, is_fiber: false };
+        s.ops[1] = IrdlOpcode { code: 2, name: "sub", operand_count: 2, is_scoped: false, is_fiber: false };
+        s.ops[2] = IrdlOpcode { code: 4, name: "call", operand_count: 3, is_scoped: false, is_fiber: false };
+        -- Register HOSE ops
+        s.ops[3] = IrdlOpcode { code: 30, name: "hose.prompt_install", operand_count: 1, is_scoped: true, is_fiber: false };
+        s.ops[4] = IrdlOpcode { code: 32, name: "hose.fiber_spawn", operand_count: 2, is_scoped: false, is_fiber: true };
+        s.ops[5] = IrdlOpcode { code: 34, name: "hose.yield_in", operand_count: 3, is_scoped: true, is_fiber: false };
+        s.ops[6] = IrdlOpcode { code: 35, name: "hose.yield_out", operand_count: 3, is_scoped: true, is_fiber: false };
+        s.ops[7] = IrdlOpcode { code: 36, name: "hose.split_cont", operand_count: 1, is_scoped: true, is_fiber: false };
+        s.ops[8] = IrdlOpcode { code: 37, name: "hose.fuse_cont", operand_count: 2, is_scoped: true, is_fiber: false };
+        s.op_count = 9;
+        s
+
+fn irdl_schema_destroy : *IrdlSchema -> ()
+    | s ->
+        if s != null then {
+            s.op_count = 0;
+        } else {
+            ()
+        }
+
+fn irdl_schema_add_op : (*IrdlSchema, ptr, i64) -> *IrdlOpcode
+    | (s, name_ptr, arity) ->
+        if s != null && s.op_count < 64 then {
+            let idx : i64 = s.op_count;
+            s.ops[idx] = IrdlOpcode {
+                code: idx + 100,
+                name: name_ptr,
+                operand_count: arity,
+                is_scoped: false,
+                is_fiber: false
+            };
+            s.op_count = idx + 1;
+            &s.ops[idx]
+        } else {
+            null
+        }
+
+fn irdl_verify_instruction : (*IrdlSchema, i64, *i64, i64) -> bool
+    | (s, code, operands, count) ->
+        if s == null then {
+            false
+        } else {
+            let mut i : i64 = 0;
+            let mut found : bool = false;
+            while i < s.op_count do {
+                if s.ops[i].code == code then {
+                    if s.ops[i].operand_count == count then {
+                        found = true;
+                    } else {
+                        found = false;
+                    };
+                    break;
+                };
+                i = i + 1;
+            };
+            found
+        }
+
+fn irdl_op_name : (*IrdlSchema, i64) -> str.string.String
+    | (s, code) ->
+        if s == null then {
+            str.string.from_str("unknown")
+        } else {
+            let mut i : i64 = 0;
+            let mut result : str.string.String = str.string.from_str("unknown");
+            while i < s.op_count do {
+                if s.ops[i].code == code && s.ops[i].name != null then {
+                    result = str.string.from_str("irdl_op");
+                    break;
+                };
+                i = i + 1;
+            };
+            result
+        }

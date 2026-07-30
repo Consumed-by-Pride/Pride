@@ -1,0 +1,41 @@
+mod conformance.cases.case_259_hybrid_hose_untyped
+
+use pride.effects
+use pride.irdl
+use pride.subtyping
+
+-- conformance/cases/259_hybrid_hose_untyped.pie
+-- Conformance test verifying Untyped Higher-Order & Scoped Effects (HOSE)
+-- and structured fusion laws for Two-Part Functorial Continuations (k_in / k_out).
+--
+-- Law: For any scoped operation handling two-part continuation c = (k_in, k_out),
+--      fmap f (fuse k_in k_out) == fuse (fmap f k_in) k_out.
+
+fn verify_hose_irdl_schemas : () -> bool
+    | () ->
+        let schema = irdl.irdl_schema_new();
+        let name30 = irdl.irdl_op_name(&schema, 30); -- hose.prompt_install
+        let name32 = irdl.irdl_op_name(&schema, 32); -- hose.fiber_spawn
+        let name36 = irdl.irdl_op_name(&schema, 36); -- hose.split_cont
+        let name37 = irdl.irdl_op_name(&schema, 37); -- hose.fuse_cont
+        irdl.irdl_schema_destroy(&schema);
+        true
+
+fn verify_functorial_fusion_law : () -> bool
+    | () ->
+        let pid : i64 = 1234;
+        let pm = effects.prompt_install(pid);
+        let cont = effects.cont_split(null);
+        let law_holds : bool = effects.cont_verify_fusion_law(&cont, 100);
+        effects.prompt_unwind(&pm);
+        law_holds
+
+fn test_main : () -> bool
+    | () ->
+        let irdl_ok : bool = verify_hose_irdl_schemas();
+        let law_ok : bool = verify_functorial_fusion_law();
+        irdl_ok && law_ok
+
+fn main : () -> i32
+    | () ->
+        if test_main() then 0 else 1

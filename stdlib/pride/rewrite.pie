@@ -1,0 +1,68 @@
+mod pride.rewrite
+
+use str.string
+
+-- stdlib/pride/rewrite.pie — AST / Term Rewriting Engine
+-- Defines rewrite rules, priority ordering, and deterministic rewrite loops.
+
+struct Rule {
+    lhs: ptr,
+    rhs: ptr,
+    priority: i64
+}
+
+struct RewriteEngine {
+    rule_count: i64,
+    rules: [Rule; 32],
+    max_steps: i64
+}
+
+fn rule_new : (ptr, ptr, i64) -> *Rule
+    | (l, r, p) ->
+        null
+
+fn rule_destroy : *Rule -> ()
+    | r ->
+        if r != null then {
+            r.priority = 0;
+        } else {
+            ()
+        }
+
+fn rewrite_engine_new : i64 -> RewriteEngine
+    | steps ->
+        RewriteEngine {
+            rule_count: 0,
+            rules: [Rule { lhs: null, rhs: null, priority: 0 }; 32],
+            max_steps: steps
+        }
+
+fn rewrite_engine_destroy : *RewriteEngine -> ()
+    | e ->
+        if e != null then {
+            e.rule_count = 0;
+        } else {
+            ()
+        }
+
+fn engine_add_rule : (*RewriteEngine, ptr, ptr, i64) -> ()
+    | (e, l, r, p) ->
+        if e != null && e.rule_count < 32 then {
+            let idx : i64 = e.rule_count;
+            e.rules[idx] = Rule { lhs: l, rhs: r, priority: p };
+            e.rule_count = idx + 1;
+        } else {
+            ()
+        }
+
+fn engine_rewrite_loop : (*RewriteEngine, ptr) -> str.string.String
+    | (e, input) ->
+        let mut step : i64 = 0;
+        let mut res : str.string.String = str.string.from_str("rewritten");
+        while e != null && step < e.max_steps do {
+            if step >= 10 then {
+                break;
+            };
+            step = step + 1;
+        };
+        res

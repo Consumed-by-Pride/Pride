@@ -1,0 +1,65 @@
+mod examples.hybrid_scoped_effects_showcase
+
+use pride.effects
+use pride.irdl
+use str.string
+use fmt
+
+-- examples/hybrid_scoped_effects_showcase.pie
+-- Showcase of Pride's Untyped Higher-Order & Scoped Effects (HOSE):
+-- Combining Stack-Switching Fibers (high-throughput flat yielding)
+-- with Untyped Prompt Markers and Two-Part Functorial Continuations (k_in / k_out).
+
+fn generator_task : i64 -> i64
+    | limit ->
+        let mut n : i64 = 0;
+        while true do {
+            if n >= limit then {
+                break;
+            };
+            effects.fiber_yield(n * 10);
+            n = n + 1;
+        };
+        n
+
+fn demo_fiber_generator : () -> i64
+    | () ->
+        let fib = effects.fiber_spawn(null, null);
+        let mut sum : i64 = 0;
+        let mut i : i64 = 0;
+        while true do {
+            if i >= 5 then {
+                break;
+            };
+            let val : i64 = effects.fiber_resume(&fib, i);
+            sum = sum + val;
+            i = i + 1;
+        };
+        sum
+
+fn demo_scoped_prompt_continuations : () -> bool
+    | () ->
+        let prompt_id : i64 = 42;
+        let marker = effects.prompt_install(prompt_id);
+        let in_scope : bool = effects.is_in_scope(prompt_id);
+        
+        -- Yield in-scope (k_in) vs out-of-scope (k_out)
+        let val_in : i64 = effects.scoped_yield_in(prompt_id, 100, 777);
+        let val_out : i64 = effects.scoped_yield_out(prompt_id, 101, 888);
+        
+        -- Split continuation into functorial components k_in and k_out
+        let cont = effects.cont_split(null);
+        let fused_ptr : ptr = effects.cont_fuse(&cont);
+        
+        -- Verify Wu, Schrijvers, Yang et al.'s structured fusion law:
+        --   fmap f (fuse k_in k_out) == fuse (fmap f k_in) k_out
+        let fusion_valid : bool = effects.cont_verify_fusion_law(&cont, 1);
+        
+        effects.prompt_unwind(&marker);
+        in_scope && fusion_valid
+
+fn main : () -> i64
+    | () ->
+        let gen_sum : i64 = demo_fiber_generator();
+        let scoped_ok : bool = demo_scoped_prompt_continuations();
+        if scoped_ok then gen_sum else 0

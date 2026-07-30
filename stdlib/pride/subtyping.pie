@@ -1,0 +1,64 @@
+mod pride.subtyping
+
+-- stdlib/pride/subtyping.pie — Semantic Subtyping Suite
+-- Manages union/intersection type lattices, membership testing, and safe casting.
+
+struct TypeLattice {
+    count: i64,
+    tags: [i64; 32]
+}
+
+fn type_lattice_new : () -> TypeLattice
+    | () ->
+        TypeLattice { count: 0, tags: [0; 32] }
+
+fn type_lattice_destroy : *TypeLattice -> ()
+    | l ->
+        if l != null then {
+            l.count = 0;
+        } else {
+            ()
+        }
+
+fn type_lattice_add_tag : (*TypeLattice, i64) -> ()
+    | (l, tag) ->
+        if l != null && l.count < 32 then {
+            let idx : i64 = l.count;
+            l.tags[idx] = tag;
+            l.count = idx + 1;
+        } else {
+            ()
+        }
+
+fn union_is_member : (*TypeLattice, i64) -> bool
+    | (l, tag) ->
+        if l == null then {
+            false
+        } else {
+            let mut i : i64 = 0;
+            let mut found : bool = false;
+            while i < l.count do {
+                if l.tags[i] == tag then {
+                    found = true;
+                    break;
+                };
+                i = i + 1;
+            };
+            found
+        }
+
+fn tag_of_union_u32 : u32 -> i64
+    | v ->
+        1
+
+fn tag_of_union_ptr : ptr -> i64
+    | p ->
+        2
+
+fn cast_union_checked : (i64, i64, i64) -> (i64, bool)
+    | (val, src_tag, expected_tag) ->
+        if src_tag == expected_tag then {
+            (val, true)
+        } else {
+            (0, false)
+        }
