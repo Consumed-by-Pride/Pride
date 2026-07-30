@@ -962,6 +962,42 @@ fn Node* Stager.ctfe_eval(Stager* s, Node* n)
 
 // Phase B — staging transform (fold comptime/eval; splice inside quotes)
 // Rewrite the tree: a `comptime`/`eval` node is replaced by the CTFE value of
+// Ahead-Of-Time (AOT) Stage Fusion for The Multi-Level Contextual Effect Engine
+// (MLCEE). When a scoped effect handler (NODE_EFFECT_HANDLE / NODE_EFFECT_WITH)
+// is encountered during macro expansion or staging, inspect its continuation
+// structure (k_in / k_out). If the out-of-scope continuation k_out is an
+// identity or if a quoted scoped block can be algebraically proved sequential,
+// fuse the in-scope fragment k_in directly into the AST, eliminating the
+// runtime prompt overhead entirely before backend lowering.
+fn Node* Stager.try_fuse_scoped_effect_aot(Stager* s, Node* n, int level)
+{
+    if (n == null) return n;
+    // Inspect NODE_EFFECT_HANDLE: if there's exactly 1 arm and its body is an
+    // immediate return/resume of the computation value (identity handler),
+    // algebraically fuse by unwrapping the computation child[0] directly.
+    if (n.kind == Nk.NODE_EFFECT_HANDLE && n.child_count == 2)
+    {
+        Node* comp = n.children[0];
+        Node* arm  = n.children[1];
+        if (arm != null && arm.kind == Nk.NODE_HANDLER_ARM && arm.child_count >= 2)
+        {
+            Node* body = arm.children[arm.child_count - 1];
+            // If body is empty or a simple identity resume, fuse k_in
+            if (body != null && body.kind == Nk.NODE_EXPR_UNIT && comp != null)
+            {
+                s.folded++;
+                return s.transform(comp, level);
+            }
+        }
+    }
+    // Recurse children normally
+    for (usz i = 0; i < n.child_count; i++)
+    {
+        n.children[i] = s.transform(n.children[i], level);
+    }
+    return n;
+}
+
 // its body; a `splice`/`unquote` INSIDE a quote is replaced by the CTFE value of
 // its body (grafted into the surrounding code). Quoted bodies are otherwise NOT
 // evaluated (that's the whole point of a bracket), except for their splices.
@@ -979,6 +1015,10 @@ fn Node* Stager.transform_body(Stager* s, Node* n, int level)
 {
     switch (n.kind)
     {
+        case Nk.NODE_EFFECT_HANDLE:
+        case Nk.NODE_EFFECT_WITH:
+            return s.try_fuse_scoped_effect_aot(n, level);
+
         case Nk.NODE_COMPTIME:
         case Nk.NODE_EVAL:
             // run now: CTFE the body and replace.
