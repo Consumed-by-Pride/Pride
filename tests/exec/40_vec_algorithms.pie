@@ -1,0 +1,119 @@
+-- EXPECT: 6\n60\n12\n1\n9\n2\n-1\n9\n1\n
+
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let mut neg = false
+        if x < 0
+          neg = true
+          x = -x
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        if neg
+          tmp[tlen] = 45u8
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+
+fn gcd : (i64, i64) -> i64
+  | (a, b) ->
+    let mut x = if a < 0i64 then -a else a
+    let mut y = if b < 0i64 then -b else b
+    while y != 0i64
+      let t = y
+      y = x % y
+      x = t
+    x
+
+fn lcm : (i64, i64) -> i64
+  | (a, b) ->
+    if a == 0i64 || b == 0i64 then 0i64
+    else (a / gcd(a, b)) * b
+
+fn sqrt_i64 : i64 -> i64
+  | n ->
+    if n <= 0i64 then 0i64
+    else if n == 1i64 then 1i64
+    else
+      let mut x = n
+      let mut y = (x + 1i64) / 2i64
+      while y < x
+        x = y
+        y = (x + n / x) / 2i64
+      x
+
+fn sort_array : (*i64, i64) -> ()
+  | (data, len) ->
+    let mut i : i64 = 1i64
+    while i < len
+      let key = data[i]
+      let mut j = i - 1i64
+      while j >= 0i64 && data[j] > key
+        data[j + 1i64] = data[j]
+        j = j - 1i64
+      data[j + 1i64] = key
+      i = i + 1i64
+
+fn binary_search : (*i64, i64, i64) -> i64
+  | (data, len, target) ->
+    let mut lo : i64 = 0i64
+    let mut hi = len - 1i64
+    let mut found = -1i64
+    while lo <= hi
+      let mid = lo + (hi - lo) / 2i64
+      let val = data[mid]
+      if val == target
+        found = mid
+        break
+      else if val < target
+        lo = mid + 1i64
+      else
+        hi = mid - 1i64
+    found
+
+fn reverse_array : (*i64, i64) -> ()
+  | (data, len) ->
+    let mut lo : i64 = 0i64
+    let mut hi = len - 1i64
+    while lo < hi
+      let t = data[lo]
+      data[lo] = data[hi]
+      data[hi] = t
+      lo = lo + 1i64
+      hi = hi - 1i64
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      print_i64_nl(gcd(48i64, 18i64))
+      print_i64_nl(lcm(12i64, 15i64))
+      print_i64_nl(sqrt_i64(144i64))
+
+      let mut arr : [i64; 5] = [9i64, 2i64, 5i64, 1i64, 7i64]
+      sort_array(&arr[0] as *i64, 5i64)
+      print_i64_nl(arr[0])
+      print_i64_nl(arr[4])
+
+      print_i64_nl(binary_search(&arr[0] as *i64, 5i64, 5i64))
+      print_i64_nl(binary_search(&arr[0] as *i64, 5i64, 8i64))
+
+      reverse_array(&arr[0] as *i64, 5i64)
+      print_i64_nl(arr[0])
+      print_i64_nl(arr[4])
+      syscall(231, 0)

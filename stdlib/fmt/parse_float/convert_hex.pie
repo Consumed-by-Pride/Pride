@@ -22,7 +22,7 @@ fn parse_hex_f64 : (*float_stream.FloatStream, bool) -> (f64, bool)
     -- Integer part
     while !float_stream.stream_at_end(s)
       let d = float_stream.stream_read_hexdigit(s)
-      if d < 0i64 then s.len   -- break
+      if d < 0i64 then break
       else
         if mantissa_digits < 16i64
           mantissa = (mantissa << 4u64) | d as u64
@@ -35,7 +35,7 @@ fn parse_hex_f64 : (*float_stream.FloatStream, bool) -> (f64, bool)
       has_dot = true
       while !float_stream.stream_at_end(s)
         let d = float_stream.stream_read_hexdigit(s)
-        if d < 0i64 then s.len   -- break
+        if d < 0i64 then break
         else
           frac_digits = frac_digits + 1i64
           if mantissa_digits < 16i64
@@ -55,8 +55,8 @@ fn parse_hex_f64 : (*float_stream.FloatStream, bool) -> (f64, bool)
                    else false
         let mut exp_val : i64 = 0i64
         while !float_stream.stream_at_end(s)
-          let d = float_stream.stream_read_hexdigit(s)
-          if d < 0i64 then s.len
+          let d = float_stream.stream_read_digit(s)
+          if d < 0i64 then break
           else if exp_val < 1000000i64 then exp_val = exp_val*10i64 + d
 
         let binary_exp : i64 = if eneg then -exp_val else exp_val

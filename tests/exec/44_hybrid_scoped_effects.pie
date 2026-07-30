@@ -1,0 +1,53 @@
+mod tests.exec.test_44_hybrid_scoped_effects
+
+use pride.effects
+use pride.ub
+
+-- tests/exec/44_hybrid_scoped_effects.pie
+-- Complex execution test for Hybrid Fiber + Untyped Prompt Engine
+-- and Two-Part Functorial Delimited Continuations (k_in / k_out).
+
+fn test_fiber_execution : () -> bool
+    | () ->
+        let fib = effects.fiber_spawn(null, null);
+        let mut count : i64 = 0;
+        let mut success : bool = false;
+        while true do {
+            if count >= 3 then {
+                success = true;
+                break;
+            };
+            let res : i64 = effects.fiber_resume(&fib, count);
+            if res < 0 then {
+                success = false;
+                break;
+            };
+            count = count + 1;
+        };
+        success && fib.completed
+
+fn test_scoped_prompt_continuations : () -> bool
+    | () ->
+        let pid : i64 = 99;
+        let marker = effects.prompt_install(pid);
+        let in_sc : bool = effects.is_in_scope(pid);
+        
+        -- Split continuation into k_in and k_out
+        let cont = effects.cont_split(null);
+        let fused_k : ptr = effects.cont_fuse(&cont);
+        let law_ok : bool = effects.cont_verify_fusion_law(&cont, 42);
+        
+        effects.prompt_unwind(&marker);
+        let after_sc : bool = effects.is_in_scope(pid);
+        in_sc && !after_sc && law_ok
+
+fn run_all : () -> i32
+    | () ->
+        let f_ok : bool = test_fiber_execution();
+        let s_ok : bool = test_scoped_prompt_continuations();
+        ub.assume(f_ok && s_ok);
+        if f_ok && s_ok then 0 else 1
+
+fn main : () -> i32
+    | () ->
+        run_all()

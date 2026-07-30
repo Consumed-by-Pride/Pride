@@ -1,0 +1,43 @@
+mod ast
+
+use vec.vec
+
+-- stdlib/ast.pie — Memory-Efficient Abstract Syntax Tree (AST) Arena
+-- Index-based node arrays designed to avoid pointer chasing during tree traversals.
+
+struct AstNode
+  kind      : i64
+  span_strt : i64
+  span_len  : i64
+  left_id   : i64
+  right_id  : i64
+
+struct AstArena
+  nodes : vec.Vec
+
+fn ast_arena_new : () -> AstArena
+  | () -> AstArena { nodes: vec.vec_new(32i64) }
+
+fn ast_arena_destroy : *AstArena -> ()
+  | ar -> vec.vec_destroy(&ar.nodes)
+
+fn ast_arena_clear : *AstArena -> ()
+  | ar -> vec.vec_clear(&ar.nodes)
+
+fn ast_arena_alloc_node : (*AstArena, i64, i64, i64, i64, i64) -> i64
+  | (ar, kind, start, len, left, right) ->
+    let n = AstNode {
+      kind:      kind,
+      span_strt: start,
+      span_len:  len,
+      left_id:   left,
+      right_id:  right
+    }
+    let id = vec.vec_len(&ar.nodes)
+    vec.vec_push(&ar.nodes, &n as ptr)
+    id
+
+fn ast_arena_get_node : (*AstArena, i64) -> *AstNode
+  | (ar, node_id) ->
+    if node_id < 0i64 || node_id >= vec.vec_len(&ar.nodes) then 0 as *AstNode
+    else (vec.vec_as_slice(&ar.nodes) as i64 + node_id * 40i64) as *AstNode

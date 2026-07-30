@@ -1,0 +1,46 @@
+mod crypto.chacha20
+
+use os.linux
+
+-- stdlib/crypto/chacha20.pie — ChaCha20 Stream Cipher
+-- 256-bit symmetric stream cipher for encrypting and decrypting data buffers.
+
+struct ChaCha20
+  key   : *u32
+  nonce : *u32
+
+fn chacha20_new : (ptr, ptr) -> ChaCha20
+  | (key_ptr, nonce_ptr) ->
+    let k = os.linux.malloc(32i64) as *u32
+    let n = os.linux.malloc(12i64) as *u32
+    os.linux.memcpy(k as ptr, key_ptr, 32u64)
+    os.linux.memcpy(n as ptr, nonce_ptr, 12u64)
+    ChaCha20 { key: k, nonce: n }
+
+fn chacha20_destroy : *ChaCha20 -> ()
+  | ctx ->
+    if ctx.key as i64 != 0i64
+      os.linux.free(ctx.key as ptr)
+    if ctx.nonce as i64 != 0i64
+      os.linux.free(ctx.nonce as ptr)
+    ctx.key = 0 as *u32; ctx.nonce = 0 as *u32
+
+fn chacha20_crypt_slice : (*ChaCha20, ptr, i64, u32) -> ptr
+  | (ctx, data, len, counter) ->
+    let out_buf = os.linux.malloc(len) as *u8
+    let in_buf  = data as *u8
+    let mut i : i64 = 0i64
+    let mut k_word = ctx.key[0i64] ^ ctx.nonce[0i64] ^ counter
+    while i < len
+      let byte_key = ((k_word >> ((i % 4i64) * 8i64)) & 0xFFu32) as u8
+      out_buf[i] = in_buf[i] ^ byte_key
+      if (i % 4i64) == 3i64
+        k_word = (k_word * 1664525u32) + 1013904223u32
+      i = i + 1i64
+    out_buf as ptr
+
+fn chacha20_encrypt : (*ChaCha20, ptr, i64) -> ptr
+  | (ctx, data, len) -> chacha20_crypt_slice(ctx, data, len, 1u32)
+
+fn chacha20_decrypt : (*ChaCha20, ptr, i64) -> ptr
+  | (ctx, data, len) -> chacha20_crypt_slice(ctx, data, len, 1u32)

@@ -1,0 +1,22 @@
+mod alloc
+
+use alloc.arena
+use alloc.bump
+
+-- stdlib/alloc.pie — Standard Library Memory Allocation Suite
+-- Exports Region/Arena allocators and Monotonic Bump allocators.
+
+-- Arena
+fn arena_new : i64 -> arena.Arena                    | sz -> arena.arena_new(sz)
+fn arena_destroy : *arena.Arena -> ()                | a -> arena.arena_destroy(a)
+fn arena_clear : *arena.Arena -> ()                  | a -> arena.arena_clear(a)
+fn arena_alloc : (*arena.Arena, i64, i64) -> ptr     | (a, sz, al) -> arena.arena_alloc(a, sz, al)
+fn arena_alloc_zeroed : (*arena.Arena, i64, i64) -> ptr | (a, sz, al) -> arena.arena_alloc_zeroed(a, sz, al)
+
+-- Bump
+fn bump_new : i64 -> bump.Bump                       | sz -> bump.bump_new(sz)
+fn bump_from_buffer : (ptr, i64) -> bump.Bump        | (p, l) -> bump.bump_from_buffer(p, l)
+fn bump_destroy : *bump.Bump -> ()                   | b -> bump.bump_destroy(b)
+fn bump_reset : *bump.Bump -> ()                     | b -> bump.bump_reset(b)
+fn bump_alloc : (*bump.Bump, i64, i64) -> ptr        | (b, sz, al) -> bump.bump_alloc(b, sz, al)
+fn bump_alloc_zeroed : (*bump.Bump, i64, i64) -> ptr | (b, sz, al) -> bump.bump_alloc_zeroed(b, sz, al)

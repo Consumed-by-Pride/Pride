@@ -1,0 +1,161 @@
+mod str.string
+
+use os.linux
+use vec.raw
+use str.raw
+use str.ascii
+
+-- stdlib/str/string.pie — Contiguous Dynamic UTF-8 String (String)
+-- Dynamic text builder with automatic capacity management, null-termination,
+-- and UTF-8 codepoint pushing.
+
+struct String
+  buf : raw.RawVec
+  len : i64
+
+fn string_new : () -> String
+  | () -> String { buf: raw.rawvec_new(1i64), len: 0i64 }
+
+fn string_with_cap : i64 -> String
+  | cap -> String { buf: raw.rawvec_with_cap(cap + 1i64, 1i64), len: 0i64 }
+
+fn string_destroy : *String -> ()
+  | s ->
+    raw.rawvec_destroy(&s.buf)
+    s.len = 0i64
+
+fn string_len : *String -> i64
+  | s -> s.len
+
+fn string_cap : *String -> i64
+  | s -> raw.rawvec_cap(&s.buf)
+
+fn string_is_empty : *String -> bool
+  | s -> s.len == 0i64
+
+fn string_as_slice : *String -> ptr
+  | s -> raw.rawvec_ptr(&s.buf)
+
+fn string_reserve : (*String, i64) -> ()
+  | (s, additional) -> raw.rawvec_reserve(&s.buf, s.len + 1i64, additional)
+
+fn string_push_byte : (*String, u8) -> ()
+  | (s, b) ->
+    raw.rawvec_reserve(&s.buf, s.len + 1i64, 1i64)
+    let base = raw.rawvec_ptr(&s.buf) as i64
+    (base as *u8)[s.len] = b
+    s.len = s.len + 1i64
+
+fn string_push_char : (*String, i64) -> i64
+  | (s, cp) ->
+    let tmp : *u8 = os.linux.malloc(4i64) as *u8
+    let n = str.raw.encode_utf8_char(cp, tmp as ptr)
+    if n > 0i64
+      raw.rawvec_reserve(&s.buf, s.len + 1i64, n)
+      let base = raw.rawvec_ptr(&s.buf) as i64
+      os.linux.memcpy((base + s.len) as ptr, tmp as ptr, n as u64)
+      s.len = s.len + n
+    os.linux.free(tmp as ptr)
+    n
+
+fn string_push_slice : (*String, ptr, i64) -> ()
+  | (s, slice_ptr, count) ->
+    if count > 0i64
+      raw.rawvec_reserve(&s.buf, s.len + 1i64, count)
+      let base = raw.rawvec_ptr(&s.buf) as i64
+      os.linux.memcpy((base + s.len) as ptr, slice_ptr, count as u64)
+      s.len = s.len + count
+
+fn string_push_cstr : (*String, ptr) -> ()
+  | (s, cstr) ->
+    let slen = os.linux.strlen(cstr) as i64
+    string_push_slice(s, cstr, slen)
+
+fn string_as_cstr : *String -> *u8
+  | s ->
+    raw.rawvec_reserve(&s.buf, s.len, 1i64)
+    let base = raw.rawvec_ptr(&s.buf) as i64
+    (base as *u8)[s.len] = 0u8
+    base as *u8
+
+fn string_from_slice : (ptr, i64) -> String
+  | (data, count) ->
+    let mut s = string_with_cap(count)
+    string_push_slice(&s, data, count)
+    s
+
+fn string_from_cstr : ptr -> String
+  | cstr ->
+    let count = os.linux.strlen(cstr) as i64
+    string_from_slice(cstr, count)
+
+fn string_concat : (*String, *String) -> String
+  | (a, b) ->
+    let mut out = string_with_cap(a.len + b.len)
+    string_push_slice(&out, raw.rawvec_ptr(&a.buf), a.len)
+    string_push_slice(&out, raw.rawvec_ptr(&b.buf), b.len)
+    out
+
+fn string_clone : *String -> String
+  | s -> string_from_slice(raw.rawvec_ptr(&s.buf), s.len)
+
+fn string_clear : *String -> ()
+  | s -> s.len = 0i64
+
+fn string_char_count : *String -> i64
+  | s ->
+    let mut count : i64 = 0i64
+    let mut i : i64 = 0i64
+    let buf = raw.rawvec_ptr(&s.buf) as *u8
+    while i < s.len
+      let clen = str.raw.utf8_char_len(buf[i])
+      if clen <= 0i64
+        count = count + 1i64
+        i = i + 1i64
+      else
+        count = count + 1i64
+        i = i + clen
+    count
+
+fn string_make_ascii_uppercase : *String -> ()
+  | s ->
+    let buf = raw.rawvec_ptr(&s.buf) as *u8
+    let mut i : i64 = 0i64
+    while i < s.len
+      buf[i] = ascii.ascii_to_upper(buf[i])
+      i = i + 1i64
+
+fn string_make_ascii_lowercase : *String -> ()
+  | s ->
+    let buf = raw.rawvec_ptr(&s.buf) as *u8
+    let mut i : i64 = 0i64
+    while i < s.len
+      buf[i] = ascii.ascii_to_lower(buf[i])
+      i = i + 1i64
+
+fn string_repeat : (*String, i64) -> String
+  | (s, times) ->
+    if times <= 0i64 || s.len == 0i64 then string_new()
+    else
+      let mut out = string_with_cap(s.len * times)
+      let mut i : i64 = 0i64
+      while i < times
+        string_push_slice(&out, raw.rawvec_ptr(&s.buf), s.len)
+        i = i + 1i64
+      out
+
+fn string_starts_with_cstr : (*String, ptr) -> bool
+  | (s, cstr) ->
+    let clen = os.linux.strlen(cstr) as i64
+    if clen > s.len then false
+    else if clen == 0i64 then true
+    else os.linux.memcmp(raw.rawvec_ptr(&s.buf), cstr, clen as u64) == 0i32
+
+fn string_ends_with_cstr : (*String, ptr) -> bool
+  | (s, cstr) ->
+    let clen = os.linux.strlen(cstr) as i64
+    if clen > s.len then false
+    else if clen == 0i64 then true
+    else
+      let start = (raw.rawvec_ptr(&s.buf) as i64 + s.len - clen) as ptr
+      os.linux.memcmp(start, cstr, clen as u64) == 0i32

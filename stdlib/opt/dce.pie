@@ -1,0 +1,32 @@
+mod opt.dce
+
+use ir.func
+use ir.block
+use ir.instr
+use vec.vec
+
+-- stdlib/opt/dce.pie — Dead Code Elimination (DCE) Pass
+-- Sweeps unused SSA instructions from function basic blocks.
+
+fn opt_dce_function : *func.IrFunction -> i64
+  | fn_ptr ->
+    let mut removed : i64 = 0i64
+    let mut i : i64 = 0i64
+    let blk_count = vec.vec_len(&fn_ptr.blocks)
+    while i < blk_count
+      let blk = vec.vec_get(&fn_ptr.blocks, i) as *block.IrBlock
+      let mut j : i64 = 0i64
+      let mut new_instrs = vec.vec_new(16i64)
+      let inst_count = vec.vec_len(&blk.instrs)
+      while j < inst_count
+        let inst = vec.vec_get(&blk.instrs, j) as *instr.IrInstr
+        if inst.is_dead
+          instr.ir_instr_destroy(inst)
+          removed = removed + 1i64
+        else
+          vec.vec_push(&new_instrs, inst as ptr)
+        j = j + 1i64
+      vec.vec_destroy(&blk.instrs)
+      blk.instrs = new_instrs
+      i = i + 1i64
+    removed

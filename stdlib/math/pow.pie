@@ -1,0 +1,101 @@
+mod math.pow
+
+use math.abs
+
+-- stdlib/math/pow.pie — Exponentiation, Roots, and Hypotenuse
+-- Integer and modular power algorithms, integer square root, and floating-point roots.
+
+fn pow_i64 : (i64, i64) -> i64
+  | (base, exp) ->
+    if exp < 0i64 then 0i64
+    else if exp == 0i64 then 1i64
+    else
+      let mut res : i64 = 1i64
+      let mut b = base
+      let mut e = exp
+      while e > 0i64
+        if (e & 1i64) != 0i64
+          res = res * b
+        b = b * b
+        e = e >> 1i64
+      res
+
+fn pow_u64 : (u64, u64) -> u64
+  | (base, exp) ->
+    if exp == 0u64 then 1u64
+    else
+      let mut res : u64 = 1u64
+      let mut b = base
+      let mut e = exp
+      while e > 0u64
+        if (e & 1u64) != 0u64
+          res = res * b
+        b = b * b
+        e = e >> 1u64
+      res
+
+fn pow_mod_u64 : (u64, u64, u64) -> u64
+  | (base, exp, mod_val) ->
+    if mod_val <= 1u64 then 0u64
+    else
+      let mut res : u64 = 1u64
+      let mut b = base % mod_val
+      let mut e = exp
+      while e > 0u64
+        if (e & 1u64) != 0u64
+          res = (res * b) % mod_val
+        b = (b * b) % mod_val
+        e = e >> 1u64
+      res
+
+fn sqrt_u64 : u64 -> u64
+  | n ->
+    if n <= 1u64 then n
+    else
+      let mut x = n
+      let mut y = (x + 1u64) / 2u64
+      while y < x
+        x = y
+        y = (x + n / x) / 2u64
+      x
+
+fn sqrt_f64 : f64 -> f64
+  | x ->
+    if x <= 0.0f64 then 0.0f64
+    else
+      let mut g = x
+      let mut i : i64 = 0i64
+      while i < 20i64
+        let next_g = 0.5f64 * (g + x / g)
+        if abs.abs_f64(next_g - g) < 0.000000000000001f64
+          break
+        g = next_g
+        i = i + 1i64
+      g
+
+fn cbrt_f64 : f64 -> f64
+  | x ->
+    if x == 0.0f64 then 0.0f64
+    else
+      let neg = x < 0.0f64
+      let ax = if neg then -x else x
+      let mut g = ax
+      let mut i : i64 = 0i64
+      while i < 25i64
+        let next_g = (2.0f64 * g + ax / (g * g)) / 3.0f64
+        if abs.abs_f64(next_g - g) < 0.000000000000001f64
+          break
+        g = next_g
+        i = i + 1i64
+      if neg then -g else g
+
+fn hypot_f64 : (f64, f64) -> f64
+  | (x, y) ->
+    let ax = abs.abs_f64(x)
+    let ay = abs.abs_f64(y)
+    let max_v = if ax > ay then ax else ay
+    let min_v = if ax > ay then ay else ax
+    if max_v == 0.0f64 then 0.0f64
+    else
+      let ratio = min_v / max_v
+      max_v * sqrt_f64(1.0f64 + ratio * ratio)

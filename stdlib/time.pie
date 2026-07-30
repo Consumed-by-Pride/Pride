@@ -1,0 +1,61 @@
+mod time
+
+use time.duration
+use time.clock
+use time.instant
+use time.stopwatch
+use time.date
+use time.format
+use time.timer
+use time.cron
+
+-- stdlib/time.pie — Standard Library Time & Calendar Suite
+-- Exports POSIX monotonic/real-time clocks, high-precision timers (Stopwatch),
+-- monotonic time points (Instant), duration spans, and UTC date/time calculation.
+
+-- Clocks
+fn monotonic : () -> duration.Duration             | () -> clock.clock_monotonic()
+fn realtime : () -> duration.Duration              | () -> clock.clock_realtime()
+fn boottime : () -> duration.Duration              | () -> clock.clock_boottime()
+
+-- Duration
+fn dur_secs : i64 -> duration.Duration             | s -> duration.duration_from_secs(s)
+fn dur_millis : i64 -> duration.Duration           | ms -> duration.duration_from_millis(ms)
+fn dur_micros : i64 -> duration.Duration           | us -> duration.duration_from_micros(us)
+fn dur_nanos : i64 -> duration.Duration            | ns -> duration.duration_from_nanos(ns)
+fn dur_add : (duration.Duration, duration.Duration) -> duration.Duration | (a, b) -> duration.duration_add(a, b)
+fn dur_sub : (duration.Duration, duration.Duration) -> duration.Duration | (a, b) -> duration.duration_sub(a, b)
+
+-- Instant
+fn now : () -> instant.Instant                     | () -> instant.instant_now()
+fn elapsed : instant.Instant -> duration.Duration  | i -> instant.instant_elapsed(i)
+fn dur_since : (instant.Instant, instant.Instant) -> duration.Duration | (later, earlier) -> instant.instant_duration_since(later, earlier)
+
+-- Stopwatch
+fn stopwatch_new : () -> stopwatch.Stopwatch       | () -> stopwatch.stopwatch_new()
+fn stopwatch_start : *stopwatch.Stopwatch -> ()    | sw -> stopwatch.stopwatch_start(sw)
+fn stopwatch_stop : *stopwatch.Stopwatch -> ()     | sw -> stopwatch.stopwatch_stop(sw)
+fn stopwatch_reset : *stopwatch.Stopwatch -> ()    | sw -> stopwatch.stopwatch_reset(sw)
+fn stopwatch_elapsed : *stopwatch.Stopwatch -> duration.Duration | sw -> stopwatch.stopwatch_elapsed(sw)
+
+-- Calendar
+fn is_leap_year : i64 -> bool                      | y -> date.is_leap_year(y)
+fn days_in_month : (i64, i64) -> i64               | (y, m) -> date.days_in_month(y, m)
+fn utc_from_timestamp : i64 -> date.DateTime       | ts -> date.datetime_from_unix_timestamp(ts)
+fn timestamp_from_utc : *date.DateTime -> i64      | dt -> date.datetime_to_unix_timestamp(dt)
+fn iso8601_from_utc : *date.DateTime -> str.string.String | dt -> date.datetime_to_iso8601(dt)
+fn date_is_valid : (i64, i64, i64) -> bool         | (y, m, d) -> date.date_is_valid(y, m, d)
+fn rfc3339_from_utc : *date.DateTime -> str.string.String | dt -> format.datetime_format_rfc3339(dt)
+fn rfc2822_from_utc : *date.DateTime -> str.string.String | dt -> format.datetime_format_rfc2822(dt)
+fn add_days : (*date.DateTime, i64) -> date.DateTime | (dt, d) -> format.datetime_add_days(dt, d)
+fn diff_days : (*date.DateTime, *date.DateTime) -> i64 | (a, b) -> format.datetime_diff_days(a, b)
+
+-- Timers & Deadlines
+fn deadline_secs : i64 -> timer.Deadline             | s -> timer.deadline_new_secs(s)
+fn deadline_expired : *timer.Deadline -> bool        | d -> timer.deadline_is_expired(d)
+fn ratelimiter_new : (i64, i64) -> timer.RateLimiter | (max, sec) -> timer.ratelimiter_new(max, sec)
+fn ratelimiter_acquire : (*timer.RateLimiter, i64) -> bool | (rl, c) -> timer.ratelimiter_try_acquire(rl, c)
+
+-- Cron Schedules
+fn cron_all : () -> cron.CronSchedule                | () -> cron.cron_all()
+fn cron_matches : (*cron.CronSchedule, *date.DateTime) -> bool | (s, dt) -> cron.cron_matches_date(s, dt)

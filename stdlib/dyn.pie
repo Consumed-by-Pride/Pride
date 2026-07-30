@@ -1,0 +1,57 @@
+mod dyn
+
+-- stdlib/dyn.pie — Dynamic dispatch via vtable fat-pointer { data: ptr, vtable: ptr }
+-- and core operator/protocol interfaces.
+-- Migrated from compiler/stdlib/dyn.pie.
+
+struct DynPtr
+  data   : ptr
+  vtable : ptr
+
+fn dyn_new : (ptr, ptr) -> DynPtr
+  | (data, vtable) -> DynPtr { data: data, vtable: vtable }
+
+fn dyn_data   : DynPtr -> ptr | d -> d.data
+fn dyn_vtable : DynPtr -> ptr | d -> d.vtable
+
+-- Retrieve a function pointer from vtable slot `slot_bytes` (= slot_index * 8).
+fn dyn_vtable_fn : (DynPtr, i64) -> ptr
+  | (d, slot_bytes) ->
+      let entry_addr = (d.vtable as i64) + slot_bytes;
+      *(entry_addr as *ptr)
+
+-- ── Core operator interfaces ─────────────────────────────────────────────────
+
+interface Add   fn add  : (Self, Self) -> Self
+interface Sub   fn sub  : (Self, Self) -> Self
+interface Mul   fn mul  : (Self, Self) -> Self
+interface Div   fn div  : (Self, Self) -> Self
+interface Rem   fn rem  : (Self, Self) -> Self
+interface Neg   fn neg  : Self -> Self
+
+interface Eq
+  fn eq : (Self, Self) -> bool
+  fn ne : (Self, Self) -> bool
+
+interface Ord
+  fn lt  : (Self, Self) -> bool
+  fn gt  : (Self, Self) -> bool
+  fn lte : (Self, Self) -> bool
+  fn gte : (Self, Self) -> bool
+
+interface BitAnd  fn bit_and : (Self, Self) -> Self
+interface BitOr   fn bit_or  : (Self, Self) -> Self
+interface BitXor  fn bit_xor : (Self, Self) -> Self
+interface Shl     fn shl     : (Self, i32) -> Self
+interface Shr     fn shr     : (Self, i32) -> Self
+
+interface Index   fn index   : (*Self, i64) -> ptr
+interface Display fn display : (Self, *ptr) -> ()  -- *ptr = *String opaque handle
+
+interface Iterator
+  fn has_next : *Self -> bool
+  fn next_val : *Self -> i64
+
+interface Hash    fn hash_val : Self -> i64
+interface Clone   fn clone    : Self -> Self
+interface Drop    fn drop     : *Self -> ()

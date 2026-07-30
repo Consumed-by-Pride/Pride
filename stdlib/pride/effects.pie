@@ -1,0 +1,117 @@
+mod pride.effects
+
+-- stdlib/pride/effects.pie — Untyped Higher-Order & Scoped Effects (HOSE) Suite
+--
+-- This module is the Pride-language interface to the real HOSE runtime in
+-- runtime/compiler_rt.c.  Every function here forwards to a genuine C symbol;
+-- there are no fake struct returns or stub bodies.
+--
+-- Runtime C symbols (all in compiler_rt.c §4):
+--   §4a  Algebraic effects   — __pride_push_handler / __pride_perform / __pride_resume
+--   §4b  Fibers              — __pride_fiber_spawn / __pride_fiber_resume / __pride_fiber_yield
+--   §4c  Prompt markers      — __pride_prompt_install / __pride_prompt_unwind
+--   §4d  Scoped continuations— __pride_scoped_yield_in / out / __pride_split_cont / __pride_fuse_cont
+--   §4e  Dynamic-winding     — __pride_dynamic_wind_push/pop/enter/exit
+--   §4f  Reader/local        — __pride_local_bind / __pride_local_get
+--   §4g  Effect-row evidence — __pride_evidence_push / __pride_evidence_pop / __pride_perform_evidence
+
+-- ── Opaque runtime handle types ────────────────────────────────────────────
+-- PrideFiber, PrideContinuation, PrideHandlerRow are C structs allocated by
+-- compiler_rt; Pride code only ever holds pointers to them (ptr).
+
+-- ── §4a  Algebraic Effects ─────────────────────────────────────────────────
+
+-- Push a handler frame.  Returns 0 on normal entry; returns op_id+1 when an
+-- effect arm fires (setjmp/getcontext style).
+fn push_handler : (i64, i64, i64, ptr) -> i64 #extern("__pride_push_handler") #cc(c)
+
+-- Pop the top handler frame (called on normal completion via #defer).
+fn pop_handler : () -> () #extern("__pride_pop_handler") #cc(c)
+
+-- Signal that the enclosing handler completed normally.
+fn complete : () -> () #extern("__pride_complete") #cc(c)
+
+-- Perform an effect operation.  op is the op-code; arg is the single argument
+-- (as a ptr-sized integer); returns the resume value.
+fn perform : (i64, i64) -> i64 #extern("__pride_perform") #cc(c)
+
+-- Resume the paused computation with value v.
+fn resume : i64 -> ptr #extern("__pride_resume") #cc(c)
+
+-- Retrieve the idx-th argument delivered to the currently-executing handler arm.
+fn get_arm_arg : i64 -> i64 #extern("__pride_get_arm_arg") #cc(c)
+
+-- ── §4b  Stack-Switching Fibers ────────────────────────────────────────────
+
+-- Allocate and initialise a new fiber.  entry_fn is a ptr to a C function
+-- `void* fn(void*)`.  Returns an opaque ptr to the PrideFiber heap object.
+fn fiber_spawn : (ptr, ptr) -> ptr #extern("__pride_fiber_spawn") #cc(c)
+
+-- Switch into the fiber, passing arg as the resume value.
+-- Returns whatever the fiber yields (or its final return value once completed).
+fn fiber_resume : (ptr, i64) -> ptr #extern("__pride_fiber_resume") #cc(c)
+
+-- Yield from within a running fiber, passing arg back to the resumer.
+-- Returns the value passed to the next fiber_resume call.
+fn fiber_yield : i64 -> ptr #extern("__pride_fiber_yield") #cc(c)
+
+-- ── §4c  Untyped Prompt Markers ────────────────────────────────────────────
+
+-- Install a prompt marker identified by prompt_id.  Returns prompt_id.
+fn prompt_install : i64 -> i64 #extern("__pride_prompt_install") #cc(c)
+
+-- Unwind (deactivate) the prompt with the given id.
+fn prompt_unwind : i64 -> () #extern("__pride_prompt_unwind") #cc(c)
+
+-- Check whether prompt_id's scope is currently active on this thread.
+fn is_in_scope : i64 -> bool #extern("__pride_is_in_scope") #cc(c)
+
+-- ── §4d  Two-Part Functorial Delimited Continuations (k_in / k_out) ────────
+
+-- Perform the in-scope half of a scoped operation (captures k_in).
+fn scoped_yield_in : (i64, i64, i64) -> ptr #extern("__pride_scoped_yield_in") #cc(c)
+
+-- Perform the out-of-scope half of a scoped operation (captures k_out).
+fn scoped_yield_out : (i64, i64, i64) -> ptr #extern("__pride_scoped_yield_out") #cc(c)
+
+-- Split the current handler frame's saved continuation into k_in / k_out halves.
+-- Returns a ptr to a heap-allocated PrideContinuation{k_in, k_out, prompt_id}.
+fn cont_split : ptr -> ptr #extern("__pride_split_cont") #cc(c)
+
+-- Fuse a PrideContinuation's k_in + k_out back into an executable continuation ptr.
+fn cont_fuse : ptr -> ptr #extern("__pride_fuse_cont") #cc(c)
+
+-- ── §4e  Dynamic-Winding ──────────────────────────────────────────────────
+
+-- Register on_enter/on_exit thunks around the prompt scope.  Both are `ptr`
+-- to C functions `void fn(void*)`.  env is passed through to both thunks.
+fn dynamic_wind_push : (i64, ptr, ptr, ptr) -> () #extern("__pride_dynamic_wind_push") #cc(c)
+
+-- Deregister the dynamic-wind entry for prompt_id.
+fn dynamic_wind_pop : i64 -> () #extern("__pride_dynamic_wind_pop") #cc(c)
+
+-- Fire all on_enter thunks up to prompt_id's scope (called on resume).
+fn dynamic_wind_enter : i64 -> () #extern("__pride_dynamic_wind_enter") #cc(c)
+
+-- Fire all on_exit thunks down from prompt_id's scope (called on yield/unwind).
+fn dynamic_wind_exit : i64 -> () #extern("__pride_dynamic_wind_exit") #cc(c)
+
+-- ── §4f  Reader / Local Scoping ───────────────────────────────────────────
+
+-- Bind val_ptr under key_id within prompt_id's scope.  Returns key_id.
+fn local_bind : (i64, ptr, i64) -> i64 #extern("__pride_local_bind") #cc(c)
+
+-- Look up the innermost binding for key_id.  Returns null if not found.
+fn local_get : i64 -> ptr #extern("__pride_local_get") #cc(c)
+
+-- ── §4g  Effect-Row Polymorphism Evidence ─────────────────────────────────
+
+-- Push an evidence entry for op_tag onto the evidence stack.
+-- handler_frame is a ptr to the caller's handler state; returns the evidence index.
+fn evidence_push : (i64, ptr) -> i64 #extern("__pride_evidence_push") #cc(c)
+
+-- Pop the evidence entry at idx.
+fn evidence_pop : i64 -> () #extern("__pride_evidence_pop") #cc(c)
+
+-- Perform op_tag via the evidence stack (used inside multi-handler dispatch).
+fn perform_evidence : (i64, ptr) -> ptr #extern("__pride_perform_evidence") #cc(c)

@@ -1,0 +1,23 @@
+-- examples/union_intersection_showcase.pie — Semantic Subtyping and Union Representations
+-- Demonstrates union (∪) and intersection (∩) type annotations, C-unions, and newtypes.
+
+type Num = i32 ∪ i64
+type PosInt = i32 ∩ i32
+
+fn to_i64 : Num -> i64
+  | x -> x as i64
+
+fn id_pos : PosInt -> i32
+  | x -> x
+
+type Word = union
+  i : i64
+  p : ptr
+
+fn word_as_int : Word -> i64
+  | w -> w.i
+
+type UserId = newtype(i64)
+
+fn user_id_val : UserId -> i64
+  | u -> u as i64

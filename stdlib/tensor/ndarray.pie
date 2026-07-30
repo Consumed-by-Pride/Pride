@@ -1,0 +1,46 @@
+mod tensor.ndarray
+
+use os.linux
+use math.ndarray
+
+-- stdlib/tensor/ndarray.pie — N-Dimensional Tensor Structure (Tensor)
+-- Unites flat buffer memory with geometric shape and layout metadata.
+
+struct Tensor
+  data   : *f64
+  layout : ndarray.NdArrayLayout
+  size   : i64
+
+fn tensor_new : (i64, ptr) -> Tensor
+  | (ndim, shape_ptr) ->
+    let ly = ndarray.ndarray_layout_c_order(ndim, shape_ptr)
+    let sh = ly.shape as *i64
+    let mut total : i64 = 1i64
+    let mut i : i64 = 0i64
+    while i < ndim
+      total = total * sh[i]
+      i = i + 1i64
+    let p = os.linux.malloc(total * 8i64) as *f64
+    os.linux.memset(p as ptr, 0i32, (total * 8i64) as u64)
+    Tensor { data: p, layout: ly, size: total }
+
+fn tensor_destroy : *Tensor -> ()
+  | t ->
+    if t.data as i64 != 0i64
+      os.linux.free(t.data as ptr)
+    ndarray.ndarray_layout_destroy(&t.layout)
+    t.data = 0 as *f64; t.size = 0i64
+
+fn tensor_get_f64 : (*Tensor, ptr) -> f64
+  | (t, index_ptr) ->
+    let off = ndarray.ndarray_layout_offset(&t.layout, index_ptr)
+    if off < 0i64 || off >= t.size then 0.0f64
+    else t.data[off]
+
+fn tensor_set_f64 : (*Tensor, ptr, f64) -> bool
+  | (t, index_ptr, val) ->
+    let off = ndarray.ndarray_layout_offset(&t.layout, index_ptr)
+    if off < 0i64 || off >= t.size then false
+    else
+      t.data[off] = val
+      true

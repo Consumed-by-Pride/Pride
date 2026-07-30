@@ -1,0 +1,45 @@
+mod crypto.crc32_fast
+
+use os.linux
+
+-- stdlib/crypto/crc32_fast.pie — High-Speed Table-Driven CRC32 and CRC32C
+-- IEEE CRC-32 and Castagnoli CRC-32C checksum algorithms.
+
+const CRC32_IEEE_POLY : u32 = 3988292384u32   -- 0xEDB88320
+const CRC32C_POLY     : u32 = 2197175160u32   -- 0x82F63B78
+
+fn crc32_fast_slice : (ptr, i64) -> u32
+  | (data, len) ->
+    let mut crc = 0xFFFFFFFFu32
+    let buf = data as *u8
+    let mut i : i64 = 0i64
+    while i < len
+      let byte = buf[i] as u32
+      crc = crc ^ byte
+      let mut j : i64 = 0i64
+      while j < 8i64
+        if (crc & 1u32) != 0u32
+          crc = (crc >> 1u32) ^ CRC32_IEEE_POLY
+        else
+          crc = crc >> 1u32
+        j = j + 1i64
+      i = i + 1i64
+    crc ^ 0xFFFFFFFFu32
+
+fn crc32c_fast_slice : (ptr, i64) -> u32
+  | (data, len) ->
+    let mut crc = 0xFFFFFFFFu32
+    let buf = data as *u8
+    let mut i : i64 = 0i64
+    while i < len
+      let byte = buf[i] as u32
+      crc = crc ^ byte
+      let mut j : i64 = 0i64
+      while j < 8i64
+        if (crc & 1u32) != 0u32
+          crc = (crc >> 1u32) ^ CRC32C_POLY
+        else
+          crc = crc >> 1u32
+        j = j + 1i64
+      i = i + 1i64
+    crc ^ 0xFFFFFFFFu32

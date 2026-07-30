@@ -1,0 +1,29 @@
+mod simd.i64x2
+
+-- stdlib/simd/i64x2.pie — 128-Bit Packed 2-Long SIMD Vector
+-- Two 64-bit integer lanes with elementwise arithmetic and bitwise logic.
+
+struct I64x2
+  x0 : i64
+  x1 : i64
+
+fn i64x2_new : (i64, i64) -> I64x2
+  | (v0, v1) -> I64x2 { x0: v0, x1: v1 }
+
+fn i64x2_splat : i64 -> I64x2
+  | val -> I64x2 { x0: val, x1: val }
+
+fn i64x2_add : (I64x2, I64x2) -> I64x2
+  | (a, b) -> I64x2 { x0: a.x0 + b.x0, x1: a.x1 + b.x1 }
+
+fn i64x2_sub : (I64x2, I64x2) -> I64x2
+  | (a, b) -> I64x2 { x0: a.x0 - b.x0, x1: a.x1 - b.x1 }
+
+fn i64x2_and : (I64x2, I64x2) -> I64x2
+  | (a, b) -> I64x2 { x0: a.x0 & b.x0, x1: a.x1 & b.x1 }
+
+fn i64x2_or : (I64x2, I64x2) -> I64x2
+  | (a, b) -> I64x2 { x0: a.x0 | b.x0, x1: a.x1 | b.x1 }
+
+fn i64x2_xor : (I64x2, I64x2) -> I64x2
+  | (a, b) -> I64x2 { x0: a.x0 ^ b.x0, x1: a.x1 ^ b.x1 }

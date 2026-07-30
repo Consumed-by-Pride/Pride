@@ -1,0 +1,64 @@
+mod log.logger
+
+use os.linux
+use str.string
+use log.level
+use fs.file
+
+-- stdlib/log/logger.pie — Formatted Console and File Logger (Logger)
+-- Configurable severity filtering with timestamps and output redirection.
+
+struct Logger
+  fd        : i64
+  min_level : i64
+  own_fd    : bool
+
+fn logger_new_console : i64 -> Logger
+  | min_lvl -> Logger { fd: 2i64, min_level: min_lvl, own_fd: false }   -- stderr = 2
+
+fn logger_new_file : (ptr, i64) -> Logger
+  | (path, min_lvl) ->
+    let f = file.file_open_append(path)
+    if f.fd < 0i64 then logger_new_console(min_lvl)
+    else Logger { fd: f.fd, min_level: min_lvl, own_fd: true }
+
+fn logger_destroy : *Logger -> ()
+  | lg ->
+    if lg.own_fd && lg.fd >= 0i64
+      os.linux.close(lg.fd)
+    lg.fd = -1i64; lg.own_fd = false
+
+fn logger_set_level : (*Logger, i64) -> ()
+  | (lg, new_lvl) -> lg.min_level = new_lvl
+
+fn logger_log : (*Logger, i64, ptr, ptr) -> ()
+  | (lg, lvl, tag_cstr, msg_cstr) ->
+    if lvl >= lg.min_level && lg.fd >= 0i64
+      let mut out = string.string_with_cap(128i64)
+      string.string_push_byte(&out, 91u8)   -- '['
+      string.string_push_cstr(&out, level.log_level_name(lvl))
+      string.string_push_cstr(&out, "] " as ptr)
+      let tag_len = os.linux.strlen(tag_cstr) as i64
+      if tag_len > 0i64
+        string.string_push_byte(&out, 40u8)   -- '('
+        string.string_push_cstr(&out, tag_cstr)
+        string.string_push_cstr(&out, "): " as ptr)
+      string.string_push_cstr(&out, msg_cstr)
+      string.string_push_byte(&out, 10u8)   -- '\n'
+      os.linux.write_all(lg.fd, string.string_as_slice(&out), string.string_len(&out))
+      string.string_destroy(&out)
+
+fn logger_debug : (*Logger, ptr, ptr) -> ()
+  | (lg, tag, msg) -> logger_log(lg, level.LOG_DEBUG, tag, msg)
+
+fn logger_info : (*Logger, ptr, ptr) -> ()
+  | (lg, tag, msg) -> logger_log(lg, level.LOG_INFO, tag, msg)
+
+fn logger_warn : (*Logger, ptr, ptr) -> ()
+  | (lg, tag, msg) -> logger_log(lg, level.LOG_WARN, tag, msg)
+
+fn logger_error : (*Logger, ptr, ptr) -> ()
+  | (lg, tag, msg) -> logger_log(lg, level.LOG_ERROR, tag, msg)
+
+fn logger_fatal : (*Logger, ptr, ptr) -> ()
+  | (lg, tag, msg) -> logger_log(lg, level.LOG_FATAL, tag, msg)

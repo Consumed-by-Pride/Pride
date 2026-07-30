@@ -1,0 +1,51 @@
+mod sys.uname
+
+use os.linux
+use str.string
+
+-- stdlib/sys/uname.pie — Linux Kernel Release and System Architecture Info
+-- Wraps uname syscall for OS kernel identification.
+
+struct UnameInfo
+  sysname  : string.String
+  nodename : string.String
+  release  : string.String
+  version  : string.String
+  machine  : string.String
+
+fn sys_uname_info : () -> UnameInfo
+  | () ->
+    let p = os.linux.malloc(390i64) as *u8
+    os.linux.memset(p as ptr, 0i32, 390u64)
+    let r = os.linux.uname(p as ptr)
+    if r < 0i64
+      os.linux.free(p as ptr)
+      UnameInfo {
+        sysname:  string.string_new(),
+        nodename: string.string_new(),
+        release:  string.string_new(),
+        version:  string.string_new(),
+        machine:  string.string_new()
+      }
+    else
+      let sys = string.string_from_cstr(p as ptr)
+      let nod = string.string_from_cstr((p as i64 + 65i64) as ptr)
+      let rel = string.string_from_cstr((p as i64 + 130i64) as ptr)
+      let ver = string.string_from_cstr((p as i64 + 195i64) as ptr)
+      let mac = string.string_from_cstr((p as i64 + 260i64) as ptr)
+      os.linux.free(p as ptr)
+      UnameInfo {
+        sysname:  sys,
+        nodename: nod,
+        release:  rel,
+        version:  ver,
+        machine:  mac
+      }
+
+fn uname_info_destroy : *UnameInfo -> ()
+  | info ->
+    string.string_destroy(&info.sysname)
+    string.string_destroy(&info.nodename)
+    string.string_destroy(&info.release)
+    string.string_destroy(&info.version)
+    string.string_destroy(&info.machine)

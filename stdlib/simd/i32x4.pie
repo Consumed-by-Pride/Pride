@@ -1,0 +1,34 @@
+mod simd.i32x4
+
+-- stdlib/simd/i32x4.pie — 128-Bit Packed 4-Int SIMD Vector
+-- Four 32-bit integer lanes with elementwise arithmetic and bitwise logic.
+
+struct I32x4
+  x0 : i64
+  x1 : i64
+  x2 : i64
+  x3 : i64
+
+fn i32x4_new : (i64, i64, i64, i64) -> I32x4
+  | (v0, v1, v2, v3) -> I32x4 { x0: v0, x1: v1, x2: v2, x3: v3 }
+
+fn i32x4_splat : i64 -> I32x4
+  | val -> I32x4 { x0: val, x1: val, x2: val, x3: val }
+
+fn i32x4_add : (I32x4, I32x4) -> I32x4
+  | (a, b) -> I32x4 { x0: a.x0 + b.x0, x1: a.x1 + b.x1, x2: a.x2 + b.x2, x3: a.x3 + b.x3 }
+
+fn i32x4_sub : (I32x4, I32x4) -> I32x4
+  | (a, b) -> I32x4 { x0: a.x0 - b.x0, x1: a.x1 - b.x1, x2: a.x2 - b.x2, x3: a.x3 - b.x3 }
+
+fn i32x4_mul : (I32x4, I32x4) -> I32x4
+  | (a, b) -> I32x4 { x0: a.x0 * b.x0, x1: a.x1 * b.x1, x2: a.x2 * b.x2, x3: a.x3 * b.x3 }
+
+fn i32x4_and : (I32x4, I32x4) -> I32x4
+  | (a, b) -> I32x4 { x0: a.x0 & b.x0, x1: a.x1 & b.x1, x2: a.x2 & b.x2, x3: a.x3 & b.x3 }
+
+fn i32x4_or : (I32x4, I32x4) -> I32x4
+  | (a, b) -> I32x4 { x0: a.x0 | b.x0, x1: a.x1 | b.x1, x2: a.x2 | b.x2, x3: a.x3 | b.x3 }
+
+fn i32x4_xor : (I32x4, I32x4) -> I32x4
+  | (a, b) -> I32x4 { x0: a.x0 ^ b.x0, x1: a.x1 ^ b.x1, x2: a.x2 ^ b.x2, x3: a.x3 ^ b.x3 }

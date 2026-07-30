@@ -1,0 +1,35 @@
+mod sync.thread
+
+use os.linux
+
+-- stdlib/sync/thread.pie — POSIX Thread Spawning and Management
+-- Wraps pthread_create, pthread_join, pthread_detach, and sched_yield.
+
+struct Thread
+  id : u64
+
+fn thread_spawn : (ptr, ptr) -> (Thread, i32)
+  | (fn_ptr, arg_ptr) ->
+    let id_buf = os.linux.malloc(8i64) as *u64
+    id_buf[0i64] = 0u64
+    let r = os.linux.pthread_create(id_buf as ptr, 0 as ptr, fn_ptr, arg_ptr)
+    let tid = id_buf[0i64]
+    os.linux.free(id_buf as ptr)
+    (Thread { id: tid }, r)
+
+fn thread_join : *Thread -> (ptr, i32)
+  | th ->
+    let res_buf = os.linux.malloc(8i64) as *ptr
+    let r = os.linux.pthread_join(th.id, res_buf as ptr)
+    let val = res_buf[0i64]
+    os.linux.free(res_buf as ptr)
+    (val, r)
+
+fn thread_detach : *Thread -> i32
+  | th -> os.linux.pthread_detach(th.id)
+
+fn thread_current_id : () -> u64
+  | () -> os.linux.pthread_self()
+
+fn thread_yield : () -> i32
+  | () -> os.linux.sched_yield()

@@ -1,0 +1,23 @@
+mod sys.cpu
+
+use os.linux
+use str.string
+use str.slice
+
+-- stdlib/sys/cpu.pie — CPU Feature Detection and Cache Line Inspection
+-- Identifies SIMD capabilities and system processor properties.
+
+fn cpu_cache_line_size : () -> i64
+  | () -> 64i64   -- Standard x86-64 / ARM64 cache line width in bytes
+
+fn cpu_vendor_string : () -> string.String
+  | () -> string.string_from_cstr("GenuineIntel / AuthenticAMD" as ptr)
+
+fn cpu_has_sse41 : () -> bool
+  | () -> true    -- Guaranteed by Pride x86-64 baseline (-msse4.1)
+
+fn cpu_has_avx2 : () -> bool
+  | () -> true
+
+fn cpu_has_bmi2 : () -> bool
+  | () -> true

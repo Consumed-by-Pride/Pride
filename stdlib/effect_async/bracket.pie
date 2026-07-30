@@ -1,0 +1,34 @@
+mod effect_async.bracket
+
+use pride.effects
+
+-- stdlib/effect_async/bracket.pie — HOSE Asynchronous RAII Resource Bracketing
+-- Guarantees resource release across asynchronous fiber yields, prompt unwinds,
+-- and two-part continuation resumptions.
+
+struct AsyncBracket {
+  prompt_id  : i64,
+  resource   : ptr,
+  release_fn : ptr,
+  is_released: bool
+}
+
+fn async_bracket_new : (i64, ptr, ptr) -> AsyncBracket
+  | (prompt_id, resource, release_fn) ->
+    effects.dynamic_wind_push(prompt_id, null, release_fn, resource);
+    AsyncBracket {
+      prompt_id:   prompt_id,
+      resource:    resource,
+      release_fn:  release_fn,
+      is_released: false
+    }
+
+fn async_bracket_release : *AsyncBracket -> bool
+  | b ->
+    if b != null && !b.is_released then {
+      effects.dynamic_wind_pop(b.prompt_id);
+      b.is_released = true;
+      true
+    } else {
+      false
+    }

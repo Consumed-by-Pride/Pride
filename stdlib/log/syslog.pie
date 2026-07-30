@@ -1,0 +1,52 @@
+mod log.syslog
+
+use os.linux
+use str.string
+use log.level
+
+-- stdlib/log/syslog.pie — POSIX / Linux Syslog Socket Bridge
+-- Formats and transmits syslog datagrams to /dev/log socket.
+
+const AF_UNIX     : i64 = 1i64
+const SOCK_DGRAM  : i64 = 2i64
+
+struct Syslog
+  fd    : i64
+  ident : string.String
+
+fn syslog_open : ptr -> Syslog
+  | ident_cstr ->
+    let fd = os.linux.socket(AF_UNIX, SOCK_DGRAM, 0i64)
+    let s  = string.string_from_cstr(ident_cstr)
+    if fd >= 0i64
+      let addr_buf = os.linux.malloc(110i64) as *u8
+      os.linux.memset(addr_buf as ptr, 0i32, 110u64)
+      (addr_buf as *u16)[0i64] = AF_UNIX as u16
+      let dev_log = "/dev/log" as *u8
+      let mut i : i64 = 0i64
+      while i < 8i64
+        addr_buf[i + 2i64] = dev_log[i]
+        i = i + 1i64
+      os.linux.connect(fd, addr_buf as ptr, 110i64)
+      os.linux.free(addr_buf as ptr)
+    Syslog { fd: fd, ident: s }
+
+fn syslog_close : *Syslog -> ()
+  | sl ->
+    if sl.fd >= 0i64
+      os.linux.close(sl.fd)
+      sl.fd = -1i64
+    string.string_destroy(&sl.ident)
+
+fn syslog_write : (*Syslog, i64, ptr) -> i64
+  | (sl, priority, msg_cstr) ->
+    if sl.fd < 0i64 then -1i64
+    else
+      let mut out = string.string_with_cap(128i64)
+      string.string_push_cstr(&out, "<13>" as ptr)   -- facility user + priority
+      string.string_concat(&out, &sl.ident)
+      string.string_push_cstr(&out, ": " as ptr)
+      string.string_push_cstr(&out, msg_cstr)
+      let r = os.linux.write_all(sl.fd, string.string_as_slice(&out), string.string_len(&out))
+      string.string_destroy(&out)
+      r

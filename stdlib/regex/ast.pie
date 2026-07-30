@@ -1,0 +1,31 @@
+mod regex.ast
+
+use os.linux
+
+-- stdlib/regex/ast.pie — Regular Expression Syntax Tree (RegexAst)
+-- Represents literals, concatenations, alternations, and Kleene closures.
+
+const RX_LITERAL : i64 = 1i64
+const RX_CONCAT  : i64 = 2i64
+const RX_ALTER   : i64 = 3i64
+const RX_STAR    : i64 = 4i64
+
+struct RegexNode
+  kind      : i64
+  byte_val  : u8
+  left_id   : i64
+  right_id  : i64
+
+fn regex_node_new : (i64, u8, i64, i64) -> *RegexNode
+  | (kind, b, l, r) ->
+    let p = os.linux.malloc(32i64) as *RegexNode
+    p.kind     = kind
+    p.byte_val = b
+    p.left_id  = l
+    p.right_id = r
+    p
+
+fn regex_node_destroy : *RegexNode -> ()
+  | n ->
+    if n as i64 != 0i64
+      os.linux.free(n as ptr)

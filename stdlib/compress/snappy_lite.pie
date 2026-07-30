@@ -1,0 +1,67 @@
+mod compress.snappy_lite
+
+use os.linux
+use encoding.varint
+
+-- stdlib/compress/snappy_lite.pie — Snappy-Inspired Byte Compression
+-- Fast framing and byte-oriented literal/copy encoding.
+
+fn snappy_encode_slice : (ptr, i64) -> (ptr, i64)
+  | (data, len) ->
+    if len <= 0i64 then (0 as ptr, 0i64)
+    else
+      let max_out = len + (len / 6i64) + 32i64
+      let out_buf = os.linux.malloc(max_out) as *u8
+      -- prefix with LEB128 varint of original length
+      let hlen = varint.varint_encode_i64(len, out_buf as ptr, 10i64)
+      let mut out_pos = hlen
+      let in_buf = data as *u8
+      let mut i : i64 = 0i64
+      while i < len
+        let mut chunk = if len - i < 60i64 then len - i else 60i64
+        out_buf[out_pos] = ((chunk - 1i64) << 2i64) as u8   -- tag 00 = literal
+        out_pos = out_pos + 1i64
+        let mut k : i64 = 0i64
+        while k < chunk
+          out_buf[out_pos] = in_buf[i + k]
+          out_pos = out_pos + 1i64
+          k = k + 1i64
+        i = i + chunk
+      (out_buf as ptr, out_pos)
+
+fn snappy_decode_slice : (ptr, i64) -> (ptr, i64, bool)
+  | (snap_data, snap_len) ->
+    if snap_len <= 0i64 then (0 as ptr, 0i64, false)
+    else
+      let (orig_len, hlen, ok_h) = varint.varint_decode_i64(snap_data, snap_len)
+      if !ok_h || orig_len <= 0i64 then (0 as ptr, 0i64, false)
+      else
+        let out_buf = os.linux.malloc(orig_len + 16i64) as *u8
+        let in_buf  = snap_data as *u8
+        let mut in_pos  = hlen
+        let mut out_pos : i64 = 0i64
+        let mut ok = true
+        while in_pos < snap_len && out_pos < orig_len
+          let tag_byte = in_buf[in_pos] as i64
+          in_pos = in_pos + 1i64
+          let tag_type = tag_byte & 3i64
+          if tag_type == 0i64
+            -- Literal
+            let lit_len = ((tag_byte >> 2i64) & 0x3Fi64) + 1i64
+            if in_pos + lit_len > snap_len || out_pos + lit_len > orig_len
+              ok = false
+              break
+            let mut k : i64 = 0i64
+            while k < lit_len
+              out_buf[out_pos + k] = in_buf[in_pos + k]
+              k = k + 1i64
+            out_pos = out_pos + lit_len
+            in_pos  = in_pos + lit_len
+          else
+            ok = false
+            break
+        if !ok
+          os.linux.free(out_buf as ptr)
+          (0 as ptr, 0i64, false)
+        else
+          (out_buf as ptr, out_pos, true)

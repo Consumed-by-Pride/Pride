@@ -1,0 +1,91 @@
+mod vec.lru
+
+use os.linux
+use vec.vec
+
+-- stdlib/vec/lru.pie — Generic LRU (Least-Recently-Used) Eviction List
+-- Doubly-linked tracking list for cache eviction algorithms.
+
+struct LruItem
+  key       : u64
+  value     : i64
+  prev_idx  : i64
+  next_idx  : i64
+
+struct LruList
+  items     : vec.Vec
+  head_idx  : i64
+  tail_idx  : i64
+  max_cap   : i64
+
+fn lrulist_new : i64 -> LruList
+  | cap ->
+    let c = if cap <= 0i64 then 64i64 else cap
+    LruList { items: vec.vec_new(8i64), head_idx: -1i64, tail_idx: -1i64, max_cap: c }
+
+fn lrulist_destroy : *LruList -> ()
+  | lru ->
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&lru.items)
+    while i < len
+      os.linux.free(vec.vec_get(&lru.items, i))
+      i = i + 1i64
+    vec.vec_destroy(&lru.items)
+    lru.head_idx = -1i64; lru.tail_idx = -1i64
+
+fn lrulist_push_head : (*LruList, u64, i64) -> i64
+  | (lru, key, val) ->
+    let id = vec.vec_len(&lru.items)
+    let item = os.linux.malloc(32i64) as *LruItem
+    item.key      = key
+    item.value    = val
+    item.prev_idx = -1i64
+    item.next_idx = lru.head_idx
+    vec.vec_push(&lru.items, item as ptr)
+    if lru.head_idx >= 0i64
+      let old_h = vec.vec_get(&lru.items, lru.head_idx) as *LruItem
+      old_h.prev_idx = id
+    lru.head_idx = id
+    if lru.tail_idx < 0i64
+      lru.tail_idx = id
+    id
+
+fn lrulist_access : (*LruList, i64) -> bool
+  | (lru, idx) ->
+    let len = vec.vec_len(&lru.items)
+    if idx < 0i64 || idx >= len || idx == lru.head_idx then true
+    else
+      let item = vec.vec_get(&lru.items, idx) as *LruItem
+      let prev = item.prev_idx
+      let next = item.next_idx
+      if prev >= 0i64
+        let p_node = vec.vec_get(&lru.items, prev) as *LruItem
+        p_node.next_idx = next
+      if next >= 0i64
+        let n_node = vec.vec_get(&lru.items, next) as *LruItem
+        n_node.prev_idx = prev
+      if idx == lru.tail_idx
+        lru.tail_idx = prev
+      item.prev_idx = -1i64
+      item.next_idx = lru.head_idx
+      if lru.head_idx >= 0i64
+        let h_node = vec.vec_get(&lru.items, lru.head_idx) as *LruItem
+        h_node.prev_idx = idx
+      lru.head_idx = idx
+      true
+
+fn lrulist_evict_tail : *LruList -> (u64, i64, bool)
+  | lru ->
+    if lru.tail_idx < 0i64 then (0u64, 0i64, false)
+    else
+      let t_node = vec.vec_get(&lru.items, lru.tail_idx) as *LruItem
+      let k   = t_node.key
+      let v   = t_node.value
+      let prv = t_node.prev_idx
+      if prv >= 0i64
+        let p_node = vec.vec_get(&lru.items, prv) as *LruItem
+        p_node.next_idx = -1i64
+      lru.tail_idx = prv
+      if lru.head_idx == lru.tail_idx
+        lru.head_idx = -1i64
+      (k, v, true)

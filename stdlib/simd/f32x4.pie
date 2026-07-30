@@ -1,0 +1,74 @@
+mod simd.f32x4
+
+-- stdlib/simd/f32x4.pie — 128-Bit Packed 4-Float SIMD Vector
+-- Four 32-bit floating-point lanes with elementwise arithmetic and dot product.
+
+struct F32x4
+  x0 : f32
+  x1 : f32
+  x2 : f32
+  x3 : f32
+
+fn f32x4_new : (f32, f32, f32, f32) -> F32x4
+  | (v0, v1, v2, v3) -> F32x4 { x0: v0, x1: v1, x2: v2, x3: v3 }
+
+fn f32x4_splat : f32 -> F32x4
+  | val -> F32x4 { x0: val, x1: val, x2: val, x3: val }
+
+fn f32x4_add : (F32x4, F32x4) -> F32x4
+  | (a, b) ->
+    F32x4 {
+      x0: a.x0 + b.x0,
+      x1: a.x1 + b.x1,
+      x2: a.x2 + b.x2,
+      x3: a.x3 + b.x3
+    }
+
+fn f32x4_sub : (F32x4, F32x4) -> F32x4
+  | (a, b) ->
+    F32x4 {
+      x0: a.x0 - b.x0,
+      x1: a.x1 - b.x1,
+      x2: a.x2 - b.x2,
+      x3: a.x3 - b.x3
+    }
+
+fn f32x4_mul : (F32x4, F32x4) -> F32x4
+  | (a, b) ->
+    F32x4 {
+      x0: a.x0 * b.x0,
+      x1: a.x1 * b.x1,
+      x2: a.x2 * b.x2,
+      x3: a.x3 * b.x3
+    }
+
+fn f32x4_div : (F32x4, F32x4) -> F32x4
+  | (a, b) ->
+    F32x4 {
+      x0: a.x0 / b.x0,
+      x1: a.x1 / b.x1,
+      x2: a.x2 / b.x2,
+      x3: a.x3 / b.x3
+    }
+
+fn f32x4_min : (F32x4, F32x4) -> F32x4
+  | (a, b) ->
+    F32x4 {
+      x0: if a.x0 < b.x0 then a.x0 else b.x0,
+      x1: if a.x1 < b.x1 then a.x1 else b.x1,
+      x2: if a.x2 < b.x2 then a.x2 else b.x2,
+      x3: if a.x3 < b.x3 then a.x3 else b.x3
+    }
+
+fn f32x4_max : (F32x4, F32x4) -> F32x4
+  | (a, b) ->
+    F32x4 {
+      x0: if a.x0 > b.x0 then a.x0 else b.x0,
+      x1: if a.x1 > b.x1 then a.x1 else b.x1,
+      x2: if a.x2 > b.x2 then a.x2 else b.x2,
+      x3: if a.x3 > b.x3 then a.x3 else b.x3
+    }
+
+fn f32x4_dot : (F32x4, F32x4) -> f32
+  | (a, b) ->
+    (a.x0 * b.x0) + (a.x1 * b.x1) + (a.x2 * b.x2) + (a.x3 * b.x3)

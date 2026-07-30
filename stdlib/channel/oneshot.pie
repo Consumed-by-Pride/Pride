@@ -1,0 +1,58 @@
+mod channel.oneshot
+
+use sync.mutex
+use sync.cond
+use os.linux
+
+-- stdlib/channel/oneshot.pie — Oneshot Future Communication Channel
+-- Single-use message passing for asynchronous request/response pairs.
+
+struct OneshotChannel
+  value    : ptr
+  has_val  : bool
+  closed   : bool
+  mut      : mutex.Mutex
+  ready    : cond.CondVar
+
+struct OneshotSender
+  chan : *OneshotChannel
+
+struct OneshotReceiver
+  chan : *OneshotChannel
+
+fn oneshot_channel_new : () -> (OneshotSender, OneshotReceiver)
+  | () ->
+    let ch = os.linux.malloc(48i64) as *OneshotChannel
+    ch.value   = 0 as ptr
+    ch.has_val = false
+    ch.closed  = false
+    ch.mut     = mutex.mutex_new()
+    ch.ready   = cond.condvar_new()
+    (OneshotSender { chan: ch }, OneshotReceiver { chan: ch })
+
+fn oneshot_send : (*OneshotSender, ptr) -> bool
+  | (tx, val_ptr) ->
+    mutex.mutex_lock(&tx.chan.mut)
+    if tx.chan.closed || tx.chan.has_val
+      mutex.mutex_unlock(&tx.chan.mut)
+      false
+    else
+      tx.chan.value   = val_ptr
+      tx.chan.has_val = true
+      cond.condvar_signal(&tx.chan.ready)
+      mutex.mutex_unlock(&tx.chan.mut)
+      true
+
+fn oneshot_recv : *OneshotReceiver -> (ptr, bool)
+  | rx ->
+    mutex.mutex_lock(&rx.chan.mut)
+    while !rx.chan.has_val && !rx.chan.closed
+      cond.condvar_wait(&rx.chan.ready, &rx.chan.mut)
+    if !rx.chan.has_val
+      mutex.mutex_unlock(&rx.chan.mut)
+      (0 as ptr, false)
+    else
+      let val = rx.chan.value
+      rx.chan.closed = true
+      mutex.mutex_unlock(&rx.chan.mut)
+      (val, true)

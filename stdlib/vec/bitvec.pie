@@ -1,0 +1,179 @@
+mod vec.bitvec
+
+use os.linux
+
+-- stdlib/vec/bitvec.pie — Compact Bit Vector (BitVec)
+-- Packed array of bits stored in 64-bit words, supporting population count,
+-- bit-level push/pop/get/set, and bitwise vector algebra.
+
+struct BitVec
+  words : *u64
+  len   : i64
+  cap   : i64
+
+fn bitvec_new : () -> BitVec
+  | () -> BitVec { words: 0 as *u64, len: 0i64, cap: 0i64 }
+
+fn bitvec_with_cap : i64 -> BitVec
+  | bit_cap ->
+    if bit_cap <= 0i64 then bitvec_new()
+    else
+      let word_cap = (bit_cap + 63i64) / 64i64
+      let p = os.linux.malloc(word_cap * 8i64) as *u64
+      os.linux.memset(p as ptr, 0i32, (word_cap * 8i64) as u64)
+      BitVec { words: p, len: 0i64, cap: word_cap }
+
+fn bitvec_destroy : *BitVec -> ()
+  | bv ->
+    if bv.cap > 0i64 && bv.words as i64 != 0i64
+      os.linux.free(bv.words as ptr)
+    bv.words = 0 as *u64; bv.len = 0i64; bv.cap = 0i64
+
+fn bitvec_len : *BitVec -> i64
+  | bv -> bv.len
+
+fn bitvec_cap : *BitVec -> i64
+  | bv -> bv.cap * 64i64
+
+fn bitvec_grow : (*BitVec, i64) -> ()
+  | (bv, needed_words) ->
+    let mut new_cap = if bv.cap == 0i64 then 2i64 else bv.cap * 2i64
+    while new_cap < needed_words
+      new_cap = new_cap * 2i64
+    let new_p = if bv.cap == 0i64 then os.linux.malloc(new_cap * 8i64)
+                else os.linux.realloc(bv.words as ptr, new_cap * 8i64)
+    let added_bytes = (new_cap - bv.cap) * 8i64
+    os.linux.memset((new_p as i64 + bv.cap * 8i64) as ptr, 0i32, added_bytes as u64)
+    bv.words = new_p as *u64; bv.cap = new_cap
+
+fn bitvec_push : (*BitVec, bool) -> ()
+  | (bv, bit) ->
+    let needed_words = (bv.len + 64i64) / 64i64
+    if needed_words > bv.cap
+      bitvec_grow(bv, needed_words)
+    let word_idx = bv.len / 64i64
+    let bit_idx  = bv.len % 64i64
+    if bit
+      bv.words[word_idx] = bv.words[word_idx] | (1u64 << bit_idx as u64)
+    else
+      bv.words[word_idx] = bv.words[word_idx] & ~(1u64 << bit_idx as u64)
+    bv.len = bv.len + 1i64
+
+fn bitvec_pop : *BitVec -> bool
+  | bv ->
+    if bv.len == 0i64 then false
+    else
+      bv.len = bv.len - 1i64
+      let word_idx = bv.len / 64i64
+      let bit_idx  = bv.len % 64i64
+      let val = (bv.words[word_idx] & (1u64 << bit_idx as u64)) != 0u64
+      bv.words[word_idx] = bv.words[word_idx] & ~(1u64 << bit_idx as u64)
+      val
+
+fn bitvec_get : (*BitVec, i64) -> bool
+  | (bv, idx) ->
+    if idx < 0i64 || idx >= bv.len then false
+    else
+      let word_idx = idx / 64i64
+      let bit_idx  = idx % 64i64
+      (bv.words[word_idx] & (1u64 << bit_idx as u64)) != 0u64
+
+fn bitvec_set : (*BitVec, i64, bool) -> bool
+  | (bv, idx, bit) ->
+    if idx < 0i64 || idx >= bv.len then false
+    else
+      let word_idx = idx / 64i64
+      let bit_idx  = idx % 64i64
+      if bit
+        bv.words[word_idx] = bv.words[word_idx] | (1u64 << bit_idx as u64)
+      else
+        bv.words[word_idx] = bv.words[word_idx] & ~(1u64 << bit_idx as u64)
+      true
+
+fn bitvec_flip : (*BitVec, i64) -> bool
+  | (bv, idx) ->
+    if idx < 0i64 || idx >= bv.len then false
+    else
+      let word_idx = idx / 64i64
+      let bit_idx  = idx % 64i64
+      bv.words[word_idx] = bv.words[word_idx] ^ (1u64 << bit_idx as u64)
+      (bv.words[word_idx] & (1u64 << bit_idx as u64)) != 0u64
+
+fn bitvec_count_ones : *BitVec -> i64
+  | bv ->
+    let mut count : i64 = 0i64
+    let mut i : i64 = 0i64
+    let words_full = bv.len / 64i64
+    while i < words_full
+      let mut w = bv.words[i]
+      while w != 0u64
+        count = count + 1i64
+        w = w & (w -% 1u64)
+      i = i + 1i64
+    let rem = bv.len % 64i64
+    if rem > 0i64
+      let mut w = bv.words[words_full] & ((1u64 << rem as u64) -% 1u64)
+      while w != 0u64
+        count = count + 1i64
+        w = w & (w -% 1u64)
+    count
+
+fn bitvec_count_zeros : *BitVec -> i64
+  | bv -> bv.len - bitvec_count_ones(bv)
+
+fn bitvec_all : *BitVec -> bool
+  | bv -> bitvec_count_ones(bv) == bv.len
+
+fn bitvec_any : *BitVec -> bool
+  | bv -> bitvec_count_ones(bv) > 0i64
+
+fn bitvec_none : *BitVec -> bool
+  | bv -> bitvec_count_ones(bv) == 0i64
+
+fn bitvec_eq : (*BitVec, *BitVec) -> bool
+  | (a, b) ->
+    if a.len != b.len then false
+    else if a.len == 0i64 then true
+    else
+      let mut i : i64 = 0i64
+      let mut equal = true
+      while i < a.len
+        if bitvec_get(a, i) != bitvec_get(b, i)
+          equal = false
+          break
+        i = i + 1i64
+      equal
+
+fn bitvec_bitwise_not : *BitVec -> BitVec
+  | bv ->
+    let mut out = bitvec_with_cap(bv.len)
+    let mut i : i64 = 0i64
+    while i < bv.len
+      bitvec_push(&out, !bitvec_get(bv, i))
+      i = i + 1i64
+    out
+
+fn bitvec_parity : *BitVec -> bool
+  | bv -> (bitvec_count_ones(bv) & 1i64) != 0i64
+
+fn bitvec_trailing_zeros : *BitVec -> i64
+  | bv ->
+    let mut count : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i < bv.len
+      if bitvec_get(bv, i)
+        break
+      count = count + 1i64
+      i = i + 1i64
+    count
+
+fn bitvec_trailing_ones : *BitVec -> i64
+  | bv ->
+    let mut count : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i < bv.len
+      if !bitvec_get(bv, i)
+        break
+      count = count + 1i64
+      i = i + 1i64
+    count

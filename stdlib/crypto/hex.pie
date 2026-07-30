@@ -1,0 +1,52 @@
+mod crypto.hex
+
+use os.linux
+use str.string
+
+-- stdlib/crypto/hex.pie — Hexadecimal Encoding and Decoding
+-- Formats cryptographic digests and keys into hex strings and parses hex buffers.
+
+fn hex_encode_slice : (ptr, i64, bool) -> string.String
+  | (data, len, upper) ->
+    let alphabet = if upper then "0123456789ABCDEF" as *u8 else "0123456789abcdef" as *u8
+    let mut out = string.string_with_cap(len * 2i64)
+    let buf = data as *u8
+    let mut i : i64 = 0i64
+    while i < len
+      let b = buf[i] as i64
+      let hi = (b >> 4i64) & 0xFi64
+      let lo = b & 0xFi64
+      string.string_push_byte(&out, alphabet[hi])
+      string.string_push_byte(&out, alphabet[lo])
+      i = i + 1i64
+    out
+
+fn hex_char_to_val : u8 -> i64
+  | c ->
+    if c >= 48u8 && c <= 57u8 then (c as i64 - 48i64)
+    else if c >= 65u8 && c <= 70u8 then (c as i64 - 55i64)
+    else if c >= 97u8 && c <= 102u8 then (c as i64 - 87i64)
+    else -1i64
+
+fn hex_decode_slice : (ptr, i64) -> (ptr, i64, bool)
+  | (hex_str, len) ->
+    if (len & 1i64) != 0i64 then (0 as ptr, 0i64, false)
+    else
+      let out_len = len / 2i64
+      let out_buf = os.linux.malloc(out_len) as *u8
+      let in_buf  = hex_str as *u8
+      let mut i : i64 = 0i64
+      let mut ok = true
+      while i < out_len
+        let hi = hex_char_to_val(in_buf[i * 2i64])
+        let lo = hex_char_to_val(in_buf[i * 2i64 + 1i64])
+        if hi < 0i64 || lo < 0i64
+          ok = false
+          break
+        out_buf[i] = ((hi << 4i64) | lo) as u8
+        i = i + 1i64
+      if !ok
+        os.linux.free(out_buf as ptr)
+        (0 as ptr, 0i64, false)
+      else
+        (out_buf as ptr, out_len, true)

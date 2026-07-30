@@ -1,0 +1,104 @@
+mod net.url
+
+use os.linux
+use str.string
+use str.slice
+
+-- stdlib/net/url.pie — Lightweight URL/URI Parser and Formatter
+-- Breaks down URL strings into scheme, host, port, path, and query components.
+
+struct Url
+  scheme : string.String
+  host   : string.String
+  port   : i64
+  path   : string.String
+  query  : string.String
+
+fn url_destroy : *Url -> ()
+  | u ->
+    string.string_destroy(&u.scheme)
+    string.string_destroy(&u.host)
+    string.string_destroy(&u.path)
+    string.string_destroy(&u.query)
+    u.port = 0i64
+
+fn url_parse : ptr -> (Url, bool)
+  | cstr ->
+    let len = os.linux.strlen(cstr) as i64
+    let mut empty_u = Url {
+      scheme: string.string_new(),
+      host:   string.string_new(),
+      port:   0i64,
+      path:   string.string_new(),
+      query:  string.string_new()
+    }
+    let sep = "://"
+    let sep_idx = slice.str_find(cstr, len, sep as ptr, 3i64)
+    if sep_idx < 0i64 then (empty_u, false)
+    else
+      let scheme_str = string.string_from_slice(cstr, sep_idx)
+      let mut rest_idx = sep_idx + 3i64
+      let mut end_host = rest_idx
+      let buf = cstr as *u8
+      while end_host < len && buf[end_host] != 47u8 && buf[end_host] != 58u8 && buf[end_host] != 63u8
+        end_host = end_host + 1i64
+      let host_str = string.string_from_slice((cstr as i64 + rest_idx) as ptr, end_host - rest_idx)
+      let mut port_val : i64 = 80i64
+      if end_host < len && buf[end_host] == 58u8
+        end_host = end_host + 1i64
+        port_val = 0i64
+        while end_host < len && buf[end_host] >= 48u8 && buf[end_host] <= 57u8
+          port_val = port_val * 10i64 + (buf[end_host] as i64 - 48i64)
+          end_host = end_host + 1i64
+      let mut path_end = end_host
+      while path_end < len && buf[path_end] != 63u8
+        path_end = path_end + 1i64
+      let path_str = if path_end > end_host then string.string_from_slice((cstr as i64 + end_host) as ptr, path_end - end_host)
+                     else string.string_from_cstr("/" as ptr)
+      let query_str = if path_end < len && buf[path_end] == 63u8 then
+                        string.string_from_slice((cstr as i64 + path_end + 1i64) as ptr, len - path_end - 1i64)
+                      else string.string_new()
+      let parsed = Url {
+        scheme: scheme_str,
+        host:   host_str,
+        port:   port_val,
+        path:   path_str,
+        query:  query_str
+      }
+      (parsed, true)
+
+fn url_format : *Url -> string.String
+  | u ->
+    let mut out = string.string_with_cap(64i64)
+    string.string_concat(&out, &u.scheme)
+    string.string_push_cstr(&out, "://" as ptr)
+    string.string_concat(&out, &u.host)
+    if u.port != 80i64 && u.port != 443i64 && u.port > 0i64
+      string.string_push_byte(&out, 58u8)   -- ':'
+      -- append port digits
+      let mut pv = u.port
+      if pv >= 10000i64
+        string.string_push_byte(&out, (48i64 + pv / 10000i64) as u8)
+        string.string_push_byte(&out, (48i64 + (pv / 1000i64) % 10i64) as u8)
+        string.string_push_byte(&out, (48i64 + (pv / 100i64) % 10i64) as u8)
+        string.string_push_byte(&out, (48i64 + (pv / 10i64) % 10i64) as u8)
+        string.string_push_byte(&out, (48i64 + pv % 10i64) as u8)
+      else if pv >= 1000i64
+        string.string_push_byte(&out, (48i64 + pv / 1000i64) as u8)
+        string.string_push_byte(&out, (48i64 + (pv / 100i64) % 10i64) as u8)
+        string.string_push_byte(&out, (48i64 + (pv / 10i64) % 10i64) as u8)
+        string.string_push_byte(&out, (48i64 + pv % 10i64) as u8)
+      else if pv >= 100i64
+        string.string_push_byte(&out, (48i64 + pv / 100i64) as u8)
+        string.string_push_byte(&out, (48i64 + (pv / 10i64) % 10i64) as u8)
+        string.string_push_byte(&out, (48i64 + pv % 10i64) as u8)
+      else if pv >= 10i64
+        string.string_push_byte(&out, (48i64 + pv / 10i64) as u8)
+        string.string_push_byte(&out, (48i64 + pv % 10i64) as u8)
+      else
+        string.string_push_byte(&out, (48i64 + pv) as u8)
+    string.string_concat(&out, &u.path)
+    if string.string_len(&u.query) > 0i64
+      string.string_push_byte(&out, 63u8)   -- '?'
+      string.string_concat(&out, &u.query)
+    out

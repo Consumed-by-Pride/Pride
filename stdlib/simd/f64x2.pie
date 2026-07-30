@@ -1,0 +1,35 @@
+mod simd.f64x2
+
+-- stdlib/simd/f64x2.pie — 128-Bit Packed 2-Double SIMD Vector
+-- Two 64-bit floating-point lanes with elementwise arithmetic and dot product.
+
+struct F64x2
+  x0 : f64
+  x1 : f64
+
+fn f64x2_new : (f64, f64) -> F64x2
+  | (v0, v1) -> F64x2 { x0: v0, x1: v1 }
+
+fn f64x2_splat : f64 -> F64x2
+  | val -> F64x2 { x0: val, x1: val }
+
+fn f64x2_add : (F64x2, F64x2) -> F64x2
+  | (a, b) -> F64x2 { x0: a.x0 + b.x0, x1: a.x1 + b.x1 }
+
+fn f64x2_sub : (F64x2, F64x2) -> F64x2
+  | (a, b) -> F64x2 { x0: a.x0 - b.x0, x1: a.x1 - b.x1 }
+
+fn f64x2_mul : (F64x2, F64x2) -> F64x2
+  | (a, b) -> F64x2 { x0: a.x0 * b.x0, x1: a.x1 * b.x1 }
+
+fn f64x2_div : (F64x2, F64x2) -> F64x2
+  | (a, b) -> F64x2 { x0: a.x0 / b.x0, x1: a.x1 / b.x1 }
+
+fn f64x2_min : (F64x2, F64x2) -> F64x2
+  | (a, b) -> F64x2 { x0: if a.x0 < b.x0 then a.x0 else b.x0, x1: if a.x1 < b.x1 then a.x1 else b.x1 }
+
+fn f64x2_max : (F64x2, F64x2) -> F64x2
+  | (a, b) -> F64x2 { x0: if a.x0 > b.x0 then a.x0 else b.x0, x1: if a.x1 > b.x1 then a.x1 else b.x1 }
+
+fn f64x2_dot : (F64x2, F64x2) -> f64
+  | (a, b) -> (a.x0 * b.x0) + (a.x1 * b.x1)

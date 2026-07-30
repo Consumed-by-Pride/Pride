@@ -1,0 +1,25 @@
+mod regex
+
+use regex.ast
+use regex.nfa
+use regex.dfa
+use regex.matcher
+
+-- stdlib/regex.pie — Standard Library Finite Automata Regular Expression Suite
+-- Exports AST representation, Thompson NFA compilation, DFA subset construction,
+-- and linear-time string matching engines.
+
+-- AST
+fn node_new : (i64, u8, i64, i64) -> *ast.RegexNode       | (k, b, l, r) -> ast.regex_node_new(k, b, l, r)
+fn node_destroy : *ast.RegexNode -> ()                    | n -> ast.regex_node_destroy(n)
+
+-- NFA
+fn nfa_new : () -> nfa.Nfa                                | () -> nfa.nfa_new()
+fn nfa_destroy : *nfa.Nfa -> ()                           | n -> nfa.nfa_destroy(n)
+fn nfa_add : (*nfa.Nfa, i64, i64, i64, bool) -> i64       | (n, b, s0, s1, e) -> nfa.nfa_add_state(n, b, s0, s1, e)
+
+-- DFA & Matcher
+fn dfa_new : () -> dfa.Dfa                                | () -> dfa.dfa_new()
+fn dfa_destroy : *dfa.Dfa -> ()                           | d -> dfa.dfa_destroy(d)
+fn dfa_match : (*dfa.Dfa, ptr, i64) -> bool               | (d, p, l) -> matcher.regex_match_slice(d, p, l)
+fn dfa_match_str : (*dfa.Dfa, ptr) -> bool                | (d, s) -> matcher.regex_match_str(d, s)

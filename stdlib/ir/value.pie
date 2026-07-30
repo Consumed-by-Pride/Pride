@@ -1,0 +1,65 @@
+mod ir.value
+
+use os.linux
+use str.string
+use ir.types
+
+-- stdlib/ir/value.pie — Compiler IR SSA Values and Constants
+-- Represents SSA values, constants, globals, and function arguments.
+
+const VAL_KIND_CONST_INT   : i64 = 1i64
+const VAL_KIND_CONST_FLOAT : i64 = 2i64
+const VAL_KIND_CONST_STR   : i64 = 3i64
+const VAL_KIND_CONST_NULL  : i64 = 4i64
+const VAL_KIND_GLOBAL_REF  : i64 = 5i64
+const VAL_KIND_FUNC_REF    : i64 = 6i64
+const VAL_KIND_INSTR_RES   : i64 = 7i64
+
+struct IrValue
+  id       : i64
+  kind     : i64
+  type     : *types.IrType
+  int_val  : i64
+  flt_val  : f64
+  str_val  : string.String
+  name     : string.String
+
+fn ir_value_new_int : (i64, *types.IrType, i64) -> *IrValue
+  | (id, ty, val) ->
+    let v = os.linux.malloc(64i64) as *IrValue
+    v.id = id; v.kind = VAL_KIND_CONST_INT; v.type = ty
+    v.int_val = val; v.flt_val = 0.0f64; v.str_val = string.string_new()
+    v.name = string.string_new()
+    v
+
+fn ir_value_new_float : (i64, *types.IrType, f64) -> *IrValue
+  | (id, ty, val) ->
+    let v = os.linux.malloc(64i64) as *IrValue
+    v.id = id; v.kind = VAL_KIND_CONST_FLOAT; v.type = ty
+    v.int_val = 0i64; v.flt_val = val; v.str_val = string.string_new()
+    v.name = string.string_new()
+    v
+
+fn ir_value_new_str : (i64, *types.IrType, ptr) -> *IrValue
+  | (id, ty, cstr) ->
+    let v = os.linux.malloc(64i64) as *IrValue
+    v.id = id; v.kind = VAL_KIND_CONST_STR; v.type = ty
+    v.int_val = 0i64; v.flt_val = 0.0f64; v.str_val = string.string_from_cstr(cstr)
+    v.name = string.string_new()
+    v
+
+fn ir_value_new_global : (i64, *types.IrType, ptr) -> *IrValue
+  | (id, ty, name_cstr) ->
+    let v = os.linux.malloc(64i64) as *IrValue
+    v.id = id; v.kind = VAL_KIND_GLOBAL_REF; v.type = ty
+    v.int_val = 0i64; v.flt_val = 0.0f64; v.str_val = string.string_new()
+    v.name = string.string_from_cstr(name_cstr)
+    v
+
+fn ir_value_destroy : *IrValue -> ()
+  | v ->
+    if v as i64 == 0i64 then ()
+    else
+      string.string_destroy(&v.str_val)
+      string.string_destroy(&v.name)
+      os.linux.free(v as ptr)

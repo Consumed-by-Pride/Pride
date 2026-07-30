@@ -1,0 +1,157 @@
+mod ir.types
+
+use os.linux
+use vec.vec
+use str.string
+
+-- stdlib/ir/types.pie — Compiler IR Type System Representation
+-- Formal SSA types: integers, floats, pointers, aggregates, and function signatures.
+
+const IR_TYPE_VOID   : i64 = 0i64
+const IR_TYPE_INT    : i64 = 1i64
+const IR_TYPE_FLOAT  : i64 = 2i64
+const IR_TYPE_PTR    : i64 = 3i64
+const IR_TYPE_ARRAY  : i64 = 4i64
+const IR_TYPE_STRUCT : i64 = 5i64
+const IR_TYPE_UNION  : i64 = 6i64
+const IR_TYPE_FUNC   : i64 = 7i64
+
+struct IrType
+  kind         : i64
+  bits         : i64           -- integer width (8..128) or float width (32..64)
+  elem_type    : *IrType       -- for pointer or array element type
+  array_len    : i64
+  fields       : vec.Vec       -- vector of *IrType for struct/union
+  struct_name  : string.String
+  is_c_union   : bool
+
+struct IrFnType
+  return_type  : *IrType
+  param_types  : vec.Vec
+  is_vararg    : bool
+
+fn ir_type_new_void : () -> *IrType
+  | () ->
+    let t = os.linux.malloc(56i64) as *IrType
+    t.kind = IR_TYPE_VOID; t.bits = 0i64; t.elem_type = 0 as *IrType
+    t.array_len = 0i64; t.fields = vec.vec_new(4i64); t.struct_name = string.string_new()
+    t.is_c_union = false
+    t
+
+fn ir_type_new_int : i64 -> *IrType
+  | width ->
+    let t = os.linux.malloc(56i64) as *IrType
+    t.kind = IR_TYPE_INT; t.bits = width; t.elem_type = 0 as *IrType
+    t.array_len = 0i64; t.fields = vec.vec_new(4i64); t.struct_name = string.string_new()
+    t.is_c_union = false
+    t
+
+fn ir_type_new_float : i64 -> *IrType
+  | width ->
+    let t = os.linux.malloc(56i64) as *IrType
+    t.kind = IR_TYPE_FLOAT; t.bits = width; t.elem_type = 0 as *IrType
+    t.array_len = 0i64; t.fields = vec.vec_new(4i64); t.struct_name = string.string_new()
+    t.is_c_union = false
+    t
+
+fn ir_type_new_ptr : () -> *IrType
+  | () ->
+    let t = os.linux.malloc(56i64) as *IrType
+    t.kind = IR_TYPE_PTR; t.bits = 64i64; t.elem_type = 0 as *IrType
+    t.array_len = 0i64; t.fields = vec.vec_new(4i64); t.struct_name = string.string_new()
+    t.is_c_union = false
+    t
+
+fn ir_type_new_array : (*IrType, i64) -> *IrType
+  | (elem, count) ->
+    let t = os.linux.malloc(56i64) as *IrType
+    t.kind = IR_TYPE_ARRAY; t.bits = 0i64; t.elem_type = elem
+    t.array_len = count; t.fields = vec.vec_new(4i64); t.struct_name = string.string_new()
+    t.is_c_union = false
+    t
+
+fn ir_type_new_struct : ptr -> *IrType
+  | name_cstr ->
+    let t = os.linux.malloc(56i64) as *IrType
+    t.kind = IR_TYPE_STRUCT; t.bits = 0i64; t.elem_type = 0 as *IrType
+    t.array_len = 0i64; t.fields = vec.vec_new(8i64)
+    t.struct_name = string.string_from_cstr(name_cstr)
+    t.is_c_union = false
+    t
+
+fn ir_type_new_union : (ptr, bool) -> *IrType
+  | (name_cstr, is_c) ->
+    let t = os.linux.malloc(56i64) as *IrType
+    t.kind = IR_TYPE_UNION; t.bits = 0i64; t.elem_type = 0 as *IrType
+    t.array_len = 0i64; t.fields = vec.vec_new(8i64)
+    t.struct_name = string.string_from_cstr(name_cstr)
+    t.is_c_union = is_c
+    t
+
+fn ir_type_add_field : (*IrType, *IrType) -> ()
+  | (agg, field_ty) -> vec.vec_push(&agg.fields, field_ty as ptr)
+
+fn ir_type_alignof : *IrType -> i64
+  | ty ->
+    if ty as i64 == 0i64 then 8i64
+    else if ty.kind == IR_TYPE_VOID then 1i64
+    else if ty.kind == IR_TYPE_INT
+      if ty.bits <= 8i64 then 1i64
+      else if ty.bits <= 16i64 then 2i64
+      else if ty.bits <= 32i64 then 4i64
+      else 8i64
+    else if ty.kind == IR_TYPE_FLOAT
+      if ty.bits <= 32i64 then 4i64 else 8i64
+    else if ty.kind == IR_TYPE_PTR then 8i64
+    else if ty.kind == IR_TYPE_ARRAY
+      if ty.elem_type as i64 != 0i64 then ir_type_alignof(ty.elem_type) else 8i64
+    else if ty.kind == IR_TYPE_STRUCT || ty.kind == IR_TYPE_UNION
+      let mut max_a : i64 = 1i64
+      let mut i : i64 = 0i64
+      let len = vec.vec_len(&ty.fields)
+      while i < len
+        let fa = ir_type_alignof(vec.vec_get(&ty.fields, i) as *IrType)
+        if fa > max_a then max_a = fa
+        i = i + 1i64
+      max_a
+    else 8i64
+
+fn ir_type_sizeof : *IrType -> i64
+  | ty ->
+    if ty as i64 == 0i64 then 8i64
+    else if ty.kind == IR_TYPE_VOID then 0i64
+    else if ty.kind == IR_TYPE_INT
+      (ty.bits + 7i64) / 8i64
+    else if ty.kind == IR_TYPE_FLOAT
+      ty.bits / 8i64
+    else if ty.kind == IR_TYPE_PTR then 8i64
+    else if ty.kind == IR_TYPE_ARRAY
+      if ty.elem_type as i64 != 0i64 then ty.array_len * ir_type_sizeof(ty.elem_type) else 8i64
+    else if ty.kind == IR_TYPE_UNION
+      let mut max_sz : i64 = 0i64
+      let mut i : i64 = 0i64
+      let len = vec.vec_len(&ty.fields)
+      while i < len
+        let fs = ir_type_sizeof(vec.vec_get(&ty.fields, i) as *IrType)
+        if fs > max_sz then max_sz = fs
+        i = i + 1i64
+      let al = ir_type_alignof(ty)
+      let rem = max_sz % al
+      if rem != 0i64 then max_sz + al - rem else max_sz
+    else if ty.kind == IR_TYPE_STRUCT
+      let mut total : i64 = 0i64
+      let mut max_a : i64 = 1i64
+      let mut i : i64 = 0i64
+      let len = vec.vec_len(&ty.fields)
+      while i < len
+        let f_ty = vec.vec_get(&ty.fields, i) as *IrType
+        let fa   = ir_type_alignof(f_ty)
+        let fs   = ir_type_sizeof(f_ty)
+        if fa > max_a then max_a = fa
+        let rem  = total % fa
+        if rem != 0i64 then total = total + fa - rem
+        total = total + fs
+        i = i + 1i64
+      let rem2 = total % max_a
+      if rem2 != 0i64 then total + max_a - rem2 else total
+    else 8i64

@@ -87,7 +87,7 @@ fn stream_skip_whitespace : *FloatStream -> ()
     while s.pos < s.len
       let c = s.ptr[s.pos]
       if c == 32u8 || c == 9u8 || c == 10u8 || c == 13u8 then s.pos = s.pos + 1i64
-      else s.len   -- break
+      else break
 
 -- Try to match a literal string at current position. Returns true and advances if matched.
 fn stream_match : (*FloatStream, ptr, i64) -> bool

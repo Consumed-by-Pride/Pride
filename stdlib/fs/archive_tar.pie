@@ -1,0 +1,56 @@
+mod fs.archive_tar
+
+use os.linux
+use fs.file
+use str.string
+
+-- stdlib/fs/archive_tar.pie — POSIX TAR Archive (Tarball) Reader/Writer
+-- Formats 512-byte USTAR archive headers and data blocks.
+
+struct TarHeader
+  name     : string.String
+  mode     : i64
+  size     : i64
+  typeflag : u8
+
+const TAR_BLOCK_LEN : i64 = 512i64
+
+fn tar_header_new : (ptr, i64, i64, u8) -> TarHeader
+  | (name_cstr, mode, size, tflag) ->
+    TarHeader {
+      name:     string.string_from_cstr(name_cstr),
+      mode:     mode,
+      size:     size,
+      typeflag: tflag
+    }
+
+fn tar_header_destroy : *TarHeader -> ()
+  | h -> string.string_destroy(&h.name)
+
+fn tar_write_header_block : (*file.File, *TarHeader) -> i64
+  | (f, h) ->
+    let blk = os.linux.malloc(512i64) as *u8
+    os.linux.memset(blk as ptr, 0i32, 512u64)
+    let nlen = string.string_len(&h.name)
+    let copy_len = if nlen < 100i64 then nlen else 99i64
+    os.linux.memcpy(blk as ptr, string.string_as_slice(&h.name), copy_len as u64)
+    blk[156i64] = h.typeflag
+    let r = file.file_write_all(f, blk as ptr, 512i64)
+    os.linux.free(blk as ptr)
+    r
+
+fn tar_write_file_entry : (*file.File, ptr, i64, ptr, i64) -> i64
+  | (f, name_cstr, mode, data_ptr, data_len) ->
+    let mut hdr = tar_header_new(name_cstr, mode, data_len, 48u8)   -- '0' regular file
+    let r1 = tar_write_header_block(f, &hdr)
+    tar_header_destroy(&hdr)
+    if r1 < 0i64 then -1i64
+    else
+      let r2 = file.file_write_all(f, data_ptr, data_len)
+      let rem = (512i64 - (data_len % 512i64)) % 512i64
+      if rem > 0i64
+        let zero_pad = os.linux.malloc(rem)
+        os.linux.memset(zero_pad, 0i32, rem as u64)
+        file.file_write_all(f, zero_pad, rem)
+        os.linux.free(zero_pad)
+      512i64 + data_len + rem

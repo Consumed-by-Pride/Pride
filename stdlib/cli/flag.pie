@@ -1,0 +1,80 @@
+mod cli.flag
+
+use str.string
+use vec.vec
+
+-- stdlib/cli/flag.pie — CLI Flag Definitions and Argument Parsing Results
+-- Defines flag schemas (boolean, int, string) and holds parsed arguments.
+
+const KIND_BOOL   : i64 = 1i64
+const KIND_INT    : i64 = 2i64
+const KIND_STRING : i64 = 3i64
+
+struct Flag
+  name      : string.String
+  short_c   : u8
+  kind      : i64
+  b_val     : bool
+  i_val     : i64
+  s_val     : string.String
+  doc       : string.String
+
+struct ArgResult
+  flags     : vec.Vec
+  pos_args  : vec.Vec
+
+fn flag_new_bool : (ptr, u8, bool, ptr) -> *Flag
+  | (name_cstr, sh, default_val, doc_cstr) ->
+    let f = os.linux.malloc(56i64) as *Flag
+    f.name    = string.string_from_cstr(name_cstr)
+    f.short_c = sh
+    f.kind    = KIND_BOOL
+    f.b_val   = default_val
+    f.i_val   = 0i64
+    f.s_val   = string.string_new()
+    f.doc     = string.string_from_cstr(doc_cstr)
+    f
+
+fn flag_new_int : (ptr, u8, i64, ptr) -> *Flag
+  | (name_cstr, sh, default_val, doc_cstr) ->
+    let f = os.linux.malloc(56i64) as *Flag
+    f.name    = string.string_from_cstr(name_cstr)
+    f.short_c = sh
+    f.kind    = KIND_INT
+    f.b_val   = false
+    f.i_val   = default_val
+    f.s_val   = string.string_new()
+    f.doc     = string.string_from_cstr(doc_cstr)
+    f
+
+fn flag_new_string : (ptr, u8, ptr, ptr) -> *Flag
+  | (name_cstr, sh, default_cstr, doc_cstr) ->
+    let f = os.linux.malloc(56i64) as *Flag
+    f.name    = string.string_from_cstr(name_cstr)
+    f.short_c = sh
+    f.kind    = KIND_STRING
+    f.b_val   = false
+    f.i_val   = 0i64
+    f.s_val   = string.string_from_cstr(default_cstr)
+    f.doc     = string.string_from_cstr(doc_cstr)
+    f
+
+fn flag_destroy : *Flag -> ()
+  | f ->
+    if f as i64 == 0i64 then ()
+    else
+      string.string_destroy(&f.name)
+      string.string_destroy(&f.s_val)
+      string.string_destroy(&f.doc)
+      os.linux.free(f as ptr)
+
+fn argresult_destroy : *ArgResult -> ()
+  | res ->
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&res.pos_args)
+    while i < len
+      let s_ptr = vec.vec_get(&res.pos_args, i) as *string.String
+      string.string_destroy(s_ptr)
+      i = i + 1i64
+    vec.vec_destroy(&res.pos_args)
+    vec.vec_destroy(&res.flags)

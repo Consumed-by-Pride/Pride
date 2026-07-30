@@ -1,0 +1,94 @@
+mod db.memtable
+
+use os.linux
+use str.string
+use str.slice
+use vec.vec
+
+-- stdlib/db/memtable.pie — Ordered In-Memory Table (MemTable)
+-- Sorted key-value memory buffer prior to SSTable disk compaction.
+
+struct MemEntry
+  key   : string.String
+  val   : string.String
+  tomb  : bool
+
+struct MemTable
+  entries : vec.Vec
+  max_cap : i64
+
+fn mementry_new : (ptr, ptr, bool) -> *MemEntry
+  | (k_cstr, v_cstr, tomb) ->
+    let e = os.linux.malloc(40i64) as *MemEntry
+    e.key  = string.string_from_cstr(k_cstr)
+    e.val  = string.string_from_cstr(v_cstr)
+    e.tomb = tomb
+    e
+
+fn mementry_destroy : *MemEntry -> ()
+  | e ->
+    if e as i64 == 0i64 then ()
+    else
+      string.string_destroy(&e.key)
+      string.string_destroy(&e.val)
+      os.linux.free(e as ptr)
+
+fn memtable_new : i64 -> MemTable
+  | cap -> MemTable { entries: vec.vec_new(16i64), max_cap: if cap <= 0i64 then 1024i64 else cap }
+
+fn memtable_destroy : *MemTable -> ()
+  | mt ->
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&mt.entries)
+    while i < len
+      mementry_destroy(vec.vec_get(&mt.entries, i) as *MemEntry)
+      i = i + 1i64
+    vec.vec_destroy(&mt.entries)
+
+fn memtable_find_idx : (*MemTable, ptr) -> i64
+  | (mt, key_cstr) ->
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&mt.entries)
+    let mut found = -1i64
+    while i < len
+      let e = vec.vec_get(&mt.entries, i) as *MemEntry
+      let kslice = string.string_as_slice(&e.key)
+      let klen   = string.string_len(&e.key)
+      if slice.str_eq(kslice, klen, key_cstr, os.linux.strlen(key_cstr) as i64)
+        found = i
+        break
+      i = i + 1i64
+    found
+
+fn memtable_put : (*MemTable, ptr, ptr) -> ()
+  | (mt, key_cstr, val_cstr) ->
+    let idx = memtable_find_idx(mt, key_cstr)
+    if idx >= 0i64
+      let e = vec.vec_get(&mt.entries, idx) as *MemEntry
+      string.string_destroy(&e.val)
+      e.val  = string.string_from_cstr(val_cstr)
+      e.tomb = false
+    else
+      let ne = mementry_new(key_cstr, val_cstr, false)
+      vec.vec_push(&mt.entries, ne as ptr)
+
+fn memtable_get : (*MemTable, ptr) -> (string.String, bool)
+  | (mt, key_cstr) ->
+    let idx = memtable_find_idx(mt, key_cstr)
+    if idx < 0i64 then (string.string_new(), false)
+    else
+      let e = vec.vec_get(&mt.entries, idx) as *MemEntry
+      if e.tomb then (string.string_new(), false)
+      else (string.string_clone(&e.val), true)
+
+fn memtable_delete : (*MemTable, ptr) -> bool
+  | (mt, key_cstr) ->
+    let idx = memtable_find_idx(mt, key_cstr)
+    if idx < 0i64
+      let ne = mementry_new(key_cstr, "" as ptr, true)
+      vec.vec_push(&mt.entries, ne as ptr)
+      true
+    else
+      let e = vec.vec_get(&mt.entries, idx) as *MemEntry
+      e.tomb = true
+      true

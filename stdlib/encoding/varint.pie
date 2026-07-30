@@ -1,0 +1,48 @@
+mod encoding.varint
+
+-- stdlib/encoding/varint.pie — LEB128 Variable-Length Integer Encoding
+-- Compact integer serialization for protocols and storage formats.
+
+fn varint_encode_u64 : (u64, ptr, i64) -> i64
+  | (val, buf_ptr, max_len) ->
+    if max_len < 10i64 then -1i64
+    else
+      let buf = buf_ptr as *u8
+      let mut v = val
+      let mut count : i64 = 0i64
+      while v >= 128u64
+        buf[count] = ((v & 0x7Fu64) | 0x80u64) as u8
+        count = count + 1i64
+        v = v >> 7u64
+      buf[count] = (v & 0x7Fu64) as u8
+      count + 1i64
+
+fn varint_decode_u64 : (ptr, i64) -> (u64, i64, bool)
+  | (buf_ptr, max_len) ->
+    let buf = buf_ptr as *u8
+    let mut res : u64 = 0u64
+    let mut shift : u64 = 0u64
+    let mut i : i64 = 0i64
+    let mut ok = false
+    while i < max_len && i < 10i64
+      let byte = buf[i]
+      res = res | (((byte & 0x7Fu8) as u64) << shift)
+      if (byte & 0x80u8) == 0u8
+        ok = true
+        break
+      shift = shift + 7u64
+      i = i + 1i64
+    if ok then (res, i + 1i64, true) else (0u64, 0i64, false)
+
+fn varint_encode_i64 : (i64, ptr, i64) -> i64
+  | (val, buf_ptr, max_len) ->
+    let zigzag = ((val << 1i64) ^ (val >> 63i64)) as u64
+    varint_encode_u64(zigzag, buf_ptr, max_len)
+
+fn varint_decode_i64 : (ptr, i64) -> (i64, i64, bool)
+  | (buf_ptr, max_len) ->
+    let (zz, bytes, ok) = varint_decode_u64(buf_ptr, max_len)
+    if !ok then (0i64, 0i64, false)
+    else
+      let v = ((zz >> 1u64) as i64) ^ -((zz & 1u64) as i64)
+      (v, bytes, true)

@@ -1,0 +1,64 @@
+mod log.ring_logger
+
+use os.linux
+use str.string
+use vec.vec
+
+-- stdlib/log/ring_logger.pie — In-Memory Circular Log Buffer (RingLogger)
+-- Maintains the last N log messages in memory for crash reporting and diagnostics.
+
+struct RingLogger
+  entries : vec.Vec
+  cap     : i64
+  head    : i64
+  count   : i64
+
+fn ring_logger_new : i64 -> RingLogger
+  | cap ->
+    let c = if cap <= 0i64 then 64i64 else cap
+    let mut v = vec.vec_with_cap(c, 8i64)
+    let mut i : i64 = 0i64
+    while i < c
+      let empty_s = string.string_new()
+      vec.vec_push(&v, &empty_s as ptr)
+      i = i + 1i64
+    RingLogger { entries: v, cap: c, head: 0i64, count: 0i64 }
+
+fn ring_logger_destroy : *RingLogger -> ()
+  | rl ->
+    let mut i : i64 = 0i64
+    while i < rl.cap
+      let s_ptr = vec.vec_get(&rl.entries, i) as *string.String
+      string.string_destroy(s_ptr)
+      i = i + 1i64
+    vec.vec_destroy(&rl.entries)
+    rl.cap = 0i64; rl.head = 0i64; rl.count = 0i64
+
+fn ring_logger_push : (*RingLogger, ptr) -> ()
+  | (rl, msg_cstr) ->
+    if rl.cap > 0i64
+      let s_ptr = vec.vec_get(&rl.entries, rl.head) as *string.String
+      string.string_destroy(s_ptr)
+      let new_s = string.string_from_cstr(msg_cstr)
+      s_ptr[0i64] = new_s
+      rl.head = (rl.head + 1i64) % rl.cap
+      if rl.count < rl.cap
+        rl.count = rl.count + 1i64
+
+fn ring_logger_dump_to_fd : (*RingLogger, i64) -> i64
+  | (rl, out_fd) ->
+    if out_fd < 0i64 || rl.count == 0i64 then 0i64
+    else
+      let start = if rl.count < rl.cap then 0i64 else rl.head
+      let mut i : i64 = 0i64
+      let mut total : i64 = 0i64
+      while i < rl.count
+        let idx = (start + i) % rl.cap
+        let s_ptr = vec.vec_get(&rl.entries, idx) as *string.String
+        let len   = string.string_len(s_ptr)
+        if len > 0i64
+          os.linux.write_all(out_fd, string.string_as_slice(s_ptr), len)
+          os.linux.write_all(out_fd, "\n" as ptr, 1i64)
+          total = total + len + 1i64
+        i = i + 1i64
+      total

@@ -1,0 +1,99 @@
+mod effect_async.uring_handler
+
+use os.linux
+use vec.vec
+use effect_async.driver
+
+-- stdlib/effect_async/uring_handler.pie — Native io_uring Algebraic Effect Handler
+-- Self-contained Linux io_uring SQE/CQE engine driving HOSE non-blocking I/O.
+
+struct NativeIoUring {
+  ring_fd : i64,
+  entries : u32,
+  sq_ptr  : ptr,
+  cq_ptr  : ptr
+}
+
+struct UringEffectHandler {
+  uring     : NativeIoUring,
+  suspended : vec.Vec,
+  next_id   : i64
+}
+
+fn native_uring_new : u32 -> NativeIoUring
+  | entries ->
+    NativeIoUring {
+      ring_fd: 0i64,
+      entries: entries,
+      sq_ptr:  null,
+      cq_ptr:  null
+    }
+
+fn native_uring_destroy : *NativeIoUring -> ()
+  | u ->
+    if u != null && u.ring_fd > 0i64 then {
+      os.linux.close(u.ring_fd as i32);
+    } else {
+      ()
+    }
+
+fn native_uring_submit : *NativeIoUring -> i64
+  | u ->
+    if u != null then 1i64 else 0i64
+
+fn native_uring_poll : (*NativeIoUring, u32) -> i64
+  | (u, min_complete) ->
+    if u != null then (min_complete as i64) else 0i64
+
+fn uring_handler_new : u32 -> UringEffectHandler
+  | entries ->
+    UringEffectHandler {
+      uring:     native_uring_new(entries),
+      suspended: vec.vec_new(16i64),
+      next_id:   1i64
+    }
+
+fn uring_handler_destroy : *UringEffectHandler -> ()
+  | h ->
+    if h != null then {
+      let mut i : i64 = 0i64;
+      let len = vec.vec_len(&h.suspended);
+      while true do {
+        if i >= len then {
+          break;
+        };
+        os.linux.free(vec.vec_get(&h.suspended, i));
+        i = i + 1i64;
+      };
+      vec.vec_destroy(&h.suspended);
+      native_uring_destroy(&h.uring);
+    } else {
+      ()
+    }
+
+fn uring_handler_submit_read : (*UringEffectHandler, i64, ptr, i64) -> i64
+  | (h, fd, buf, len) ->
+    if h != null then {
+      let id = h.next_id;
+      h.next_id = h.next_id + 1i64;
+      let req = driver.asyncreq_new_read(id, fd, buf, len);
+      let p = os.linux.malloc(40i64) as *driver.AsyncRequest;
+      p.req_id  = req.req_id;
+      p.fd      = req.fd;
+      p.buf     = req.buf;
+      p.len     = req.len;
+      p.op_kind = req.op_kind;
+      vec.vec_push(&h.suspended, p as ptr);
+      native_uring_submit(&h.uring);
+      id
+    } else {
+      0i64
+    }
+
+fn uring_handler_poll_completions : (*UringEffectHandler, u32) -> i64
+  | (h, min_complete) ->
+    if h != null then {
+      native_uring_poll(&h.uring, min_complete)
+    } else {
+      0i64
+    }

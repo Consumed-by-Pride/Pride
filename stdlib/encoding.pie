@@ -1,0 +1,42 @@
+mod encoding
+
+use encoding.base64
+use encoding.json_lite
+use encoding.url_encode
+use encoding.hex_dump
+use encoding.varint
+use encoding.csv
+use encoding.ini
+
+-- stdlib/encoding.pie — Standard Library Data Encoding Suite
+-- Exports Base64/Base64URL, lightweight JSON tokenizer/parser, URL percent-encoding,
+-- canonical hexdump formatting, and LEB128 variable-length integer serialization.
+
+-- Base64
+fn base64_encode : (ptr, i64, bool) -> str.string.String | (d, l, u) -> base64.base64_encode_slice(d, l, u)
+fn base64_decode : (ptr, i64) -> (ptr, i64, bool)        | (s, l) -> base64.base64_decode_slice(s, l)
+
+-- JSON Lite
+fn json_null : () -> *json_lite.JsonNode                 | () -> json_lite.json_node_null()
+fn json_destroy : *json_lite.JsonNode -> ()              | n -> json_lite.json_node_destroy(n)
+fn json_is_obj : *json_lite.JsonNode -> bool             | n -> json_lite.json_node_is_object(n)
+fn json_get : (*json_lite.JsonNode, ptr) -> *json_lite.JsonNode | (n, k) -> json_lite.json_node_get_field(n, k)
+
+-- URL percent encoding
+fn url_encode : (ptr, i64) -> str.string.String          | (d, l) -> url_encode.url_percent_encode(d, l)
+fn url_decode : (ptr, i64) -> (str.string.String, bool)  | (d, l) -> url_encode.url_percent_decode(d, l)
+
+-- Hex dump
+fn hex_dump : (ptr, i64) -> str.string.String            | (d, l) -> hex_dump.hex_dump_format_slice(d, l)
+
+-- LEB128 Varint
+fn varint_encode_u64 : (u64, ptr, i64) -> i64            | (v, b, l) -> varint.varint_encode_u64(v, b, l)
+fn varint_decode_u64 : (ptr, i64) -> (u64, i64, bool)    | (b, l) -> varint.varint_decode_u64(b, l)
+fn varint_encode_i64 : (i64, ptr, i64) -> i64            | (v, b, l) -> varint.varint_encode_i64(v, b, l)
+fn varint_decode_i64 : (ptr, i64) -> (i64, i64, bool)    | (b, l) -> varint.varint_decode_i64(b, l)
+
+-- CSV & INI
+fn csv_parse : (ptr, i64, u8) -> csv.CsvTable            | (p, l, d) -> csv.csv_parse_table(p, l, d)
+fn csv_destroy : *csv.CsvTable -> ()                     | t -> csv.csv_table_destroy(t)
+fn ini_new : () -> ini.IniConfig                         | () -> ini.ini_config_new()
+fn ini_destroy : *ini.IniConfig -> ()                    | c -> ini.ini_config_destroy(c)

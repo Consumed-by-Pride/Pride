@@ -1,0 +1,32 @@
+mod graph.autodiff
+
+use os.linux
+use vec.vec
+use math.grad
+
+-- stdlib/graph/autodiff.pie — Reverse-Mode DAG Automatic Differentiation
+-- Reverse-engineers operational graphs to generate gradient computation nodes.
+
+struct AutoDiffGraph
+  tape : grad.GradTape
+
+fn autodiff_new : () -> AutoDiffGraph
+  | () -> AutoDiffGraph { tape: grad.grad_tape_new() }
+
+fn autodiff_destroy : *AutoDiffGraph -> ()
+  | g -> grad.grad_tape_destroy(&g.tape)
+
+fn autodiff_var : (*AutoDiffGraph, f64) -> i64
+  | (g, val) -> grad.grad_tape_push_var(&g.tape, val)
+
+fn autodiff_add_op : (*AutoDiffGraph, i64, i64, f64) -> i64
+  | (g, a0, a1, val) -> grad.grad_tape_push_op(&g.tape, grad.OP_ADD, a0, a1, val)
+
+fn autodiff_mul_op : (*AutoDiffGraph, i64, i64, f64) -> i64
+  | (g, a0, a1, val) -> grad.grad_tape_push_op(&g.tape, grad.OP_MUL, a0, a1, val)
+
+fn autodiff_backward : (*AutoDiffGraph, i64) -> ()
+  | (g, target_id) -> grad.grad_tape_backward(&g.tape, target_id)
+
+fn autodiff_get_grad : (*AutoDiffGraph, i64) -> f64
+  | (g, var_id) -> grad.grad_tape_get_grad(&g.tape, var_id)

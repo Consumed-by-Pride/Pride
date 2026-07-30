@@ -1,0 +1,81 @@
+mod lex
+
+use os.linux
+use str.ascii
+
+-- stdlib/lex.pie — Zero-Copy Stream Lexer and Scanner
+-- Produces tokens with direct buffer spans and line/column tracking.
+
+struct Span
+  start : i64
+  len   : i64
+  line  : i64
+  col   : i64
+
+struct Token
+  kind  : i64
+  span  : Span
+
+const TOK_EOF    : i64 = 0i64
+const TOK_IDENT  : i64 = 1i64
+const TOK_INT    : i64 = 2i64
+const TOK_PUNCT  : i64 = 3i64
+
+struct Lexer
+  buf  : ptr
+  len  : i64
+  pos  : i64
+  line : i64
+  col  : i64
+
+fn lexer_new : (ptr, i64) -> Lexer
+  | (buf, len) -> Lexer { buf: buf, len: len, pos: 0i64, line: 1i64, col: 1i64 }
+
+fn lexer_peek_byte : *Lexer -> i64
+  | lx ->
+    if lx.pos >= lx.len then -1i64
+    else (lx.buf as *u8)[lx.pos] as i64
+
+fn lexer_advance : *Lexer -> i64
+  | lx ->
+    if lx.pos >= lx.len then -1i64
+    else
+      let c = (lx.buf as *u8)[lx.pos] as i64
+      lx.pos = lx.pos + 1i64
+      if c == 10i64
+        lx.line = lx.line + 1i64
+        lx.col  = 1i64
+      else
+        lx.col = lx.col + 1i64
+      c
+
+fn lexer_skip_whitespace : *Lexer -> ()
+  | lx ->
+    while lx.pos < lx.len
+      let c = lexer_peek_byte(lx)
+      if c == 32i64 || c == 9i64 || c == 10i64 || c == 13i64
+        lexer_advance(lx)
+      else
+        break
+
+fn lexer_next_token : *Lexer -> Token
+  | lx ->
+    lexer_skip_whitespace(lx)
+    if lx.pos >= lx.len
+      Token { kind: TOK_EOF, span: Span { start: lx.len, len: 0i64, line: lx.line, col: lx.col } }
+    else
+      let start_pos = lx.pos
+      let start_ln  = lx.line
+      let start_col = lx.col
+      let c = lexer_peek_byte(lx)
+      if ascii.ascii_is_alpha(c as u8) || c == 95i64   -- '_'
+        while lx.pos < lx.len && (ascii.ascii_is_alphanumeric(lexer_peek_byte(lx) as u8) || lexer_peek_byte(lx) == 95i64)
+          lexer_advance(lx)
+        Token { kind: TOK_IDENT, span: Span { start: start_pos, len: lx.pos - start_pos, line: start_ln, col: start_col } }
+      else if ascii.ascii_is_digit(c as u8)
+        while lx.pos < lx.len && ascii.ascii_is_digit(lexer_peek_byte(lx) as u8)
+          lexer_advance(lx)
+        Token { kind: TOK_INT, span: Span { start: start_pos, len: lx.pos - start_pos, line: start_ln, col: start_col } }
+      else
+        lexer_advance(lx)
+        Token { kind: TOK_PUNCT, span: Span { start: start_pos, len: 1i64, line: start_ln, col: start_col } }

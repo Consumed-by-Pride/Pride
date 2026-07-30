@@ -1,0 +1,59 @@
+mod net
+
+use net.ip
+use net.sockaddr
+use net.tcp
+use net.udp
+use net.http
+use net.url
+use net.dns
+use net.websocket
+
+-- stdlib/net.pie — Standard Library Network Socket & Address Suite
+-- Exports IPv4/IPv6 addresses, socket endpoints, TCP stream/listener, and UDP sockets.
+
+-- IP Addresses
+fn ipv4 : (u8, u8, u8, u8) -> ip.Ipv4Addr                    | (a, b, c, d) -> ip.ipv4_new(a, b, c, d)
+fn ipv4_localhost : () -> ip.Ipv4Addr                        | () -> ip.ipv4_localhost()
+fn ipv4_any : () -> ip.Ipv4Addr                              | () -> ip.ipv4_any()
+fn ipv4_is_loopback : *ip.Ipv4Addr -> bool                   | addr -> ip.ipv4_is_loopback(addr)
+fn ipv4_is_private : *ip.Ipv4Addr -> bool                    | addr -> ip.ipv4_is_private(addr)
+fn ipv4_to_string : *ip.Ipv4Addr -> str.string.String        | addr -> ip.ipv4_to_string(addr)
+fn ipv4_parse : ptr -> (ip.Ipv4Addr, bool)                   | cstr -> ip.ipv4_parse(cstr)
+
+-- Socket Addresses
+fn sockaddr_v4 : (ip.Ipv4Addr, u16) -> sockaddr.SocketAddrV4 | (ip_addr, port) -> sockaddr.sockaddr_v4_new(ip_addr, port)
+fn sa_port : *sockaddr.SocketAddrV4 -> u16                   | sa -> sockaddr.sockaddr_v4_port(sa)
+fn sa_ip : *sockaddr.SocketAddrV4 -> ip.Ipv4Addr             | sa -> sockaddr.sockaddr_v4_ip(sa)
+
+-- TCP
+fn tcp_connect : *sockaddr.SocketAddrV4 -> (tcp.TcpStream, i64)        | sa -> tcp.tcp_connect_v4(sa)
+fn tcp_listen : (*sockaddr.SocketAddrV4, i64) -> (tcp.TcpListener, i64) | (sa, bl) -> tcp.tcp_listen_v4(sa, bl)
+fn tcp_accept : *tcp.TcpListener -> (tcp.TcpStream, i64)               | l -> tcp.tcp_accept(l)
+fn tcp_read : (*tcp.TcpStream, ptr, i64) -> i64                        | (s, b, c) -> tcp.tcp_read(s, b, c)
+fn tcp_write : (*tcp.TcpStream, ptr, i64) -> i64                       | (s, b, c) -> tcp.tcp_write(s, b, c)
+fn tcp_nodelay : (*tcp.TcpStream, bool) -> i64                         | (s, en) -> tcp.tcp_set_nodelay(s, en)
+fn tcp_keepalive : (*tcp.TcpStream, bool) -> i64                       | (s, en) -> tcp.tcp_set_keepalive(s, en)
+fn tcp_reuseaddr : (*tcp.TcpListener, bool) -> i64                     | (l, en) -> tcp.tcp_set_reuseaddr(l, en)
+fn tcp_close_stream : *tcp.TcpStream -> ()                             | s -> tcp.tcp_stream_close(s)
+fn tcp_close_listener : *tcp.TcpListener -> ()                         | l -> tcp.tcp_listener_close(l)
+
+-- UDP
+fn udp_bind : *sockaddr.SocketAddrV4 -> (udp.UdpSocket, i64)           | sa -> udp.udp_bind_v4(sa)
+fn udp_send_to : (*udp.UdpSocket, ptr, i64, *sockaddr.SocketAddrV4) -> i64 | (s, b, l, sa) -> udp.udp_send_to_v4(s, b, l, sa)
+fn udp_recv_from : (*udp.UdpSocket, ptr, i64) -> (i64, sockaddr.SocketAddrV4) | (s, b, m) -> udp.udp_recv_from_v4(s, b, m)
+fn udp_close : *udp.UdpSocket -> ()                                    | s -> udp.udp_close(s)
+
+-- HTTP/1.1 & URL
+fn http_format_request : *http.HttpRequest -> str.string.String        | req -> http.http_request_format(req)
+fn http_format_response : *http.HttpResponse -> str.string.String      | resp -> http.http_response_format(resp)
+fn http_parse_status : ptr -> (i64, bool)                              | cstr -> http.http_parse_status_code(cstr)
+fn url_parse : ptr -> (url.Url, bool)                                  | cstr -> url.url_parse(cstr)
+fn url_format : *url.Url -> str.string.String                          | u -> url.url_format(u)
+fn url_destroy : *url.Url -> ()                                        | u -> url.url_destroy(u)
+
+-- DNS & WebSocket
+fn dns_resolve_ipv4 : ptr -> (ip.Ipv4Addr, bool)                       | domain -> dns.dns_resolve_ipv4_cstr(domain)
+fn ws_frame_new : (u8, ptr, i64) -> websocket.WsFrame                  | (op, d, l) -> websocket.ws_frame_new(op, d, l)
+fn ws_frame_encode : *websocket.WsFrame -> str.string.String           | f -> websocket.ws_frame_encode(f)
+fn ws_frame_destroy : *websocket.WsFrame -> ()                         | f -> websocket.ws_frame_destroy(f)

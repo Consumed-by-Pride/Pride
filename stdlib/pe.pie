@@ -1,0 +1,44 @@
+mod pe
+
+-- stdlib/pe.pie — Portable Executable (PE32+ / COFF) Layout and Parser
+-- Binary layout mappings for Windows 64-bit EXE and DLL files.
+
+struct PeDosHdr
+  e_magic    : u16   -- 0x5A4D ('M' 'Z')
+  e_cblp     : u16
+  e_cp       : u16
+  e_crlc     : u16
+  e_cparhdr  : u16
+  e_minalloc : u16
+  e_maxalloc : u16
+  e_ss       : u16
+  e_sp       : u16
+  e_csum     : u16
+  e_ip       : u16
+  e_cs       : u16
+  e_lfarlc   : u16
+  e_ovno     : u16
+  e_res0     : u64
+  e_oemid    : u16
+  e_oeminfo  : u16
+  e_res2     : u64
+  e_lfanew   : u32   -- offset to PE header
+
+struct PeCoffHdr
+  machine   : u16
+  num_sects : u16
+  timedate  : u32
+  sym_table : u32
+  num_syms  : u32
+  opt_hdr   : u16
+  characteristics : u16
+
+const IMAGE_FILE_MACHINE_AMD64 : u16 = 34404u16   -- 0x8664
+
+fn pe_is_valid : ptr -> bool
+  | dos_ptr ->
+    let dos = dos_ptr as *PeDosHdr
+    if dos.e_magic != 23117u16 then false         -- 0x5A4D ('M' 'Z')
+    else
+      let pe_sig_ptr = (dos_ptr as i64 + dos.e_lfanew as i64) as *u32
+      pe_sig_ptr[0i64] == 17744u32                -- 0x00004550 ('P' 'E' '\0' '\0')

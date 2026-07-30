@@ -1,0 +1,137 @@
+mod time.date
+
+use str.string
+
+-- stdlib/time/date.pie — Calendar Date and UTC Timestamp Breakdown
+-- Converts Unix timestamps to year, month, day, hour, minute, second.
+
+struct Date
+  year  : i64
+  month : i64
+  day   : i64
+
+struct TimeOfDay
+  hour   : i64
+  minute : i64
+  second : i64
+
+struct DateTime
+  date : Date
+  time : TimeOfDay
+  wday : i64   -- 0 = Sunday, 1 = Monday, ... 6 = Saturday
+
+fn is_leap_year : i64 -> bool
+  | year ->
+    if (year % 400i64) == 0i64 then true
+    else if (year % 100i64) == 0i64 then false
+    else (year % 4i64) == 0i64
+
+fn days_in_month : (i64, i64) -> i64
+  | (year, month) ->
+    if month == 2i64 then (if is_leap_year(year) then 29i64 else 28i64)
+    else if month == 4i64 || month == 6i64 || month == 9i64 || month == 11i64 then 30i64
+    else 31i64
+
+fn days_in_year : i64 -> i64
+  | year -> if is_leap_year(year) then 366i64 else 365i64
+
+fn day_of_week : (i64, i64, i64) -> i64
+  | (year, month, day) ->
+    -- Zeller-inspired day of week calculation
+    let mut y = year
+    let mut m = month
+    if m < 3i64
+      m = m + 12i64
+      y = y - 1i64
+    let k = y % 100i64
+    let j = y / 100i64
+    let h = (day + (13i64 * (m + 1i64)) / 5i64 + k + (k / 4i64) + (j / 4i64) - (2i64 * j)) % 7i64
+    (h + 7i64) % 7i64
+
+fn datetime_from_unix_timestamp : i64 -> DateTime
+  | unix_sec ->
+    let mut days = unix_sec / 86400i64
+    let mut rem_sec = unix_sec % 86400i64
+    if rem_sec < 0i64
+      rem_sec = rem_sec + 86400i64
+      days = days - 1i64
+
+    let wday = (days + 4i64) % 7i64
+    let wday_norm = if wday < 0i64 then wday + 7i64 else wday
+
+    let hour   = rem_sec / 3600i64
+    let minute = (rem_sec % 3600i64) / 60i64
+    let second = rem_sec % 60i64
+
+    let mut y : i64 = 1970i64
+    while true
+      let diy = days_in_year(y)
+      if days < diy
+        break
+      days = days - diy
+      y = y + 1i64
+
+    let mut m : i64 = 1i64
+    while m <= 12i64
+      let dim = days_in_month(y, m)
+      if days < dim
+        break
+      days = days - dim
+      m = m + 1i64
+
+    DateTime {
+      date: Date { year: y, month: m, day: days + 1i64 },
+      time: TimeOfDay { hour: hour, minute: minute, second: second },
+      wday: wday_norm
+    }
+
+fn date_is_valid : (i64, i64, i64) -> bool
+  | (year, month, day) ->
+    if month < 1i64 || month > 12i64 then false
+    else
+      let dim = days_in_month(year, month)
+      day >= 1i64 && day <= dim
+
+fn datetime_to_unix_timestamp : *DateTime -> i64
+  | dt ->
+    let mut days : i64 = 0i64
+    let mut y : i64 = 1970i64
+    if dt.date.year >= 1970i64
+      while y < dt.date.year
+        days = days + days_in_year(y)
+        y = y + 1i64
+    let mut m : i64 = 1i64
+    while m < dt.date.month
+      days = days + days_in_month(dt.date.year, m)
+      m = m + 1i64
+    days = days + (dt.date.day - 1i64)
+    days * 86400i64 + dt.time.hour * 3600i64 + dt.time.minute * 60i64 + dt.time.second
+
+fn push_2_digits : (*string.String, i64) -> ()
+  | (s, val) ->
+    string.string_push_byte(s, (48i64 + (val / 10i64) % 10i64) as u8)
+    string.string_push_byte(s, (48i64 + val % 10i64) as u8)
+
+fn push_4_digits : (*string.String, i64) -> ()
+  | (s, val) ->
+    string.string_push_byte(s, (48i64 + (val / 1000i64) % 10i64) as u8)
+    string.string_push_byte(s, (48i64 + (val / 100i64) % 10i64) as u8)
+    string.string_push_byte(s, (48i64 + (val / 10i64) % 10i64) as u8)
+    string.string_push_byte(s, (48i64 + val % 10i64) as u8)
+
+fn datetime_to_iso8601 : *DateTime -> string.String
+  | dt ->
+    let mut out = string.string_with_cap(20i64)
+    push_4_digits(&out, dt.date.year)
+    string.string_push_byte(&out, 45u8)   -- '-'
+    push_2_digits(&out, dt.date.month)
+    string.string_push_byte(&out, 45u8)   -- '-'
+    push_2_digits(&out, dt.date.day)
+    string.string_push_byte(&out, 84u8)   -- 'T'
+    push_2_digits(&out, dt.time.hour)
+    string.string_push_byte(&out, 58u8)   -- ':'
+    push_2_digits(&out, dt.time.minute)
+    string.string_push_byte(&out, 58u8)   -- ':'
+    push_2_digits(&out, dt.time.second)
+    string.string_push_byte(&out, 90u8)   -- 'Z'
+    out

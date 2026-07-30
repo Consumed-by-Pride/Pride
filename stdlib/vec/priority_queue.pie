@@ -1,0 +1,50 @@
+mod vec.priority_queue
+
+use vec.vec
+use vec.algo
+
+-- stdlib/vec/priority_queue.pie — Binary Max-Heap Priority Queue (PriorityQueue)
+-- Efficient O(log N) push and pop, O(1) peek for max-priority u64 items.
+
+struct PriorityQueue
+  items : vec.Vec
+
+fn pq_new : () -> PriorityQueue
+  | () -> PriorityQueue { items: vec.vec_new(8i64) }
+
+fn pq_with_cap : i64 -> PriorityQueue
+  | cap -> PriorityQueue { items: vec.vec_with_cap(cap, 8i64) }
+
+fn pq_destroy : *PriorityQueue -> ()
+  | pq -> vec.vec_destroy(&pq.items)
+
+fn pq_len : *PriorityQueue -> i64
+  | pq -> vec.vec_len(&pq.items)
+
+fn pq_is_empty : *PriorityQueue -> bool
+  | pq -> vec.vec_is_empty(&pq.items)
+
+fn pq_clear : *PriorityQueue -> ()
+  | pq -> vec.vec_clear(&pq.items)
+
+fn pq_push : (*PriorityQueue, u64) -> ()
+  | (pq, val) ->
+    let mut v = val
+    vec.vec_push(&pq.items, &v as ptr)
+    algo.vec_push_heap_u64(&pq.items)
+
+fn pq_peek : *PriorityQueue -> (u64, bool)
+  | pq ->
+    if vec.vec_is_empty(&pq.items) then (0u64, false)
+    else
+      let data = vec.vec_as_slice(&pq.items) as *u64
+      (data[0i64], true)
+
+fn pq_pop : *PriorityQueue -> (u64, bool)
+  | pq ->
+    if vec.vec_is_empty(&pq.items) then (0u64, false)
+    else
+      let data = vec.vec_as_slice(&pq.items) as *u64
+      let top = data[0i64]
+      algo.vec_pop_heap_u64(&pq.items)
+      (top, true)

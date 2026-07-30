@@ -1,0 +1,32 @@
+mod sync.mutex
+
+use os.linux
+
+-- stdlib/sync/mutex.pie — POSIX Mutex Wrapper (Mutex)
+-- 40-byte pthread_mutex_t allocation and locking operations.
+
+struct Mutex
+  handle : ptr
+
+fn mutex_new : () -> Mutex
+  | () ->
+    let p = os.linux.malloc(40i64)
+    os.linux.memset(p, 0i32, 40u64)
+    os.linux.pthread_mutex_init(p, 0 as ptr)
+    Mutex { handle: p }
+
+fn mutex_lock : *Mutex -> i64
+  | m -> os.linux.pthread_mutex_lock(m.handle)
+
+fn mutex_trylock : *Mutex -> bool
+  | m -> os.linux.pthread_mutex_trylock(m.handle) == 0i32
+
+fn mutex_unlock : *Mutex -> i64
+  | m -> os.linux.pthread_mutex_unlock(m.handle)
+
+fn mutex_destroy : *Mutex -> ()
+  | m ->
+    if m.handle as i64 != 0i64
+      os.linux.pthread_mutex_destroy(m.handle)
+      os.linux.free(m.handle)
+    m.handle = 0 as ptr

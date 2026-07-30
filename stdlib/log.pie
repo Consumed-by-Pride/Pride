@@ -1,0 +1,35 @@
+mod log
+
+use log.level
+use log.logger
+use log.syslog
+use log.ring_logger
+
+-- stdlib/log.pie — Standard Library Logging and Diagnostics Suite
+-- Exports severity levels, console/file loggers, POSIX syslog bindings, and crash ring loggers.
+
+-- Levels
+fn level_name : i64 -> ptr                           | lvl -> level.log_level_name(lvl)
+fn level_from_str : ptr -> i64                       | s -> level.log_level_from_str(s)
+
+-- Logger
+fn new_console : i64 -> logger.Logger                | lvl -> logger.logger_new_console(lvl)
+fn new_file : (ptr, i64) -> logger.Logger            | (path, lvl) -> logger.logger_new_file(path, lvl)
+fn destroy : *logger.Logger -> ()                    | l -> logger.logger_destroy(l)
+fn set_level : (*logger.Logger, i64) -> ()           | (l, lvl) -> logger.logger_set_level(l, lvl)
+fn debug : (*logger.Logger, ptr, ptr) -> ()          | (l, tag, m) -> logger.logger_debug(l, tag, m)
+fn info : (*logger.Logger, ptr, ptr) -> ()           | (l, tag, m) -> logger.logger_info(l, tag, m)
+fn warn : (*logger.Logger, ptr, ptr) -> ()           | (l, tag, m) -> logger.logger_warn(l, tag, m)
+fn error : (*logger.Logger, ptr, ptr) -> ()          | (l, tag, m) -> logger.logger_error(l, tag, m)
+fn fatal : (*logger.Logger, ptr, ptr) -> ()          | (l, tag, m) -> logger.logger_fatal(l, tag, m)
+
+-- Syslog
+fn syslog_open : ptr -> syslog.Syslog                | ident -> syslog.syslog_open(ident)
+fn syslog_close : *syslog.Syslog -> ()               | s -> syslog.syslog_close(s)
+fn syslog_write : (*syslog.Syslog, i64, ptr) -> i64  | (s, p, m) -> syslog.syslog_write(s, p, m)
+
+-- RingLogger
+fn ring_new : i64 -> ring_logger.RingLogger          | cap -> ring_logger.ring_logger_new(cap)
+fn ring_destroy : *ring_logger.RingLogger -> ()      | r -> ring_logger.ring_logger_destroy(r)
+fn ring_push : (*ring_logger.RingLogger, ptr) -> ()  | (r, m) -> ring_logger.ring_logger_push(r, m)
+fn ring_dump_fd : (*ring_logger.RingLogger, i64) -> i64 | (r, fd) -> ring_logger.ring_logger_dump_to_fd(r, fd)

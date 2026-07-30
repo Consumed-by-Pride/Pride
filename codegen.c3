@@ -553,6 +553,16 @@ fn bool fn_binder_explodes_tuple(Node* fn_decl, Node* param_t)
 {
     if (fn_decl == null || param_t == null) return false;
     if (param_t.kind != Nk.NODE_TYPE_TUPLE) return false;
+    // Extern C functions (#extern/#cc(c)) have NO clauses but ALWAYS explode
+    // their tuple domain componentwise — they are C functions, each parameter
+    // is a separate argument. Previously `clause == null` → false caused their
+    // tuple domain to be collapsed into a single aggregate parameter, producing
+    // invalid IR (e.g. `call @memcpy({ ptr, ptr, i64 } %agg, ...)`).
+    {
+        char* ext_check = null; usz ext_check_len = 0;
+        if (fn_get_extern_name(fn_decl, &ext_check, &ext_check_len) && ext_check != null)
+        { return param_t.child_count >= 1; }
+    }
     // A DECL_FN's layout is [name, TYPE_FN signature, body-block]; the
     // Prolog clauses are children OF the body block. (Closures store clauses
     // directly as children.) Find the first clause either way.
@@ -1397,6 +1407,7 @@ fn char* CgenModule.gmut_type(CgenModule* cg, Node* decl, Node* use_node,
             if (c.kind == Nk.NODE_TYPE_PRIMITIVE || c.kind == Nk.NODE_TYPE_PTR
                 || c.kind == Nk.NODE_TYPE_ARRAY || c.kind == Nk.NODE_TYPE_TUPLE
                 || c.kind == Nk.NODE_TYPE_SLICE || c.kind == Nk.NODE_TYPE_FN
+                || c.kind == Nk.NODE_TYPE_UNION || c.kind == Nk.NODE_TYPE_INTERSECT
                 || c.kind == Nk.NODE_TYPEVAR)
             { return type_to_llvm_buf(c, buf, cap, 0); }
             if (c.kind == Nk.NODE_LIT_INT)
@@ -1643,6 +1654,8 @@ fn bool phi_annotation_type(ssi_ir::IrVal* ph, char* pbuf, usz cap)
                     || bc.kind == Nk.NODE_TYPE_FN
                     || bc.kind == Nk.NODE_TYPE_TUPLE
                     || bc.kind == Nk.NODE_TYPE_ARRAY
+                    || bc.kind == Nk.NODE_TYPE_UNION
+                    || bc.kind == Nk.NODE_TYPE_INTERSECT
                     || bc.kind == Nk.NODE_TYPEVAR
                     || bc.kind == Nk.NODE_EXPR_UNIT);
                 if (bc_is_type) { binder_ty_node = bc; break; }
@@ -1955,6 +1968,12 @@ fn void CgenModule.emit_type(CgenModule* cg, Node* t, bool in_ret_pos, int depth
             cg.out.writes("{ i32, i64 }");
             return;
         }
+        if (d.kind == Nk.NODE_DECL_UNION)
+        {
+            if (ast::union_is_c_union(d)) { cg.out.writes("i64"); }
+            else                          { cg.out.writes("{ i32, i64 }"); }
+            return;
+        }
         if (d.kind == Nk.NODE_DECL_STRUCT)
         {
             cg.register_struct(d);
@@ -2041,6 +2060,15 @@ fn void CgenModule.emit_type(CgenModule* cg, Node* t, bool in_ret_pos, int depth
             // Enum: { i32 tag, i64 payload } — simple uniform representation.
             // Tag identifies variant; payload holds up to 64-bit data.
             cg.out.writes("{ i32, i64 }");
+
+        case Nk.NODE_DECL_UNION:
+            if (ast::union_is_c_union(t)) { cg.out.writes("i64"); }
+            else                          { cg.out.writes("{ i32, i64 }"); }
+
+        case Nk.NODE_TYPE_UNION:
+        case Nk.NODE_TYPE_INTERSECT:
+            if (t.child_count >= 1 && t.children[0] != null) { cg.emit_type(t.children[0], in_ret_pos, depth + 1); }
+            else { cg.out.writes("i64"); }
 
         case Nk.NODE_DECL_STRUCT:
             cg.register_struct(t);
@@ -3111,6 +3139,11 @@ fn long sizeof_type_x86(Node* t)
             }
             return t.resolved != null ? sizeof_type_x86(t.resolved) : 8;
         }
+        case Nk.NODE_DECL_UNION:
+            return ast::union_is_c_union(t) ? 8 : 16;
+        case Nk.NODE_TYPE_UNION:
+        case Nk.NODE_TYPE_INTERSECT:
+            return (t.child_count >= 1 && t.children[0] != null) ? sizeof_type_x86(t.children[0]) : 8;
         default: return 8;
     }
 }
@@ -3160,6 +3193,11 @@ fn long alignof_type_x86(Node* t)
             }
             return t.resolved != null ? alignof_type_x86(t.resolved) : 8;
         }
+        case Nk.NODE_DECL_UNION:
+            return 8;
+        case Nk.NODE_TYPE_UNION:
+        case Nk.NODE_TYPE_INTERSECT:
+            return (t.child_count >= 1 && t.children[0] != null) ? alignof_type_x86(t.children[0]) : 8;
         default: return 8;
     }
 }
@@ -3903,6 +3941,48 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                     // If operand is not ptr (type error), inttoptr first.
                     char* load_ty = (tm != null) ? tm.get(v.id) : null;
                     if (load_ty == null || load_ty[0] == 0) load_ty = (char*)"i64";
+                    // If the pointer arg has a *T annotation and T is scalar+narrower,
+                    // use T as the load type — the tymap may have promoted to i64 via
+                    // phi merging, but the actual pointed-to element is narrower (e.g.
+                    // *i32 → load i32, not i64). This prevents the phi→i64 promotion
+                    // from widening deref loads of *i32/*u8/etc. fields.
+                    if (arg != null && arg.src != null)
+                    {
+                        Node* asrc = arg.src;
+                        // For calls returning *T: the call's src is the fn-type node;
+                        // unwrap TYPE_FN return, or use the binder's type_annotation directly.
+                        Node* aann = asrc.type_annotation;
+                        if (aann != null && aann.kind == Nk.NODE_TYPE_FN && aann.child_count >= 2)
+                        {
+                            Node* aret = aann.children[1];
+                            if (aret != null && aret.kind == Nk.NODE_EFFECT_ROW && aret.child_count >= 1)
+                            { aret = aret.children[0]; }
+                            aann = aret;
+                        }
+                        if (aann != null && aann.kind == Nk.NODE_TYPE_PTR && aann.child_count >= 1
+                            && aann.children[0] != null)
+                        {
+                            char[TYMAP_ENTRY] ptbuf3; ptbuf3[0] = 0;
+                            type_to_llvm_buf(aann.children[0], &ptbuf3[0], TYMAP_ENTRY, 0);
+                            if (ptbuf3[0] != 0 && !(ptbuf3[0]=='v'&&ptbuf3[1]=='o')
+                                && ptbuf3[0] != '{' && ptbuf3[0] != '['
+                                && ptbuf3[0] != 'p'  // keep ptr loads as the tymap type
+                                && load_ty[0] == 'i' && ptbuf3[0] == 'i')
+                            {
+                                // Both are integer types — use the narrower one.
+                                long lw3=0;
+                                long pw3=0;
+                                char* lp3=load_ty+1; while(*lp3>='0'&&*lp3<='9'){lw3=lw3*10+(long)(*lp3-'0');lp3++;}
+                                char* pp3=&ptbuf3[0]+1; while(*pp3>='0'&&*pp3<='9'){pw3=pw3*10+(long)(*pp3-'0');pp3++;}
+                                if (pw3 > 0 && pw3 < lw3)
+                                {
+                                    // Pointee is narrower: use it and fix up the tymap.
+                                    load_ty = &ptbuf3[0];
+                                    if (tm != null) { tm.set(v.id, load_ty); }
+                                }
+                            }
+                        }
+                    }
                     char* arg_base_ty = (tm != null && arg != null) ? tm.get(arg.id) : null;
                     bool arg_is_ptr = (arg_base_ty != null && arg_base_ty[0] == 'p');
                     if (!arg_is_ptr && arg_base_ty != null && arg_base_ty[0] == 'i')
@@ -5914,8 +5994,116 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 }
                 else
                 {
-                    // Pointer deref store: store val, ptr base
-                    cg.out.writes("  store "); cg.out.writes(val_ty_st); cg.out.writes(" ");
+                    // Pointer deref store: store val, ptr base.
+                    // The store type MUST match the pointee type of `base`, not just
+                    // the tymap type of `val`: a phi collecting i32/i64 across branches
+                    // may have its tymap entry promoted to i64 by the phi-resolution pass,
+                    // but if the pointer is *i32, the store must use i32.
+                    // Recover the pointee type from base_arg's AST annotation (the lhs
+                    // of the assignment carries a *T annotation; unwrap T and use it).
+                    char* store_ty = val_ty_st;
+                    {
+                        char[TYMAP_ENTRY] ptbuf; ptbuf[0] = 0;
+                        Node* bsrc = (base_arg != null) ? base_arg.src : null;
+                        Node* bann = (bsrc != null) ? bsrc.type_annotation : null;
+                        // For CALL results (*T return type): the call's src.type_annotation
+                        // is the fn type, unwrap fn return → the pointed type.
+                        if (bann != null && bann.kind == Nk.NODE_TYPE_FN && bann.child_count >= 2)
+                        {
+                            Node* ret = bann.children[1];
+                            if (ret != null && ret.kind == Nk.NODE_EFFECT_ROW && ret.child_count >= 1)
+                            { ret = ret.children[0]; }
+                            bann = ret;
+                        }
+                        // Unwrap *T → T
+                        if (bann != null && bann.kind == Nk.NODE_TYPE_PTR && bann.child_count >= 1)
+                        {
+                            type_to_llvm_buf(bann.children[0], &ptbuf[0], TYMAP_ENTRY, 0);
+                        }
+                        if (ptbuf[0] != 0 && !(ptbuf[0]=='v'&&ptbuf[1]=='o') && !(ptbuf[0]=='{'||ptbuf[0]=='['))
+                        {
+                            // Narrower pointee type: prefer it. If value needs coercion, emit it.
+                            bool same_ty = true;
+                            { char* a=&ptbuf[0]; char* b=val_ty_st;
+                              while(*a!=0&&*a==*b){a++;b++;}
+                              if(*a!=0||*b!=0) same_ty=false; }
+                            if (!same_ty && val_ty_st[0]=='i' && ptbuf[0]=='i')
+                            {
+                                long vw=0;
+                                long pw=0;
+                                { char* vp=val_ty_st+1; while(*vp>='0'&&*vp<='9'){vw=vw*10+(long)(*vp-'0');vp++;} }
+                                { char* pp=&ptbuf[0]+1; while(*pp>='0'&&*pp<='9'){pw=pw*10+(long)(*pp-'0');pp++;} }
+                                if (pw > 0 && pw < vw && val_arg != null)
+                                {
+                                    // Tymap says value is wider than pointee. But for phi nodes,
+                                    // the tymap may be wrong (phi i32 promoted to i64 in tymap).
+                                    // Check: if the phi IS already the narrow type, store directly
+                                    // rather than emitting a trunc of a value that is already narrow.
+                                    // Detect phi narrow: the phi's definition uses ptbuf width.
+                                    // We can't check the LLVM-emitted phi type here, but we CAN
+                                    // check if the phi binder's source annotation says the narrow type.
+                                    // Sigma-unwrap: a phi can be wrapped in a sigma filter node.
+                                    ssi_ir::IrVal* val_unwrapped = val_arg;
+                                    { int sd_phi=0;
+                                      while (val_unwrapped != null && val_unwrapped.op == ssi_ir::IrOp.IR_SIGMA
+                                             && val_unwrapped.arg_count >= 1 && val_unwrapped.args[0] != null && sd_phi < 8)
+                                      { val_unwrapped = val_unwrapped.args[0]; sd_phi++; }
+                                    }
+                                    bool val_is_phi = (val_arg.op == ssi_ir::IrOp.IR_PHI
+                                        || (val_unwrapped != null && val_unwrapped.op == ssi_ir::IrOp.IR_PHI));
+                                    bool phi_already_narrow = false;
+                                    if (val_is_phi)
+                                    {
+                                        // Check src annotation
+                                        if (val_arg.src != null && val_arg.src.type_annotation != null)
+                                        {
+                                            char[TYMAP_ENTRY] phbuf2; phbuf2[0] = 0;
+                                            type_to_llvm_buf(val_arg.src.type_annotation, &phbuf2[0], TYMAP_ENTRY, 0);
+                                            long phw=0;
+                                            { char* ph2=&phbuf2[0]+1; while(*ph2>='0'&&*ph2<='9'){phw=phw*10+(long)(*ph2-'0');ph2++;} }
+                                            phi_already_narrow = (phw > 0 && phw == pw);
+                                        }
+                                        // Fallback: check any arg that is also narrow —
+                                        // a phi over i32 values IS i32, the tymap is wrong.
+                                        if (!phi_already_narrow && tm != null)
+                                        {
+                                            bool all_narrow = (val_arg.arg_count > 0);
+                                            for (usz pai = 0; pai < val_arg.arg_count && all_narrow; pai++)
+                                            {
+                                                ssi_ir::IrVal* pa3 = val_arg.args[pai];
+                                                char* pat3 = (pa3 != null) ? tm.get(pa3.id) : null;
+                                                if (pat3 == null || pat3[0] != 'i') { all_narrow = false; break; }
+                                                long paw=0;
+                                                { char* pp3=pat3+1; while(*pp3>='0'&&*pp3<='9'){paw=paw*10+(long)(*pp3-'0');pp3++;} }
+                                                if (paw != pw) { all_narrow = false; }
+                                            }
+                                            phi_already_narrow = all_narrow;
+                                        }
+                                    }
+                                    if (!phi_already_narrow && !val_is_phi)
+                                    {
+                                        // Value is genuinely wider — emit trunc.
+                                        cg.out.writes("  %st.pcoerce.v"); cg.out.writei(v.id);
+                                        cg.out.writes(" = trunc "); cg.out.writes(val_ty_st);
+                                        cg.out.writes(" "); cg.emit_vref(val_arg);
+                                        cg.out.writes(" to "); cg.out.writes(&ptbuf[0]); cg.out.writes("\n");
+                                        cg.out.writes("  store "); cg.out.writes(&ptbuf[0]);
+                                        cg.out.writes(" %st.pcoerce.v"); cg.out.writei(v.id);
+                                        cg.out.writes(", ptr ");
+                                        if (base_arg != null) { cg.emit_vref(base_arg); } else { cg.out.writes("null"); }
+                                        cg.out.writes("\n");
+                                        return;
+                                    }
+                                    // IR_PHI or confirmed-narrow: the phi was emitted with the
+                                    // narrow type by emit_phi; trusting ptbuf avoids an invalid
+                                    // `trunc i64 %phi_i32` (the phi IS i32, not i64).
+                                    // Fall through and store with ptbuf type.
+                                }
+                            }
+                            store_ty = &ptbuf[0];
+                        }
+                    }
+                    cg.out.writes("  store "); cg.out.writes(store_ty); cg.out.writes(" ");
                     if (val_arg != null && val_arg.op == ssi_ir::IrOp.IR_CONST_STR)
                     { cgen_emit_str_const_record(cg, val_arg); }
                     else if (val_arg != null) { cg.emit_vref(val_arg); }
@@ -8491,6 +8679,13 @@ const char*[*] RUNTIME_DECL_NAMES = {
     "__pride_perform", "__pride_push_handler", "__pride_pop_handler",
     "__pride_resume", "__pride_drop", "__pride_panic", "__pride_get_arm_arg",
     "__pride_complete",
+    "__pride_fiber_spawn", "__pride_fiber_yield", "__pride_fiber_resume",
+    "__pride_prompt_install", "__pride_prompt_unwind", "__pride_is_in_scope",
+    "__pride_scoped_yield_in", "__pride_scoped_yield_out", "__pride_split_cont",
+    "__pride_fuse_cont",
+    "__pride_dynamic_wind_push", "__pride_dynamic_wind_pop",
+    "__pride_dynamic_wind_enter", "__pride_dynamic_wind_exit",
+    "__pride_local_bind", "__pride_local_get",
     // Tensor runtime (`@` matmul, elemwise ops, vector dot)
     "__pride_matmul", "__pride_tensor_elemwise", "__pride_vecdot",
     // Str runtime helpers
@@ -8956,6 +9151,23 @@ fn void CgenModule.emit_runtime_decls(CgenModule* cg)
     cg.out.writes("declare void @__pride_drop(ptr)\n");
     cg.out.writes("declare void @__pride_panic(ptr, i64)\n");
     cg.out.writes("declare i64  @__pride_get_arm_arg(i64)\n");
+    // Untyped HOSE (Hybrid Fiber + Prompt Engine)
+    cg.out.writes("declare ptr  @__pride_fiber_spawn(ptr, ptr)\n");
+    cg.out.writes("declare ptr  @__pride_fiber_yield(ptr)\n");
+    cg.out.writes("declare ptr  @__pride_fiber_resume(ptr, ptr)\n");
+    cg.out.writes("declare i64  @__pride_prompt_install(i64)\n");
+    cg.out.writes("declare void @__pride_prompt_unwind(i64)\n");
+    cg.out.writes("declare i1   @__pride_is_in_scope(i64)\n");
+    cg.out.writes("declare ptr  @__pride_scoped_yield_in(i64, i64, ptr)\n");
+    cg.out.writes("declare ptr  @__pride_scoped_yield_out(i64, i64, ptr)\n");
+    cg.out.writes("declare ptr  @__pride_split_cont(ptr)\n");
+    cg.out.writes("declare ptr  @__pride_fuse_cont(ptr)\n");
+    cg.out.writes("declare void @__pride_dynamic_wind_push(i64, ptr, ptr, ptr)\n");
+    cg.out.writes("declare void @__pride_dynamic_wind_pop(i64)\n");
+    cg.out.writes("declare void @__pride_dynamic_wind_enter(i64)\n");
+    cg.out.writes("declare void @__pride_dynamic_wind_exit(i64)\n");
+    cg.out.writes("declare i64  @__pride_local_bind(i64, ptr, i64)\n");
+    cg.out.writes("declare ptr  @__pride_local_get(i64)\n");
     // Tensor matmul (`@` operator) — implemented in runtime/compiler_rt.c
     cg.out.writes("declare ptr  @__pride_matmul(ptr, ptr)\n");
     cg.out.writes("declare ptr  @__pride_tensor_elemwise(ptr, ptr, i32)\n");
@@ -9430,88 +9642,6 @@ fn bool CgenModule.emit(CgenModule* cg, char* source_filename)
 
     cg.out.flush();
     return cg.errors == 0;
-}
-
-
-// For each IR_UNKNOWN value tagged as a closure (binder.kind == NODE_EXPR_CLOSURE),
-// emit a standalone LLVM function that:
-//   1. Receives (ptr %__env, args...) 
-//   2. Loads each captured value from the env array (via ptrtoint)
-//   3. Executes the closure body inline
-// The closure body is the AST NODE_EXPR_CLOSURE's clause children.
-// We emit it as a dedicated SSI function via a synthetic lower pass.
-
-fn void CgenModule.emit_closure_thunks(CgenModule* cg)
-{
-    ssi_ir::SsiModule* m = cg.ir;
-
-    // Scan all vals for closure IR_UNKNOWN nodes
-    for (usz vi = 0; vi < m.val_count; vi++)
-    {
-        ssi_ir::IrVal* v = &m.vals[vi];
-        if (v.op != ssi_ir::IrOp.IR_UNKNOWN) continue;
-        if (v.binder == null || v.binder.kind != Nk.NODE_EXPR_CLOSURE) continue;
-
-        int cid = (int)(v.ival & 0x7FFFFFFF);
-        usz ncap = v.arg_count;
-        Node* closure = v.binder;
-
-        // Determine parameter count from the first clause's pattern
-        usz nparams = 0;
-        if (closure.child_count >= 1 && closure.children[0] != null)
-        {
-            Node* clause = closure.children[0];
-            Node* pat = clause.child_count >= 1 ? clause.children[0] : null;
-            if (pat != null && pat.kind == Nk.NODE_PATTERN_TUPLE)
-            { nparams = pat.child_count; }
-            else if (pat != null && pat.kind == Nk.NODE_PATTERN_IDENT)
-            { nparams = 1; }
-        }
-
-        // Emit: define i64 @__pride_closure_N(ptr %__env, i64 %a0, i64 %a1, ...)
-        cg.out.writes("; closure thunk\n");
-        cg.out.writes("define i64 @__pride_closure_");
-        cg.out.writei((long)cid);
-        cg.out.writes("(ptr %__env");
-        for (usz pi = 0; pi < nparams; pi++)
-        {
-            cg.out.writes(", i64 %ca"); cg.out.writei((long)pi);
-        }
-        cg.out.writes(") {\n");
-        cg.out.writes("entry:\n");
-
-        // Unpack captures from env array
-        for (usz ci = 0; ci < ncap; ci++)
-        {
-            cg.out.writes("  %eslot."); cg.out.writei((long)ci);
-            cg.out.writes(" = getelementptr ["); cg.out.writei((long)ncap);
-            cg.out.writes(" x ptr], ptr %__env, i32 0, i32 "); cg.out.writei((long)ci);
-            cg.out.writes("\n");
-            cg.out.writes("  %ecap."); cg.out.writei((long)ci);
-            cg.out.writes(" = load ptr, ptr %eslot."); cg.out.writei((long)ci);
-            cg.out.writes("\n");
-            // ptrtoint to i64 for arithmetic use inside body
-            cg.out.writes("  %ecapi."); cg.out.writei((long)ci);
-            cg.out.writes(" = ptrtoint ptr %ecap."); cg.out.writei((long)ci);
-            cg.out.writes(" to i64\n");
-        }
-
-        // Emit the closure body.
-        // For each clause: evaluate body expression with params bound.
-        // Simplified: emit a call-through to the first body expression.
-        // Full CTFE lowering would require re-running the SSI pass on the body AST.
-        // For now: emit a placeholder that returns 0, which will be replaced once
-        // the closure body is lowered via lower_fn (registered in pending_inner_fns).
-        // The actual thunk body will be emitted when the closure AST node is lowered
-        // as a synthetic fn via lower_fn — see note below.
-        // NOTE: The real body lowering happens via pending_inner_fns in ssi_ir.c3.
-        // This thunk is a forward declaration that gets filled in by that pass.
-        // For closures with bodies, the thunk IS the lowered fn.
-        // Here we emit a minimal stub that calls the SSI-lowered body via tail call.
-        cg.out.writes("  ; closure body (lowered by SSI pass)\n");
-        cg.out.writes("  ret i64 0  ; TODO: link to SSI-lowered body\n");
-        cg.out.writes("}\n\n");
-    }
 }
 
 

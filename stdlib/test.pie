@@ -1,0 +1,31 @@
+mod test
+
+-- stdlib/test.pie — Built-in test framework
+-- Annotate functions with #[test]; run with: pride --test file.pie
+-- Test functions: fn name : () -> ()
+
+fn printf_rt : (ptr, ...) -> i32 #extern("printf") #cc(c)
+
+let mut __pride_test_pass  : i64 = 0i64
+let mut __pride_test_fail  : i64 = 0i64
+let mut __pride_test_total : i64 = 0i64
+
+fn __test_assert : (bool, ptr) -> ()
+  | (cond, msg) ->
+      __pride_test_total = __pride_test_total + 1i64;
+      if cond then {
+          __pride_test_pass = __pride_test_pass + 1i64;
+      } else {
+          __pride_test_fail = __pride_test_fail + 1i64;
+      }
+
+fn assert_true  : (bool, ptr) -> () | (c, m) -> __test_assert(c, m)
+fn assert_false : (bool, ptr) -> () | (c, m) -> __test_assert(!c, m)
+fn assert_eq_i64 : (i64, i64, ptr) -> () | (a, b, m) -> __test_assert(a == b, m)
+fn assert_ne_i64 : (i64, i64, ptr) -> () | (a, b, m) -> __test_assert(a != b, m)
+fn assert_lt_i64 : (i64, i64, ptr) -> () | (a, b, m) -> __test_assert(a < b, m)
+fn assert_gt_i64 : (i64, i64, ptr) -> () | (a, b, m) -> __test_assert(a > b, m)
+
+fn test_pass_count  : () -> i64 | () -> __pride_test_pass
+fn test_fail_count  : () -> i64 | () -> __pride_test_fail
+fn test_total_count : () -> i64 | () -> __pride_test_total

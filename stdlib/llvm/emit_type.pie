@@ -1,0 +1,62 @@
+mod llvm.emit_type
+
+use str.string
+use ir.types
+use vec.vec
+
+-- stdlib/llvm/emit_type.pie — LLVM IR 22 Type Text Formatter
+-- Formats SSA types into LLVM 22 IR textual syntax.
+
+fn push_i64_decimal : (*string.String, i64) -> ()
+  | (s, val) ->
+    if val >= 100i64
+      string.string_push_byte(s, (48i64 + val / 100i64) as u8)
+      string.string_push_byte(s, (48i64 + (val / 10i64) % 10i64) as u8)
+      string.string_push_byte(s, (48i64 + val % 10i64) as u8)
+    else if val >= 10i64
+      string.string_push_byte(s, (48i64 + val / 10i64) as u8)
+      string.string_push_byte(s, (48i64 + val % 10i64) as u8)
+    else
+      string.string_push_byte(s, (48i64 + val) as u8)
+
+fn emit_llvm_type : *types.IrType -> string.String
+  | ty ->
+    if ty as i64 == 0i64 then string.string_from_cstr("i64" as ptr)
+    else if ty.kind == types.IR_TYPE_VOID then string.string_from_cstr("void" as ptr)
+    else if ty.kind == types.IR_TYPE_INT
+      let mut out = string.string_with_cap(8i64)
+      string.string_push_byte(&out, 105u8)   -- 'i'
+      push_i64_decimal(&out, ty.bits)
+      out
+    else if ty.kind == types.IR_TYPE_FLOAT
+      if ty.bits <= 32i64 then string.string_from_cstr("float" as ptr)
+      else string.string_from_cstr("double" as ptr)
+    else if ty.kind == types.IR_TYPE_PTR then string.string_from_cstr("ptr" as ptr)
+    else if ty.kind == types.IR_TYPE_UNION
+      if ty.is_c_union then string.string_from_cstr("i64" as ptr)
+      else string.string_from_cstr("{ i32, i64 }" as ptr)
+    else if ty.kind == types.IR_TYPE_ARRAY
+      let mut out = string.string_with_cap(32i64)
+      string.string_push_byte(&out, 91u8)   -- '['
+      push_i64_decimal(&out, ty.array_len)
+      string.string_push_cstr(&out, " x " as ptr)
+      let elem_str = emit_llvm_type(ty.elem_type)
+      string.string_concat(&out, &elem_str)
+      string.string_destroy(&elem_str)
+      string.string_push_byte(&out, 93u8)   -- ']'
+      out
+    else if ty.kind == types.IR_TYPE_STRUCT
+      let mut out = string.string_with_cap(64i64)
+      string.string_push_cstr(&out, "{ " as ptr)
+      let mut i : i64 = 0i64
+      let len = vec.vec_len(&ty.fields)
+      while i < len
+        if i > 0i64
+          string.string_push_cstr(&out, ", " as ptr)
+        let f_str = emit_llvm_type(vec.vec_get(&ty.fields, i) as *types.IrType)
+        string.string_concat(&out, &f_str)
+        string.string_destroy(&f_str)
+        i = i + 1i64
+      string.string_push_cstr(&out, " }" as ptr)
+      out
+    else string.string_from_cstr("i64" as ptr)

@@ -1,0 +1,32 @@
+mod sync.rwlock
+
+use os.linux
+
+-- stdlib/sync/rwlock.pie — POSIX Reader-Writer Lock (RwLock)
+-- 56-byte pthread_rwlock_t wrapper allowing concurrent readers or single writer.
+
+struct RwLock
+  handle : ptr
+
+fn rwlock_new : () -> RwLock
+  | () ->
+    let p = os.linux.malloc(56i64)
+    os.linux.memset(p, 0i32, 56u64)
+    os.linux.pthread_rwlock_init(p, 0 as ptr)
+    RwLock { handle: p }
+
+fn rwlock_read_lock : *RwLock -> i64
+  | rwl -> os.linux.pthread_rwlock_rdlock(rwl.handle)
+
+fn rwlock_write_lock : *RwLock -> i64
+  | rwl -> os.linux.pthread_rwlock_wrlock(rwl.handle)
+
+fn rwlock_unlock : *RwLock -> i64
+  | rwl -> os.linux.pthread_rwlock_unlock(rwl.handle)
+
+fn rwlock_destroy : *RwLock -> ()
+  | rwl ->
+    if rwl.handle as i64 != 0i64
+      os.linux.pthread_rwlock_destroy(rwl.handle)
+      os.linux.free(rwl.handle)
+    rwl.handle = 0 as ptr

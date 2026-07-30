@@ -1,0 +1,67 @@
+mod encoding.ini
+
+use os.linux
+use str.string
+use str.slice
+use vec.vec
+
+-- stdlib/encoding/ini.pie — INI Configuration File Parser
+-- Parses sections [Name] and Key=Value property assignments.
+
+struct IniEntry
+  key : string.String
+  val : string.String
+
+struct IniSection
+  name    : string.String
+  entries : vec.Vec
+
+struct IniConfig
+  sections : vec.Vec
+
+fn ini_entry_new : (ptr, ptr) -> *IniEntry
+  | (k_cstr, v_cstr) ->
+    let e = os.linux.malloc(32i64) as *IniEntry
+    e.key = string.string_from_cstr(k_cstr)
+    e.val = string.string_from_cstr(v_cstr)
+    e
+
+fn ini_entry_destroy : *IniEntry -> ()
+  | e ->
+    if e as i64 == 0i64 then ()
+    else
+      string.string_destroy(&e.key)
+      string.string_destroy(&e.val)
+      os.linux.free(e as ptr)
+
+fn ini_section_new : ptr -> *IniSection
+  | name_cstr ->
+    let s = os.linux.malloc(24i64) as *IniSection
+    s.name    = string.string_from_cstr(name_cstr)
+    s.entries = vec.vec_new(8i64)
+    s
+
+fn ini_section_destroy : *IniSection -> ()
+  | sec ->
+    if sec as i64 == 0i64 then ()
+    else
+      string.string_destroy(&sec.name)
+      let mut i : i64 = 0i64
+      let len = vec.vec_len(&sec.entries)
+      while i < len
+        ini_entry_destroy(vec.vec_get(&sec.entries, i) as *IniEntry)
+        i = i + 1i64
+      vec.vec_destroy(&sec.entries)
+      os.linux.free(sec as ptr)
+
+fn ini_config_new : () -> IniConfig
+  | () -> IniConfig { sections: vec.vec_new(4i64) }
+
+fn ini_config_destroy : *IniConfig -> ()
+  | cfg ->
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&cfg.sections)
+    while i < len
+      ini_section_destroy(vec.vec_get(&cfg.sections, i) as *IniSection)
+      i = i + 1i64
+    vec.vec_destroy(&cfg.sections)

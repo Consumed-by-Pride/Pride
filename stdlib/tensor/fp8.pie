@@ -1,0 +1,45 @@
+mod tensor.fp8
+
+use os.linux
+use math.quant
+
+-- stdlib/tensor/fp8.pie — 8-Bit Floating-Point (FP8 E4M3 / E5M2) Tensor Storage
+-- Ultra-compact 8-bit machine learning tensors for hardware acceleration.
+
+struct FP8Tensor
+  data     : *u8
+  size     : i64
+  is_e4m3  : bool
+
+fn fp8_tensor_new : (i64, bool) -> FP8Tensor
+  | (size, is_e4m3) ->
+    let p = os.linux.malloc(size) as *u8
+    os.linux.memset(p as ptr, 0i32, size as u64)
+    FP8Tensor { data: p, size: size, is_e4m3: is_e4m3 }
+
+fn fp8_tensor_destroy : *FP8Tensor -> ()
+  | t ->
+    if t.data as i64 != 0i64
+      os.linux.free(t.data as ptr)
+    t.data = 0 as *u8; t.size = 0i64
+
+fn fp8_tensor_from_f32 : (ptr, i64, bool) -> FP8Tensor
+  | (f32_data, count, is_e4m3) ->
+    let mut t = fp8_tensor_new(count, is_e4m3)
+    let src = f32_data as *f32
+    let mut i : i64 = 0i64
+    while i < count
+      t.data[i] = if is_e4m3 then quant.fp8_e4m3_from_f32(src[i])
+                  else quant.fp8_e5m2_from_f32(src[i])
+      i = i + 1i64
+    t
+
+fn f32_tensor_from_fp8 : *FP8Tensor -> ptr
+  | t ->
+    let out = os.linux.malloc(t.size * 4i64) as *f32
+    let mut i : i64 = 0i64
+    while i < t.size
+      out[i] = if t.is_e4m3 then quant.f32_from_fp8_e4m3(t.data[i])
+               else quant.f32_from_fp8_e5m2(t.data[i])
+      i = i + 1i64
+    out as ptr

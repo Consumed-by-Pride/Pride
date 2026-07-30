@@ -1,0 +1,19 @@
+mod unicode.case
+
+-- stdlib/unicode/case.pie — Unicode Case Folding and Transformation
+-- Codepoint-level uppercase, lowercase, and titlecase mappings.
+
+fn char_to_uppercase : i64 -> i64
+  | cp ->
+    if cp >= 97i64 && cp <= 122i64 then cp - 32i64
+    else if cp >= 224i64 && cp <= 254i64 && cp != 247i64 then cp - 32i64   -- Latin-1 Supplement
+    else cp
+
+fn char_to_lowercase : i64 -> i64
+  | cp ->
+    if cp >= 65i64 && cp <= 90i64 then cp + 32i64
+    else if cp >= 192i64 && cp <= 222i64 && cp != 215i64 then cp + 32i64
+    else cp
+
+fn char_to_titlecase : i64 -> i64
+  | cp -> char_to_uppercase(cp)

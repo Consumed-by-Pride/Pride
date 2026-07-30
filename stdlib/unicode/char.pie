@@ -1,0 +1,29 @@
+mod unicode.char
+
+-- stdlib/unicode/char.pie — Unicode Codepoint Classification and Properties
+-- Identifies ASCII, Latin-1, and Unicode General Category ranges.
+
+fn char_is_ascii : i64 -> bool
+  | cp -> cp >= 0i64 && cp <= 127i64
+
+fn char_is_alphabetic : i64 -> bool
+  | cp ->
+    if (cp >= 65i64 && cp <= 90i64) || (cp >= 97i64 && cp <= 122i64) then true
+    else if cp >= 192i64 && cp <= 687i64 then true   -- Latin Extended
+    else cp >= 900i64 && cp <= 1153i64               -- Greek / Cyrillic
+
+fn char_is_numeric : i64 -> bool
+  | cp ->
+    if cp >= 48i64 && cp <= 57i64 then true          -- ASCII 0-9
+    else cp >= 1632i64 && cp <= 1641i64              -- Arabic-Indic
+
+fn char_is_whitespace : i64 -> bool
+  | cp ->
+    cp == 32i64 || cp == 9i64 || cp == 10i64 || cp == 13i64 ||
+    cp == 12i64 || cp == 160i64 || cp == 8192i64     -- NBSP / EN space
+
+fn char_is_control : i64 -> bool
+  | cp -> (cp >= 0i64 && cp <= 31i64) || cp == 127i64 || (cp >= 128i64 && cp <= 159i64)
+
+fn char_is_emoji : i64 -> bool
+  | cp -> cp >= 0x1F300i64 && cp <= 0x1F6FFi64       -- Misc Symbols & Pictographs / Emoticons

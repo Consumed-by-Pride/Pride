@@ -1,0 +1,46 @@
+mod os.signal
+
+use os.linux
+
+-- stdlib/os/signal.pie — Signal Sets, Masks, and Delivery
+-- Wraps rt_sigprocmask, kill, tkill, and tgkill for POSIX signal management.
+
+struct SigSet
+  bits : u64
+
+const SIG_BLOCK   : i64 = 0i64
+const SIG_UNBLOCK : i64 = 1i64
+const SIG_SETMASK : i64 = 2i64
+
+fn sigset_empty : () -> SigSet
+  | () -> SigSet { bits: 0u64 }
+
+fn sigset_add : (*SigSet, i64) -> ()
+  | (s, sig) ->
+    if sig >= 1i64 && sig <= 64i64
+      s.bits = s.bits | (1u64 << (sig - 1i64) as u64)
+
+fn sigset_remove : (*SigSet, i64) -> ()
+  | (s, sig) ->
+    if sig >= 1i64 && sig <= 64i64
+      s.bits = s.bits & ~(1u64 << (sig - 1i64) as u64)
+
+fn sigset_contains : (*SigSet, i64) -> bool
+  | (s, sig) ->
+    if sig < 1i64 || sig > 64i64 then false
+    else (s.bits & (1u64 << (sig - 1i64) as u64)) != 0u64
+
+fn sigprocmask_block : *SigSet -> i64
+  | s -> os.linux.rt_sigprocmask(SIG_BLOCK, s as ptr, 0 as ptr, 8i64)
+
+fn sigprocmask_unblock : *SigSet -> i64
+  | s -> os.linux.rt_sigprocmask(SIG_UNBLOCK, s as ptr, 0 as ptr, 8i64)
+
+fn sigprocmask_set : *SigSet -> i64
+  | s -> os.linux.rt_sigprocmask(SIG_SETMASK, s as ptr, 0 as ptr, 8i64)
+
+fn kill_process : (i64, i64) -> i64
+  | (pid, sig) -> os.linux.kill(pid, sig)
+
+fn raise_signal : i64 -> i64
+  | sig -> os.linux.tkill(os.linux.getpid() as i64, sig)

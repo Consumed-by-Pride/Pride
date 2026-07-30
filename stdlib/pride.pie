@@ -1,0 +1,95 @@
+mod pride
+
+use pride.msp
+use pride.effects
+use pride.ub
+use pride.subtyping
+use pride.rewrite
+use pride.irdl
+
+-- stdlib/pride.pie — Standard Library Pride Language Metaprogramming Suite
+-- Exports Multi-Stage Programming (MSP), Algebraic Effects, Explicit UB/Safety,
+-- Semantic Subtyping, AST/Term Rewriting, and IR Description Language (IRDL) Crown Jewel.
+
+-- MSP
+fn stage_level : () -> i64                             | () -> msp.msp_stage_level()
+fn is_comptime : () -> bool                            | () -> msp.msp_is_comptime()
+fn quote_ast : (i64, ptr) -> msp.AstQuote              | (id, src) -> msp.msp_quote_ast(id, src)
+fn quote_destroy : *msp.AstQuote -> ()                 | q -> msp.msp_quote_destroy(q)
+fn eval_const_i64 : (i64, i64, i64) -> i64             | (op, l, r) -> msp.msp_eval_const_i64(op, l, r)
+fn cmtt_box_new : (i64, ptr, ptr) -> msp.CmttBox       | (s, c, k) -> msp.cmtt_box_new(s, c, k)
+fn cmtt_box_inspect : (*msp.CmttBox, i64) -> bool      | (b, o) -> msp.cmtt_box_inspect(b, o)
+fn cmtt_box_split_effects : *msp.CmttBox -> (ptr, ptr) | b -> msp.cmtt_box_split_effects(b)
+fn cmtt_box_fuse_aot : (*msp.CmttBox, ptr, ptr) -> ptr | (b, i, o) -> msp.cmtt_box_fuse_aot(b, i, o)
+
+-- Algebraic Effects
+fn handler_row_new : () -> effects.HandlerRow          | () -> effects.handler_row_new()
+fn handler_row_destroy : *effects.HandlerRow -> ()     | r -> effects.handler_row_destroy(r)
+fn effect_push_handler : (*effects.HandlerRow, i64, i64, ptr) -> () | (r, h, o, e) -> effects.effect_push_handler(r, h, o, e)
+fn effect_pop_handler : *effects.HandlerRow -> bool    | r -> effects.effect_pop_handler(r)
+fn effect_is_handled : (*effects.HandlerRow, i64) -> bool | (r, o) -> effects.effect_is_handled(r, o)
+fn effect_depth : *effects.HandlerRow -> i64           | r -> effects.effect_handler_depth(r)
+fn perform : (i64, i64) -> i64                         | (op, a) -> effects.effect_perform(op, a)
+fn resume : i64 -> i64                                 | v -> effects.effect_resume(v)
+
+-- Untyped HOSE (Fibers, Prompt Markers, Dynamic-Winding, Local Scoping)
+fn fiber_spawn : (ptr, ptr) -> effects.Fiber           | (f, a) -> effects.fiber_spawn(f, a)
+fn fiber_yield : i64 -> i64                            | v -> effects.fiber_yield(v)
+fn fiber_resume : (*effects.Fiber, i64) -> i64         | (f, a) -> effects.fiber_resume(f, a)
+fn prompt_install : i64 -> effects.PromptMarker        | p -> effects.prompt_install(p)
+fn prompt_unwind : *effects.PromptMarker -> ()         | p -> effects.prompt_unwind(p)
+fn is_in_scope : i64 -> bool                           | p -> effects.is_in_scope(p)
+fn scoped_yield_in : (i64, i64, i64) -> i64            | (p, o, v) -> effects.scoped_yield_in(p, o, v)
+fn scoped_yield_out : (i64, i64, i64) -> i64           | (p, o, v) -> effects.scoped_yield_out(p, o, v)
+fn cont_split : ptr -> effects.Continuation            | k -> effects.cont_split(k)
+fn cont_fuse : *effects.Continuation -> ptr            | c -> effects.cont_fuse(c)
+fn cont_verify_fusion_law : (*effects.Continuation, i64) -> bool | (c, v) -> effects.cont_verify_fusion_law(c, v)
+fn dynamic_wind_push : (i64, ptr, ptr, ptr) -> ()      | (p, i, o, e) -> effects.dynamic_wind_push(p, i, o, e)
+fn dynamic_wind_pop : i64 -> ()                        | p -> effects.dynamic_wind_pop(p)
+fn dynamic_wind_enter : i64 -> ()                      | p -> effects.dynamic_wind_enter(p)
+fn dynamic_wind_exit : i64 -> ()                       | p -> effects.dynamic_wind_exit(p)
+fn local_bind : (i64, ptr, i64) -> i64                 | (k, v, p) -> effects.local_bind(k, v, p)
+fn local_get : i64 -> ptr                              | k -> effects.local_get(k)
+fn effect_trace_new : () -> effects.EffectTraceLedger  | () -> effects.effect_trace_new()
+fn effect_trace_push : (*effects.EffectTraceLedger, i64, i64, i64, bool) -> bool | (l, o, d, p, r) -> effects.effect_trace_push(l, o, d, p, r)
+fn effect_trace_pop : *effects.EffectTraceLedger -> bool | l -> effects.effect_trace_pop(l)
+fn effect_trace_verify_row : (*effects.EffectTraceLedger, i64) -> bool | (l, o) -> effects.effect_trace_verify_row(l, o)
+
+-- Explicit UB & Memory Safety
+fn trap : () -> ()                                     | () -> ub.ub_trap()
+fn unreachable : () -> ()                              | () -> ub.ub_unreachable()
+fn assume : bool -> ()                                 | c -> ub.ub_assume(c)
+fn poison_memory : (ptr, i64) -> ub.PoisonCell         | (a, n) -> ub.ub_poison_memory(a, n)
+fn freeze_val : i64 -> i64                             | v -> ub.ub_freeze_val(v)
+fn check_align : (ptr, i64) -> bool                    | (a, l) -> ub.ub_check_alignment(a, l)
+fn poison_registry_new : () -> ub.PoisonRegistry       | () -> ub.poison_registry_new()
+fn poison_registry_add : (*ub.PoisonRegistry, ptr, i64) -> bool | (r, a, l) -> ub.poison_registry_add(r, a, l)
+fn poison_registry_check : (*ub.PoisonRegistry, ptr) -> bool | (r, a) -> ub.poison_registry_check(r, a)
+
+-- Semantic Subtyping
+fn lattice_new : () -> subtyping.TypeLattice           | () -> subtyping.type_lattice_new()
+fn lattice_destroy : *subtyping.TypeLattice -> ()      | l -> subtyping.type_lattice_destroy(l)
+fn lattice_add_tag : (*subtyping.TypeLattice, i64) -> () | (l, t) -> subtyping.type_lattice_add_tag(l, t)
+fn union_is_member : (*subtyping.TypeLattice, i64) -> bool | (l, t) -> subtyping.union_is_member(l, t)
+fn tag_of_int : u32 -> i64                             | v -> subtyping.tag_of_union_u32(v)
+fn tag_of_ptr : ptr -> i64                             | p -> subtyping.tag_of_union_ptr(p)
+fn cast_union : (i64, i64, i64) -> (i64, bool)         | (v, s, e) -> subtyping.cast_union_checked(v, s, e)
+
+-- AST Term Rewriting
+fn rule_new : (ptr, ptr, i64) -> *rewrite.Rule         | (l, r, p) -> rewrite.rule_new(l, r, p)
+fn rule_destroy : *rewrite.Rule -> ()                  | r -> rewrite.rule_destroy(r)
+fn rewrite_engine_new : i64 -> rewrite.RewriteEngine   | s -> rewrite.rewrite_engine_new(s)
+fn rewrite_engine_destroy : *rewrite.RewriteEngine -> () | e -> rewrite.rewrite_engine_destroy(e)
+fn engine_add_rule : (*rewrite.RewriteEngine, ptr, ptr, i64) -> () | (e, l, r, p) -> rewrite.engine_add_rule(e, l, r, p)
+fn engine_rewrite : (*rewrite.RewriteEngine, ptr) -> str.string.String | (e, i) -> rewrite.engine_rewrite_loop(e, i)
+
+-- IRDL (The Crown Jewel)
+fn irdl_schema_new : () -> irdl.IrdlSchema             | () -> irdl.irdl_schema_new()
+fn irdl_schema_destroy : *irdl.IrdlSchema -> ()        | s -> irdl.irdl_schema_destroy(s)
+fn irdl_add_op : (*irdl.IrdlSchema, ptr, i64) -> *irdl.IrdlOpcode | (s, n, c) -> irdl.irdl_schema_add_op(s, n, c)
+fn irdl_verify : (*irdl.IrdlSchema, i64, *i64, i64) -> bool | (s, c, o, n) -> irdl.irdl_verify_instruction(s, c, o, n)
+fn irdl_op_name : (*irdl.IrdlSchema, i64) -> str.string.String | (s, c) -> irdl.irdl_op_name(s, c)
+fn irdl_dialect_new : ptr -> irdl.IrdlDialectRegistry  | p -> irdl.irdl_dialect_new(p)
+fn irdl_dialect_add_type : (*irdl.IrdlDialectRegistry, i64, ptr, i64, bool) -> bool | (r, i, n, p, m) -> irdl.irdl_dialect_add_type(r, i, n, p, m)
+fn irdl_dialect_add_attr : (*irdl.IrdlDialectRegistry, i64, ptr, i64) -> bool | (r, i, n, k) -> irdl.irdl_dialect_add_attr(r, i, n, k)
+fn irdl_dialect_verify_type : (*irdl.IrdlDialectRegistry, i64, i64) -> bool | (r, i, p) -> irdl.irdl_dialect_verify_type(r, i, p)

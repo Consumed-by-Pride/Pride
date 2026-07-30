@@ -1,0 +1,42 @@
+mod vec.iter
+
+use vec.vec
+
+-- stdlib/vec/iter.pie — Vector Iterators (VecIter)
+-- Bidirectional iterator over vector elements with forward/back advancement.
+
+struct VecIter
+  data    : ptr
+  pos     : i64
+  back    : i64
+  elem_sz : i64
+
+fn vec_iter_new : *vec.Vec -> VecIter
+  | v ->
+    VecIter { data: vec.vec_as_slice(v), pos: 0i64, back: vec.vec_len(v), elem_sz: vec.vec_elem_size(v) }
+
+fn slice_iter_new : (ptr, i64, i64) -> VecIter
+  | (data, len, elem_sz) ->
+    VecIter { data: data, pos: 0i64, back: len, elem_sz: elem_sz }
+
+fn vec_iter_next : *VecIter -> ptr
+  | it ->
+    if it.pos >= it.back then 0 as ptr
+    else
+      let p = (it.data as i64 + it.pos * it.elem_sz) as ptr
+      it.pos = it.pos + 1i64
+      p
+
+fn vec_iter_next_back : *VecIter -> ptr
+  | it ->
+    if it.pos >= it.back then 0 as ptr
+    else
+      it.back = it.back - 1i64
+      (it.data as i64 + it.back * it.elem_sz) as ptr
+
+fn vec_iter_len_remaining : *VecIter -> i64
+  | it ->
+    if it.back > it.pos then it.back - it.pos else 0i64
+
+fn vec_iter_is_empty : *VecIter -> bool
+  | it -> it.pos >= it.back

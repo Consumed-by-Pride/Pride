@@ -1,0 +1,32 @@
+mod log.level
+
+use os.linux
+use str.slice
+
+-- stdlib/log/level.pie — Severity Levels and String Classification
+-- Defines standard logging thresholds from DEBUG to FATAL.
+
+const LOG_DEBUG : i64 = 0i64
+const LOG_INFO  : i64 = 1i64
+const LOG_WARN  : i64 = 2i64
+const LOG_ERROR : i64 = 3i64
+const LOG_FATAL : i64 = 4i64
+
+fn log_level_name : i64 -> ptr
+  | lvl ->
+    if lvl == LOG_DEBUG then "DEBUG" as ptr
+    else if lvl == LOG_INFO then "INFO " as ptr
+    else if lvl == LOG_WARN then "WARN " as ptr
+    else if lvl == LOG_ERROR then "ERROR" as ptr
+    else if lvl == LOG_FATAL then "FATAL" as ptr
+    else "INFO " as ptr
+
+fn log_level_from_str : ptr -> i64
+  | cstr ->
+    let l = os.linux.strlen(cstr) as i64
+    if slice.str_eq(cstr, l, "DEBUG" as ptr, 5i64) then LOG_DEBUG
+    else if slice.str_eq(cstr, l, "INFO" as ptr, 4i64) then LOG_INFO
+    else if slice.str_eq(cstr, l, "WARN" as ptr, 4i64) then LOG_WARN
+    else if slice.str_eq(cstr, l, "ERROR" as ptr, 5i64) then LOG_ERROR
+    else if slice.str_eq(cstr, l, "FATAL" as ptr, 5i64) then LOG_FATAL
+    else LOG_INFO

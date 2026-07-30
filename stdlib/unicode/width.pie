@@ -1,0 +1,42 @@
+mod unicode.width
+
+use unicode.char
+use str.raw
+use os.linux
+
+-- stdlib/unicode/width.pie — Terminal Monospace Display Width
+-- Computes East Asian Wide/Fullwidth and combining character column widths.
+
+fn char_display_width : i64 -> i64
+  | cp ->
+    if char.char_is_control(cp) then 0i64
+    else if cp >= 0x1100i64 && (
+       (cp <= 0x115Fi64) ||
+       (cp == 0x2329i64) || (cp == 0x232Ai64) ||
+       (cp >= 0x2E80i64 && cp <= 0xA4CFi64 && cp != 0x303Fi64) ||
+       (cp >= 0xAC00i64 && cp <= 0xD7A3i64) ||
+       (cp >= 0xF900i64 && cp <= 0xFAFFi64) ||
+       (cp >= 0xFE10i64 && cp <= 0xFE19i64) ||
+       (cp >= 0xFE30i64 && cp <= 0xFE6Fi64) ||
+       (cp >= 0xFF00i64 && cp <= 0xFF60i64) ||
+       (cp >= 0xFFE0i64 && cp <= 0xFFE6i64) ||
+       (cp >= 0x20000i64 && cp <= 0x2FFFDi64) ||
+       (cp >= 0x30000i64 && cp <= 0x3FFFDi64)
+    ) then 2i64
+    else 1i64
+
+fn str_display_width : (ptr, i64) -> i64
+  | (data, len) ->
+    let mut total : i64 = 0i64
+    let mut pos : i64 = 0i64
+    let mut p_copy = pos
+    while pos < len
+      p_copy = pos
+      let cp = raw.decode_utf8_char(data, len, &p_copy as *i64)
+      if cp < 0i64
+        pos = pos + 1i64
+        total = total + 1i64
+      else
+        pos = p_copy
+        total = total + char_display_width(cp)
+    total

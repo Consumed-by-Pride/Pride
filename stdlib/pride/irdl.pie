@@ -1,0 +1,228 @@
+mod pride.irdl
+
+use str.string
+
+-- stdlib/pride/irdl.pie — IR Description Language (IRDL) The Crown Jewel
+-- Formal instruction schemas, operands, and verification engine for Pride SSA IR
+-- and Untyped Higher-Order & Scoped Effects (HOSE).
+
+struct IrdlOpcode {
+    code: i64,
+    name: ptr,
+    operand_count: i64,
+    is_scoped: bool,
+    is_fiber: bool
+}
+
+struct IrdlSchema {
+    version: i64,
+    op_count: i64,
+    ops: [IrdlOpcode; 64]
+}
+
+-- ── IRDL Opcodes ───────────────────────────────────────────────────────────
+
+fn op_add : () -> i64          | () -> 1
+fn op_sub : () -> i64          | () -> 2
+fn op_mul : () -> i64          | () -> 3
+fn op_call : () -> i64         | () -> 4
+fn op_load : () -> i64         | () -> 5
+fn op_store : () -> i64        | () -> 6
+
+-- Untyped Higher-Order & Scoped Effects (HOSE) Opcodes
+fn hose_prompt_install : () -> i64 | () -> 30
+fn hose_prompt_unwind : () -> i64  | () -> 31
+fn hose_fiber_spawn : () -> i64    | () -> 32
+fn hose_fiber_yield : () -> i64    | () -> 33
+fn hose_yield_in : () -> i64       | () -> 34
+fn hose_yield_out : () -> i64      | () -> 35
+fn hose_split_cont : () -> i64     | () -> 36
+fn hose_fuse_cont : () -> i64      | () -> 37
+fn hose_dynamic_wind_push : () -> i64 | () -> 38
+fn hose_dynamic_wind_pop : () -> i64  | () -> 39
+fn hose_local_bind : () -> i64        | () -> 40
+fn hose_local_get : () -> i64         | () -> 41
+
+-- ── Schema Construction ────────────────────────────────────────────────────
+
+fn irdl_schema_new : () -> IrdlSchema
+    | () ->
+        let mut s : IrdlSchema = IrdlSchema {
+            version: 1,
+            op_count: 0,
+            ops: [IrdlOpcode { code: 0, name: null, operand_count: 0, is_scoped: false, is_fiber: false }; 64]
+        };
+        -- Register standard ops
+        s.ops[0] = IrdlOpcode { code: 1, name: "add", operand_count: 2, is_scoped: false, is_fiber: false };
+        s.ops[1] = IrdlOpcode { code: 2, name: "sub", operand_count: 2, is_scoped: false, is_fiber: false };
+        s.ops[2] = IrdlOpcode { code: 4, name: "call", operand_count: 3, is_scoped: false, is_fiber: false };
+        -- Register HOSE ops
+        s.ops[3] = IrdlOpcode { code: 30, name: "hose.prompt_install", operand_count: 1, is_scoped: true, is_fiber: false };
+        s.ops[4] = IrdlOpcode { code: 32, name: "hose.fiber_spawn", operand_count: 2, is_scoped: false, is_fiber: true };
+        s.ops[5] = IrdlOpcode { code: 34, name: "hose.yield_in", operand_count: 3, is_scoped: true, is_fiber: false };
+        s.ops[6] = IrdlOpcode { code: 35, name: "hose.yield_out", operand_count: 3, is_scoped: true, is_fiber: false };
+        s.ops[7] = IrdlOpcode { code: 36, name: "hose.split_cont", operand_count: 1, is_scoped: true, is_fiber: false };
+        s.ops[8] = IrdlOpcode { code: 37, name: "hose.fuse_cont", operand_count: 2, is_scoped: true, is_fiber: false };
+        s.ops[9] = IrdlOpcode { code: 38, name: "hose.dynamic_wind_push", operand_count: 4, is_scoped: true, is_fiber: false };
+        s.ops[10] = IrdlOpcode { code: 39, name: "hose.dynamic_wind_pop", operand_count: 1, is_scoped: true, is_fiber: false };
+        s.ops[11] = IrdlOpcode { code: 40, name: "hose.local_bind", operand_count: 3, is_scoped: true, is_fiber: false };
+        s.ops[12] = IrdlOpcode { code: 41, name: "hose.local_get", operand_count: 1, is_scoped: true, is_fiber: false };
+        s.ops[13] = IrdlOpcode { code: 42, name: "mlcee.cmtt_box_new", operand_count: 3, is_scoped: false, is_fiber: false };
+        s.ops[14] = IrdlOpcode { code: 43, name: "mlcee.cmtt_box_inspect", operand_count: 2, is_scoped: true, is_fiber: false };
+        s.ops[15] = IrdlOpcode { code: 44, name: "mlcee.cmtt_fuse_aot", operand_count: 3, is_scoped: true, is_fiber: false };
+        s.op_count = 16;
+        s
+
+fn irdl_schema_destroy : *IrdlSchema -> ()
+    | s ->
+        if s != null then {
+            s.op_count = 0;
+        } else {
+            ()
+        }
+
+fn irdl_schema_add_op : (*IrdlSchema, ptr, i64) -> *IrdlOpcode
+    | (s, name_ptr, arity) ->
+        if s != null && s.op_count < 64 then {
+            let idx : i64 = s.op_count;
+            s.ops[idx] = IrdlOpcode {
+                code: idx + 100,
+                name: name_ptr,
+                operand_count: arity,
+                is_scoped: false,
+                is_fiber: false
+            };
+            s.op_count = idx + 1;
+            &s.ops[idx]
+        } else {
+            null
+        }
+
+fn irdl_verify_instruction : (*IrdlSchema, i64, *i64, i64) -> bool
+    | (s, code, operands, count) ->
+        if s == null then {
+            false
+        } else {
+            let mut i : i64 = 0i64;
+            let mut found : bool = false;
+            while true do {
+                if i >= s.op_count then {
+                    break;
+                };
+                if s.ops[i].code == code then {
+                    if s.ops[i].operand_count == count then {
+                        found = true;
+                    } else {
+                        found = false;
+                    };
+                    break;
+                };
+                i = i + 1i64;
+            };
+            found
+        }
+
+fn irdl_op_name : (*IrdlSchema, i64) -> str.string.String
+    | (s, code) ->
+        if s == null then {
+            str.string.from_str("unknown")
+        } else {
+            let mut i : i64 = 0i64;
+            let mut result : str.string.String = str.string.from_str("unknown");
+            while true do {
+                if i >= s.op_count then {
+                    break;
+                };
+                if s.ops[i].code == code && s.ops[i].name != null then {
+                    result = str.string.string_from_cstr(s.ops[i].name);
+                    break;
+                };
+                i = i + 1i64;
+            };
+            result
+        }
+
+-- ── IRDL Dialect Type & Attribute Schemas ──────────────────────────────────
+-- Extends IRDL to validate dialect-defined custom types and attributes.
+
+struct IrdlTypeSchema {
+    type_id: i64,
+    name: ptr,
+    param_count: i64,
+    is_modal_box: bool
+}
+
+struct IrdlAttrSchema {
+    attr_id: i64,
+    name: ptr,
+    value_kind: i64
+}
+
+struct IrdlDialectRegistry {
+    name: ptr,
+    type_count: i64,
+    types: [IrdlTypeSchema; 32],
+    attr_count: i64,
+    attrs: [IrdlAttrSchema; 32]
+}
+
+fn irdl_dialect_new : ptr -> IrdlDialectRegistry
+    | name_ptr ->
+        IrdlDialectRegistry {
+            name:       name_ptr,
+            type_count: 0i64,
+            types:      [IrdlTypeSchema { type_id: 0i64, name: null, param_count: 0i64, is_modal_box: false }; 32],
+            attr_count: 0i64,
+            attrs:      [IrdlAttrSchema { attr_id: 0i64, name: null, value_kind: 0i64 }; 32]
+        }
+
+fn irdl_dialect_add_type : (*IrdlDialectRegistry, i64, ptr, i64, bool) -> bool
+    | (reg, tid, name_ptr, params, is_modal) ->
+        if reg != null && reg.type_count < 32i64 then {
+            let idx : i64 = reg.type_count;
+            reg.types[idx] = IrdlTypeSchema {
+                type_id:      tid,
+                name:         name_ptr,
+                param_count:  params,
+                is_modal_box: is_modal
+            };
+            reg.type_count = idx + 1i64;
+            true
+        } else {
+            false
+        }
+
+fn irdl_dialect_add_attr : (*IrdlDialectRegistry, i64, ptr, i64) -> bool
+    | (reg, aid, name_ptr, vkind) ->
+        if reg != null && reg.attr_count < 32i64 then {
+            let idx : i64 = reg.attr_count;
+            reg.attrs[idx] = IrdlAttrSchema {
+                attr_id:    aid,
+                name:       name_ptr,
+                value_kind: vkind
+            };
+            reg.attr_count = idx + 1i64;
+            true
+        } else {
+            false
+        }
+
+fn irdl_dialect_verify_type : (*IrdlDialectRegistry, i64, i64) -> bool
+    | (reg, tid, params) ->
+        if reg == null then {
+            false
+        } else {
+            let mut i : i64 = 0i64;
+            let mut found : bool = false;
+            while true do {
+                if i >= reg.type_count then {
+                    break;
+                };
+                if reg.types[i].type_id == tid && reg.types[i].param_count == params then {
+                    found = true;
+                    break;
+                };
+                i = i + 1i64;
+            };
+            found
+        }

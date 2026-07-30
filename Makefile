@@ -58,6 +58,9 @@ MODULES := \
 	ast.c3         \
 	parser.c3      \
 	resolve.c3     \
+	modal.c3       \
+	msp.c3         \
+	parse_modal.c3 \
 	typecheck.c3   \
 	effectcheck.c3 \
 	lint.c3        \

@@ -856,7 +856,7 @@ fn parse_int_base : (ptr, i64, u8) -> (i64, bool)
       let mut v : i64 = 0i64; let mut ok = false
       while i < slen
         let d = char_to_digit(cs[i], actual_base)
-        if d < 0i64 then i=slen   -- break
+        if d < 0i64 then break
         else v = v * actual_base as i64 + d; ok = true; i = i + 1i64
       if !ok then (0i64, false)
       else (if neg then -v else v, true)

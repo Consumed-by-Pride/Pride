@@ -1,0 +1,29 @@
+mod db
+
+use db.wal
+use db.memtable
+use db.sstable
+use db.compaction
+
+-- stdlib/db.pie — Standard Library Embedded LSM Database Suite
+-- Exports crash-safe Write-Ahead Logs (WAL), ordered in-memory tables (MemTable),
+-- disk-backed sorted string tables (SSTable), and compaction engines.
+
+-- WAL
+fn wal_open : ptr -> wal.Wal                                   | path -> wal.wal_open(path)
+fn wal_close : *wal.Wal -> ()                                  | w -> wal.wal_close(w)
+fn wal_sync : *wal.Wal -> i64                                  | w -> wal.wal_sync(w)
+fn wal_append : (*wal.Wal, ptr, i64, ptr, i64) -> i64          | (w, k, kl, v, vl) -> wal.wal_append_record(w, k, kl, v, vl)
+
+-- MemTable
+fn memtable_new : i64 -> memtable.MemTable                     | cap -> memtable.memtable_new(cap)
+fn memtable_destroy : *memtable.MemTable -> ()                 | mt -> memtable.memtable_destroy(mt)
+fn memtable_put : (*memtable.MemTable, ptr, ptr) -> ()         | (mt, k, v) -> memtable.memtable_put(mt, k, v)
+fn memtable_get : (*memtable.MemTable, ptr) -> (str.string.String, bool) | (mt, k) -> memtable.memtable_get(mt, k)
+fn memtable_delete : (*memtable.MemTable, ptr) -> bool         | (mt, k) -> memtable.memtable_delete(mt, k)
+
+-- SSTable & Compaction
+fn sstable_open : ptr -> sstable.SsTable                       | path -> sstable.sstable_open(path)
+fn sstable_close : *sstable.SsTable -> ()                      | s -> sstable.sstable_close(s)
+fn sstable_from_memtable : (ptr, *memtable.MemTable) -> i64    | (p, m) -> sstable.sstable_create_from_memtable(p, m)
+fn compaction_merge : (ptr, ptr, ptr) -> i64                   | (a, b, c) -> compaction.compaction_merge_sstables(a, b, c)

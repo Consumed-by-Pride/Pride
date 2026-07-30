@@ -1,0 +1,49 @@
+mod db.wal
+
+use os.linux
+use fs.file
+
+-- stdlib/db/wal.pie — Write-Ahead Log (WAL)
+-- Append-only transaction log ensuring crash-safe recovery for embedded storage.
+
+struct Wal
+  file_h  : file.File
+  offset  : i64
+  is_open : bool
+
+fn wal_open : ptr -> Wal
+  | path_cstr ->
+    let f = file.file_open_append(path_cstr)
+    if f.fd < 0i64
+      Wal { file_h: f, offset: 0i64, is_open: false }
+    else
+      let sz = os.linux.lseek(f.fd, 0i64, file.SEEK_END)
+      Wal { file_h: f, offset: sz, is_open: true }
+
+fn wal_close : *Wal -> ()
+  | w ->
+    if w.is_open
+      file.file_close(&w.file_h)
+    w.is_open = false; w.offset = 0i64
+
+fn wal_sync : *Wal -> i64
+  | w ->
+    if !w.is_open then -1i64
+    else file.file_sync(&w.file_h)
+
+fn wal_append_record : (*Wal, ptr, i64, ptr, i64) -> i64
+  | (w, key_ptr, key_len, val_ptr, val_len) ->
+    if !w.is_open then -1i64
+    else
+      let hdr = os.linux.malloc(16i64) as *i64
+      hdr[0i64] = key_len
+      hdr[1i64] = val_len
+      let r1 = file.file_write_all(&w.file_h, hdr as ptr, 16i64)
+      let r2 = file.file_write_all(&w.file_h, key_ptr, key_len)
+      let r3 = file.file_write_all(&w.file_h, val_ptr, val_len)
+      os.linux.free(hdr as ptr)
+      if r1 < 0i64 || r2 < 0i64 || r3 < 0i64 then -1i64
+      else
+        let total = 16i64 + key_len + val_len
+        w.offset = w.offset + total
+        total

@@ -1,0 +1,58 @@
+mod sync
+
+use sync.mutex
+use sync.cond
+use sync.rwlock
+use sync.thread
+use sync.semaphore
+use sync.mpmc
+use sync.pool
+
+-- stdlib/sync.pie — Standard Library POSIX Synchronization Suite
+-- Exports mutexes, condition variables, reader-writer locks, thread spawning, and semaphores.
+
+-- Mutex
+fn mutex_new : () -> mutex.Mutex                     | () -> mutex.mutex_new()
+fn mutex_lock : *mutex.Mutex -> i64                  | m -> mutex.mutex_lock(m)
+fn mutex_trylock : *mutex.Mutex -> bool              | m -> mutex.mutex_trylock(m)
+fn mutex_unlock : *mutex.Mutex -> i64                | m -> mutex.mutex_unlock(m)
+fn mutex_destroy : *mutex.Mutex -> ()                | m -> mutex.mutex_destroy(m)
+
+-- CondVar
+fn cond_new : () -> cond.CondVar                     | () -> cond.condvar_new()
+fn cond_wait : (*cond.CondVar, *mutex.Mutex) -> i64  | (c, m) -> cond.condvar_wait(c, m)
+fn cond_signal : *cond.CondVar -> i64                | c -> cond.condvar_signal(c)
+fn cond_broadcast : *cond.CondVar -> i64             | c -> cond.condvar_broadcast(c)
+fn cond_destroy : *cond.CondVar -> ()                | c -> cond.condvar_destroy(c)
+
+-- RwLock
+fn rwlock_new : () -> rwlock.RwLock                  | () -> rwlock.rwlock_new()
+fn rwlock_rdlock : *rwlock.RwLock -> i64             | l -> rwlock.rwlock_read_lock(l)
+fn rwlock_wrlock : *rwlock.RwLock -> i64             | l -> rwlock.rwlock_write_lock(l)
+fn rwlock_unlock : *rwlock.RwLock -> i64             | l -> rwlock.rwlock_unlock(l)
+fn rwlock_destroy : *rwlock.RwLock -> ()             | l -> rwlock.rwlock_destroy(l)
+
+-- Thread
+fn thread_spawn : (ptr, ptr) -> (thread.Thread, i32) | (f, a) -> thread.thread_spawn(f, a)
+fn thread_join : *thread.Thread -> (ptr, i32)        | t -> thread.thread_join(t)
+fn thread_detach : *thread.Thread -> i32             | t -> thread.thread_detach(t)
+fn thread_id : () -> u64                             | () -> thread.thread_current_id()
+fn thread_yield : () -> i32                          | () -> thread.thread_yield()
+
+-- Semaphore
+fn sem_new : i32 -> semaphore.Semaphore              | v -> semaphore.semaphore_new(v)
+fn sem_post : *semaphore.Semaphore -> i32            | s -> semaphore.semaphore_post(s)
+fn sem_wait : *semaphore.Semaphore -> i32            | s -> semaphore.semaphore_wait(s)
+fn sem_trywait : *semaphore.Semaphore -> i32         | s -> semaphore.semaphore_trywait(s)
+fn sem_destroy : *semaphore.Semaphore -> ()          | s -> semaphore.semaphore_destroy(s)
+
+-- MPMC Queue
+fn mpmc_new : i64 -> mpmc.MpmcQueue                  | c -> mpmc.mpmc_new(c)
+fn mpmc_destroy : *mpmc.MpmcQueue -> ()              | q -> mpmc.mpmc_destroy(q)
+fn mpmc_push : (*mpmc.MpmcQueue, ptr) -> ()          | (q, v) -> mpmc.mpmc_push(q, v)
+fn mpmc_pop : *mpmc.MpmcQueue -> ptr                 | q -> mpmc.mpmc_pop(q)
+
+-- Thread Pool
+fn pool_new : (i64, i64) -> pool.ThreadPool          | (n, c) -> pool.threadpool_new(n, c)
+fn pool_submit : (*pool.ThreadPool, ptr) -> ()       | (tp, j) -> pool.threadpool_submit(tp, j)
+fn pool_destroy : *pool.ThreadPool -> ()             | tp -> pool.threadpool_destroy(tp)

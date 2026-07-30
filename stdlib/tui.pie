@@ -1,0 +1,36 @@
+mod tui
+
+use tui.ansi
+use tui.cursor
+use tui.raw_mode
+use tui.style
+
+-- stdlib/tui.pie — Standard Library Terminal User Interface (TUI) Suite
+-- Exports ANSI formatting, VT100 cursor control, raw terminal mode, and styled text.
+
+-- ANSI
+fn reset : () -> ptr                                 | () -> ansi.ANSI_RESET
+fn bold : () -> ptr                                  | () -> ansi.ANSI_BOLD
+fn underline : () -> ptr                             | () -> ansi.ANSI_UNDERLINE
+fn clear_screen : () -> ptr                          | () -> ansi.ANSI_CLEAR_SCREEN
+fn clear_line : () -> ptr                            | () -> ansi.ANSI_CLEAR_LINE
+fn hide_cursor : () -> ptr                           | () -> ansi.ANSI_HIDE_CURSOR
+fn show_cursor : () -> ptr                           | () -> ansi.ANSI_SHOW_CURSOR
+fn fg_rgb : (i64, i64, i64) -> str.string.String     | (r, g, b) -> ansi.ansi_rgb_fg(r, g, b)
+fn bg_rgb : (i64, i64, i64) -> str.string.String     | (r, g, b) -> ansi.ansi_rgb_bg(r, g, b)
+
+-- Cursor
+fn move_to : (i64, i64) -> str.string.String         | (r, c) -> cursor.cursor_move_to(r, c)
+fn up : i64 -> str.string.String                     | n -> cursor.cursor_up(n)
+fn down : i64 -> str.string.String                   | n -> cursor.cursor_down(n)
+fn forward : i64 -> str.string.String                | n -> cursor.cursor_forward(n)
+fn backward : i64 -> str.string.String               | n -> cursor.cursor_backward(n)
+
+-- Raw Mode
+fn enable_raw_mode : i64 -> (raw_mode.TermState, i64)| fd -> raw_mode.term_enable_raw_mode(fd)
+fn restore_mode : *raw_mode.TermState -> i64         | s -> raw_mode.term_restore_state(s)
+
+-- StyledString
+fn style_new : ptr -> style.StyledString             | s -> style.style_new(s)
+fn style_destroy : *style.StyledString -> ()         | s -> style.style_destroy(s)
+fn style_render : *style.StyledString -> str.string.String | s -> style.style_render(s)

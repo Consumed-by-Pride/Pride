@@ -1,0 +1,87 @@
+mod vec.raw
+
+use os.linux
+
+-- stdlib/vec/raw.pie — RawVec: Low-level contiguous buffer management
+-- Manages raw heap allocations, exponential capacity growth, shrinking, and spare capacity.
+
+struct RawVec
+  data    : ptr
+  cap     : i64
+  elem_sz : i64
+
+fn rawvec_new : i64 -> RawVec
+  | elem_sz -> RawVec { data: 0 as ptr, cap: 0i64, elem_sz: elem_sz }
+
+fn rawvec_alloc_size : (i64, i64) -> i64
+  | (cap, elem_sz) -> cap * elem_sz
+
+fn rawvec_with_cap : (i64, i64) -> RawVec
+  | (cap, elem_sz) ->
+    if cap <= 0i64 then RawVec { data: 0 as ptr, cap: 0i64, elem_sz: elem_sz }
+    else
+      let bytes = rawvec_alloc_size(cap, elem_sz)
+      let p = os.linux.malloc(bytes)
+      RawVec { data: p, cap: cap, elem_sz: elem_sz }
+
+fn rawvec_destroy : *RawVec -> ()
+  | rv ->
+    if rv.cap > 0i64 && rv.data as i64 != 0i64
+      os.linux.free(rv.data)
+    rv.data = 0 as ptr; rv.cap = 0i64
+
+fn rawvec_ptr : *RawVec -> ptr
+  | rv -> rv.data
+
+fn rawvec_cap : *RawVec -> i64
+  | rv -> rv.cap
+
+fn rawvec_elem_size : *RawVec -> i64
+  | rv -> rv.elem_sz
+
+fn rawvec_grow : (*RawVec, i64) -> ()
+  | (rv, min_cap) ->
+    let mut new_cap = if rv.cap == 0i64 then 4i64 else rv.cap * 2i64
+    while new_cap < min_cap
+      new_cap = new_cap * 2i64
+    let bytes = rawvec_alloc_size(new_cap, rv.elem_sz)
+    let new_ptr = if rv.cap == 0i64 then os.linux.malloc(bytes)
+                  else os.linux.realloc(rv.data, bytes)
+    rv.data = new_ptr; rv.cap = new_cap
+
+fn rawvec_reserve : (*RawVec, i64, i64) -> ()
+  | (rv, len, additional) ->
+    let needed = len + additional
+    if needed > rv.cap
+      rawvec_grow(rv, needed)
+
+fn rawvec_reserve_exact : (*RawVec, i64, i64) -> ()
+  | (rv, len, additional) ->
+    let needed = len + additional
+    if needed > rv.cap
+      let bytes = rawvec_alloc_size(needed, rv.elem_sz)
+      let new_ptr = if rv.cap == 0i64 then os.linux.malloc(bytes)
+                    else os.linux.realloc(rv.data, bytes)
+      rv.data = new_ptr; rv.cap = needed
+
+fn rawvec_shrink_to_fit : (*RawVec, i64) -> ()
+  | (rv, len) ->
+    if len == 0i64
+      rawvec_destroy(rv)
+    else if len < rv.cap
+      let bytes = rawvec_alloc_size(len, rv.elem_sz)
+      let new_ptr = os.linux.realloc(rv.data, bytes)
+      rv.data = new_ptr; rv.cap = len
+
+fn rawvec_spare_capacity : (*RawVec, i64) -> ptr
+  | (rv, len) -> (rv.data as i64 + len * rv.elem_sz) as ptr
+
+fn rawvec_spare_capacity_len : (*RawVec, i64) -> i64
+  | (rv, len) -> rv.cap - len
+
+fn rawvec_zero_spare : (*RawVec, i64) -> ()
+  | (rv, len) ->
+    let spare_len = rv.cap - len
+    if spare_len > 0i64
+      let spare_ptr = rawvec_spare_capacity(rv, len)
+      os.linux.memset(spare_ptr, 0i32, (spare_len * rv.elem_sz) as u64)

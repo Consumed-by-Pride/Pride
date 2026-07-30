@@ -2,9 +2,9 @@
 *.bc
 *.opt.bc
 *.ll
-pride
-pridec
-pride_new
+/pride
+/pridec
+/pride_new
 .understand-anything/
 redteam/
 __pycache__/

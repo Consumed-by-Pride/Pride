@@ -1,0 +1,91 @@
+mod pride.ub
+
+use os.linux
+
+-- stdlib/pride/ub.pie — Explicit UB & Memory Safety Metaprogramming Suite
+-- Controlled memory poisoning, alignment validation, and explicit UB fencing.
+
+struct PoisonCell {
+    addr: ptr,
+    len: i64,
+    is_poisoned: bool
+}
+
+struct PoisonRegistry {
+    count: i64,
+    addrs: [ptr; 32],
+    lens: [i64; 32]
+}
+
+fn poison_registry_new : () -> PoisonRegistry
+    | () ->
+        PoisonRegistry { count: 0i64, addrs: [null; 32], lens: [0i64; 32] }
+
+fn poison_registry_add : (*PoisonRegistry, ptr, i64) -> bool
+    | (reg, addr, len) ->
+        if reg != null && reg.count < 32i64 then {
+            let idx : i64 = reg.count;
+            reg.addrs[idx] = addr;
+            reg.lens[idx]  = len;
+            reg.count = idx + 1i64;
+            true
+        } else {
+            false
+        }
+
+fn poison_registry_check : (*PoisonRegistry, ptr) -> bool
+    | (reg, target_addr) ->
+        if reg == null || target_addr == null then {
+            false
+        } else {
+            let mut i : i64 = 0i64;
+            let mut found : bool = false;
+            while true do {
+                if i >= reg.count then {
+                    break;
+                };
+                if reg.addrs[i] == target_addr then {
+                    found = true;
+                    break;
+                };
+                i = i + 1i64;
+            };
+            found
+        }
+
+fn ub_trap : () -> ()
+    | () ->
+        os.linux.raise(6i32);
+        ()
+
+fn ub_unreachable : () -> ()
+    | () ->
+        os.linux.raise(6i32);
+        ()
+
+fn ub_assume : bool -> ()
+    | cond ->
+        if !cond then ub_trap() else ()
+
+fn ub_poison_memory : (ptr, i64) -> PoisonCell
+    | (addr, len) ->
+        PoisonCell { addr: addr, len: len, is_poisoned: true }
+
+fn ub_freeze_val : i64 -> i64
+    | v ->
+        v
+
+fn ub_check_alignment : (ptr, i64) -> bool
+    | (addr, align_bytes) ->
+        if align_bytes <= 1i64 then {
+            true
+        } else if addr == null then {
+            false
+        } else {
+            let p_int : i64 = addr as i64;
+            if p_int % align_bytes == 0i64 then {
+                true
+            } else {
+                false
+            }
+        }

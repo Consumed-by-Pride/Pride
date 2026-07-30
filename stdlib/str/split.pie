@@ -1,0 +1,58 @@
+mod str.split
+
+use vec.vec
+use str.string
+
+-- stdlib/str/split.pie — String Splitting and Joining
+-- Split strings by delimiters or newlines and join arrays of strings.
+
+fn str_split_char : (ptr, i64, u8) -> vec.Vec
+  | (s, len, delim) ->
+    let mut out = vec.vec_new(8i64)
+    let buf = s as *u8
+    let mut start : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i < len
+      if buf[i] == delim
+        let chunk = string.string_from_slice((s as i64 + start) as ptr, i - start)
+        vec.vec_push(&out, &chunk as ptr)
+        start = i + 1i64
+      i = i + 1i64
+    let last = string.string_from_slice((s as i64 + start) as ptr, len - start)
+    vec.vec_push(&out, &last as ptr)
+    out
+
+fn str_split_lines : (ptr, i64) -> vec.Vec
+  | (s, len) ->
+    let mut out = vec.vec_new(8i64)
+    let buf = s as *u8
+    let mut start : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i < len
+      if buf[i] == 10u8
+        let mut end = i
+        if end > start && buf[end - 1i64] == 13u8
+          end = end - 1i64
+        let line = string.string_from_slice((s as i64 + start) as ptr, end - start)
+        vec.vec_push(&out, &line as ptr)
+        start = i + 1i64
+      i = i + 1i64
+    if start < len
+      let last = string.string_from_slice((s as i64 + start) as ptr, len - start)
+      vec.vec_push(&out, &last as ptr)
+    out
+
+fn str_join : (*vec.Vec, ptr, i64) -> string.String
+  | (list, sep_ptr, sep_len) ->
+    let count = vec.vec_len(list)
+    let mut out = string.string_with_cap(count * 16i64)
+    let mut i : i64 = 0i64
+    while i < count
+      if i > 0i64 && sep_len > 0i64
+        string.string_push_slice(&out, sep_ptr, sep_len)
+      let s_ptr = (vec.vec_get(list, i) as *string.String)
+      let slice = string.string_as_slice(s_ptr)
+      let slen  = string.string_len(s_ptr)
+      string.string_push_slice(&out, slice, slen)
+      i = i + 1i64
+    out

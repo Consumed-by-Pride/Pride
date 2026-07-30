@@ -1,0 +1,19 @@
+-- examples/algebraic_async_io.pie — Algebraic Effect-Driven Asynchronous I/O Showcase
+-- Demonstrates how Pride unifies native Algebraic Effects with epoll/io_uring event loops
+-- without colored async/await functions or callback futures.
+
+effect AsyncIo
+  op read  : (i64, ptr, i64) -> i64
+  op write : (i64, ptr, i64) -> i64
+  op sleep : i64 -> ()
+
+fn echo_connection_handler : i64 -> () ! [AsyncIo]
+  | fd ->
+    let mut buf : [u8; 128] = [0u8; 128]
+    while true
+      -- Ordinary synchronous-looking perform! The handler suspends this fiber,
+      -- submits an epoll/io_uring request, and calls resume(bytes) upon kernel completion.
+      let n = perform AsyncIo.read(fd, &buf[0] as ptr, 128i64)
+      if n <= 0i64
+        break
+      perform AsyncIo.write(fd, &buf[0] as ptr, n)

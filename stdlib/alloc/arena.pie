@@ -1,0 +1,84 @@
+mod alloc.arena
+
+use os.linux
+
+-- stdlib/alloc/arena.pie — Region/Arena Memory Allocator (Arena)
+-- Fast batch allocation with O(1) bulk deallocation.
+
+struct ArenaChunk
+  buf       : ptr
+  cap       : i64
+  used      : i64
+  next_ch   : ptr
+
+struct Arena
+  first     : *ArenaChunk
+  current   : *ArenaChunk
+  chunk_sz  : i64
+
+fn arena_chunk_new : i64 -> *ArenaChunk
+  | cap ->
+    let c = os.linux.malloc(32i64) as *ArenaChunk
+    c.buf     = os.linux.malloc(cap)
+    c.cap     = cap
+    c.used    = 0i64
+    c.next_ch = 0 as ptr
+    c
+
+fn arena_chunk_destroy : *ArenaChunk -> ()
+  | ch ->
+    if ch as i64 == 0i64 then ()
+    else
+      if ch.buf as i64 != 0i64
+        os.linux.free(ch.buf)
+      os.linux.free(ch as ptr)
+
+fn arena_new : i64 -> Arena
+  | chunk_sz ->
+    let sz = if chunk_sz <= 0i64 then 65536i64 else chunk_sz
+    let c  = arena_chunk_new(sz)
+    Arena { first: c, current: c, chunk_sz: sz }
+
+fn arena_destroy : *Arena -> ()
+  | a ->
+    let mut cur = a.first
+    while cur as i64 != 0i64
+      let nxt = cur.next_ch as *ArenaChunk
+      arena_chunk_destroy(cur)
+      cur = nxt
+    a.first = 0 as *ArenaChunk; a.current = 0 as *ArenaChunk
+
+fn arena_clear : *Arena -> ()
+  | a ->
+    let mut cur = a.first
+    while cur as i64 != 0i64
+      cur.used = 0i64
+      cur = cur.next_ch as *ArenaChunk
+    a.current = a.first
+
+fn align_up_i64 : (i64, i64) -> i64
+  | (n, al) -> (n + al - 1i64) & ~(al - 1i64)
+
+fn arena_alloc : (*Arena, i64, i64) -> ptr
+  | (a, size, align_bytes) ->
+    let al = if align_bytes <= 0i64 then 8i64 else align_bytes
+    let cur = a.current
+    let aligned_used = align_up_i64(cur.used, al)
+    if aligned_used + size <= cur.cap
+      let p = (cur.buf as i64 + aligned_used) as ptr
+      cur.used = aligned_used + size
+      p
+    else
+      let next_cap = if size > a.chunk_sz then size + a.chunk_sz else a.chunk_sz
+      let new_c = arena_chunk_new(next_cap)
+      cur.next_ch = new_c as ptr
+      a.current   = new_c
+      let p = new_c.buf
+      new_c.used  = size
+      p
+
+fn arena_alloc_zeroed : (*Arena, i64, i64) -> ptr
+  | (a, size, align_bytes) ->
+    let p = arena_alloc(a, size, align_bytes)
+    os.linux.memset(p, 0i32, size as u64)
+    p

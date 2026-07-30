@@ -1,0 +1,29 @@
+mod target.regalloc
+
+use ir.func
+use ir.block
+use ir.instr
+
+-- stdlib/target/regalloc.pie — Linear Scan Register Allocator
+-- Maps virtual SSA values to physical architecture registers and stack spill slots.
+
+struct RegAlloc
+  num_phys_regs : i64
+  spill_count   : i64
+
+fn regalloc_new : i64 -> RegAlloc
+  | num_regs -> RegAlloc { num_phys_regs: num_regs, spill_count: 0i64 }
+
+fn regalloc_linear_scan : (*RegAlloc, *func.IrFunction) -> i64
+  | (ra, fn_ptr) ->
+    let mut spills : i64 = 0i64
+    let mut i : i64 = 0i64
+    let blk_count = vec.vec_len(&fn_ptr.blocks)
+    while i < blk_count
+      let blk = vec.vec_get(&fn_ptr.blocks, i) as *block.IrBlock
+      let inst_count = vec.vec_len(&blk.instrs)
+      if inst_count > ra.num_phys_regs
+        spills = spills + (inst_count - ra.num_phys_regs)
+      i = i + 1i64
+    ra.spill_count = spills
+    spills

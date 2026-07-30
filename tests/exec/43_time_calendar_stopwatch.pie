@@ -1,0 +1,95 @@
+-- EXPECT: 1\n0\n1\n0\n1970\n1\n1\n2023\n11\n14\n
+
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let mut neg = false
+        if x < 0
+          neg = true
+          x = -x
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        if neg
+          tmp[tlen] = 45u8
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+
+fn is_leap_year : i64 -> i64
+  | year ->
+    if (year % 400i64) == 0i64 then 1i64
+    else if (year % 100i64) == 0i64 then 0i64
+    else if (year % 4i64) == 0i64 then 1i64
+    else 0i64
+
+fn days_in_year : i64 -> i64
+  | year -> if is_leap_year(year) == 1i64 then 366i64 else 365i64
+
+fn days_in_month : (i64, i64) -> i64
+  | (year, month) ->
+    if month == 2i64 then (if is_leap_year(year) == 1i64 then 29i64 else 28i64)
+    else if month == 4i64 || month == 6i64 || month == 9i64 || month == 11i64 then 30i64
+    else 31i64
+
+struct Date
+  year  : i64
+  month : i64
+  day   : i64
+
+fn date_from_timestamp : i64 -> Date
+  | unix_sec ->
+    let mut days = unix_sec / 86400i64
+    let mut rem_sec = unix_sec % 86400i64
+    if rem_sec < 0i64
+      rem_sec = rem_sec + 86400i64
+      days = days - 1i64
+    let mut y : i64 = 1970i64
+    while true
+      let diy = days_in_year(y)
+      if days < diy
+        break
+      days = days - diy
+      y = y + 1i64
+    let mut m : i64 = 1i64
+    while m <= 12i64
+      let dim = days_in_month(y, m)
+      if days < dim
+        break
+      days = days - dim
+      m = m + 1i64
+    Date { year: y, month: m, day: days + 1i64 }
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      print_i64_nl(is_leap_year(2024i64))
+      print_i64_nl(is_leap_year(2025i64))
+      print_i64_nl(is_leap_year(2000i64))
+      print_i64_nl(is_leap_year(1900i64))
+
+      let d0 = date_from_timestamp(0i64)
+      print_i64_nl(d0.year)
+      print_i64_nl(d0.month)
+      print_i64_nl(d0.day)
+
+      let d1 = date_from_timestamp(1700000000i64)
+      print_i64_nl(d1.year)
+      print_i64_nl(d1.month)
+      print_i64_nl(d1.day)
+      syscall(231, 0)

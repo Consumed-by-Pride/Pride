@@ -1,0 +1,15 @@
+mod regex.matcher
+
+use os.linux
+use regex.dfa
+
+-- stdlib/regex/matcher.pie — Regular Expression Execution Engine
+-- Full string matching and substring searching over DFA state machines.
+
+fn regex_match_slice : (*dfa.Dfa, ptr, i64) -> bool
+  | (mach, data, len) -> dfa.dfa_match_slice(mach, data, len)
+
+fn regex_match_str : (*dfa.Dfa, ptr) -> bool
+  | (mach, cstr) ->
+    let len = os.linux.strlen(cstr) as i64
+    regex_match_slice(mach, cstr, len)

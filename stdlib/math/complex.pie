@@ -1,0 +1,59 @@
+mod math.complex
+
+use math.pow
+use math.exp
+use math.trig
+
+-- stdlib/math/complex.pie — Complex Number Arithmetic (Complex)
+
+struct Complex
+  re : f64
+  im : f64
+
+fn complex_new : (f64, f64) -> Complex
+  | (re, im) -> Complex { re: re, im: im }
+
+fn complex_add : (Complex, Complex) -> Complex
+  | (a, b) -> Complex { re: a.re + b.re, im: a.im + b.im }
+
+fn complex_sub : (Complex, Complex) -> Complex
+  | (a, b) -> Complex { re: a.re - b.re, im: a.im - b.im }
+
+fn complex_mul : (Complex, Complex) -> Complex
+  | (a, b) -> Complex { re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re }
+
+fn complex_div : (Complex, Complex) -> Complex
+  | (a, b) ->
+    let denom = b.re * b.re + b.im * b.im
+    if denom == 0.0f64 then Complex { re: 0.0f64, im: 0.0f64 }
+    else
+      Complex { re: (a.re * b.re + a.im * b.im) / denom,
+                im: (a.im * b.re - a.re * b.im) / denom }
+
+fn complex_abs : Complex -> f64
+  | c -> pow.hypot_f64(c.re, c.im)
+
+fn complex_conj : Complex -> Complex
+  | c -> Complex { re: c.re, im: -c.im }
+
+fn complex_arg : Complex -> f64
+  | c -> trig.atan2_f64(c.im, c.re)
+
+fn complex_exp : Complex -> Complex
+  | c ->
+    let e = exp.exp_f64(c.re)
+    Complex { re: e * trig.cos_f64(c.im), im: e * trig.sin_f64(c.im) }
+
+fn complex_ln : Complex -> Complex
+  | c ->
+    let mag = complex_abs(c)
+    let arg = complex_arg(c)
+    Complex { re: exp.ln_f64(mag), im: arg }
+
+fn complex_pow : (Complex, Complex) -> Complex
+  | (z, w) ->
+    if z.re == 0.0f64 && z.im == 0.0f64 then Complex { re: 0.0f64, im: 0.0f64 }
+    else
+      let ln_z = complex_ln(z)
+      let prod = complex_mul(w, ln_z)
+      complex_exp(prod)

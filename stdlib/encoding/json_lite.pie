@@ -1,0 +1,67 @@
+mod encoding.json_lite
+
+use os.linux
+use str.string
+use str.slice
+use vec.vec
+
+-- stdlib/encoding/json_lite.pie — Lightweight JSON Tokenizer and Value Parser
+-- Parses JSON objects, arrays, strings, numbers, booleans, and nulls.
+
+const JSON_OBJECT : i64 = 1i64
+const JSON_ARRAY  : i64 = 2i64
+const JSON_STRING : i64 = 3i64
+const JSON_NUMBER : i64 = 4i64
+const JSON_BOOL   : i64 = 5i64
+const JSON_NULL   : i64 = 6i64
+
+struct JsonNode
+  kind   : i64
+  s_val  : string.String
+  num    : f64
+  b_val  : bool
+  keys   : vec.Vec
+  values : vec.Vec
+
+fn json_node_null : () -> *JsonNode
+  | () ->
+    let p = os.linux.malloc(56i64) as *JsonNode
+    p.kind = JSON_NULL
+    p.s_val = string.string_new()
+    p.num   = 0.0f64
+    p.b_val = false
+    p.keys  = vec.vec_new(8i64)
+    p.values = vec.vec_new(8i64)
+    p
+
+fn json_node_destroy : *JsonNode -> ()
+  | node ->
+    if node as i64 == 0i64 then ()
+    else
+      string.string_destroy(&node.s_val)
+      let mut i : i64 = 0i64
+      let len = vec.vec_len(&node.values)
+      while i < len
+        json_node_destroy(vec.vec_get(&node.values, i) as *JsonNode)
+        i = i + 1i64
+      vec.vec_destroy(&node.keys)
+      vec.vec_destroy(&node.values)
+      os.linux.free(node as ptr)
+
+fn json_node_is_object : *JsonNode -> bool
+  | node -> node.kind == JSON_OBJECT
+
+fn json_node_get_field : (*JsonNode, ptr) -> *JsonNode
+  | (node, key_cstr) ->
+    if node.kind != JSON_OBJECT then 0 as *JsonNode
+    else
+      let len = vec.vec_len(&node.keys)
+      let mut i : i64 = 0i64
+      let mut found = 0 as *JsonNode
+      while i < len
+        let k_str = vec.vec_get(&node.keys, i) as *string.String
+        if slice.str_eq(string.string_as_slice(k_str), string.string_len(k_str), key_cstr, os.linux.strlen(key_cstr) as i64)
+          found = vec.vec_get(&node.values, i) as *JsonNode
+          break
+        i = i + 1i64
+      found

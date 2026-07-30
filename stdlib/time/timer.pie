@@ -1,0 +1,66 @@
+mod time.timer
+
+use time.instant
+use time.duration
+
+-- stdlib/time/timer.pie — Monotonic Deadlines and Token-Bucket Rate Limiters
+-- Track expiration times and rate-limit recurring events.
+
+struct Deadline
+  target : instant.Instant
+
+fn deadline_new_secs : i64 -> Deadline
+  | secs ->
+    let dur = duration.duration_from_secs(secs)
+    Deadline { target: instant.instant_add_duration(instant.instant_now(), dur) }
+
+fn deadline_new_millis : i64 -> Deadline
+  | millis ->
+    let dur = duration.duration_from_millis(millis)
+    Deadline { target: instant.instant_add_duration(instant.instant_now(), dur) }
+
+fn deadline_is_expired : *Deadline -> bool
+  | d ->
+    let now = instant.instant_now()
+    instant.instant_cmp(now, d.target) >= 0i32
+
+fn deadline_remaining : *Deadline -> duration.Duration
+  | d ->
+    let now = instant.instant_now()
+    if instant.instant_cmp(now, d.target) >= 0i32
+      duration.duration_from_secs(0i64)
+    else
+      instant.instant_duration_since(d.target, now)
+
+struct RateLimiter
+  last_refill : instant.Instant
+  tokens      : i64
+  max_tokens  : i64
+  refill_secs : i64
+
+fn ratelimiter_new : (i64, i64) -> RateLimiter
+  | (max_tok, refill_sec) ->
+    RateLimiter {
+      last_refill: instant.instant_now(),
+      tokens:      max_tok,
+      max_tokens:  max_tok,
+      refill_secs: if refill_sec <= 0i64 then 1i64 else refill_sec
+    }
+
+fn ratelimiter_try_acquire : (*RateLimiter, i64) -> bool
+  | (rl, count) ->
+    let now = instant.instant_now()
+    let elapsed = instant.instant_duration_since(now, rl.last_refill)
+    let added = duration.duration_as_secs(elapsed) / rl.refill_secs
+    if added > 0i64
+      rl.tokens = rl.tokens + added
+      if rl.tokens > rl.max_tokens
+        rl.tokens = rl.max_tokens
+      let adv_secs = added * rl.refill_secs
+      let adv_dur = duration.duration_from_secs(adv_secs)
+      rl.last_refill = instant.instant_add_duration(rl.last_refill, adv_dur)
+    if rl.tokens >= count
+      rl.tokens = rl.tokens - count
+      true
+    else
+      false

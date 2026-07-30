@@ -1,0 +1,23 @@
+mod crypto.subtle
+
+-- stdlib/crypto/subtle.pie — Constant-Time Cryptographic Comparison
+-- Prevents timing side-channel leaks when comparing MACs, digests, and tokens.
+
+fn constant_time_eq_slice : (ptr, ptr, i64) -> bool
+  | (a, b, len) ->
+    let mut diff : u8 = 0u8
+    let mut i : i64 = 0i64
+    let ba = a as *u8
+    let bb = b as *u8
+    while i < len
+      diff = diff | (ba[i] ^ bb[i])
+      i = i + 1i64
+    diff == 0u8
+
+fn constant_time_eq_u64 : (u64, u64) -> bool
+  | (a, b) -> (a ^ b) == 0u64
+
+fn constant_time_select_u64 : (bool, u64, u64) -> u64
+  | (choice, true_val, false_val) ->
+    let mask = if choice then 18446744073709551615u64 else 0u64
+    (true_val & mask) | (false_val & ~mask)

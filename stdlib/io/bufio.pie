@@ -1,0 +1,122 @@
+mod io.bufio
+
+use os.linux
+use io
+use str.string
+
+-- stdlib/io/bufio.pie — Buffered I/O (BufReader, BufWriter)
+-- Wraps io.File with a 4096-byte buffer for efficient line-by-line I/O.
+-- Migrated from compiler/stdlib/bufio.pie; given a real module path and
+-- updated to use new stdlib module names.
+
+const BUFIO_CAP : i64 = 4096i64
+
+-- ── BufReader ────────────────────────────────────────────────────────────────
+
+struct BufReader
+  file  : io.File
+  buf   : ptr
+  start : i64
+  end2  : i64
+  eof   : bool
+
+fn bufreader_new : io.File -> BufReader
+  | f ->
+      BufReader { file: f, buf: os.linux.malloc(BUFIO_CAP), start: 0i64, end2: 0i64, eof: false }
+
+fn bufreader_fill : *BufReader -> ()
+  | br ->
+      if br.start >= br.end2 then {
+          br.start = 0i64;
+          br.end2  = io.file_read(&br.file, br.buf, BUFIO_CAP);
+          if br.end2 == 0i64 then br.eof = true else ();
+      } else { () }
+
+fn bufreader_read_byte : *BufReader -> (bool, i8)
+  | br ->
+      bufreader_fill(br);
+      if br.eof || br.start >= br.end2 then (false, 0i8)
+      else {
+          let b = *(((br.buf as i64) + br.start) as *i8);
+          br.start = br.start + 1i64;
+          (true, b)
+      }
+
+-- Read a line into dst (appends, does not clear). Returns true if data was read.
+fn bufreader_read_line : (*BufReader, *string.String) -> bool
+  | (br, dst) ->
+      let mut read_any : bool = false;
+      let mut done     : bool = false;
+      while !done do {
+          let (ok, b) = bufreader_read_byte(br);
+          if !ok then {
+              done = true;
+          } else if b == 10i8 then {
+              read_any = true;
+              done = true;
+          } else {
+              string.str_push_byte(dst, b as u8);
+              read_any = true;
+          };
+      };
+      read_any
+
+fn bufreader_close : *BufReader -> ()
+  | br ->
+      io.file_close(&br.file);
+      if br.buf != null then { os.linux.free(br.buf); br.buf = null; } else ()
+
+-- ── BufWriter ────────────────────────────────────────────────────────────────
+
+struct BufWriter
+  file : io.File
+  buf  : ptr
+  used : i64
+
+fn bufwriter_new : io.File -> BufWriter
+  | f -> BufWriter { file: f, buf: os.linux.malloc(BUFIO_CAP), used: 0i64 }
+
+fn bufwriter_flush : *BufWriter -> ()
+  | bw ->
+      if bw.used > 0i64 then {
+          io.file_write(&bw.file, bw.buf, bw.used);
+          bw.used = 0i64;
+      } else { () }
+
+fn bufwriter_write_byte : (*BufWriter, u8) -> ()
+  | (bw, b) ->
+      if bw.used >= BUFIO_CAP then bufwriter_flush(bw) else ();
+      *(((bw.buf as i64) + bw.used) as *u8) = b;
+      bw.used = bw.used + 1i64
+
+fn bufwriter_write : (*BufWriter, ptr, i64) -> ()
+  | (bw, p, n) ->
+      let mut i : i64 = 0i64;
+      while i < n do {
+          bufwriter_write_byte(bw, *(((p as i64) + i) as *u8));
+          i = i + 1i64;
+      }
+
+fn bufwriter_close : *BufWriter -> ()
+  | bw ->
+      bufwriter_flush(bw);
+      io.file_close(&bw.file);
+      if bw.buf != null then { os.linux.free(bw.buf); bw.buf = null; } else ()
+
+-- ── Convenience: read entire file into a String ───────────────────────────────
+fn read_file_to_string : ptr -> string.String
+  | path ->
+      let f = io.file_open(path, "r" as ptr);
+      let mut s = string.str_new();
+      if io.file_is_open(f) then {
+          let mut br = bufreader_new(f);
+          let mut line = string.str_new();
+          while bufreader_read_line(&br, &line) do {
+              string.str_concat_raw(&s, line.ptr, line.len);
+              string.str_push_byte(&s, 10u8);
+              string.str_clear(&line);
+          };
+          string.str_free(&line);
+          bufreader_close(&br);
+      } else { () };
+      s

@@ -1,0 +1,135 @@
+mod str.slice
+
+use os.linux
+use str.ascii
+use str.string
+
+-- stdlib/str/slice.pie — String Slice Searching, Comparison, and Trimming
+
+fn str_eq : (ptr, i64, ptr, i64) -> bool
+  | (a, alen, b, blen) ->
+    if alen != blen then false
+    else if alen == 0i64 then true
+    else os.linux.memcmp(a, b, alen as u64) == 0i32
+
+fn str_cmp : (ptr, i64, ptr, i64) -> i32
+  | (a, alen, b, blen) ->
+    let min_len = if alen < blen then alen else blen
+    if min_len == 0i64
+      if alen == blen then 0i32 else if alen < blen then -1i32 else 1i32
+    else
+      let res = os.linux.memcmp(a, b, min_len as u64)
+      if res != 0i32 then res
+      else if alen == blen then 0i32 else if alen < blen then -1i32 else 1i32
+
+fn str_starts_with : (ptr, i64, ptr, i64) -> bool
+  | (hay, hay_len, pre, pre_len) ->
+    if pre_len > hay_len then false
+    else if pre_len == 0i64 then true
+    else os.linux.memcmp(hay, pre, pre_len as u64) == 0i32
+
+fn str_ends_with : (ptr, i64, ptr, i64) -> bool
+  | (hay, hay_len, suf, suf_len) ->
+    if suf_len > hay_len then false
+    else if suf_len == 0i64 then true
+    else
+      let start = (hay as i64 + hay_len - suf_len) as ptr
+      os.linux.memcmp(start, suf, suf_len as u64) == 0i32
+
+fn str_find : (ptr, i64, ptr, i64) -> i64
+  | (hay, hay_len, needle, needle_len) ->
+    if needle_len > hay_len then -1i64
+    else if needle_len == 0i64 then 0i64
+    else
+      let mut res : i64 = -1i64
+      let mut i : i64 = 0i64
+      while i <= hay_len - needle_len
+        if os.linux.memcmp((hay as i64 + i) as ptr, needle, needle_len as u64) == 0i32
+          res = i
+          break
+        i = i + 1i64
+      res
+
+fn str_rfind : (ptr, i64, ptr, i64) -> i64
+  | (hay, hay_len, needle, needle_len) ->
+    if needle_len > hay_len then -1i64
+    else if needle_len == 0i64 then hay_len
+    else
+      let mut res : i64 = -1i64
+      let mut i = hay_len - needle_len
+      while i >= 0i64
+        if os.linux.memcmp((hay as i64 + i) as ptr, needle, needle_len as u64) == 0i32
+          res = i
+          break
+        i = i - 1i64
+      res
+
+fn str_contains : (ptr, i64, ptr, i64) -> bool
+  | (hay, hay_len, needle, needle_len) ->
+    str_find(hay, hay_len, needle, needle_len) >= 0i64
+
+fn str_trim_start : (ptr, i64) -> (ptr, i64)
+  | (s, len) ->
+    let mut i : i64 = 0i64
+    let buf = s as *u8
+    while i < len
+      if !ascii.ascii_is_space(buf[i])
+        break
+      i = i + 1i64
+    ((s as i64 + i) as ptr, len - i)
+
+fn str_trim_end : (ptr, i64) -> (ptr, i64)
+  | (s, len) ->
+    let mut end = len
+    let buf = s as *u8
+    while end > 0i64
+      if !ascii.ascii_is_space(buf[end - 1i64])
+        break
+      end = end - 1i64
+    (s, end)
+
+fn str_trim : (ptr, i64) -> (ptr, i64)
+  | (s, len) ->
+    let (s1, l1) = str_trim_start(s, len)
+    str_trim_end(s1, l1)
+
+fn str_to_upper : (ptr, i64) -> string.String
+  | (s, len) ->
+    let mut out = string.string_with_cap(len)
+    let buf = s as *u8
+    let mut i : i64 = 0i64
+    while i < len
+      let u = ascii.ascii_to_upper(buf[i])
+      string.string_push_byte(&out, u)
+      i = i + 1i64
+    out
+
+fn str_to_lower : (ptr, i64) -> string.String
+  | (s, len) ->
+    let mut out = string.string_with_cap(len)
+    let buf = s as *u8
+    let mut i : i64 = 0i64
+    while i < len
+      let l = ascii.ascii_to_lower(buf[i])
+      string.string_push_byte(&out, l)
+      i = i + 1i64
+    out
+
+fn str_count_matches : (ptr, i64, ptr, i64) -> i64
+  | (hay, hay_len, needle, needle_len) ->
+    if needle_len <= 0i64 || needle_len > hay_len then 0i64
+    else
+      let mut count : i64 = 0i64
+      let mut i : i64 = 0i64
+      while i <= hay_len - needle_len
+        if os.linux.memcmp((hay as i64 + i) as ptr, needle, needle_len as u64) == 0i32
+          count = count + 1i64
+          i = i + needle_len
+        else
+          i = i + 1i64
+      count
+
+fn str_split_at : (ptr, i64, i64) -> (ptr, i64, ptr, i64)
+  | (s, len, mid) ->
+    let clamped = if mid < 0i64 then 0i64 else if mid > len then len else mid
+    (s, clamped, (s as i64 + clamped) as ptr, len - clamped)

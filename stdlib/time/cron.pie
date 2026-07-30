@@ -1,0 +1,32 @@
+mod time.cron
+
+use time.date
+
+-- stdlib/time/cron.pie — Cron Schedule Expression Matcher
+-- Match calendar timestamps against cron minute/hour/dom/month/wday expressions.
+
+struct CronSchedule
+  min_mask   : u64   -- bits 0..59
+  hour_mask  : u32   -- bits 0..23
+  dom_mask   : u32   -- bits 1..31
+  month_mask : u16   -- bits 1..12
+  wday_mask  : u8    -- bits 0..6
+
+fn cron_all : () -> CronSchedule
+  | () ->
+    CronSchedule {
+      min_mask:   18446744073709551615u64,
+      hour_mask:  16777215u32,
+      dom_mask:   4294967294u32,
+      month_mask: 8190u16,
+      wday_mask:  127u8
+    }
+
+fn cron_matches_date : (*CronSchedule, *date.DateTime) -> bool
+  | (sched, dt) ->
+    let min_ok   = (sched.min_mask & (1u64 << dt.time.minute as u64)) != 0u64
+    let hour_ok  = (sched.hour_mask & (1u32 << dt.time.hour as u32)) != 0u32
+    let dom_ok   = (sched.dom_mask & (1u32 << dt.date.day as u32)) != 0u32
+    let month_ok = (sched.month_mask & (1u16 << dt.date.month as u16)) != 0u16
+    let wday_ok  = (sched.wday_mask & (1u8 << dt.wday as u8)) != 0u8
+    min_ok && hour_ok && dom_ok && month_ok && wday_ok

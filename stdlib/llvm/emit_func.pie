@@ -1,0 +1,48 @@
+mod llvm.emit_func
+
+use str.string
+use ir.func
+use ir.block
+use ir.instr
+use llvm.emit_type
+use llvm.emit_instr
+use vec.vec
+
+-- stdlib/llvm/emit_func.pie — LLVM IR 22 Function Text Formatter
+-- Formats function signatures, basic blocks, and attributes.
+
+fn emit_llvm_function : *func.IrFunction -> string.String
+  | fn_ptr ->
+    let mut out = string.string_with_cap(256i64)
+    if fn_ptr.is_ext
+      string.string_push_cstr(&out, "declare " as ptr)
+      let ret_str = emit_type.emit_llvm_type(fn_ptr.fn_type.return_type)
+      string.string_concat(&out, &ret_str)
+      string.string_destroy(&ret_str)
+      string.string_push_cstr(&out, " @" as ptr)
+      string.string_concat(&out, &fn_ptr.name)
+      string.string_push_cstr(&out, "(...)\n\n" as ptr)
+    else
+      string.string_push_cstr(&out, "define " as ptr)
+      let ret_str = emit_type.emit_llvm_type(fn_ptr.fn_type.return_type)
+      string.string_concat(&out, &ret_str)
+      string.string_destroy(&ret_str)
+      string.string_push_cstr(&out, " @" as ptr)
+      string.string_concat(&out, &fn_ptr.name)
+      string.string_push_cstr(&out, "() #0 {\n" as ptr)
+      let mut i : i64 = 0i64
+      let len = vec.vec_len(&fn_ptr.blocks)
+      while i < len
+        let blk = vec.vec_get(&fn_ptr.blocks, i) as *block.IrBlock
+        string.string_push_cstr(&out, "entry:\n" as ptr)
+        let mut j : i64 = 0i64
+        let ilen = vec.vec_len(&blk.instrs)
+        while j < ilen
+          let inst = vec.vec_get(&blk.instrs, j) as *instr.IrInstr
+          let i_str = emit_instr.emit_llvm_instr(inst)
+          string.string_concat(&out, &i_str)
+          string.string_destroy(&i_str)
+          j = j + 1i64
+        i = i + 1i64
+      string.string_push_cstr(&out, "}\n\n" as ptr)
+    out

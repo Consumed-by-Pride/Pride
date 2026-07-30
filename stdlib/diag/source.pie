@@ -1,0 +1,80 @@
+mod diag.source
+
+use str.string
+use vec.vec
+use os.linux
+
+-- stdlib/diag/source.pie — Source Code Map and Offset-to-Location Ledger
+-- Maps absolute byte offsets back to filename, line number, and column.
+
+struct SourceFile
+  name       : string.String
+  base_off   : i64
+  end_off    : i64
+  line_starts: vec.Vec
+
+struct SourceLoc
+  filename : string.String
+  line     : i64
+  col      : i64
+  found    : bool
+
+struct SourceMap
+  files : vec.Vec
+
+fn sourcefile_new : (ptr, i64, i64) -> *SourceFile
+  | (name_cstr, base, end_o) ->
+    let sf = os.linux.malloc(40i64) as *SourceFile
+    sf.name     = string.string_from_cstr(name_cstr)
+    sf.base_off = base
+    sf.end_off  = end_o
+    sf.line_starts = vec.vec_new(8i64)
+    sf
+
+fn sourcefile_destroy : *SourceFile -> ()
+  | sf ->
+    if sf as i64 == 0i64 then ()
+    else
+      string.string_destroy(&sf.name)
+      vec.vec_destroy(&sf.line_starts)
+      os.linux.free(sf as ptr)
+
+fn sourcemap_new : () -> SourceMap
+  | () -> SourceMap { files: vec.vec_new(4i64) }
+
+fn sourcemap_destroy : *SourceMap -> ()
+  | sm ->
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&sm.files)
+    while i < len
+      sourcefile_destroy(vec.vec_get(&sm.files, i) as *SourceFile)
+      i = i + 1i64
+    vec.vec_destroy(&sm.files)
+
+fn sourcemap_add_file : (*SourceMap, ptr, i64, i64) -> *SourceFile
+  | (sm, name_cstr, base, end_o) ->
+    let sf = sourcefile_new(name_cstr, base, end_o)
+    vec.vec_push(&sm.files, sf as ptr)
+    sf
+
+fn sourcemap_lookup_offset : (*SourceMap, i64) -> SourceLoc
+  | (sm, offset) ->
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&sm.files)
+    let mut target_sf = 0 as *SourceFile
+    while i < len
+      let sf = vec.vec_get(&sm.files, i) as *SourceFile
+      if offset >= sf.base_off && offset <= sf.end_off
+        target_sf = sf
+        break
+      i = i + 1i64
+    if target_sf as i64 == 0i64
+      SourceLoc { filename: string.string_new(), line: 1i64, col: 1i64, found: false }
+    else
+      let rel_off = offset - target_sf.base_off
+      SourceLoc {
+        filename: string.string_clone(&target_sf.name),
+        line: 1i64,
+        col:  rel_off + 1i64,
+        found: true
+      }

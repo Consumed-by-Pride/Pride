@@ -1,0 +1,23 @@
+mod channel
+
+use channel.unbounded
+use channel.bounded
+use channel.oneshot
+
+-- stdlib/channel.pie — Standard Library Concurrency Communication Channel Suite
+-- Exports unbounded queues, bounded MPMC channels, and oneshot future responders.
+
+-- Unbounded
+fn unbounded : () -> (unbounded.UnboundedSender, unbounded.UnboundedReceiver) | () -> unbounded.unbounded_channel_new()
+fn send_unbounded : (*unbounded.UnboundedSender, ptr) -> bool                 | (tx, v) -> unbounded.unbounded_send(tx, v)
+fn recv_unbounded : *unbounded.UnboundedReceiver -> (ptr, bool)               | rx -> unbounded.unbounded_recv(rx)
+
+-- Bounded
+fn bounded : i64 -> (bounded.BoundedSender, bounded.BoundedReceiver)          | c -> bounded.bounded_channel_new(c)
+fn send_bounded : (*bounded.BoundedSender, ptr) -> bool                       | (tx, v) -> bounded.bounded_send(tx, v)
+fn recv_bounded : *bounded.BoundedReceiver -> (ptr, bool)                     | rx -> bounded.bounded_recv(rx)
+
+-- Oneshot
+fn oneshot : () -> (oneshot.OneshotSender, oneshot.OneshotReceiver)           | () -> oneshot.oneshot_channel_new()
+fn send_oneshot : (*oneshot.OneshotSender, ptr) -> bool                       | (tx, v) -> oneshot.oneshot_send(tx, v)
+fn recv_oneshot : *oneshot.OneshotReceiver -> (ptr, bool)                     | rx -> oneshot.oneshot_recv(rx)

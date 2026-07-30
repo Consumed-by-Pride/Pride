@@ -1,0 +1,76 @@
+mod fs.dir_iter
+
+use os.linux
+use vec.vec
+use str.string
+use fs.file
+
+-- stdlib/fs/dir_iter.pie — Directory Stream Iteration (DirIter)
+-- Wraps Linux getdents64 syscall for reading directory entries.
+
+struct DirIter
+  fd      : i64
+  buf     : *u8
+  buf_len : i64
+  pos     : i64
+
+const O_RDONLY    : i64 = 0i64
+const O_DIRECTORY : i64 = 65536i64
+
+fn dir_iter_open : ptr -> DirIter
+  | path ->
+    let fd = os.linux.open(path, O_RDONLY | O_DIRECTORY, 0i64)
+    if fd < 0i64
+      DirIter { fd: -1i64, buf: 0 as *u8, buf_len: 0i64, pos: 0i64 }
+    else
+      let b = os.linux.malloc(4096i64) as *u8
+      DirIter { fd: fd, buf: b, buf_len: 0i64, pos: 0i64 }
+
+fn dir_iter_next_name : *DirIter -> string.String
+  | it ->
+    if it.fd < 0i64 then string.string_new()
+    else
+      if it.pos >= it.buf_len
+        let r = os.linux.getdents64(it.fd, it.buf as ptr, 4096i64)
+        if r <= 0i64
+          it.buf_len = 0i64
+          it.pos = 0i64
+          string.string_new()
+        else
+          it.buf_len = r
+          it.pos = 0i64
+      if it.pos >= it.buf_len then string.string_new()
+      else
+        let d_reclen_ptr = (it.buf as i64 + it.pos + 16i64) as *u16
+        let reclen = d_reclen_ptr[0i64] as i64
+        let name_ptr = (it.buf as i64 + it.pos + 19i64) as ptr
+        let s = string.string_from_cstr(name_ptr)
+        it.pos = it.pos + reclen
+        s
+
+fn dir_iter_close : *DirIter -> ()
+  | it ->
+    if it.buf as i64 != 0i64
+      os.linux.free(it.buf as ptr)
+    if it.fd >= 0i64
+      os.linux.close(it.fd)
+    it.fd = -1i64; it.buf = 0 as *u8; it.buf_len = 0i64; it.pos = 0i64
+
+fn dir_list_paths : ptr -> vec.Vec
+  | dir_path ->
+    let mut out = vec.vec_new(8i64)
+    let mut it = dir_iter_open(dir_path)
+    if it.fd >= 0i64
+      while true
+        let name = dir_iter_next_name(&it)
+        if string.string_len(&name) == 0i64
+          string.string_destroy(&name)
+          break
+        let nbuf = string.string_as_slice(&name) as *u8
+        if (nbuf[0i64] == 46u8 && string.string_len(&name) == 1i64) ||
+           (nbuf[0i64] == 46u8 && nbuf[1i64] == 46u8 && string.string_len(&name) == 2i64)
+          string.string_destroy(&name)
+        else
+          vec.vec_push(&out, &name as ptr)
+      dir_iter_close(&it)
+    out

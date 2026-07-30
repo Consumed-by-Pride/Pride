@@ -1,0 +1,47 @@
+-- examples/vec_math_showcase.pie — Linear Algebra and Number Theory Showcase
+-- Demonstrates 3D vector arithmetic, dot and cross products, and integer algorithms.
+
+struct Vec3
+  x : i64
+  y : i64
+  z : i64
+
+fn vec3_add : (Vec3, Vec3) -> Vec3
+  | (a, b) -> Vec3 { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }
+
+fn vec3_dot : (Vec3, Vec3) -> i64
+  | (a, b) -> a.x * b.x + a.y * b.y + a.z * b.z
+
+fn vec3_cross : (Vec3, Vec3) -> Vec3
+  | (a, b) -> Vec3 {
+      x: a.y * b.z - a.z * b.y,
+      y: a.z * b.x - a.x * b.z,
+      z: a.x * b.y - a.y * b.x
+    }
+
+fn gcd : (i64, i64) -> i64
+  | (a, b) ->
+    let mut x = if a < 0i64 then -a else a
+    let mut y = if b < 0i64 then -b else b
+    while y != 0i64
+      let t = y
+      y = x % y
+      x = t
+    x
+
+fn lcm : (i64, i64) -> i64
+  | (a, b) ->
+    if a == 0i64 || b == 0i64 then 0i64
+    else (a / gcd(a, b)) * b
+
+fn sqrt_i64 : i64 -> i64
+  | n ->
+    if n <= 0i64 then 0i64
+    else if n == 1i64 then 1i64
+    else
+      let mut x = n
+      let mut y = (x + 1i64) / 2i64
+      while y < x
+        x = y
+        y = (x + n / x) / 2i64
+      x

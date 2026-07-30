@@ -1,0 +1,39 @@
+mod sys.memory
+
+use os.linux
+
+-- stdlib/sys/memory.pie — System Memory Statistics
+-- Wraps Linux sysinfo and procfs inspection for physical and resident RAM.
+
+struct MemoryStats
+  total_ram : i64
+  free_ram  : i64
+  page_size : i64
+
+fn sys_memory_stats : () -> MemoryStats
+  | () ->
+    let p = os.linux.malloc(128i64) as *i64
+    os.linux.memset(p as ptr, 0i32, 128u64)
+    let r = os.linux.sysinfo(p as ptr)
+    let stats = if r < 0i64 then MemoryStats { total_ram: 0i64, free_ram: 0i64, page_size: 4096i64 }
+                else
+                  MemoryStats {
+                    total_ram: p[4i64],   -- totalram
+                    free_ram:  p[5i64],   -- freeram
+                    page_size: 4096i64
+                  }
+    os.linux.free(p as ptr)
+    stats
+
+fn sys_total_ram : () -> i64
+  | () ->
+    let st = sys_memory_stats()
+    st.total_ram
+
+fn sys_free_ram : () -> i64
+  | () ->
+    let st = sys_memory_stats()
+    st.free_ram
+
+fn sys_page_size : () -> i64
+  | () -> 4096i64

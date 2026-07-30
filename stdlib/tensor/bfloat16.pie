@@ -1,0 +1,43 @@
+mod tensor.bfloat16
+
+use os.linux
+use math.quant
+use tensor.ndarray
+
+-- stdlib/tensor/bfloat16.pie — Brain Floating-Point (bfloat16) Tensor Storage
+-- Compact 16-bit ML weight tensors with on-the-fly conversion.
+
+struct BF16Tensor
+  data   : *u16
+  size   : i64
+
+fn bf16_tensor_new : i64 -> BF16Tensor
+  | size ->
+    let p = os.linux.malloc(size * 2i64) as *u16
+    os.linux.memset(p as ptr, 0i32, (size * 2i64) as u64)
+    BF16Tensor { data: p, size: size }
+
+fn bf16_tensor_destroy : *BF16Tensor -> ()
+  | t ->
+    if t.data as i64 != 0i64
+      os.linux.free(t.data as ptr)
+    t.data = 0 as *u16; t.size = 0i64
+
+fn bf16_tensor_from_f32 : (ptr, i64) -> BF16Tensor
+  | (f32_data, count) ->
+    let mut t = bf16_tensor_new(count)
+    let src = f32_data as *f32
+    let mut i : i64 = 0i64
+    while i < count
+      t.data[i] = quant.bfloat16_from_f32(src[i])
+      i = i + 1i64
+    t
+
+fn f32_tensor_from_bf16 : *BF16Tensor -> ptr
+  | bf_tensor ->
+    let out = os.linux.malloc(bf_tensor.size * 4i64) as *f32
+    let mut i : i64 = 0i64
+    while i < bf_tensor.size
+      out[i] = quant.f32_from_bfloat16(bf_tensor.data[i])
+      i = i + 1i64
+    out as ptr

@@ -1,0 +1,43 @@
+mod ir
+
+use ir.types
+use ir.value
+use ir.instr
+use ir.block
+use ir.func
+use ir.module
+
+-- stdlib/ir.pie — Standard Library SSA Compiler Intermediate Representation (IR) Suite
+-- Exports formal SSA types, instructions, basic blocks, control flow graphs, and modules.
+
+-- Types
+fn type_void : () -> *types.IrType                   | () -> types.ir_type_new_void()
+fn type_int : i64 -> *types.IrType                   | w -> types.ir_type_new_int(w)
+fn type_float : i64 -> *types.IrType                 | w -> types.ir_type_new_float(w)
+fn type_ptr : () -> *types.IrType                    | () -> types.ir_type_new_ptr()
+fn type_sizeof : *types.IrType -> i64                | t -> types.ir_type_sizeof(t)
+fn type_alignof : *types.IrType -> i64               | t -> types.ir_type_alignof(t)
+
+-- Value
+fn val_int : (i64, *types.IrType, i64) -> *value.IrValue | (i, t, v) -> value.ir_value_new_int(i, t, v)
+fn val_destroy : *value.IrValue -> ()                | v -> value.ir_value_destroy(v)
+
+-- Instruction
+fn instr_new : (i64, i64, *types.IrType) -> *instr.IrInstr | (i, op, ty) -> instr.ir_instr_new(i, op, ty)
+fn instr_add_arg : (*instr.IrInstr, *value.IrValue) -> () | (i, v) -> instr.ir_instr_add_operand(i, v)
+fn instr_destroy : *instr.IrInstr -> ()              | i -> instr.ir_instr_destroy(i)
+
+-- Block
+fn block_new : (i64, ptr) -> *block.IrBlock          | (id, n) -> block.ir_block_new(id, n)
+fn block_append : (*block.IrBlock, *instr.IrInstr) -> () | (b, i) -> block.ir_block_append(b, i)
+fn block_destroy : *block.IrBlock -> ()              | b -> block.ir_block_destroy(b)
+
+-- Function
+fn func_new : (ptr, *types.IrFnType, bool) -> *func.IrFunction | (n, t, e) -> func.ir_func_new(n, t, e)
+fn func_add_block : (*func.IrFunction, *block.IrBlock) -> () | (f, b) -> func.ir_func_add_block(f, b)
+fn func_destroy : *func.IrFunction -> ()             | f -> func.ir_func_destroy(f)
+
+-- Module
+fn module_new : ptr -> *module.IrModule              | n -> module.ir_module_new(n)
+fn module_add_func : (*module.IrModule, *func.IrFunction) -> () | (m, f) -> module.ir_module_add_func(m, f)
+fn module_destroy : *module.IrModule -> ()           | m -> module.ir_module_destroy(m)

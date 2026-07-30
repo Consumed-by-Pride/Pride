@@ -1,0 +1,43 @@
+mod os.poll
+
+use os.linux
+
+-- stdlib/os/poll.pie — I/O Event Multiplexing and Epoll
+-- POSIX poll and Linux epoll wrappers for asynchronous I/O event monitoring.
+
+struct PollFd
+  fd      : i32
+  events  : i16
+  revents : i16
+
+const POLLIN  : i16 = 1i16
+const POLLOUT : i16 = 4i16
+const POLLERR : i16 = 8i16
+const POLLHUP : i16 = 16i16
+
+const EPOLLIN  : u32 = 1u32
+const EPOLLOUT : u32 = 4u32
+const EPOLLERR : u32 = 8u32
+const EPOLLHUP : u32 = 16u32
+
+const EPOLL_CTL_ADD : i64 = 1i64
+const EPOLL_CTL_DEL : i64 = 2i64
+const EPOLL_CTL_MOD : i64 = 3i64
+
+fn poll_fds : (ptr, i64, i64) -> i64
+  | (fds_array, nfds, timeout_ms) -> os.linux.poll(fds_array, nfds, timeout_ms)
+
+fn epoll_create : () -> i64
+  | () -> os.linux.epoll_create1(524288i64)   -- EPOLL_CLOEXEC
+
+fn epoll_add : (i64, i64, u32, u64) -> i64
+  | (epfd, fd, events, data_u64) ->
+    let ev_ptr = os.linux.malloc(16i64) as *u32
+    ev_ptr[0i64] = events
+    (ev_ptr as *u64)[1i64] = data_u64
+    let r = os.linux.epoll_ctl(epfd, EPOLL_CTL_ADD, fd, ev_ptr as ptr)
+    os.linux.free(ev_ptr as ptr)
+    r
+
+fn epoll_del : (i64, i64) -> i64
+  | (epfd, fd) -> os.linux.epoll_ctl(epfd, EPOLL_CTL_DEL, fd, 0 as ptr)

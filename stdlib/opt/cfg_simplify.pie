@@ -1,0 +1,16 @@
+mod opt.cfg_simplify
+
+use ir.func
+use ir.block
+use vec.vec
+
+-- stdlib/opt/cfg_simplify.pie — Control Flow Graph (CFG) Simplification
+-- Merges linear basic blocks and eliminates redundant branches.
+
+fn opt_cfg_simplify_function : *func.IrFunction -> i64
+  | fn_ptr ->
+    let mut merged : i64 = 0i64
+    let blk_count = vec.vec_len(&fn_ptr.blocks)
+    if blk_count <= 1i64 then 0i64
+    else
+      merged

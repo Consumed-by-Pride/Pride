@@ -1,0 +1,79 @@
+mod net.udp
+
+use os.linux
+use net.ip
+use net.sockaddr
+
+-- stdlib/net/udp.pie — UDP Datagram Socket
+-- Linux connectionless packet sending and receiving.
+
+const AF_INET       : i64 = 2i64
+const SOCK_DGRAM    : i64 = 2i64
+
+struct UdpSocket
+  fd : i64
+
+fn udp_bind_v4 : *sockaddr.SocketAddrV4 -> (UdpSocket, i64)
+  | sa ->
+    let fd = os.linux.socket(AF_INET, SOCK_DGRAM, 0i64)
+    if fd < 0i64 then (UdpSocket { fd: -1i64 }, fd)
+    else
+      let addr_buf = os.linux.malloc(16i64) as *u8
+      os.linux.memset(addr_buf as ptr, 0i32, 16u64)
+      (addr_buf as *u16)[0i64] = AF_INET as u16
+      let p = sa.port
+      (addr_buf as *u8)[2i64] = (p >> 8u64) as u8
+      (addr_buf as *u8)[3i64] = (p & 0xFFu64) as u8
+      (addr_buf as *u8)[4i64] = sa.ip.a
+      (addr_buf as *u8)[5i64] = sa.ip.b
+      (addr_buf as *u8)[6i64] = sa.ip.c
+      (addr_buf as *u8)[7i64] = sa.ip.d
+      let r = os.linux.bind(fd, addr_buf as ptr, 16i64)
+      os.linux.free(addr_buf as ptr)
+      if r < 0i64
+        os.linux.close(fd)
+        (UdpSocket { fd: -1i64 }, r)
+      else
+        (UdpSocket { fd: fd }, 0i64)
+
+fn udp_send_to_v4 : (*UdpSocket, ptr, i64, *sockaddr.SocketAddrV4) -> i64
+  | (s, buf, len, sa) ->
+    if s.fd < 0i64 then -1i64
+    else
+      let addr_buf = os.linux.malloc(16i64) as *u8
+      os.linux.memset(addr_buf as ptr, 0i32, 16u64)
+      (addr_buf as *u16)[0i64] = AF_INET as u16
+      let p = sa.port
+      (addr_buf as *u8)[2i64] = (p >> 8u64) as u8
+      (addr_buf as *u8)[3i64] = (p & 0xFFu64) as u8
+      (addr_buf as *u8)[4i64] = sa.ip.a
+      (addr_buf as *u8)[5i64] = sa.ip.b
+      (addr_buf as *u8)[6i64] = sa.ip.c
+      (addr_buf as *u8)[7i64] = sa.ip.d
+      let r = os.linux.sendto(s.fd, buf, len, 0i64, addr_buf as ptr, 16i64)
+      os.linux.free(addr_buf as ptr)
+      r
+
+fn udp_recv_from_v4 : (*UdpSocket, ptr, i64) -> (i64, sockaddr.SocketAddrV4)
+  | (s, buf, max_len) ->
+    let empty_sa = sockaddr.sockaddr_v4_new(ip.ipv4_any(), 0u16)
+    if s.fd < 0i64 then (-1i64, empty_sa)
+    else
+      let addr_buf = os.linux.malloc(16i64) as *u8
+      let len_ptr  = os.linux.malloc(8i64) as *i64
+      len_ptr[0i64] = 16i64
+      let r = os.linux.recvfrom(s.fd, buf, max_len, 0i64, addr_buf as ptr, len_ptr as ptr)
+      let sa_res = if r < 0i64 then empty_sa
+                   else
+                     let port = (((addr_buf as *u8)[2i64] as u16) << 8u64) | ((addr_buf as *u8)[3i64] as u16)
+                     let ip_res = ip.ipv4_new((addr_buf as *u8)[4i64], (addr_buf as *u8)[5i64], (addr_buf as *u8)[6i64], (addr_buf as *u8)[7i64])
+                     sockaddr.sockaddr_v4_new(ip_res, port)
+      os.linux.free(addr_buf as ptr)
+      os.linux.free(len_ptr as ptr)
+      (r, sa_res)
+
+fn udp_close : *UdpSocket -> ()
+  | s ->
+    if s.fd >= 0i64
+      os.linux.close(s.fd)
+      s.fd = -1i64

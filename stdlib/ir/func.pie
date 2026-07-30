@@ -1,0 +1,47 @@
+mod ir.func
+
+use os.linux
+use vec.vec
+use str.string
+use ir.types
+use ir.block
+
+-- stdlib/ir/func.pie — SSA Function and Control Flow Graph (CFG)
+-- Represents a function definition with arguments and basic blocks.
+
+struct IrFunction
+  name     : string.String
+  fn_type  : *types.IrFnType
+  blocks   : vec.Vec
+  is_ext   : bool
+
+fn ir_func_new : (ptr, *types.IrFnType, bool) -> *IrFunction
+  | (name_cstr, fn_ty, is_ext) ->
+    let f = os.linux.malloc(48i64) as *IrFunction
+    f.name    = string.string_from_cstr(name_cstr)
+    f.fn_type = fn_ty
+    f.blocks  = vec.vec_new(8i64)
+    f.is_ext  = is_ext
+    f
+
+fn ir_func_add_block : (*IrFunction, *block.IrBlock) -> ()
+  | (func, blk) -> vec.vec_push(&func.blocks, blk as ptr)
+
+fn ir_func_entry_block : *IrFunction -> *block.IrBlock
+  | func ->
+    let len = vec.vec_len(&func.blocks)
+    if len == 0i64 then 0 as *block.IrBlock
+    else vec.vec_get(&func.blocks, 0i64) as *block.IrBlock
+
+fn ir_func_destroy : *IrFunction -> ()
+  | func ->
+    if func as i64 == 0i64 then ()
+    else
+      string.string_destroy(&func.name)
+      let mut i : i64 = 0i64
+      let len = vec.vec_len(&func.blocks)
+      while i < len
+        block.ir_block_destroy(vec.vec_get(&func.blocks, i) as *block.IrBlock)
+        i = i + 1i64
+      vec.vec_destroy(&func.blocks)
+      os.linux.free(func as ptr)

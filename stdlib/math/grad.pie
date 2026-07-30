@@ -1,0 +1,96 @@
+mod math.grad
+
+use os.linux
+use vec.vec
+
+-- stdlib/math/grad.pie — Reverse-Mode Automatic Differentiation (GradTape)
+-- Linear execution history tape with Vector-Jacobian Product (VJP) backpropagation.
+
+const OP_ADD : i64 = 1i64
+const OP_SUB : i64 = 2i64
+const OP_MUL : i64 = 3i64
+const OP_DIV : i64 = 4i64
+const OP_SIN : i64 = 5i64
+const OP_COS : i64 = 6i64
+const OP_EXP : i64 = 7i64
+
+struct GradNode
+  op_type  : i64
+  arg0_id  : i64
+  arg1_id  : i64
+  value    : f64
+  gradient : f64
+
+struct GradTape
+  nodes : vec.Vec
+
+fn grad_tape_new : () -> GradTape
+  | () -> GradTape { nodes: vec.vec_new(16i64) }
+
+fn grad_tape_destroy : *GradTape -> ()
+  | tape ->
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&tape.nodes)
+    while i < len
+      let n_ptr = vec.vec_get(&tape.nodes, i) as *GradNode
+      os.linux.free(n_ptr as ptr)
+      i = i + 1i64
+    vec.vec_destroy(&tape.nodes)
+
+fn grad_tape_push_var : (*GradTape, f64) -> i64
+  | (tape, val) ->
+    let n = os.linux.malloc(40i64) as *GradNode
+    n.op_type  = 0i64
+    n.arg0_id  = -1i64
+    n.arg1_id  = -1i64
+    n.value    = val
+    n.gradient = 0.0f64
+    let id = vec.vec_len(&tape.nodes)
+    vec.vec_push(&tape.nodes, n as ptr)
+    id
+
+fn grad_tape_push_op : (*GradTape, i64, i64, i64, f64) -> i64
+  | (tape, op_type, a0, a1, val) ->
+    let n = os.linux.malloc(40i64) as *GradNode
+    n.op_type  = op_type
+    n.arg0_id  = a0
+    n.arg1_id  = a1
+    n.value    = val
+    n.gradient = 0.0f64
+    let id = vec.vec_len(&tape.nodes)
+    vec.vec_push(&tape.nodes, n as ptr)
+    id
+
+fn grad_tape_backward : (*GradTape, i64) -> ()
+  | (tape, target_id) ->
+    if target_id < 0i64 || target_id >= vec.vec_len(&tape.nodes) then ()
+    else
+      let target_node = vec.vec_get(&tape.nodes, target_id) as *GradNode
+      target_node.gradient = 1.0f64
+      let mut i = target_id
+      while i >= 0i64
+        let n = vec.vec_get(&tape.nodes, i) as *GradNode
+        let g = n.gradient
+        if n.op_type == OP_ADD && n.arg0_id >= 0i64 && n.arg1_id >= 0i64
+          let a0 = vec.vec_get(&tape.nodes, n.arg0_id) as *GradNode
+          let a1 = vec.vec_get(&tape.nodes, n.arg1_id) as *GradNode
+          a0.gradient = a0.gradient + g
+          a1.gradient = a1.gradient + g
+        else if n.op_type == OP_SUB && n.arg0_id >= 0i64 && n.arg1_id >= 0i64
+          let a0 = vec.vec_get(&tape.nodes, n.arg0_id) as *GradNode
+          let a1 = vec.vec_get(&tape.nodes, n.arg1_id) as *GradNode
+          a0.gradient = a0.gradient + g
+          a1.gradient = a1.gradient - g
+        else if n.op_type == OP_MUL && n.arg0_id >= 0i64 && n.arg1_id >= 0i64
+          let a0 = vec.vec_get(&tape.nodes, n.arg0_id) as *GradNode
+          let a1 = vec.vec_get(&tape.nodes, n.arg1_id) as *GradNode
+          a0.gradient = a0.gradient + g * a1.value
+          a1.gradient = a1.gradient + g * a0.value
+        i = i - 1i64
+
+fn grad_tape_get_grad : (*GradTape, i64) -> f64
+  | (tape, id) ->
+    if id < 0i64 || id >= vec.vec_len(&tape.nodes) then 0.0f64
+    else
+      let n = vec.vec_get(&tape.nodes, id) as *GradNode
+      n.gradient

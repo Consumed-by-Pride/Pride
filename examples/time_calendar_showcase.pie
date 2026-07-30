@@ -1,0 +1,44 @@
+-- examples/time_calendar_showcase.pie — Time Spans and UTC Calendar Breakdown
+-- Demonstrates Unix timestamp conversion, leap-year predicates, and duration arithmetic.
+
+struct Date
+  year  : i64
+  month : i64
+  day   : i64
+
+struct TimeOfDay
+  hour   : i64
+  minute : i64
+  second : i64
+
+struct Duration
+  secs  : i64
+  nanos : i32
+
+fn is_leap_year : i64 -> bool
+  | year ->
+    if (year % 400i64) == 0i64 then true
+    else if (year % 100i64) == 0i64 then false
+    else (year % 4i64) == 0i64
+
+fn days_in_month : (i64, i64) -> i64
+  | (year, month) ->
+    if month == 2i64 then (if is_leap_year(year) then 29i64 else 28i64)
+    else if month == 4i64 || month == 6i64 || month == 9i64 || month == 11i64 then 30i64
+    else 31i64
+
+fn duration_add : (Duration, Duration) -> Duration
+  | (a, b) ->
+    let mut s = a.secs + b.secs + (a.nanos as i64 + b.nanos as i64) / 1000000000i64
+    let mut n = ((a.nanos as i64 + b.nanos as i64) % 1000000000i64) as i32
+    Duration { secs: s, nanos: n }
+
+fn duration_sub : (Duration, Duration) -> Duration
+  | (a, b) ->
+    let mut s = a.secs - b.secs
+    let mut n = a.nanos - b.nanos
+    if n < 0i32
+      s = s - 1i64
+      n = n + 1000000000i32
+    if s < 0i64 then Duration { secs: 0i64, nanos: 0i32 }
+    else Duration { secs: s, nanos: n }

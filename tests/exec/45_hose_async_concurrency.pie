@@ -1,0 +1,71 @@
+mod tests.exec.test_45_hose_async_concurrency
+
+use effect_async.nursery
+use effect_async.timeout
+use effect_async.bracket
+use effect_async.fiber_pool
+use pride.effects
+use pride.ub
+
+-- tests/exec/45_hose_async_concurrency.pie
+-- Complex execution test for HOSE structured concurrency nurseries,
+-- delimited timeout scopes, asynchronous RAII resource bracketing,
+-- dynamic-winding around continuation resumptions, local environment scoping,
+-- and fiber-driven work-stealing I/O pools.
+
+fn test_nursery_lifecycle : () -> bool
+  | () ->
+    let mut n = nursery.nursery_new(1001i64);
+    let tid = nursery.nursery_spawn(&n, 42i64, null);
+    let lookup_ptr : ptr = nursery.nursery_get_task_cont(tid);
+    let mut success : bool = false;
+    let mut i : i64 = 0i64;
+    while true do {
+      if i >= 1 then {
+        break;
+      };
+      let completed = nursery.nursery_wait_all(&n);
+      if completed >= 1i64 then {
+        success = true;
+      } else {
+        success = false;
+      };
+      i = i + 1i64;
+    };
+    nursery.nursery_destroy(&n);
+    success && tid > 0i64
+
+fn test_timeout_and_bracket : () -> bool
+  | () ->
+    let mut ts = timeout.timeout_scope_new(888i64, 5000i64);
+    let t_ok = !timeout.timeout_scope_check(&ts, 1000i64);
+    let t_expired = timeout.timeout_scope_check(&ts, 6000i64);
+    timeout.timeout_scope_cancel(&ts);
+    
+    let mut br = bracket.async_bracket_new(888i64, null, null);
+    effects.dynamic_wind_enter(888i64);
+    effects.dynamic_wind_exit(888i64);
+    let r_ok = bracket.async_bracket_release(&br);
+    let r_double = !bracket.async_bracket_release(&br);
+    
+    t_ok && t_expired && r_ok && r_double
+
+fn test_fiber_pool : () -> bool
+  | () ->
+    let mut pool = fiber_pool.fiber_pool_new(4i64);
+    let fid = fiber_pool.fiber_pool_spawn(&pool, null, null);
+    let active_count = fiber_pool.fiber_pool_step(&pool);
+    fiber_pool.fiber_pool_destroy(&pool);
+    fid > 0i64 && active_count >= 1i64
+
+fn run_all_hose_tests : () -> i32
+  | () ->
+    let n_ok : bool = test_nursery_lifecycle();
+    let tb_ok : bool = test_timeout_and_bracket();
+    let fp_ok : bool = test_fiber_pool();
+    ub.assume(n_ok && tb_ok && fp_ok);
+    if n_ok && tb_ok && fp_ok then 0 else 1
+
+fn main : () -> i32
+  | () ->
+    run_all_hose_tests()

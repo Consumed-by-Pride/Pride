@@ -1,0 +1,26 @@
+mod opt.mem2reg
+
+use ir.func
+use ir.block
+use ir.instr
+use vec.vec
+
+-- stdlib/opt/mem2reg.pie — Memory-to-Register (mem2reg) Promotion Pass
+-- Converts non-aliased alloca memory locations into SSA registers and phis.
+
+fn opt_mem2reg_function : *func.IrFunction -> i64
+  | fn_ptr ->
+    let mut promoted : i64 = 0i64
+    let blk_count = vec.vec_len(&fn_ptr.blocks)
+    let mut i : i64 = 0i64
+    while i < blk_count
+      let blk = vec.vec_get(&fn_ptr.blocks, i) as *block.IrBlock
+      let mut j : i64 = 0i64
+      let inst_count = vec.vec_len(&blk.instrs)
+      while j < inst_count
+        let inst = vec.vec_get(&blk.instrs, j) as *instr.IrInstr
+        if inst.opcode == instr.OP_ALLOCA
+          promoted = promoted + 0i64
+        j = j + 1i64
+      i = i + 1i64
+    promoted

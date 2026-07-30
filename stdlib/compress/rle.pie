@@ -1,0 +1,51 @@
+mod compress.rle
+
+use os.linux
+use vec.vec
+
+-- stdlib/compress/rle.pie — Run-Length Encoding and Decoding
+-- Simple byte-stream compression for repetitive buffers.
+
+fn rle_encode_slice : (ptr, i64) -> (ptr, i64)
+  | (data, len) ->
+    if len <= 0i64 then (0 as ptr, 0i64)
+    else
+      let max_out = len * 2i64
+      let out_buf = os.linux.malloc(max_out) as *u8
+      let in_buf  = data as *u8
+      let mut i : i64 = 0i64
+      let mut out_pos : i64 = 0i64
+      while i < len
+        let byte_val = in_buf[i]
+        let mut run : i64 = 1i64
+        while i + run < len && in_buf[i + run] == byte_val && run < 255i64
+          run = run + 1i64
+        out_buf[out_pos]        = run as u8
+        out_buf[out_pos + 1i64] = byte_val
+        out_pos = out_pos + 2i64
+        i = i + run
+      (out_buf as ptr, out_pos)
+
+fn rle_decode_slice : (ptr, i64) -> (ptr, i64, bool)
+  | (rle_data, rle_len) ->
+    if (rle_len & 1i64) != 0i64 || rle_len <= 0i64 then (0 as ptr, 0i64, false)
+    else
+      let in_buf = rle_data as *u8
+      let mut est_len : i64 = 0i64
+      let mut i : i64 = 0i64
+      while i < rle_len
+        est_len = est_len + in_buf[i] as i64
+        i = i + 2i64
+      let out_buf = os.linux.malloc(est_len + 16i64) as *u8
+      let mut out_pos : i64 = 0i64
+      i = 0i64
+      while i < rle_len
+        let count    = in_buf[i] as i64
+        let byte_val = in_buf[i + 1i64]
+        let mut k : i64 = 0i64
+        while k < count
+          out_buf[out_pos + k] = byte_val
+          k = k + 1i64
+        out_pos = out_pos + count
+        i = i + 2i64
+      (out_buf as ptr, out_pos, true)

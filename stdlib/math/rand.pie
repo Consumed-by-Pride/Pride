@@ -1,0 +1,47 @@
+mod math.rand
+
+-- stdlib/math/rand.pie — Pseudorandom Number Generation
+-- High-speed XorShift64 and WyRand generators for integer and float ranges.
+
+struct XorShift64
+  state : u64
+
+fn xorshift_new : u64 -> XorShift64
+  | seed -> XorShift64 { state: if seed == 0u64 then 88172645463325252u64 else seed }
+
+fn xorshift_next_u64 : *XorShift64 -> u64
+  | rng ->
+    let mut x = rng.state
+    x = x ^ (x << 13u64)
+    x = x ^ (x >> 7u64)
+    x = x ^ (x << 17u64)
+    rng.state = x
+    x
+
+struct WyRand
+  state : u64
+
+fn wyrand_new : u64 -> WyRand
+  | seed -> WyRand { state: seed }
+
+fn wyrand_next_u64 : *WyRand -> u64
+  | rng ->
+    rng.state = rng.state +% 11562461410679940143u64
+    let mut x = rng.state
+    x = x ^ 2654435761u64
+    x = (x ^ (x >> 30u64)) *% 11400714819323198485u64
+    x = x ^ (x >> 27u64)
+    x
+
+fn rand_range_i64 : (*XorShift64, i64, i64) -> i64
+  | (rng, lo, hi) ->
+    if lo >= hi then lo
+    else
+      let span = (hi - lo) as u64
+      let r = xorshift_next_u64(rng) % span
+      lo + r as i64
+
+fn rand_f64_01 : *XorShift64 -> f64
+  | rng ->
+    let r = xorshift_next_u64(rng) & 0x001FFFFFFFFFFFFFu64   -- 53 bits
+    r as f64 / 9007199254740992.0f64

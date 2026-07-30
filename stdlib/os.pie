@@ -1,0 +1,60 @@
+mod os
+
+use os.env
+use os.process
+use os.signal
+use os.mmap
+use os.pipe
+use os.poll
+use os.random
+use os.linux
+
+-- stdlib/os.pie — Standard Library Operating System Suite
+-- Exports POSIX process management, environment variables, signals, IPC pipes,
+-- virtual memory mapping, I/O multiplexing, and cryptographic randomness.
+
+-- Process & Environment
+fn getpid : () -> i64                                | () -> env.env_get_pid()
+fn getppid : () -> i64                               | () -> env.env_get_ppid()
+fn getuid : () -> i64                                | () -> env.env_get_uid()
+fn getgid : () -> i64                                | () -> env.env_get_gid()
+fn page_size : () -> i64                             | () -> env.env_page_size()
+fn current_dir : () -> str.string.String             | () -> env.env_current_dir()
+fn set_current_dir : ptr -> i64                      | p -> env.env_set_current_dir(p)
+fn getenv : ptr -> (str.string.String, bool)         | k -> env.env_get(k)
+fn spawn : (ptr, ptr, ptr) -> (process.Process, i64) | (p, a, e) -> process.process_spawn(p, a, e)
+fn wait : *process.Process -> (process.ExitStatus, i64) | p -> process.process_wait(p)
+fn kill : (*process.Process, i64) -> i64             | (p, s) -> process.process_kill(p, s)
+fn is_running : *process.Process -> bool             | p -> process.process_is_running(p)
+
+-- Signals
+fn sigset_empty : () -> signal.SigSet                | () -> signal.sigset_empty()
+fn sigset_add : (*signal.SigSet, i64) -> ()          | (s, sig) -> signal.sigset_add(s, sig)
+fn sigmask_block : *signal.SigSet -> i64             | s -> signal.sigprocmask_block(s)
+fn sigmask_unblock : *signal.SigSet -> i64           | s -> signal.sigprocmask_unblock(s)
+fn raise : i64 -> i64                                | sig -> signal.raise_signal(sig)
+
+-- Memory Mapping (mmap)
+fn mmap_anon : (i64, i64) -> (mmap.MmapRegion, i64)  | (sz, pr) -> mmap.mmap_anon(sz, pr)
+fn mmap_file : (i64, i64, i64, i64, i64) -> (mmap.MmapRegion, i64) | (sz, pr, fl, fd, off) -> mmap.mmap_file(sz, pr, fl, fd, off)
+fn mmap_protect : (*mmap.MmapRegion, i64) -> i64     | (r, pr) -> mmap.mmap_protect(r, pr)
+fn mmap_sync : (*mmap.MmapRegion, bool) -> i64       | (r, w) -> mmap.mmap_sync(r, w)
+fn mmap_destroy : *mmap.MmapRegion -> i64            | r -> mmap.mmap_destroy(r)
+
+-- IPC Pipes
+fn pipe_new : () -> (pipe.Pipe, i64)                 | () -> pipe.pipe_new()
+fn pipe_read : (*pipe.Pipe, ptr, i64) -> i64         | (p, b, c) -> pipe.pipe_read(p, b, c)
+fn pipe_write : (*pipe.Pipe, ptr, i64) -> i64        | (p, b, c) -> pipe.pipe_write(p, b, c)
+fn pipe_close : *pipe.Pipe -> ()                     | p -> pipe.pipe_close_all(p)
+
+-- Polling & Epoll
+fn poll : (ptr, i64, i64) -> i64                     | (f, n, t) -> poll.poll_fds(f, n, t)
+fn epoll_create : () -> i64                          | () -> poll.epoll_create()
+fn epoll_add : (i64, i64, u32, u64) -> i64           | (e, f, ev, d) -> poll.epoll_add(e, f, ev, d)
+fn epoll_del : (i64, i64) -> i64                     | (e, f) -> poll.epoll_del(e, f)
+
+-- Randomness
+fn getrandom : (ptr, i64) -> i64                     | (b, l) -> random.getrandom_bytes(b, l)
+fn rand_u64 : () -> u64                              | () -> random.random_u64()
+fn rand_u32 : () -> u32                              | () -> random.random_u32()
+fn rand_f64 : () -> f64                              | () -> random.random_f64_01()

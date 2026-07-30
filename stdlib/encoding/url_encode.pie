@@ -1,0 +1,66 @@
+mod encoding.url_encode
+
+use os.linux
+use str.string
+
+-- stdlib/encoding/url_encode.pie — Percent-Encoding and URL Decoding
+-- Encodes reserved bytes into "%XX" format and decodes percent sequences.
+
+fn is_unreserved : u8 -> bool
+  | c ->
+    (c >= 65u8 && c <= 90u8) || (c >= 97u8 && c <= 122u8) ||
+    (c >= 48u8 && c <= 57u8) || c == 45u8 || c == 46u8 || c == 95u8 || c == 126u8
+
+fn url_percent_encode : (ptr, i64) -> string.String
+  | (data, len) ->
+    let hex = "0123456789ABCDEF" as *u8
+    let mut out = string.string_with_cap(len * 2i64)
+    let buf = data as *u8
+    let mut i : i64 = 0i64
+    while i < len
+      let b = buf[i]
+      if is_unreserved(b)
+        string.string_push_byte(&out, b)
+      else
+        string.string_push_byte(&out, 37u8)   -- '%'
+        string.string_push_byte(&out, hex[(b >> 4i64) as i64 & 0xFi64])
+        string.string_push_byte(&out, hex[b as i64 & 0xFi64])
+      i = i + 1i64
+    out
+
+fn hex_char_to_val : u8 -> i64
+  | c ->
+    if c >= 48u8 && c <= 57u8 then (c as i64 - 48i64)
+    else if c >= 65u8 && c <= 70u8 then (c as i64 - 55i64)
+    else if c >= 97u8 && c <= 102u8 then (c as i64 - 87i64)
+    else -1i64
+
+fn url_percent_decode : (ptr, i64) -> (string.String, bool)
+  | (data, len) ->
+    let mut out = string.string_with_cap(len)
+    let buf = data as *u8
+    let mut i : i64 = 0i64
+    let mut ok = true
+    while i < len
+      if buf[i] == 37u8   -- '%'
+        if i + 2i64 >= len
+          ok = false
+          break
+        let hi = hex_char_to_val(buf[i + 1i64])
+        let lo = hex_char_to_val(buf[i + 2i64])
+        if hi < 0i64 || lo < 0i64
+          ok = false
+          break
+        string.string_push_byte(&out, ((hi << 4i64) | lo) as u8)
+        i = i + 3i64
+      else if buf[i] == 43u8   -- '+'
+        string.string_push_byte(&out, 32u8)   -- ' '
+        i = i + 1i64
+      else
+        string.string_push_byte(&out, buf[i])
+        i = i + 1i64
+    if !ok
+      string.string_destroy(&out)
+      (string.string_new(), false)
+    else
+      (out, true)

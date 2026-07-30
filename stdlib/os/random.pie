@@ -1,0 +1,28 @@
+mod os.random
+
+use os.linux
+
+-- stdlib/os/random.pie — System Cryptographic Randomness
+-- Wraps Linux getrandom syscall for secure entropy generation.
+
+const GRND_NONBLOCK : u32 = 1u32
+const GRND_RANDOM   : u32 = 2u32
+
+fn getrandom_bytes : (ptr, i64) -> i64
+  | (buf, len) -> os.linux.getrandom(buf, len, 0u32)
+
+fn random_u64 : () -> u64
+  | () ->
+    let p = os.linux.malloc(8i64) as *u64
+    let r = getrandom_bytes(p as ptr, 8i64)
+    let val = if r == 8i64 then p[0i64] else os.linux.random_u32() as u64
+    os.linux.free(p as ptr)
+    val
+
+fn random_u32 : () -> u32
+  | () -> os.linux.random_u32()
+
+fn random_f64_01 : () -> f64
+  | () ->
+    let r = random_u64() & 0x001FFFFFFFFFFFFFu64   -- 53 bits of entropy
+    r as f64 / 9007199254740992.0f64

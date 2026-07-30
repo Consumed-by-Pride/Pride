@@ -1,0 +1,40 @@
+mod crypto
+
+use crypto.subtle
+use crypto.hex
+use crypto.sha256
+use crypto.hmac
+use crypto.chacha20
+use crypto.crc32_fast
+
+-- stdlib/crypto.pie — Standard Library Cryptography Suite
+-- Exports constant-time comparisons, hex encoding, SHA-256 digests,
+-- HMAC-SHA256 message authentication, and ChaCha20 symmetric stream cipher.
+
+-- Subtle (constant-time comparison)
+fn ct_eq_slice : (ptr, ptr, i64) -> bool             | (a, b, l) -> subtle.constant_time_eq_slice(a, b, l)
+fn ct_eq_u64 : (u64, u64) -> bool                    | (a, b) -> subtle.constant_time_eq_u64(a, b)
+fn ct_select_u64 : (bool, u64, u64) -> u64           | (c, t, f) -> subtle.constant_time_select_u64(c, t, f)
+
+-- Hex encoding/decoding
+fn hex_encode : (ptr, i64, bool) -> str.string.String| (d, l, u) -> hex.hex_encode_slice(d, l, u)
+fn hex_decode : (ptr, i64) -> (ptr, i64, bool)       | (s, l) -> hex.hex_decode_slice(s, l)
+
+-- SHA-256
+fn sha256_hash : (ptr, i64) -> ptr                   | (d, l) -> sha256.sha256_hash_bytes(d, l)
+fn sha256_str : ptr -> str.string.String             | cstr -> sha256.sha256_hash_str(cstr)
+
+-- HMAC-SHA256
+fn hmac_new : (ptr, i64) -> hmac.HmacSha256          | (k, l) -> hmac.hmac_sha256_new(k, l)
+fn hmac_compute : (*hmac.HmacSha256, ptr, i64) -> ptr| (h, d, l) -> hmac.hmac_sha256_compute(h, d, l)
+fn hmac_destroy : *hmac.HmacSha256 -> ()             | h -> hmac.hmac_sha256_destroy(h)
+
+-- ChaCha20
+fn chacha20_new : (ptr, ptr) -> chacha20.ChaCha20    | (k, n) -> chacha20.chacha20_new(k, n)
+fn chacha20_encrypt : (*chacha20.ChaCha20, ptr, i64) -> ptr | (c, d, l) -> chacha20.chacha20_encrypt(c, d, l)
+fn chacha20_decrypt : (*chacha20.ChaCha20, ptr, i64) -> ptr | (c, d, l) -> chacha20.chacha20_decrypt(c, d, l)
+fn chacha20_destroy : *chacha20.ChaCha20 -> ()       | c -> chacha20.chacha20_destroy(c)
+
+-- CRC32 Fast
+fn crc32 : (ptr, i64) -> u32                         | (d, l) -> crc32_fast.crc32_fast_slice(d, l)
+fn crc32c : (ptr, i64) -> u32                        | (d, l) -> crc32_fast.crc32c_fast_slice(d, l)

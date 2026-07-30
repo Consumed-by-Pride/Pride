@@ -1,0 +1,23 @@
+mod tensor
+
+use tensor.ndarray
+use tensor.slice
+use tensor.bfloat16
+use tensor.fp8
+
+-- stdlib/tensor.pie — Standard Library Unified N-Dimensional Tensor Suite
+-- Exports geometric tensor layouts, zero-copy slice views, and bfloat16/fp8 ML storage.
+
+-- N-Dimensional Tensor
+fn new : (i64, ptr) -> ndarray.Tensor                     | (n, s) -> ndarray.tensor_new(n, s)
+fn destroy : *ndarray.Tensor -> ()                        | t -> ndarray.tensor_destroy(t)
+fn get : (*ndarray.Tensor, ptr) -> f64                    | (t, i) -> ndarray.tensor_get_f64(t, i)
+fn set : (*ndarray.Tensor, ptr, f64) -> bool              | (t, i, v) -> ndarray.tensor_set_f64(t, i, v)
+
+-- Zero-Copy Views
+fn slice_view : (*ndarray.Tensor, i64, i64, i64) -> slice.TensorView | (t, d, s, e) -> slice.tensor_slice_view(t, d, s, e)
+fn transpose_2d : *ndarray.Tensor -> slice.TensorView     | t -> slice.tensor_transpose_2d(t)
+
+-- Low-Precision Storage
+fn bf16_from_f32_tensor : (ptr, i64) -> bfloat16.BF16Tensor | (p, c) -> bfloat16.bf16_tensor_from_f32(p, c)
+fn fp8_from_f32_tensor : (ptr, i64, bool) -> fp8.FP8Tensor  | (p, c, e) -> fp8.fp8_tensor_from_f32(p, c, e)

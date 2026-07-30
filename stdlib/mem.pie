@@ -247,14 +247,18 @@ fn slab_destroy : *Slab -> ()
 fn slab_alloc : (*Slab, i64) -> ptr
   | (s, size) ->
     let mut i : i64 = 0i64
+    let mut res : ptr = 0 as ptr
     while i < s.n_classes
       let cls : *SlabClass = (s.classes as i64 + i * 128i64) as *SlabClass
       if cls.size >= size
         let obj = pool_alloc(&cls.pool)
-        if obj as i64 != 0i64 then obj
-        else page_alloc(size)   -- class full, fall back
+        if obj as i64 != 0i64
+          res = obj
+        else
+          res = page_alloc(size)
+        break
       i = i + 1i64
-    page_alloc(size)   -- too large for any class
+    if res as i64 != 0i64 then res else page_alloc(size)   -- too large for any class
 
 fn slab_alloc_zeroed : (*Slab, i64) -> ptr
   | (s, size) ->
@@ -400,19 +404,25 @@ fn mem_find_pattern : (ptr, i64, ptr, i64) -> i64
     if needle_len > hay_len then -1i64
     else if needle_len == 0i64 then 0i64
     else
+      let mut res : i64 = -1i64
       let mut i : i64 = 0i64
       while i <= hay_len - needle_len
-        if os.linux.memcmp((hay as i64 + i) as ptr, needle, needle_len as u64) == 0i32 then i
+        if os.linux.memcmp((hay as i64 + i) as ptr, needle, needle_len as u64) == 0i32
+          res = i
+          break
         i = i + 1i64
-      -1i64
+      res
 
 fn mem_rfind_byte : (ptr, u8, i64) -> i64
   | (p, val, n) ->
+    let mut res : i64 = -1i64
     let mut i = n - 1i64
     while i >= 0i64
-      if (p as *u8)[i] == val then i
+      if (p as *u8)[i] == val
+        res = i
+        break
       i = i - 1i64
-    -1i64
+    res
 
 fn mem_count_byte : (ptr, u8, i64) -> i64
   | (p, val, n) ->
@@ -767,7 +777,7 @@ fn bvec_trim_end : *ByteVec -> ()
     while v.len > 0i64
       let c = v.data[v.len - 1i64]
       if c == 32u8 || c == 9u8 || c == 10u8 || c == 13u8 then v.len = v.len - 1i64
-      else v.len   -- break
+      else break
 
 fn bvec_trim : *ByteVec -> ()
   | v -> bvec_trim_start(v); bvec_trim_end(v)

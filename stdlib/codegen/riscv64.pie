@@ -1,0 +1,33 @@
+mod codegen.riscv64
+
+use os.linux
+use vec.vec
+
+-- stdlib/codegen/riscv64.pie — RISC-V 64-bit Machine Code Encoder
+-- Emits 32-bit RISC-V base integer instructions.
+
+struct RiscvAsm
+  buf : vec.Vec
+
+fn riscv_new : () -> RiscvAsm
+  | () -> RiscvAsm { buf: vec.vec_new(4i64) }
+
+fn riscv_destroy : *RiscvAsm -> ()
+  | a -> vec.vec_destroy(&a.buf)
+
+fn riscv_emit_word : (*RiscvAsm, u32) -> ()
+  | (a, word) ->
+    let mut w = word
+    vec.vec_push(&a.buf, &w as ptr)
+
+fn riscv_emit_nop : *RiscvAsm -> ()
+  | a -> riscv_emit_word(a, 19u32)        -- 0x00000013 (addi x0, x0, 0)
+
+fn riscv_emit_ret : *RiscvAsm -> ()
+  | a -> riscv_emit_word(a, 32871u32)     -- 0x00008067 (jalr x0, 0(x1))
+
+fn riscv_len : *RiscvAsm -> i64
+  | a -> vec.vec_len(&a.buf) * 4i64
+
+fn riscv_ptr : *RiscvAsm -> ptr
+  | a -> vec.vec_as_slice(&a.buf)

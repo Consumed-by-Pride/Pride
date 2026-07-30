@@ -1,0 +1,116 @@
+mod net.ip
+
+use os.linux
+use str.string
+
+-- stdlib/net/ip.pie — IPv4 and IPv6 Address Classification and Storage
+-- Represents 32-bit and 128-bit IP addresses in network byte order.
+
+struct Ipv4Addr
+  a : u8
+  b : u8
+  c : u8
+  d : u8
+
+struct Ipv6Addr
+  words : *u16
+
+fn ipv4_new : (u8, u8, u8, u8) -> Ipv4Addr
+  | (a, b, c, d) -> Ipv4Addr { a: a, b: b, c: c, d: d }
+
+fn ipv4_localhost : () -> Ipv4Addr
+  | () -> Ipv4Addr { a: 127u8, b: 0u8, c: 0u8, d: 1u8 }
+
+fn ipv4_any : () -> Ipv4Addr
+  | () -> Ipv4Addr { a: 0u8, b: 0u8, c: 0u8, d: 0u8 }
+
+fn ipv4_broadcast : () -> Ipv4Addr
+  | () -> Ipv4Addr { a: 255u8, b: 255u8, c: 255u8, d: 255u8 }
+
+fn ipv4_is_loopback : *Ipv4Addr -> bool
+  | ip -> ip.a == 127u8
+
+fn ipv4_is_private : *Ipv4Addr -> bool
+  | ip ->
+    if ip.a == 10u8 then true
+    else if ip.a == 172u8 && ip.b >= 16u8 && ip.b <= 31u8 then true
+    else ip.a == 192u8 && ip.b == 168u8
+
+fn ipv4_to_u32_be : *Ipv4Addr -> u32
+  | ip ->
+    ((ip.a as u32) << 24u64) | ((ip.b as u32) << 16u64) | ((ip.c as u32) << 8u64) | (ip.d as u32)
+
+fn ipv6_new : (u16, u16, u16, u16, u16, u16, u16, u16) -> Ipv6Addr
+  | (w0, w1, w2, w3, w4, w5, w6, w7) ->
+    let p = os.linux.malloc(16i64) as *u16
+    p[0i64] = w0; p[1i64] = w1; p[2i64] = w2; p[3i64] = w3
+    p[4i64] = w4; p[5i64] = w5; p[6i64] = w6; p[7i64] = w7
+    Ipv6Addr { words: p }
+
+fn ipv6_localhost : () -> Ipv6Addr
+  | () -> ipv6_new(0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 1u16)
+
+fn ipv6_any : () -> Ipv6Addr
+  | () -> ipv6_new(0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 0u16)
+
+fn ipv6_destroy : *Ipv6Addr -> ()
+  | ip ->
+    if ip.words as i64 != 0i64
+      os.linux.free(ip.words as ptr)
+    ip.words = 0 as *u16
+
+fn push_u8_decimal : (*string.String, u8) -> ()
+  | (s, val) ->
+    let v = val as i64
+    if v >= 100i64
+      string.string_push_byte(s, (48i64 + v / 100i64) as u8)
+      string.string_push_byte(s, (48i64 + (v / 10i64) % 10i64) as u8)
+      string.string_push_byte(s, (48i64 + v % 10i64) as u8)
+    else if v >= 10i64
+      string.string_push_byte(s, (48i64 + v / 10i64) as u8)
+      string.string_push_byte(s, (48i64 + v % 10i64) as u8)
+    else
+      string.string_push_byte(s, (48i64 + v) as u8)
+
+fn ipv4_to_string : *Ipv4Addr -> string.String
+  | ip ->
+    let mut out = string.string_with_cap(15i64)
+    push_u8_decimal(&out, ip.a)
+    string.string_push_byte(&out, 46u8)   -- '.'
+    push_u8_decimal(&out, ip.b)
+    string.string_push_byte(&out, 46u8)   -- '.'
+    push_u8_decimal(&out, ip.c)
+    string.string_push_byte(&out, 46u8)   -- '.'
+    push_u8_decimal(&out, ip.d)
+    out
+
+fn ipv4_parse : ptr -> (Ipv4Addr, bool)
+  | cstr ->
+    let len = os.linux.strlen(cstr) as i64
+    let buf = cstr as *u8
+    let mut i : i64 = 0i64
+    let mut octets : i64 = 0i64
+    let mut cur : i64 = 0i64
+    let mut o0 : u8 = 0u8; let mut o1 : u8 = 0u8; let mut o2 : u8 = 0u8; let mut o3 : u8 = 0u8
+    let mut ok = true
+    while i <= len
+      if i == len || buf[i] == 46u8   -- '.'
+        if cur > 255i64 || octets >= 4i64
+          ok = false
+          break
+        if octets == 0i64 then o0 = cur as u8
+        else if octets == 1i64 then o1 = cur as u8
+        else if octets == 2i64 then o2 = cur as u8
+        else if octets == 3i64 then o3 = cur as u8
+        octets = octets + 1i64
+        cur = 0i64
+      else if buf[i] >= 48u8 && buf[i] <= 57u8
+        cur = cur * 10i64 + (buf[i] as i64 - 48i64)
+      else
+        ok = false
+        break
+      i = i + 1i64
+    if ok && octets == 4i64
+      (Ipv4Addr { a: o0, b: o1, c: o2, d: o3 }, true)
+    else
+      (ipv4_any(), false)

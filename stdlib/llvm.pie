@@ -1,0 +1,14 @@
+mod llvm
+
+use llvm.emit_type
+use llvm.emit_instr
+use llvm.emit_func
+use llvm.emit_module
+
+-- stdlib/llvm.pie — Standard Library LLVM 22 IR Text Emitter Suite
+-- Exports type formatting, instruction formatting, function formatting, and full .ll module emission.
+
+fn emit_type_str : *ir.types.IrType -> str.string.String       | t -> emit_type.emit_llvm_type(t)
+fn emit_instr_str : *ir.instr.IrInstr -> str.string.String     | i -> emit_instr.emit_llvm_instr(i)
+fn emit_func_str : *ir.func.IrFunction -> str.string.String    | f -> emit_func.emit_llvm_function(f)
+fn emit_mod_str : *ir.module.IrModule -> str.string.String     | m -> emit_module.emit_llvm_module(m)

@@ -1,0 +1,42 @@
+mod regex.nfa
+
+use os.linux
+use vec.vec
+
+-- stdlib/regex/nfa.pie — Thompson's Nondeterministic Finite Automaton (NFA)
+-- Compiles regular expression AST nodes into NFA state machines.
+
+struct NfaState
+  id       : i64
+  match_b  : i64   -- -1 for epsilon, 0..255 for literal
+  next0_id : i64
+  next1_id : i64
+  is_match : bool
+
+struct Nfa
+  states   : vec.Vec
+  start_id : i64
+
+fn nfa_new : () -> Nfa
+  | () -> Nfa { states: vec.vec_new(16i64), start_id: 0i64 }
+
+fn nfa_destroy : *Nfa -> ()
+  | nfa ->
+    let mut i : i64 = 0i64
+    let len = vec.vec_len(&nfa.states)
+    while i < len
+      os.linux.free(vec.vec_get(&nfa.states, i))
+      i = i + 1i64
+    vec.vec_destroy(&nfa.states)
+
+fn nfa_add_state : (*Nfa, i64, i64, i64, bool) -> i64
+  | (nfa, match_byte, next0, next1, is_end) ->
+    let id = vec.vec_len(&nfa.states)
+    let s  = os.linux.malloc(40i64) as *NfaState
+    s.id       = id
+    s.match_b  = match_byte
+    s.next0_id = next0
+    s.next1_id = next1
+    s.is_match = is_end
+    vec.vec_push(&nfa.states, s as ptr)
+    id

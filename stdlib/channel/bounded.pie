@@ -1,0 +1,38 @@
+mod channel.bounded
+
+use sync.mpmc
+use os.linux
+
+-- stdlib/channel/bounded.pie — Bounded Blocking Communication Channel
+-- Backed by lock-free MPMC queue for thread-safe message passing.
+
+struct BoundedChannel
+  queue  : mpmc.MpmcQueue
+  closed : bool
+
+struct BoundedSender
+  chan : *BoundedChannel
+
+struct BoundedReceiver
+  chan : *BoundedChannel
+
+fn bounded_channel_new : i64 -> (BoundedSender, BoundedReceiver)
+  | cap ->
+    let ch = os.linux.malloc(64i64) as *BoundedChannel
+    ch.queue  = mpmc.mpmc_new(cap)
+    ch.closed = false
+    (BoundedSender { chan: ch }, BoundedReceiver { chan: ch })
+
+fn bounded_send : (*BoundedSender, ptr) -> bool
+  | (tx, msg_ptr) ->
+    if tx.chan.closed then false
+    else
+      mpmc.mpmc_push(&tx.chan.queue, msg_ptr)
+      true
+
+fn bounded_recv : *BoundedReceiver -> (ptr, bool)
+  | rx ->
+    if rx.chan.closed && rx.chan.queue.count == 0i64 then (0 as ptr, false)
+    else
+      let val = mpmc.mpmc_pop(&rx.chan.queue)
+      (val, true)

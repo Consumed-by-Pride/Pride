@@ -1,0 +1,30 @@
+mod effect_async.driver
+
+-- stdlib/effect_async/driver.pie — Algebraic Effect Operations for Non-Blocking I/O
+-- Replaces colored async/await futures with composable, stack-reifying effect operations.
+
+effect AsyncIo
+  op read   : (i64, ptr, i64) -> i64
+  op write  : (i64, ptr, i64) -> i64
+  op accept : i64 -> i64
+  op sleep  : i64 -> ()
+
+struct AsyncRequest
+  req_id   : i64
+  fd       : i64
+  buf      : ptr
+  len      : i64
+  op_kind  : i64
+
+const ASYNC_OP_READ   : i64 = 1i64
+const ASYNC_OP_WRITE  : i64 = 2i64
+const ASYNC_OP_ACCEPT : i64 = 3i64
+const ASYNC_OP_SLEEP  : i64 = 4i64
+
+fn asyncreq_new_read : (i64, i64, ptr, i64) -> AsyncRequest
+  | (id, fd, buf, len) ->
+    AsyncRequest { req_id: id, fd: fd, buf: buf, len: len, op_kind: ASYNC_OP_READ }
+
+fn asyncreq_new_write : (i64, i64, ptr, i64) -> AsyncRequest
+  | (id, fd, buf, len) ->
+    AsyncRequest { req_id: id, fd: fd, buf: buf, len: len, op_kind: ASYNC_OP_WRITE }
