@@ -10,7 +10,8 @@ use pride.ub
 
 fn test_cmtt_inspection_and_fusion : () -> bool
     | () ->
-        let box = msp.cmtt_box_new(2i64, null, null);
+        let mut box = msp.cmtt_box_new(2i64, null, null);
+        msp.cmtt_box_add_effect_op(&box, 42i64);
         let inspect_ok : bool = msp.cmtt_box_inspect(&box, 42i64);
         let (k_in, k_out) = msp.cmtt_box_split_effects(&box);
         let fused = msp.cmtt_box_fuse_aot(&box, k_in, k_out);

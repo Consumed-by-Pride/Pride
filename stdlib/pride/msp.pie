@@ -1,12 +1,23 @@
 mod pride.msp
 
 -- stdlib/pride/msp.pie — Multi-Stage Programming (MSP) Metaprogramming Suite
--- Supports compile-time stage levels, AST quotation, CMTT box modality,
--- and continuation-tree stage fusion.
+-- Supports compile-time stage levels, AST quotation registries, CMTT box modality,
+-- and ahead-of-time continuation stage fusion.
 
 struct AstQuote {
     id: i64,
     src: ptr
+}
+
+struct AstQuoteTable {
+    count: i64,
+    ids: [i64; 32],
+    srcs: [ptr; 32]
+}
+
+struct StageStack {
+    depth: i64,
+    levels: [i64; 32]
 }
 
 struct CmttBox {
@@ -14,8 +25,34 @@ struct CmttBox {
     ctx: ptr,
     code: ptr,
     k_in: ptr,
-    k_out: ptr
+    k_out: ptr,
+    op_count: i64,
+    code_ops: [i64; 16]
 }
+
+fn stage_stack_new : () -> StageStack
+    | () ->
+        StageStack { depth: 1i64, levels: [0i64; 32] }
+
+fn stage_stack_push : (*StageStack, i64) -> i64
+    | (stk, next_level) ->
+        if stk != null && stk.depth < 32i64 then {
+            let idx : i64 = stk.depth;
+            stk.levels[idx] = next_level;
+            stk.depth = idx + 1i64;
+            next_level
+        } else {
+            0i64
+        }
+
+fn stage_stack_pop : *StageStack -> i64
+    | stk ->
+        if stk != null && stk.depth > 1i64 then {
+            stk.depth = stk.depth - 1i64;
+            stk.levels[stk.depth]
+        } else {
+            0i64
+        }
 
 fn msp_stage_level : () -> i64
     | () -> 0i64
@@ -35,6 +72,42 @@ fn msp_quote_destroy : *AstQuote -> ()
             q.src = null;
         } else {
             ()
+        }
+
+fn msp_quote_table_new : () -> AstQuoteTable
+    | () ->
+        AstQuoteTable { count: 0i64, ids: [0i64; 32], srcs: [null; 32] }
+
+fn msp_quote_register : (*AstQuoteTable, i64, ptr) -> bool
+    | (tbl, id, src) ->
+        if tbl != null && tbl.count < 32i64 then {
+            let idx : i64 = tbl.count;
+            tbl.ids[idx] = id;
+            tbl.srcs[idx] = src;
+            tbl.count = idx + 1i64;
+            true
+        } else {
+            false
+        }
+
+fn msp_quote_lookup : (*AstQuoteTable, i64) -> ptr
+    | (tbl, id) ->
+        if tbl == null then {
+            null
+        } else {
+            let mut i : i64 = 0i64;
+            let mut res : ptr = null;
+            while true do {
+                if i >= tbl.count then {
+                    break;
+                };
+                if tbl.ids[i] == id then {
+                    res = tbl.srcs[i];
+                    break;
+                };
+                i = i + 1i64;
+            };
+            res
         }
 
 fn msp_eval_const_i64 : (i64, i64, i64) -> i64
@@ -68,15 +141,40 @@ fn cmtt_box_new : (i64, ptr, ptr) -> CmttBox
             ctx:   ctx_ptr,
             code:  code_ptr,
             k_in:  code_ptr,
-            k_out: null
+            k_out: null,
+            op_count: 0i64,
+            code_ops: [0i64; 16]
         }
 
-fn cmtt_box_inspect : (*CmttBox, i64) -> bool
-    | (box, target_stage) ->
-        if box != null && box.stage == target_stage && box.code != null then {
-            true
+fn cmtt_box_add_effect_op : (*CmttBox, i64) -> ()
+    | (box, op_code) ->
+        if box != null && box.op_count < 16i64 then {
+            let idx : i64 = box.op_count;
+            box.code_ops[idx] = op_code;
+            box.op_count = idx + 1i64;
         } else {
+            ()
+        }
+
+-- Inspect open code fragment for a specific effect opcode inside []
+fn cmtt_box_inspect : (*CmttBox, i64) -> bool
+    | (box, target_op) ->
+        if box == null || box.code == null then {
             false
+        } else {
+            let mut i : i64 = 0i64;
+            let mut found : bool = false;
+            while true do {
+                if i >= box.op_count then {
+                    break;
+                };
+                if box.code_ops[i] == target_op then {
+                    found = true;
+                    break;
+                };
+                i = i + 1i64;
+            };
+            found
         }
 
 fn cmtt_box_split_effects : *CmttBox -> (ptr, ptr)

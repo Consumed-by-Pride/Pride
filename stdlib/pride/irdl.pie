@@ -103,9 +103,12 @@ fn irdl_verify_instruction : (*IrdlSchema, i64, *i64, i64) -> bool
         if s == null then {
             false
         } else {
-            let mut i : i64 = 0;
+            let mut i : i64 = 0i64;
             let mut found : bool = false;
-            while i < s.op_count do {
+            while true do {
+                if i >= s.op_count then {
+                    break;
+                };
                 if s.ops[i].code == code then {
                     if s.ops[i].operand_count == count then {
                         found = true;
@@ -114,7 +117,7 @@ fn irdl_verify_instruction : (*IrdlSchema, i64, *i64, i64) -> bool
                     };
                     break;
                 };
-                i = i + 1;
+                i = i + 1i64;
             };
             found
         }
@@ -124,14 +127,17 @@ fn irdl_op_name : (*IrdlSchema, i64) -> str.string.String
         if s == null then {
             str.string.from_str("unknown")
         } else {
-            let mut i : i64 = 0;
+            let mut i : i64 = 0i64;
             let mut result : str.string.String = str.string.from_str("unknown");
-            while i < s.op_count do {
-                if s.ops[i].code == code && s.ops[i].name != null then {
-                    result = str.string.from_str("irdl_op");
+            while true do {
+                if i >= s.op_count then {
                     break;
                 };
-                i = i + 1;
+                if s.ops[i].code == code && s.ops[i].name != null then {
+                    result = str.string.string_from_cstr(s.ops[i].name);
+                    break;
+                };
+                i = i + 1i64;
             };
             result
         }
