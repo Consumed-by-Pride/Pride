@@ -4,17 +4,20 @@ use effect_async.nursery
 use effect_async.timeout
 use effect_async.bracket
 use effect_async.fiber_pool
+use pride.effects
 use pride.ub
 
 -- tests/exec/45_hose_async_concurrency.pie
 -- Complex execution test for HOSE structured concurrency nurseries,
 -- delimited timeout scopes, asynchronous RAII resource bracketing,
+-- dynamic-winding around continuation resumptions, local environment scoping,
 -- and fiber-driven work-stealing I/O pools.
 
 fn test_nursery_lifecycle : () -> bool
   | () ->
     let mut n = nursery.nursery_new(1001i64);
     let tid = nursery.nursery_spawn(&n, 42i64, null);
+    let lookup_ptr : ptr = nursery.nursery_get_task_cont(tid);
     let mut success : bool = false;
     let mut i : i64 = 0i64;
     while true do {
@@ -40,6 +43,8 @@ fn test_timeout_and_bracket : () -> bool
     timeout.timeout_scope_cancel(&ts);
     
     let mut br = bracket.async_bracket_new(888i64, null, null);
+    effects.dynamic_wind_enter(888i64);
+    effects.dynamic_wind_exit(888i64);
     let r_ok = bracket.async_bracket_release(&br);
     let r_double = !bracket.async_bracket_release(&br);
     

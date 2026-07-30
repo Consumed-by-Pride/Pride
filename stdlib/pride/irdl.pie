@@ -38,6 +38,10 @@ fn hose_yield_in : () -> i64       | () -> 34
 fn hose_yield_out : () -> i64      | () -> 35
 fn hose_split_cont : () -> i64     | () -> 36
 fn hose_fuse_cont : () -> i64      | () -> 37
+fn hose_dynamic_wind_push : () -> i64 | () -> 38
+fn hose_dynamic_wind_pop : () -> i64  | () -> 39
+fn hose_local_bind : () -> i64        | () -> 40
+fn hose_local_get : () -> i64         | () -> 41
 
 -- ── Schema Construction ────────────────────────────────────────────────────
 
@@ -59,7 +63,11 @@ fn irdl_schema_new : () -> IrdlSchema
         s.ops[6] = IrdlOpcode { code: 35, name: "hose.yield_out", operand_count: 3, is_scoped: true, is_fiber: false };
         s.ops[7] = IrdlOpcode { code: 36, name: "hose.split_cont", operand_count: 1, is_scoped: true, is_fiber: false };
         s.ops[8] = IrdlOpcode { code: 37, name: "hose.fuse_cont", operand_count: 2, is_scoped: true, is_fiber: false };
-        s.op_count = 9;
+        s.ops[9] = IrdlOpcode { code: 38, name: "hose.dynamic_wind_push", operand_count: 4, is_scoped: true, is_fiber: false };
+        s.ops[10] = IrdlOpcode { code: 39, name: "hose.dynamic_wind_pop", operand_count: 1, is_scoped: true, is_fiber: false };
+        s.ops[11] = IrdlOpcode { code: 40, name: "hose.local_bind", operand_count: 3, is_scoped: true, is_fiber: false };
+        s.ops[12] = IrdlOpcode { code: 41, name: "hose.local_get", operand_count: 1, is_scoped: true, is_fiber: false };
+        s.op_count = 13;
         s
 
 fn irdl_schema_destroy : *IrdlSchema -> ()

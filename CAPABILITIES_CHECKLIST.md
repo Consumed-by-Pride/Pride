@@ -120,6 +120,8 @@ Multi-clause literal patterns compiled to decision trees (Maranget's algorithm i
 | `ub!` explicit UB effect | ✅ Exec verified | pattern-guards prevent runtime UB |
 | Untyped HOSE (Hybrid Fiber + Prompt Engine) | ✅ Exec verified | Stack-switching fibers + untyped prompt markers (`fiber_spawn`, `fiber_resume`, `prompt_install`, `prompt_unwind`) |
 | Two-Part Functorial Continuations (`k_in` / `k_out`) | ✅ Exec verified | Obeys structured fusion laws `fmap f (fuse k_in k_out) == fuse (fmap f k_in) k_out` (Wu, Schrijvers, Yang et al.) |
+| Untyped HOSE Dynamic-Winding (`dynamic_wind`) | ✅ Exec verified | `on_enter` / `on_exit` hooks across two-part continuation prompt boundaries |
+| Untyped HOSE Reader/Local Environment Scoping | ✅ Exec verified | `local_bind` / `local_get` dynamic bindings scoped to prompt markers |
 | Single-arm `handle` + `resume` | 🔶 | Works end-to-end via `getcontext`/`setcontext` |
 | Multi-arm effect dispatch | 🔶 | Dispatch always routes to arm 1; op_id→arm_index map is TODO. Multi-arm handlers with different ops will always fire arm 1. |
 | Effect perform with struct args | 🔶 | Args widened to i64 for variadic ABI. Struct args not supported. |

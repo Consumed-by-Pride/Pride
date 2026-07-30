@@ -8683,6 +8683,9 @@ const char*[*] RUNTIME_DECL_NAMES = {
     "__pride_prompt_install", "__pride_prompt_unwind", "__pride_is_in_scope",
     "__pride_scoped_yield_in", "__pride_scoped_yield_out", "__pride_split_cont",
     "__pride_fuse_cont",
+    "__pride_dynamic_wind_push", "__pride_dynamic_wind_pop",
+    "__pride_dynamic_wind_enter", "__pride_dynamic_wind_exit",
+    "__pride_local_bind", "__pride_local_get",
     // Tensor runtime (`@` matmul, elemwise ops, vector dot)
     "__pride_matmul", "__pride_tensor_elemwise", "__pride_vecdot",
     // Str runtime helpers
@@ -9159,6 +9162,12 @@ fn void CgenModule.emit_runtime_decls(CgenModule* cg)
     cg.out.writes("declare ptr  @__pride_scoped_yield_out(i64, i64, ptr)\n");
     cg.out.writes("declare ptr  @__pride_split_cont(ptr)\n");
     cg.out.writes("declare ptr  @__pride_fuse_cont(ptr)\n");
+    cg.out.writes("declare void @__pride_dynamic_wind_push(i64, ptr, ptr, ptr)\n");
+    cg.out.writes("declare void @__pride_dynamic_wind_pop(i64)\n");
+    cg.out.writes("declare void @__pride_dynamic_wind_enter(i64)\n");
+    cg.out.writes("declare void @__pride_dynamic_wind_exit(i64)\n");
+    cg.out.writes("declare i64  @__pride_local_bind(i64, ptr, i64)\n");
+    cg.out.writes("declare ptr  @__pride_local_get(i64)\n");
     // Tensor matmul (`@` operator) — implemented in runtime/compiler_rt.c
     cg.out.writes("declare ptr  @__pride_matmul(ptr, ptr)\n");
     cg.out.writes("declare ptr  @__pride_tensor_elemwise(ptr, ptr, i32)\n");

@@ -15,6 +15,7 @@ struct AsyncBracket {
 
 fn async_bracket_new : (i64, ptr, ptr) -> AsyncBracket
   | (prompt_id, resource, release_fn) ->
+    effects.dynamic_wind_push(prompt_id, null, release_fn, resource);
     AsyncBracket {
       prompt_id:   prompt_id,
       resource:    resource,
@@ -25,6 +26,7 @@ fn async_bracket_new : (i64, ptr, ptr) -> AsyncBracket
 fn async_bracket_release : *AsyncBracket -> bool
   | b ->
     if b != null && !b.is_released then {
+      effects.dynamic_wind_pop(b.prompt_id);
       b.is_released = true;
       true
     } else {

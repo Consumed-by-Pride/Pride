@@ -957,6 +957,107 @@ void* __pride_fuse_cont(PrideContinuation* c) {
     return fused;
 }
 
+/*
+ * ============================================================================
+ * §4c  Untyped HOSE Dynamic-Winding (PrideDynamicWind) & Reader/Local
+ *      Environment Scoping (PrideLocalEnv).
+ *
+ * Scoped effects (local, catch, bracket, timeout) require dynamic-winding
+ * around prompt boundaries so that:
+ *   1. on_enter is invoked whenever a continuation k_in re-enters a scope.
+ *   2. on_exit  is invoked whenever a continuation k_out leaves a scope.
+ *
+ * Reader/Local effects bind a dynamic environment pointer scoped strictly
+ * to the lifetime of the prompt marker, restoring outer bindings on unwind.
+ * ============================================================================
+ */
+
+#define PRIDE_MAX_DYNAMIC_WINDS 32
+#define PRIDE_MAX_LOCAL_ENVS    32
+
+typedef struct PrideDynamicWind {
+    void (*on_enter)(void*);
+    void (*on_exit)(void*);
+    void*    env;
+    uint64_t prompt_id;
+    int      active;
+} PrideDynamicWind;
+
+static __thread PrideDynamicWind dynamic_wind_stack[PRIDE_MAX_DYNAMIC_WINDS];
+static __thread int dynamic_wind_top = -1;
+
+void __pride_dynamic_wind_push(uint64_t prompt_id, void (*on_enter)(void*), void (*on_exit)(void*), void* env) {
+    if (PRIDE_UNLIKELY(dynamic_wind_top + 1 >= PRIDE_MAX_DYNAMIC_WINDS)) {
+        panic_fmt("dynamic wind stack overflow");
+    }
+    dynamic_wind_top++;
+    dynamic_wind_stack[dynamic_wind_top].prompt_id = prompt_id;
+    dynamic_wind_stack[dynamic_wind_top].on_enter  = on_enter;
+    dynamic_wind_stack[dynamic_wind_top].on_exit   = on_exit;
+    dynamic_wind_stack[dynamic_wind_top].env       = env;
+    dynamic_wind_stack[dynamic_wind_top].active    = 1;
+}
+
+void __pride_dynamic_wind_pop(uint64_t prompt_id) {
+    while (dynamic_wind_top >= 0) {
+        PrideDynamicWind* dw = &dynamic_wind_stack[dynamic_wind_top];
+        dw->active = 0;
+        dynamic_wind_top--;
+        if (dw->prompt_id == prompt_id) break;
+    }
+}
+
+void __pride_dynamic_wind_enter(uint64_t prompt_id) {
+    for (int i = 0; i <= dynamic_wind_top; i++) {
+        if (dynamic_wind_stack[i].active && dynamic_wind_stack[i].prompt_id == prompt_id) {
+            if (dynamic_wind_stack[i].on_enter) {
+                dynamic_wind_stack[i].on_enter(dynamic_wind_stack[i].env);
+            }
+        }
+    }
+}
+
+void __pride_dynamic_wind_exit(uint64_t prompt_id) {
+    for (int i = dynamic_wind_top; i >= 0; i--) {
+        if (dynamic_wind_stack[i].active && dynamic_wind_stack[i].prompt_id == prompt_id) {
+            if (dynamic_wind_stack[i].on_exit) {
+                dynamic_wind_stack[i].on_exit(dynamic_wind_stack[i].env);
+            }
+        }
+    }
+}
+
+typedef struct PrideLocalEnv {
+    uint64_t key_id;
+    void*    value_ptr;
+    uint64_t prompt_id;
+    int      active;
+} PrideLocalEnv;
+
+static __thread PrideLocalEnv local_env_stack[PRIDE_MAX_LOCAL_ENVS];
+static __thread int local_env_top = -1;
+
+uint64_t __pride_local_bind(uint64_t key_id, void* value_ptr, uint64_t prompt_id) {
+    if (PRIDE_UNLIKELY(local_env_top + 1 >= PRIDE_MAX_LOCAL_ENVS)) {
+        panic_fmt("local environment stack overflow");
+    }
+    local_env_top++;
+    local_env_stack[local_env_top].key_id    = key_id;
+    local_env_stack[local_env_top].value_ptr = value_ptr;
+    local_env_stack[local_env_top].prompt_id = prompt_id;
+    local_env_stack[local_env_top].active    = 1;
+    return key_id;
+}
+
+void* __pride_local_get(uint64_t key_id) {
+    for (int i = local_env_top; i >= 0; i--) {
+        if (local_env_stack[i].active && local_env_stack[i].key_id == key_id) {
+            return local_env_stack[i].value_ptr;
+        }
+    }
+    return NULL;
+}
+
 
 /* ── §5  Drop registry ───────────────────────────────────────────────────── */
 /*

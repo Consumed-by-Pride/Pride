@@ -60,10 +60,15 @@ fn nursery_spawn : (*Nursery, i64, ptr) -> i64
       t.completed = false;
       t.cont_ptr  = cont_ptr;
       vec.vec_push(&n.tasks, t as ptr);
+      effects.local_bind(tid, cont_ptr, prompt_id);
       tid
     } else {
       0i64
     }
+
+fn nursery_get_task_cont : i64 -> ptr
+  | tid ->
+    effects.local_get(tid)
 
 fn nursery_wait_all : *Nursery -> i64
   | n ->

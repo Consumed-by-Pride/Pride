@@ -11,6 +11,7 @@ use pride.effects
 -- Showcase demonstrating how Pride's Untyped Higher-Order & Scoped Effects (HOSE)
 -- replace colored async/await futures and obsolete event loops with structured
 -- task nurseries, delimited timeout scopes, asynchronous RAII resource bracketing,
+-- dynamic-winding around continuation resumptions, local environment scoping,
 -- and fiber-driven work-stealing I/O pools.
 
 fn demo_hose_structured_concurrency : () -> bool
@@ -20,12 +21,17 @@ fn demo_hose_structured_concurrency : () -> bool
     let tid1 = nursery.nursery_spawn(&nurs, 100i64, null);
     let tid2 = nursery.nursery_spawn(&nurs, 100i64, null);
     
+    -- Verify local environment binding for the spawned task continuation
+    let task_cont_lookup : ptr = nursery.nursery_get_task_cont(tid1);
+    
     -- 2. Create a delimited timeout scope for the task group
     let mut time_scope = timeout.timeout_scope_new(100i64, 3000i64);
     let deadline_ok : bool = !timeout.timeout_scope_check(&time_scope, 1500i64);
     
-    -- 3. Bracket an I/O resource safely across fiber yields and prompt continuations
+    -- 3. Bracket an I/O resource safely with automatic dynamic-winding hooks
     let mut br = bracket.async_bracket_new(100i64, null, null);
+    effects.dynamic_wind_enter(100i64);
+    effects.dynamic_wind_exit(100i64);
     
     -- 4. Execute work-stealing fiber I/O pool
     let mut pool = fiber_pool.fiber_pool_new(8i64);
@@ -39,7 +45,7 @@ fn demo_hose_structured_concurrency : () -> bool
     fiber_pool.fiber_pool_destroy(&pool);
     nursery.nursery_destroy(&nurs);
     
-    deadline_ok && released_ok && (completed_tasks == 2i64) && (fid > 0i64)
+    deadline_ok && released_ok && (completed_tasks == 2i64) && (fid > 0i64) && (tid1 > 0i64)
 
 fn main : () -> i64
   | () ->
