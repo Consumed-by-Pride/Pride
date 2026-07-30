@@ -1,0 +1,46 @@
+mod examples.hose_async_showcase
+
+use effect_async.nursery
+use effect_async.timeout
+use effect_async.bracket
+use effect_async.fiber_pool
+use effect_async.epoll_handler
+use pride.effects
+
+-- examples/hose_async_showcase.pie
+-- Showcase demonstrating how Pride's Untyped Higher-Order & Scoped Effects (HOSE)
+-- replace colored async/await futures and obsolete event loops with structured
+-- task nurseries, delimited timeout scopes, asynchronous RAII resource bracketing,
+-- and fiber-driven work-stealing I/O pools.
+
+fn demo_hose_structured_concurrency : () -> bool
+  | () ->
+    -- 1. Spawn a structured nursery bounded by an untyped prompt marker
+    let mut nurs = nursery.nursery_new(100i64);
+    let tid1 = nursery.nursery_spawn(&nurs, 100i64, null);
+    let tid2 = nursery.nursery_spawn(&nurs, 100i64, null);
+    
+    -- 2. Create a delimited timeout scope for the task group
+    let mut time_scope = timeout.timeout_scope_new(100i64, 3000i64);
+    let deadline_ok : bool = !timeout.timeout_scope_check(&time_scope, 1500i64);
+    
+    -- 3. Bracket an I/O resource safely across fiber yields and prompt continuations
+    let mut br = bracket.async_bracket_new(100i64, null, null);
+    
+    -- 4. Execute work-stealing fiber I/O pool
+    let mut pool = fiber_pool.fiber_pool_new(8i64);
+    let fid = fiber_pool.fiber_pool_spawn(&pool, null, null);
+    
+    -- Wait for structured nursery completion
+    let completed_tasks = nursery.nursery_wait_all(&nurs);
+    let released_ok : bool = bracket.async_bracket_release(&br);
+    
+    timeout.timeout_scope_cancel(&time_scope);
+    fiber_pool.fiber_pool_destroy(&pool);
+    nursery.nursery_destroy(&nurs);
+    
+    deadline_ok && released_ok && (completed_tasks == 2i64) && (fid > 0i64)
+
+fn main : () -> i64
+  | () ->
+    if demo_hose_structured_concurrency() then 1 else 0

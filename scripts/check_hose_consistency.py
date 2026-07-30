@@ -85,7 +85,7 @@ def check_runtime_symbols():
     return errors
 
 def check_pride_modules():
-    """Verify that stdlib/pride.pie and stdlib/pride/*.pie modules exist and are structured correctly."""
+    """Verify that stdlib/pride.pie, stdlib/pride/*.pie, and stdlib/effect_async/*.pie modules exist, and that obsolete stdlib/async is deleted."""
     required_modules = [
         "stdlib/pride.pie",
         "stdlib/pride/effects.pie",
@@ -93,13 +93,31 @@ def check_pride_modules():
         "stdlib/pride/msp.pie",
         "stdlib/pride/ub.pie",
         "stdlib/pride/subtyping.pie",
-        "stdlib/pride/rewrite.pie"
+        "stdlib/pride/rewrite.pie",
+        "stdlib/effect_async.pie",
+        "stdlib/effect_async/driver.pie",
+        "stdlib/effect_async/epoll_handler.pie",
+        "stdlib/effect_async/uring_handler.pie",
+        "stdlib/effect_async/nursery.pie",
+        "stdlib/effect_async/timeout.pie",
+        "stdlib/effect_async/bracket.pie",
+        "stdlib/effect_async/fiber_pool.pie"
     ]
     errors = []
     for mod in required_modules:
         path = os.path.join(REPO_ROOT, mod)
         if not os.path.exists(path):
             errors.append(f"Required module {mod} does not exist")
+            
+    obsolete_paths = [
+        "stdlib/async.pie",
+        "stdlib/async"
+    ]
+    for obs in obsolete_paths:
+        path = os.path.join(REPO_ROOT, obs)
+        if os.path.exists(path):
+            errors.append(f"Obsolete legacy path {obs} still exists (should be deleted)")
+            
     return errors
 
 def check_gcc_build():

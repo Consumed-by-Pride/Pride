@@ -1,0 +1,44 @@
+mod effect_async.timeout
+
+use pride.effects
+
+-- stdlib/effect_async/timeout.pie — HOSE Delimited Timeout Scopes
+-- Implements timeout and deadline enforcement across asynchronous I/O operations
+-- via Untyped HOSE prompt markers.
+
+struct TimeoutScope {
+  prompt_id  : i64,
+  deadline_ms: i64,
+  timed_out  : bool,
+  active     : bool
+}
+
+fn timeout_scope_new : (i64, i64) -> TimeoutScope
+  | (prompt_id, deadline_ms) ->
+    TimeoutScope {
+      prompt_id:   prompt_id,
+      deadline_ms: deadline_ms,
+      timed_out:   false,
+      active:      true
+    }
+
+fn timeout_scope_check : (*TimeoutScope, i64) -> bool
+  | (ts, now_ms) ->
+    if ts != null && ts.active then {
+      if now_ms >= ts.deadline_ms then {
+        ts.timed_out = true;
+        true
+      } else {
+        false
+      }
+    } else {
+      false
+    }
+
+fn timeout_scope_cancel : *TimeoutScope -> ()
+  | ts ->
+    if ts != null then {
+      ts.active = false;
+    } else {
+      ()
+    }

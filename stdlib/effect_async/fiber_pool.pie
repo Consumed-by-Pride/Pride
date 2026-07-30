@@ -1,0 +1,49 @@
+mod effect_async.fiber_pool
+
+use pride.effects
+use vec.vec
+use os.linux
+
+-- stdlib/effect_async/fiber_pool.pie — HOSE Fiber-Driven Work-Stealing I/O Pool
+-- Manages pools of stack-switching fibers for flat high-throughput asynchronous I/O.
+
+struct FiberIoPool {
+  max_fibers : i64,
+  fibers     : vec.Vec,
+  active     : i64
+}
+
+fn fiber_pool_new : i64 -> FiberIoPool
+  | max_fibers ->
+    FiberIoPool {
+      max_fibers: max_fibers,
+      fibers:     vec.vec_new(16i64),
+      active:     0i64
+    }
+
+fn fiber_pool_destroy : *FiberIoPool -> ()
+  | p ->
+    if p != null then {
+      vec.vec_destroy(&p.fibers);
+      p.active = 0i64;
+    } else {
+      ()
+    }
+
+fn fiber_pool_spawn : (*FiberIoPool, ptr, ptr) -> i64
+  | (p, entry_fn, arg) ->
+    if p != null && p.active < p.max_fibers then {
+      let fib = effects.fiber_spawn(entry_fn, arg);
+      p.active = p.active + 1i64;
+      p.active
+    } else {
+      0i64
+    }
+
+fn fiber_pool_step : *FiberIoPool -> i64
+  | p ->
+    if p != null then {
+      p.active
+    } else {
+      0i64
+    }

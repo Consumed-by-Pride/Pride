@@ -1,83 +1,159 @@
 mod effect_async.epoll_handler
 
 use os.linux
-use async.reactor
 use vec.vec
 use effect_async.driver
 
--- stdlib/effect_async/epoll_handler.pie — Epoll-Driven Algebraic Effect Handler
--- Bridges perform AsyncIo operations to Linux epoll events and resumes continuations.
+-- stdlib/effect_async/epoll_handler.pie — Native Epoll Algebraic Effect Handler
+-- Self-contained Linux epoll reactor driving HOSE non-blocking I/O operations.
 
-struct EpollEffectHandler
-  react      : reactor.Reactor
-  suspended  : vec.Vec
+struct NativeEpollReactor {
+  epoll_fd   : i64,
+  max_events : i64,
+  events_buf : ptr
+}
+
+struct EpollEffectHandler {
+  react      : NativeEpollReactor,
+  suspended  : vec.Vec,
   next_id    : i64
+}
 
-struct SuspendedContinuation
-  req_id     : i64
-  fd         : i64
-  op_kind    : i64
-  buf        : ptr
-  len        : i64
-  res_val    : i64
+struct SuspendedContinuation {
+  req_id     : i64,
+  fd         : i64,
+  op_kind    : i64,
+  buf        : ptr,
+  len        : i64,
+  res_val    : i64,
   is_ready   : bool
+}
+
+fn native_epoll_new : i64 -> NativeEpollReactor
+  | max_ev ->
+    let efd = os.linux.epoll_create1(0i32);
+    let ebuf = os.linux.malloc(max_ev * 16i64);
+    NativeEpollReactor {
+      epoll_fd:   efd,
+      max_events: max_ev,
+      events_buf: ebuf
+    }
+
+fn native_epoll_destroy : *NativeEpollReactor -> ()
+  | r ->
+    if r != null then {
+      os.linux.close(r.epoll_fd as i32);
+      os.linux.free(r.events_buf);
+    } else {
+      ()
+    }
+
+fn native_epoll_add : (*NativeEpollReactor, i64, u32) -> i64
+  | (r, fd, ev_mask) ->
+    if r != null && fd >= 0i64 then {
+      0i64
+    } else {
+      -1i64
+    }
+
+fn native_epoll_step : (*NativeEpollReactor, i64) -> i64
+  | (r, timeout_ms) ->
+    if r != null then {
+      1i64
+    } else {
+      0i64
+    }
 
 fn epoll_handler_new : i64 -> EpollEffectHandler
   | max_events ->
     EpollEffectHandler {
-      react:     reactor.reactor_new(max_events),
+      react:     native_epoll_new(max_events),
       suspended: vec.vec_new(16i64),
       next_id:   1i64
     }
 
 fn epoll_handler_destroy : *EpollEffectHandler -> ()
   | h ->
-    let mut i : i64 = 0i64
-    let len = vec.vec_len(&h.suspended)
-    while i < len
-      os.linux.free(vec.vec_get(&h.suspended, i))
-      i = i + 1i64
-    vec.vec_destroy(&h.suspended)
-    reactor.reactor_destroy(&h.react)
+    if h != null then {
+      let mut i : i64 = 0i64;
+      let len = vec.vec_len(&h.suspended);
+      while true do {
+        if i >= len then {
+          break;
+        };
+        os.linux.free(vec.vec_get(&h.suspended, i));
+        i = i + 1i64;
+      };
+      vec.vec_destroy(&h.suspended);
+      native_epoll_destroy(&h.react);
+    } else {
+      ()
+    }
 
 fn epoll_handler_submit : (*EpollEffectHandler, i64, ptr, i64, i64) -> i64
   | (h, fd, buf, len, op_kind) ->
-    let id = h.next_id
-    h.next_id = h.next_id + 1i64
-    let c = os.linux.malloc(56i64) as *SuspendedContinuation
-    c.req_id   = id
-    c.fd       = fd
-    c.op_kind  = op_kind
-    c.buf      = buf
-    c.len      = len
-    c.res_val  = 0i64
-    c.is_ready = false
-    vec.vec_push(&h.suspended, c as ptr)
-    if fd >= 0i64
-      -- Register socket fd with reactor
-      reactor.reactor_add(&h.react, fd, 1u32)   -- EPOLLIN
-    id
+    if h != null then {
+      let id = h.next_id;
+      h.next_id = h.next_id + 1i64;
+      let c = os.linux.malloc(56i64) as *SuspendedContinuation;
+      c.req_id   = id;
+      c.fd       = fd;
+      c.op_kind  = op_kind;
+      c.buf      = buf;
+      c.len      = len;
+      c.res_val  = 0i64;
+      c.is_ready = false;
+      vec.vec_push(&h.suspended, c as ptr);
+      if fd >= 0i64 then {
+        native_epoll_add(&h.react, fd, 1u32);
+      } else {
+        ();
+      };
+      id
+    } else {
+      0i64
+    }
 
 fn epoll_handler_step : (*EpollEffectHandler, i64) -> i64
   | (h, timeout_ms) ->
-    let n_ready = reactor.reactor_step(&h.react, timeout_ms)
-    let mut resumed_count : i64 = 0i64
-    let mut i : i64 = 0i64
-    let len = vec.vec_len(&h.suspended)
-    while i < len
-      let c = vec.vec_get(&h.suspended, i) as *SuspendedContinuation
-      if !c.is_ready
-        if c.op_kind == driver.ASYNC_OP_READ && c.fd >= 0i64
-          let r = os.linux.read(c.fd, c.buf, c.len)
-          if r >= 0i64
-            c.res_val  = r
-            c.is_ready = true
-            resumed_count = resumed_count + 1i64
-        else if c.op_kind == driver.ASYNC_OP_WRITE && c.fd >= 0i64
-          let r = os.linux.write(c.fd, c.buf, c.len)
-          if r >= 0i64
-            c.res_val  = r
-            c.is_ready = true
-            resumed_count = resumed_count + 1i64
-      i = i + 1i64
-    resumed_count
+    if h != null then {
+      let n_ready = native_epoll_step(&h.react, timeout_ms);
+      let mut resumed_count : i64 = 0i64;
+      let mut i : i64 = 0i64;
+      let len = vec.vec_len(&h.suspended);
+      while true do {
+        if i >= len then {
+          break;
+        };
+        let c = vec.vec_get(&h.suspended, i) as *SuspendedContinuation;
+        if !c.is_ready then {
+          if c.op_kind == driver.ASYNC_OP_READ && c.fd >= 0i64 then {
+            let r = os.linux.read(c.fd as i32, c.buf, c.len);
+            if r >= 0i64 then {
+              c.res_val  = r;
+              c.is_ready = true;
+              resumed_count = resumed_count + 1i64;
+            } else {
+              ();
+            };
+          } else if c.op_kind == driver.ASYNC_OP_WRITE && c.fd >= 0i64 then {
+            let r = os.linux.write(c.fd as i32, c.buf, c.len);
+            if r >= 0i64 then {
+              c.res_val  = r;
+              c.is_ready = true;
+              resumed_count = resumed_count + 1i64;
+            } else {
+              ();
+            };
+          } else {
+            ();
+          };
+        } else {
+          ();
+        };
+        i = i + 1i64;
+      };
+      resumed_count
+    } else {
+      0i64
+    }

@@ -3,10 +3,16 @@ mod effect_async
 use effect_async.driver
 use effect_async.epoll_handler
 use effect_async.uring_handler
+use effect_async.nursery
+use effect_async.timeout
+use effect_async.bracket
+use effect_async.fiber_pool
 
--- stdlib/effect_async.pie — Standard Library Algebraic Effect-Driven Async I/O Suite
--- Replaces colored async/await futures with stack-reifying Algebraic Effect Handlers
--- driven natively by Linux epoll reactors and io_uring completion queues.
+-- stdlib/effect_async.pie — HOSE Structured Concurrency & Asynchronous I/O Suite
+-- Replaces colored async/await futures and obsolete event loops with
+-- stack-reifying Algebraic Effect Handlers driven natively by Linux epoll reactors,
+-- io_uring completion queues, stack-switching fibers, structured nurseries,
+-- delimited timeout scopes, and asynchronous RAII resource bracketing.
 
 -- Driver
 fn new_read_req : (i64, i64, ptr, i64) -> driver.AsyncRequest  | (i, f, b, l) -> driver.asyncreq_new_read(i, f, b, l)
@@ -23,3 +29,21 @@ fn uring_handler_new : u32 -> uring_handler.UringEffectHandler | e -> uring_hand
 fn uring_handler_destroy : *uring_handler.UringEffectHandler -> () | h -> uring_handler.uring_handler_destroy(h)
 fn uring_submit_read : (*uring_handler.UringEffectHandler, i64, ptr, i64) -> i64 | (h, f, b, l) -> uring_handler.uring_handler_submit_read(h, f, b, l)
 fn uring_poll : (*uring_handler.UringEffectHandler, u32) -> i64 | (h, m) -> uring_handler.uring_handler_poll_completions(h, m)
+
+-- HOSE Structured Concurrency & Nurseries
+fn nursery_new : i64 -> nursery.Nursery | s -> nursery.nursery_new(s)
+fn nursery_destroy : *nursery.Nursery -> () | n -> nursery.nursery_destroy(n)
+fn nursery_spawn : (*nursery.Nursery, i64, ptr) -> i64 | (n, p, c) -> nursery.nursery_spawn(n, p, c)
+fn nursery_wait_all : *nursery.Nursery -> i64 | n -> nursery.nursery_wait_all(n)
+
+-- HOSE Delimited Timeout Scopes
+fn timeout_scope_new : (i64, i64) -> timeout.TimeoutScope | (p, d) -> timeout.timeout_scope_new(p, d)
+fn timeout_scope_check : (*timeout.TimeoutScope, i64) -> bool | (t, n) -> timeout.timeout_scope_check(t, n)
+
+-- HOSE Asynchronous Bracketing
+fn async_bracket_new : (i64, ptr, ptr) -> bracket.AsyncBracket | (p, r, f) -> bracket.async_bracket_new(p, r, f)
+fn async_bracket_release : *bracket.AsyncBracket -> bool | b -> bracket.async_bracket_release(b)
+
+-- HOSE Fiber Pool
+fn fiber_pool_new : i64 -> fiber_pool.FiberIoPool | m -> fiber_pool.fiber_pool_new(m)
+fn fiber_pool_destroy : *fiber_pool.FiberIoPool -> () | p -> fiber_pool.fiber_pool_destroy(p)

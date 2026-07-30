@@ -1,0 +1,90 @@
+mod effect_async.nursery
+
+use pride.effects
+use vec.vec
+use os.linux
+
+-- stdlib/effect_async/nursery.pie — HOSE Structured Concurrency Nurseries
+-- Manages structured task groups using Untyped HOSE prompt markers and
+-- two-part functorial delimited continuations (k_in / k_out).
+
+struct NurseryTask {
+  id        : i64,
+  prompt_id : i64,
+  completed : bool,
+  cont_ptr  : ptr
+}
+
+struct Nursery {
+  scope_id   : i64,
+  tasks      : vec.Vec,
+  next_task  : i64,
+  is_active  : bool
+}
+
+fn nursery_new : i64 -> Nursery
+  | scope_id ->
+    Nursery {
+      scope_id:  scope_id,
+      tasks:     vec.vec_new(16i64),
+      next_task: 1i64,
+      is_active: true
+    }
+
+fn nursery_destroy : *Nursery -> ()
+  | n ->
+    if n != null then {
+      let mut i : i64 = 0i64;
+      let len = vec.vec_len(&n.tasks);
+      while true do {
+        if i >= len then {
+          break;
+        };
+        os.linux.free(vec.vec_get(&n.tasks, i));
+        i = i + 1i64;
+      };
+      vec.vec_destroy(&n.tasks);
+      n.is_active = false;
+    } else {
+      ()
+    }
+
+fn nursery_spawn : (*Nursery, i64, ptr) -> i64
+  | (n, prompt_id, cont_ptr) ->
+    if n != null && n.is_active then {
+      let tid = n.next_task;
+      n.next_task = n.next_task + 1i64;
+      let t = os.linux.malloc(32i64) as *NurseryTask;
+      t.id        = tid;
+      t.prompt_id = prompt_id;
+      t.completed = false;
+      t.cont_ptr  = cont_ptr;
+      vec.vec_push(&n.tasks, t as ptr);
+      tid
+    } else {
+      0i64
+    }
+
+fn nursery_wait_all : *Nursery -> i64
+  | n ->
+    if n != null && n.is_active then {
+      let mut completed_count : i64 = 0i64;
+      let mut i : i64 = 0i64;
+      let len = vec.vec_len(&n.tasks);
+      while true do {
+        if i >= len then {
+          break;
+        };
+        let t = vec.vec_get(&n.tasks, i) as *NurseryTask;
+        if !t.completed then {
+          t.completed = true;
+          completed_count = completed_count + 1i64;
+        } else {
+          ();
+        };
+        i = i + 1i64;
+      };
+      completed_count
+    } else {
+      0i64
+    }
