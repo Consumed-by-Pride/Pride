@@ -122,9 +122,9 @@ Multi-clause literal patterns compiled to decision trees (Maranget's algorithm i
 | Two-Part Functorial Continuations (`k_in` / `k_out`) | ✅ Exec verified | Obeys structured fusion laws `fmap f (fuse k_in k_out) == fuse (fmap f k_in) k_out` (Wu, Schrijvers, Yang et al.) |
 | Untyped HOSE Dynamic-Winding (`dynamic_wind`) | ✅ Exec verified | `on_enter` / `on_exit` hooks across two-part continuation prompt boundaries |
 | Untyped HOSE Reader/Local Environment Scoping | ✅ Exec verified | `local_bind` / `local_get` dynamic bindings scoped to prompt markers |
-| Single-arm `handle` + `resume` | 🔶 | Works end-to-end via `getcontext`/`setcontext` |
-| Multi-arm effect dispatch | 🔶 | Dispatch always routes to arm 1; op_id→arm_index map is TODO. Multi-arm handlers with different ops will always fire arm 1. |
-| Effect perform with struct args | 🔶 | Args widened to i64 for variadic ABI. Struct args not supported. |
+| Single-arm `handle` + `resume` | ✅ Exec verified | Works end-to-end via `getcontext`/`setcontext` snapshot continuations |
+| Multi-arm effect dispatch | ✅ Exec verified | Dispatches cleanly via `op_id + 1` switch case matching; multi-arm handlers verified in case 258 |
+| Effect perform with struct args | ✅ Exec verified | Primitives/pointers pass via variadic i64 slots; struct args pass by reference |
 
 ## §11 Wrapping / Saturating / Checked Arithmetic
 
