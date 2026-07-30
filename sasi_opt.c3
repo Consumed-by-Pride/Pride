@@ -557,9 +557,21 @@ fn void Optimizer.fold_identities(Optimizer* o)
 
             if (repl != null)
             {
-                // Rewire every user of this bin to the identity operand; the
-                // bin itself becomes unreferenced pure code for DCE.
+                // Rewire every user of this bin to the identity operand, then
+                // NEUTRALIZE the bin in place. The mutation is sound: after
+                // replace_uses the bin has no uses left (replace_uses covers
+                // the exact use universe DCE walks — instr args, φ args, term
+                // cond/ret_val — and IrBlock holds no other IrVal*), and any
+                // SASI fact that still names it only misses an optimization
+                // key, never a correctness decision. The mutation is REQUIRED
+                // for termination: an untouched bin would re-match its own
+                // pattern next fixpoint round, re-firing the counter and
+                // pinning `changed` true until the round cap. As IR_CONST_INT
+                // it is invisible to every fold and collectable by DCE.
                 replace_uses(m, in, repl);
+                in.op = IrOp.IR_CONST_INT;
+                in.ival = 0;
+                in.arg_count = 0;
                 o.st.identities_folded++;
             }
             else if (to_const_zero)

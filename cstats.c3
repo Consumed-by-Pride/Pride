@@ -169,7 +169,8 @@ fn void print_report(long pipeline_start)
     ulong span  = (ulong)ticks_since(pipeline_start);
 
     printf("\n=== Pass timing (CPU) ===\n");
-    printf("  %-16s %12s %10s %8s\n", "pass", "microsec", "millisec", "%");
+    printf("  %-16s %12s %10s %8s\n",
+           (char*)"pass", (char*)"microsec", (char*)"millisec", (char*)"%");
     for (usz i = 0; i < g_count; i++)
     {
         // ms10 = round(us * 100 / 1000) = hundredths of a millisecond.
@@ -189,9 +190,9 @@ fn void print_report(long pipeline_start)
     // per-pass driver glue (AST printing, arg parsing, teardown).
     ulong total_ms10 = (total + 5) / 10;
     ulong span_ms10  = (span + 5) / 10;
-    printf("  %-16s %12llu %7llu.%02llu\n", "accounted", total,
+    printf("  %-16s %12llu %7llu.%02llu\n", (char*)"accounted", total,
            total_ms10 / 100, total_ms10 % 100);
-    printf("  %-16s %12llu %7llu.%02llu\n", "span", span,
+    printf("  %-16s %12llu %7llu.%02llu\n", (char*)"span", span,
            span_ms10 / 100, span_ms10 % 100);
     if (span > total)
     {
