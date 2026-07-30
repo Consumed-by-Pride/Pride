@@ -9607,6 +9607,13 @@ fn bool CgenModule.emit(CgenModule* cg, char* source_filename)
     cg.out.writes(cg.triple);
     cg.out.writes("\"\n\n");
 
+    // Provenance header (pure comment lines — llvm-as ignores them; they make
+    // every .ll self-describing when checked into test fixtures or diffed).
+    cg.out.writes("; ── Provenance ──────────────────────────────────────────────────\n");
+    cg.out.writes("; emitted by pride 0.1.0 — pipeline: ssi-ir → sasi → sasi-opt → codegen\n");
+    cg.out.writes("; optimization: SASI redundant-compare/branch folding, algebraic\n");
+    cg.out.writes(";   identities, unreachable pruning, DCE (see sasi_opt.c3)\n\n");
+
     cg.collect_all_structs();
     if (cg.struct_count > 0)
     {
@@ -9639,6 +9646,19 @@ fn bool CgenModule.emit(CgenModule* cg, char* source_filename)
     // Uniform indirect ABI adapters for every fn referenced as a value
     // (registered during value materialization inside emit_function).
     cg.emit_fn_trampolines();
+
+    // Emission trailer (pure comments): module shape at codegen time. Cheap
+    // telemetry that makes IR-size regressions visible in fixture diffs and
+    // records exactly which module produced the file (counts are the full
+    // module arrays, so they also expose post-SASI pruning slack).
+    cg.out.writes("\n; ── Emission statistics ─────────────────────────────────────────\n");
+    cg.out.writes("; functions: ");
+    cg.out.writeu((ulong)m.func_count);
+    cg.out.writes("\n; blocks:    ");
+    cg.out.writeu((ulong)m.block_count);
+    cg.out.writes("\n; values:    ");
+    cg.out.writeu((ulong)m.val_count);
+    cg.out.writes("\n");
 
     cg.out.flush();
     return cg.errors == 0;

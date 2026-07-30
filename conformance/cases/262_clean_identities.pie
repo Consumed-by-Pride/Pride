@@ -1,0 +1,10 @@
+-- EXPECT-CLEAN
+-- Code that exercises every algebraic identity the SASI optimizer folds must
+-- still produce ZERO diagnostics across lex/parse/resolve/type/effect/lint:
+-- the identity pass is a codegen-stage transform, never a source of noise.
+fn f : i64 -> i64
+  | x ->
+      (((x * 1) + (x | 0)) - 0) ^ 0
+
+fn g : i64 -> i64
+  | x -> ((x / 1) & -1i64) << 0

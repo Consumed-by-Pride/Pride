@@ -39,6 +39,21 @@ const int MSP_MAX_STAGE     = 100;
 const int MSP_MAX_DEPTH     = 500;
 
 // ── Open-Code Quotation Table & Hash-Consing Registry ───────────────────────
+//
+// STORAGE & COMPLEXITY. The entry array is the canonical store (stable
+// pointers, insertion order). Lookups go through an open hash index:
+// 2048-entry MCS-style separate chaining — each bucket heads an intrusive
+// chain threaded through MspQuoteEntry.next_idx, so lookup is O(chain) with
+// an expected chain of < 1 at the capped registry size, versus the previous
+// O(n) full scan per insert (O(n²) total for n quotations).
+//
+// OBSERVABILITY. `inserts`/`hits`/`probes`/`longest_chain` make the dedup
+// ratio and index health queryable once the engine is wired into staging;
+// report() prints them.
+//
+// NOTE: the struct is ~200 KB — instances MUST be heap-allocated.
+
+const usz MSP_IDX_CAP = 8192;   // power of two, 4× MSP_MAX_QUOTES
 
 struct MspQuoteEntry
 {
@@ -46,6 +61,7 @@ struct MspQuoteEntry
     int      stage_level;
     Node*    ast_node;
     Node*    context_node; // explicit environment Γ' for CMTT
+    usz      next_idx;     // hash-chain link: entry index + 1 (0 = chain end)
 }
 
 struct MspQuoteRegistry
@@ -54,12 +70,22 @@ struct MspQuoteRegistry
     usz                           count;
     int                           errors;
     char[256][64]                 error_msgs;
+    usz[MSP_IDX_CAP]              idx;        // bucket → entry index + 1 (0 = empty)
+    usz                           hits;          // dedup: returned existing entry
+    usz                           inserts;       // genuinely new quotations
+    usz                           probes;         // chain steps (lookup cost)
+    usz                           longest_chain;  // worst chain seen (index health)
 }
 
 fn void MspQuoteRegistry.init(MspQuoteRegistry* r)
 {
     r.count = 0;
     r.errors = 0;
+    for (usz i = 0; i < MSP_IDX_CAP; i++) r.idx[i] = 0;
+    r.hits = 0;
+    r.inserts = 0;
+    r.probes = 0;
+    r.longest_chain = 0;
 }
 
 fn void MspQuoteRegistry.report_error(MspQuoteRegistry* r, char* msg)
@@ -128,18 +154,35 @@ fn bool msp_ast_equal(Node* a, Node* b, int depth)
 
 // Register or lookup a quoted AST node via hash-consing.
 // Returns the canonical interned AST pointer.
+// Lookup walks only the chain of the node-hash bucket (expected length < 1
+// at the capped 2048 entries rather than the previous O(n) full scan);
+// structural equality (msp_ast_equal) is still the final arbiter, so hash
+// collisions can never cause a false intern.
 fn Node* MspQuoteRegistry.hash_cons(MspQuoteRegistry* r, Node* n, int stage, Node* ctx)
 {
     if (n == null) return null;
     uint64_t h = msp_hash_ast(n, 0);
-    for (usz i = 0; i < r.count; i++)
+    usz bucket = (usz)(h & (uint64_t)(MSP_IDX_CAP - 1));
+    usz chain_len = 0;
+
+    usz link = r.idx[bucket];
+    while (link != 0)
     {
-        MspQuoteEntry* e = &r.entries[i];
-        if (e.hash_code == h && e.stage_level == stage && msp_ast_equal(e.ast_node, n, 0))
+        MspQuoteEntry* e = &r.entries[link - 1];
+        r.probes++;
+        chain_len++;
+        // Same structural hash AND same stage, then confirm structurally.
+        if (e.hash_code == h && e.stage_level == stage
+            && msp_ast_equal(e.ast_node, n, 0))
         {
+            r.hits++;
+            if (chain_len > r.longest_chain) r.longest_chain = chain_len;
             return e.ast_node;
         }
+        link = e.next_idx;
     }
+    if (chain_len > r.longest_chain) r.longest_chain = chain_len;
+
     if (r.count < MSP_MAX_QUOTES)
     {
         usz idx = r.count++;
@@ -147,8 +190,31 @@ fn Node* MspQuoteRegistry.hash_cons(MspQuoteRegistry* r, Node* n, int stage, Nod
         r.entries[idx].stage_level  = stage;
         r.entries[idx].ast_node     = n;
         r.entries[idx].context_node = ctx;
+        // Prepend to the bucket chain (chain order is irrelevant to equality).
+        r.entries[idx].next_idx     = r.idx[bucket];
+        r.idx[bucket]               = idx + 1;
+        r.inserts++;
     }
     return n;
+}
+
+// Dedup ratio snapshot: (canonical entries, dedup hits, new inserts).
+fn void MspQuoteRegistry.stats(MspQuoteRegistry* r, usz* out_entries,
+                               usz* out_hits, usz* out_inserts)
+{
+    if (out_entries != null) *out_entries = r.count;
+    if (out_hits != null)    *out_hits = r.hits;
+    if (out_inserts != null) *out_inserts = r.inserts;
+}
+
+// Print the registry's dedup/index health report (for the staging report and
+// future `--stage-verbose` tooling).
+fn void MspQuoteRegistry.report(MspQuoteRegistry* r)
+{
+    printf("  quotes interned     : %llu (dedup hits %llu, fresh %llu)\n",
+           (ulong)r.count, (ulong)r.hits, (ulong)r.inserts);
+    printf("  index probes        : %llu (longest chain %llu / %llu buckets)\n",
+           (ulong)r.probes, (ulong)r.longest_chain, (ulong)MSP_IDX_CAP);
 }
 
 // ── Open-Code Pattern Matching & Spliced Subtree Extraction ────────────────

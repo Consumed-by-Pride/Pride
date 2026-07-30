@@ -178,6 +178,8 @@ struct Rule
     uint  prio;      // application order (source order; ++ preserves it)
     ulong lhs_effects;  // effects present on the LHS (for conservation)
     ulong rhs_effects;  // effects the RHS would introduce
+    usz   fire_count;   // successful applications (drives the engine report:
+                        // which rules pull their weight / which are dead)
 }
 
 const usz MAX_RULES = 4096;
@@ -259,6 +261,7 @@ fn void RuleSet.add(RuleSet* rs, Node* lhs, Node* rhs, Node* guard, uint prio)
     r.prio = prio;
     r.lhs_effects = lhs != null ? lhs.effects : 0;
     r.rhs_effects = rhs != null ? rhs.effects : 0;
+    r.fire_count = 0;
     rs.count++;
 }
 
@@ -646,6 +649,7 @@ fn Node* Rewriter.try_rule(Rewriter* rw, Node* t, Rule* r)
     if (result == null || rw.arena.oom) { rw.out_of_fuel = true; return t; }
     rw.fuel--;
     rw.firings++;
+    r.fire_count++;
     return result;
 }
 

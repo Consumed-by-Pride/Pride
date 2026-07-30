@@ -98,6 +98,14 @@ struct Stager
     int    splices;         // splices evaluated
     bool   overflow;
 
+    // CTFE telemetry (observability upgrade): high-water mark, so tuning
+    // EVAL_FUEL / EVAL_MAX_DEPTH / ENV_CAP is data-driven instead of
+    // guesswork. All fields are strictly additive — they change reporting
+    // only, never evaluation behavior.
+    int    depth_hwm;       // deepest eval recursion actually reached
+    usz    env_hwm;         // widest the comptime env ever grew
+    int    calls_evaluated; // comptime fn calls CTFE actually ran
+
     // MSP extensions
     int    gensym_counter;  // monotone counter for fresh name generation (CSP support)
 }
@@ -121,6 +129,9 @@ fn void Stager.init(Stager* s, ast::AstArena* arena)
     s.folded = 0;
     s.splices = 0;
     s.overflow = false;
+    s.depth_hwm = 0;
+    s.env_hwm = 0;
+    s.calls_evaluated = 0;
 }
 
 fn void Stager.diag(Stager* s, char* msg, int line, int col, bool is_error)
@@ -158,6 +169,7 @@ fn void Stager.env_push(Stager* s, char* nptr, usz nlen, Node* value)
     s.env[s.env_count].name_len = nlen;
     s.env[s.env_count].value = value;
     s.env_count++;
+    if (s.env_count > s.env_hwm) s.env_hwm = s.env_count;
 }
 
 fn Node* Stager.env_lookup(Stager* s, char* nptr, usz nlen)
@@ -253,6 +265,7 @@ fn Node* Stager.eval(Stager* s, Node* n)
     if (s.fuel <= 0) { s.out_of_fuel = true; return n; }
     if (s.depth > EVAL_MAX_DEPTH) { s.too_deep = true; return n; }
     s.depth++;
+    if (s.depth > s.depth_hwm) s.depth_hwm = s.depth;
     Node* r = s.eval_body(n);
     s.depth--;
     return r;
@@ -720,6 +733,9 @@ fn Node* Stager.eval_call(Stager* s, Node* n)
         if (c != null && c.kind == Nk.NODE_EXPR_BLOCK) { body_block = c; break; }
     }
     if (body_block == null) return n;
+
+    // Past every bail-out: this call WILL be dispatched to a clause — count it.
+    s.calls_evaluated++;
 
     // MULTI-CLAUSE DISPATCH: try each clause in order; the first whose parameter
     // pattern matches the (reduced) arguments AND whose guard holds is selected.

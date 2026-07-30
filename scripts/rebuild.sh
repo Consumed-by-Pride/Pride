@@ -55,7 +55,7 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 cp "$PRIDE_DIR"/*.c3 "$BUILD_DIR/"
 cd "$BUILD_DIR"
 "$C3C" compile -O3 \
-    lexer.c3 ast.c3 parser.c3 resolve.c3 typecheck.c3 effectcheck.c3 \
+    lexer.c3 ast.c3 parser.c3 cstats.c3 resolve.c3 typecheck.c3 effectcheck.c3 \
     lint.c3 integrity.c3 ssi.c3 ssi_ir.c3 sasi.c3 sasi_opt.c3 \
     rewrite.c3 pgen.c3 stage.c3 irdl_msp.c3 mono.c3 codegen.c3 pride.c3 \
     -o "$PRIDE_DIR/pride" 2>&1 | grep -iE "error|linked" || true
@@ -72,5 +72,5 @@ $CC $CFLAGS -c runtime/compiler_rt.c      -o runtime/compiler_rt.o
 $CC $CFLAGS -c runtime/compiler_rt_arch.c -o runtime/compiler_rt_arch.o
 
 echo "=== Done. Gates: ==="
-echo "  bash conformance/run.sh      # expect: pass=242 fail=0"
-echo "  bash tests/run_exec.sh       # expect: pass=19 fail=0"
+echo "  bash conformance/run.sh      # expect: pass=262 fail=0"
+echo "  bash tests/run_exec.sh       # expect: pass=47 fail=0"

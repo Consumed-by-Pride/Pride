@@ -68,6 +68,7 @@ MODULES := \
 	lexer.c3       \
 	ast.c3         \
 	parser.c3      \
+	cstats.c3      \
 	resolve.c3     \
 	modal.c3       \
 	msp.c3         \

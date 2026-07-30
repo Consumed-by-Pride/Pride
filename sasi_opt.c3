@@ -14,6 +14,11 @@
 //      successors dropped — iterated to a fixpoint.
 //   4. DEAD-CODE ELIMINATION. Pure instructions (and φ) with no remaining users
 //      are removed from their block lists.
+//   5. ALGEBRAIC IDENTITIES (pass 0.5, +copy-propagation): folds type-agnostic
+//      identities (x*1 → x, x/1 → x, x-0 → x, x|0 → x, x&-1 → x, x^0 → x,
+//      x<<0 → x, x>>0 → x, x^x → 0, x&0 → 0) by rewiring uses through
+//      replace_uses() — with an explicit soundness table for every identity
+//      NOT folded (float -0/NaN and div-by-zero trap erasure).
 // All edits preserve the SSA-CFG invariants `ssi_ir::verify()` checks
 // (succ/pred symmetry, φ operand/predecessor agreement), re-verified after.
 // The reasoning core is a SOUND integer-implication checker over constant
@@ -43,6 +48,10 @@ alias SasiFact = sasi::SasiFact;
 
 const int OPT_FIXPOINT_ROUNDS = 64;   // outer fixpoint cap
 
+// All-ones 64-bit mask for the `x & -1 → x` identity (constants are stored as
+// raw ulong bits, so -1 arrives as 0xFFFF…F).
+const ulong OPT_ALL_ONES = 0xFFFF_FFFF_FFFF_FFFF;
+
 struct OptStats
 {
     int compares_folded;   // redundant comparisons → const bool
@@ -50,6 +59,7 @@ struct OptStats
     int blocks_pruned;     // blocks made unreachable
     int edges_removed;     // CFG edges deleted
     int dead_removed;      // dead instructions/φ removed
+    int identities_folded; // algebraic identities (x*1 → x, x^0 → x, ...)
     int rounds;            // fixpoint rounds run
 }
 
@@ -69,6 +79,7 @@ fn void Optimizer.init(Optimizer* o, SsiModule* mod, SasiMap* sasi)
     o.st.blocks_pruned = 0;
     o.st.edges_removed = 0;
     o.st.dead_removed = 0;
+    o.st.identities_folded = 0;
     o.st.rounds = 0;
 }
 
@@ -386,6 +397,180 @@ fn void Optimizer.fold_const_arith(Optimizer* o)
         while (in != null)
         {
             if (o.fold_const_bin(in)) o.st.compares_folded++;
+            in = in.next;
+        }
+    }
+}
+
+// ── Use substitution (the copy-propagation backbone) ───────────────────────
+// Replace EVERY use of SSA value `from` by `to` module-wide: straight-line
+// instruction operands, φ operands, and the per-block terminator fields
+// (cond / ret_val) — the exact use universe DCE's marker walks, so the two
+// passes can never disagree about what "a use" is.
+//
+// DOMINANCE (why this preserves well-formed SSA): `to` is always an operand
+// of `from`'s definition site, so `to` dominates `from`'s def block. Every
+// use of `from` — a direct use dominated by `from`, or a φ-operand used on an
+// incoming edge whose tail `from` dominates — is therefore also dominated by
+// `to`. Substitution never creates a use-before-def.
+//
+// SASI interplay (why this stays conservative-correct): the fact map is keyed
+// on σ handles, never on the pure arithmetic bins we substitute, and a lookup
+// that misses after substitution only loses an optimization opportunity —
+// it can never decide a comparison incorrectly.
+fn void replace_uses(SsiModule* m, IrVal* from, IrVal* to)
+{
+    if (from == null || to == null || from == to) return;
+    for (usz bi = 0; bi < m.block_count; bi++)
+    {
+        IrBlock* b = &m.blocks[bi];
+        IrVal* in = b.phi_head;
+        while (in != null)
+        {
+            for (usz k = 0; k < in.arg_count; k++)
+            {
+                if (in.args[k] == from) in.args[k] = to;
+            }
+            in = in.next;
+        }
+        in = b.head;
+        while (in != null)
+        {
+            for (usz k = 0; k < in.arg_count; k++)
+            {
+                if (in.args[k] == from) in.args[k] = to;
+            }
+            in = in.next;
+        }
+        if (b.cond == from)    b.cond = to;
+        if (b.ret_val == from) b.ret_val = to;
+    }
+}
+
+// ── Algebraic identity folding ─────────────────────────────────────────────
+// Soundness protocol. IrVal carries NO type tag, and this IR shares operator
+// tokens between int and float arithmetic, so an identity is admitted ONLY if
+// it is valid for every domain the operator can reach:
+//
+//   ADMITTED (int AND IEEE-754 float safe):
+//     x * 1 → x, 1 * x → x     (exact for ±0, ±∞, NaN)
+//     x / 1 → x                (exact, and never a div-trap: divisor is 1)
+//     x - 0 → x                (exact; note -0 - +0 = -0, preserved)
+//
+//   ADMITTED (int-only operators — the type checker rejects floats on bitwise
+//   ops, so anything reaching IR is an integer domain):
+//     x | 0 → x, 0 | x → x
+//     x & -1 → x, -1 & x → x   (all-ones mask; -1 as ulong bits = 0xFFFF…F)
+//     x ^ 0 → x, 0 ^ x → x
+//     x << 0 → x, x >> 0 → x
+//     x ^ x → 0                (SSA value identity ⇒ same bits)
+//     x & x → x, x | x → x     (idempotent operators)
+//     x & 0 → 0, 0 & x → 0     (x kept alive by DCE if it was a side-effecting
+//                               call — DCE never drops impure values, so
+//                               "losing the use" here cannot lose an effect)
+//
+//   DELIBERATELY NOT FOLDED (with the counter-example):
+//     x + 0 → x     float -0: (-0) + (+0) = +0 ≠ x          (sign of zero)
+//     x - x → 0     float NaN: NaN - NaN = NaN ≠ 0
+//     0 * x → 0     float NaN/±∞: 0 * NaN = NaN ≠ 0
+//     x / x → 1     runtime x = 0 would trap on ints / NaN on floats — the
+//                   fold would erase a required trap
+//     x % x → 0     same div-by-zero erasure as x / x
+//     0 % x → 0     x = 0 erases a required trap
+//     x == x → true float NaN: NaN == NaN is false
+//     x < x → false float NaN: comparisons on NaN are all false
+//
+// Mechanism: identities whose result is another SSA value fire replace_uses
+// and leave the (now use-less, pure) bin for DCE; identities whose result is
+// a constant mutate in place exactly like fold_const_bin.
+fn ulong const_of_val_bits(IrVal* v, bool* is_const)
+{
+    *is_const = false;
+    if (v == null || v.op != IrOp.IR_CONST_INT) return 0;
+    *is_const = true;
+    return v.ival;
+}
+
+fn void Optimizer.fold_identities(Optimizer* o)
+{
+    SsiModule* m = o.mod;
+    for (usz bi = 0; bi < m.block_count; bi++)
+    {
+        IrBlock* b = &m.blocks[bi];
+        IrVal* in = b.head;
+        while (in != null)
+        {
+            if (in.op != IrOp.IR_BIN || in.arg_count < 2)
+            {
+                in = in.next;
+                continue;
+            }
+            IrVal* x0 = in.args[0];
+            IrVal* x1 = in.args[1];
+            bool c0; ulong k0 = const_of_val_bits(x0, &c0);
+            bool c1; ulong k1 = const_of_val_bits(x1, &c1);
+
+            // Result-as-value target (null when the fold yields a constant).
+            IrVal* repl = null;
+            bool    to_const_zero = false;
+
+            switch (in.bop)
+            {
+                case Tt.TOKEN_STAR:
+                    // x * 1  /  1 * x → x   (int + IEEE safe)
+                    if (c1 && k1 == 1) repl = x0;
+                    else if (c0 && k0 == 1) repl = x1;
+                case Tt.TOKEN_SLASH:
+                    // x / 1 → x   (no trap possible: divisor is the constant 1)
+                    if (c1 && k1 == 1) repl = x0;
+                case Tt.TOKEN_MINUS:
+                    // x - 0 → x   (int + IEEE safe, -0 preserved)
+                    if (c1 && k1 == 0) repl = x0;
+                case Tt.TOKEN_PIPE:
+                    // x | 0  /  0 | x → x   (bitwise: int-only by front-end)
+                    if (c1 && k1 == 0) repl = x0;
+                    else if (c0 && k0 == 0) repl = x1;
+                    // x | x → x             (idempotent)
+                    else if (x0 != null && x0 == x1) repl = x0;
+                case Tt.TOKEN_AMP:
+                    // x & -1 / -1 & x → x   (all-ones mask)
+                    if (c1 && k1 == OPT_ALL_ONES) repl = x0;
+                    else if (c0 && k0 == OPT_ALL_ONES) repl = x1;
+                    // x & 0 / 0 & x → 0     (side-effect-safe: calls survive DCE)
+                    else if (c1 && k1 == 0) to_const_zero = true;
+                    else if (c0 && k0 == 0) to_const_zero = true;
+                    // x & x → x             (idempotent)
+                    else if (x0 != null && x0 == x1) repl = x0;
+                case Tt.TOKEN_XOR:
+                    // x ^ 0 / 0 ^ x → x
+                    if (c1 && k1 == 0) repl = x0;
+                    else if (c0 && k0 == 0) repl = x1;
+                    // x ^ x → 0   (value identity ⇒ same bits)
+                    else if (x0 != null && x0 == x1) to_const_zero = true;
+                case Tt.TOKEN_LSHIFT:
+                case Tt.TOKEN_RSHIFT:
+                    // x << 0  /  x >> 0 → x
+                    if (c1 && k1 == 0) repl = x0;
+                default:
+                    break;
+            }
+
+            if (repl != null)
+            {
+                // Rewire every user of this bin to the identity operand; the
+                // bin itself becomes unreferenced pure code for DCE.
+                replace_uses(m, in, repl);
+                o.st.identities_folded++;
+            }
+            else if (to_const_zero)
+            {
+                // Mutate in place, exactly like fold_const_bin (stale .bop is
+                // harmless there and here: consumers dispatch on .op first).
+                in.op = IrOp.IR_CONST_INT;
+                in.ival = 0;
+                in.arg_count = 0;
+                o.st.identities_folded++;
+            }
             in = in.next;
         }
     }
@@ -763,12 +948,15 @@ fn OptStats Optimizer.run(Optimizer* o)
     while (changed && rounds < OPT_FIXPOINT_ROUNDS)
     {
         rounds++;
-        int before = o.st.compares_folded + o.st.branches_folded + o.st.blocks_pruned;
+        int before = o.st.compares_folded + o.st.branches_folded + o.st.blocks_pruned
+                   + o.st.identities_folded;
         o.fold_const_arith();     // pass 0: constant arithmetic/compare folding
+        o.fold_identities();      // pass 0.5: algebraic identities (copy-prop backbone)
         o.fold_compares();        // pass 1: SASI redundant-comparison folding
         o.fold_branches();        // pass 2
         o.prune_unreachable();    // pass 3
-        int after = o.st.compares_folded + o.st.branches_folded + o.st.blocks_pruned;
+        int after = o.st.compares_folded + o.st.branches_folded + o.st.blocks_pruned
+                  + o.st.identities_folded;
         changed = after != before;
     }
     o.dce();                      // pass 4 (once, internally fixpointed)
@@ -780,6 +968,7 @@ fn void Optimizer.report(Optimizer* o)
 {
     printf("\n=== SASI optimization ===\n");
     printf("  redundant compares folded : %d\n", o.st.compares_folded);
+    printf("  algebraic identities      : %d\n", o.st.identities_folded);
     printf("  branches folded (cbr→br)  : %d\n", o.st.branches_folded);
     printf("  blocks pruned             : %d\n", o.st.blocks_pruned);
     printf("  cfg edges removed         : %d\n", o.st.edges_removed);

@@ -3,7 +3,20 @@
 The active-vision goal: use the SASI fact map (step 2) to **delete redundant
 instructions** on the clean SSA CFG (step 3 output), then re-verify.
 
-## What it does (four passes, fixpointed)
+## What it does (five passes, fixpointed)
+
+0. **Constant arithmetic/compare folding** (`fold_const_arith`, pass 0). Any
+   `IR_BIN` with two constant-int operands is evaluated at compile time —
+   signedness-correct, division/modulo-by-zero and over-wide shifts declined.
+
+0.5. **Algebraic identity folding** (`fold_identities`, pass 0.5). Type-agnostic
+   identities — `x*1 → x`, `x/1 → x`, `x-0 → x`, `x|0 → x`, `x&-1 → x`,
+   `x^0 → x`, `x<<0 → x`, `x>>0 → x`, `x&x → x`, `x|x → x` (rewire users via
+   `replace_uses`), and `x^x → 0`, `x&0 → 0` (in-place const mutation).
+   The soundness protocol (which identities are safe on an IR that shares
+   operator tokens between ints and floats, and why `x+0`, `x-x`, `0*x`,
+   `x/x`, and all self-comparisons are NOT folded) is documented in the file
+   header of `fold_identities` itself.
 
 1. **Redundant-comparison folding.** A comparison value `v = a <cmp> k` whose
    truth is already implied by a SASI fact on `a` (crawling the dominating-σ
@@ -54,6 +67,11 @@ Every edit preserves the SSA-CFG invariants `ssi_ir::verify()` checks:
   the matching φ operand (the one tagged with predecessor `from`).
 - pruning rebuilds out-edges before marking a block unreachable.
 - DCE only removes values with zero live users.
+- `replace_uses(from,to)` rewrites every use (instr operands, φ operands,
+  terminator cond/ret_val) to an operand of `from`'s definition; because that
+  operand dominates `from`'s def block, substitution can never create a
+  use-before-def. Side-effecting operands referenced by a folded-away bin stay
+  alive — DCE only drops *pure* values.
 
 The driver re-runs `ir.verify()` after optimization and reports `opt verify errs`
 (must be 0).
@@ -72,8 +90,9 @@ result: B1 → br B4 unconditionally; B5 unreachable; φ collapsed to one operan
 
 ## Driver
 `--dump-sasi` prints the fact map, the σ-stripped CFG, the optimization report,
-and the optimized CFG. Summary counters: `opt compares`, `opt branches`,
-`opt blocks pruned`, `opt dead removed`, `opt verify errs` (must be 0).
+and the optimized CFG. Summary counters: `opt compares`, `opt identities`,
+`opt branches`, `opt blocks pruned`, `opt dead removed`, `opt verify errs`
+(must be 0).
 
 ## Test status
 - **Red-team**: 105/105 (cases 101–105: redundant-true, redundant-false,

@@ -10,6 +10,7 @@ module pride;
 import lexer;
 import ast;
 import parser;
+import cstats;
 import resolve;
 import modal;
 import msp;
@@ -794,6 +795,13 @@ fn void dump_stage_report(stage::Stager* st)
     printf("  comptime/eval folded : %d\n", st.folded);
     printf("  splices grafted      : %d\n", st.splices);
     printf("  comptime fns         : %llu\n", (ulong)st.fn_count);
+    // CTFE telemetry: capacity-vs-actual for the three tunable budgets.
+    printf("  calls evaluated      : %d\n", st.calls_evaluated);
+    printf("  eval depth peak      : %d / %d\n", st.depth_hwm, stage::EVAL_MAX_DEPTH);
+    printf("  env peak             : %llu / %llu\n", (ulong)st.env_hwm, (ulong)stage::ENV_CAP);
+    printf("  fuel burned          : %d / %d\n",
+           stage::EVAL_FUEL - st.fuel > 0 ? stage::EVAL_FUEL - st.fuel : 0,
+           stage::EVAL_FUEL);
     if (st.out_of_fuel) printf("  [OUT OF FUEL]\n");
     if (st.too_deep)    printf("  [EVAL TOO DEEP]\n");
     if (st.overflow)    printf("  [CTFE ENV/FN TABLE OVERFLOW — some bindings or comptime fns were dropped]\n");
@@ -967,6 +975,69 @@ fn void run_pgen_pass(Node* program)
     free((void*)ps);
 }
 
+// Print the top rules of a completed rewrite run, then the count of rules
+// that never fired. Zero-fire rules usually indicate a pattern that can never
+// match (wrong operator, arity slip); hot rules document where the engine
+// actually spends its fuel. Selection is a plain max scan per round — rule
+// counts are tiny and this runs only under --rewrite.
+const int  REWRITE_REPORT_TOP_N = 5;
+
+// Bitmap capacity for the reporter's selection state. rewrite::MAX_RULES is
+// currently 4096 as well; if it ever grows, the report truncates to the first
+// REWRITE_REPORT_CAP rules (bounded-array safety, never an overflow).
+const usz REWRITE_REPORT_CAP  = 4096;
+
+fn void report_rule_firings(rewrite::RuleSet* rs)
+{
+    if (rs == null || rs.count == 0) return;
+
+    // All indexing below is clamped to cap: min(rule count, bitmap size).
+    usz cap = rs.count < REWRITE_REPORT_CAP ? rs.count : REWRITE_REPORT_CAP;
+
+    bool[REWRITE_REPORT_CAP] picked;
+    for (usz i = 0; i < cap; i++) picked[i] = false;
+
+    int shown = 0;
+    for (int round = 0; round < REWRITE_REPORT_TOP_N; round++)
+    {
+        usz best = cap;           // sentinel: none chosen this round
+        usz best_fc = 0;
+        for (usz i = 0; i < cap; i++)
+        {
+            if (picked[i]) continue;
+            usz fc = rs.rules[i].fire_count;
+            if (fc > 0 && (best == cap || fc > best_fc))
+            {
+                best = i;
+                best_fc = fc;
+            }
+        }
+        if (best == cap) break;   // nothing left with firings > 0
+        picked[best] = true;
+        if (shown == 0) printf("  rule firings (top %d):\n", REWRITE_REPORT_TOP_N);
+        rewrite::Rule* r = &rs.rules[best];
+        printf("    #%-5llu ×%-6llu ", (ulong)best, (ulong)r.fire_count);
+        print_expr(r.lhs);
+        printf(" ↦ ");
+        print_expr(r.rhs);
+        if (r.guard != null) printf("   [guarded]");
+        printf("\n");
+        shown++;
+    }
+
+    // Dead-rule tally (over the capped view): declared but never applied.
+    usz dead = 0;
+    for (usz i = 0; i < cap; i++)
+    {
+        if (rs.rules[i].fire_count == 0) dead++;
+    }
+    if (dead > 0)
+    {
+        printf("  note: %llu of %llu rules never fired (check their LHS patterns)\n",
+               (ulong)dead, (ulong)cap);
+    }
+}
+
 fn void run_rewrite_pass(ast::AstArena* arena, Node* program)
 {
     // Collect rules.
@@ -990,6 +1061,11 @@ fn void run_rewrite_pass(ast::AstArena* arena, Node* program)
     if (rw.too_deep) { printf(", TERM TOO DEEP (size-growing rule?)"); }
     else if (rw.out_of_fuel) { printf(", OUT OF FUEL"); }
     printf("]\n");
+
+    // Engine report: top-5 rules by firing count (each Rule now tallies its
+    // own successful applications). Dead rules (zero firings) usually mean a
+    // typo'd LHS pattern; hot rules suggest the pipeline belongs in |>* form.
+    report_rule_firings(rs);
 
     free((void*)hc);
     free((void*)rs);
@@ -1123,6 +1199,7 @@ fn void print_help()
     printf("  --irdl               print the IRDL dialect report\n");
     printf("  --rewrite            run the rewrite pass and report\n");
     printf("  --pgen               run pass-generation and report\n");
+    printf("  --time-passes        print per-pass CPU-time accounting after the summary\n");
     printf("\n");
     printf("misc:\n");
     printf("  -h, --help           show this text and exit\n");
@@ -1180,7 +1257,10 @@ fn int main(int argc, char** argv)
     bool dump_irdl = false;
     bool dump_sasi = false;
     bool verify_frontend = false;
+    bool time_passes = false;    // --time-passes: per-pass CPU-time table
     bool freestanding = false;   // --freestanding: also affects --emit-bin linking
+    long pt = 0;                 // reused per-pass CPU-time marker (cstats)
+    long pipeline_t0 = 0;        // whole-pipeline span marker (cstats)
     char* path_arg = argv[1];
     bool found_path = false;
     for (usz ai = 1; ai < (usz)argc; ai++)
@@ -1297,6 +1377,7 @@ fn int main(int argc, char** argv)
         else if (arg_is(a_raw, a_len, "--stage"))        { dump_stage = true; }
         else if (arg_is(a_raw, a_len, "--irdl"))         { dump_irdl = true; }
         else if (arg_is(a_raw, a_len, "--verify"))       { verify_frontend = true; }
+        else if (arg_is(a_raw, a_len, "--time-passes"))  { time_passes = true; }
         else if (arg_is(a_raw, a_len, "--self-test"))
         {
             // The spec-lock doctests (r14) run entirely in-process: no source
@@ -1367,6 +1448,9 @@ fn int main(int argc, char** argv)
     if (!emit_llvm || dump_ast) { printf("=== Pride front-end ===\n"); }
     printf("source: %s  (%llu bytes)\n\n", &path_buf[0], (ulong)src_len);
 
+    // Whole-pipeline CPU-span marker. The first pass begins immediately.
+    pipeline_t0 = cstats::now();
+
     // 1. Lexer
     lexer::Lexer lx;
     lx.init(src, src_len);
@@ -1380,33 +1464,43 @@ fn int main(int argc, char** argv)
         return 1;
     }
 
-    // 3. Parser
+    // 3. Parser (pull-driven, so lexing time lands inside this record too)
     parser::Parser p;
     p.init(&lx, &arena);
 
+    pt = cstats::now();
     Node* program = p.parse_program();
+    cstats::record_pass((char*)"parse", pt);
 
     // 4. Name resolution — links every identifier use to its declaration.
     // The Resolver holds the scope stack inline, so it's heap-allocated.
     resolve::Resolver* r = (resolve::Resolver*)malloc(resolve::Resolver::size);
     r.init();
+    pt = cstats::now();
     r.resolve_program(program);
+    cstats::record_pass((char*)"resolve", pt);
 
     // 5. Type checking — semantic subtyping with soft warnings (v.md §20).
     typecheck::TypeChecker tc;
     tc.init(&arena, strict);
+    pt = cstats::now();
     tc.check_program(program);
+    cstats::record_pass((char*)"typecheck", pt);
 
     // 6. Effect checking — actual effects must fit the declared ! [...] row.
     effectcheck::EffectChecker ec;
     ec.init(strict);
+    pt = cstats::now();
     ec.check_program(program);
+    cstats::record_pass((char*)"effectcheck", pt);
 
     // 7. Lint — advisory warnings (exhaustiveness, unreachable, unused).
     // Heap-allocated: the Linter holds large inline binder/diag tables.
     lint::Linter* lt = (lint::Linter*)malloc(lint::Linter::size);
     lt.init(strict);
+    pt = cstats::now();
     lt.run(program);
+    cstats::record_pass((char*)"lint", pt);
 
     // 7'. Frontend integrity verification (pre-lowering guardrail). Audits that
     // the post-resolve/post-typecheck AST satisfies the invariants lowering
@@ -1416,7 +1510,12 @@ fn int main(int argc, char** argv)
     // (reported, never fatal) unless --strict; --verify prints each finding.
     integrity::Verifier* iv = (integrity::Verifier*)malloc(integrity::Verifier::size);
     iv.init();
-    if (verify_frontend) { iv.verify(program); }  // only when --verify
+    if (verify_frontend)   // only when --verify
+    {
+        pt = cstats::now();
+        iv.verify(program);
+        cstats::record_pass((char*)"integrity", pt);
+    }
 
     // 7a. MSP — Staging (CTFE). Runs the compile-time evaluator: folds
     // `comptime`/`eval` blocks to value nodes, grafts `splice`s inside quotes,
@@ -1424,7 +1523,9 @@ fn int main(int argc, char** argv)
     // This is compile-time-only; nothing here runs at program runtime.
     stage::Stager* st = (stage::Stager*)malloc(stage::Stager::size);
     st.init(&arena);
+    pt = cstats::now();
     program = st.run(program);
+    cstats::record_pass((char*)"stage", pt);
     if (dump_stage) dump_stage_report(st);
 
     // 7a'. MSP — IRDL dialect lowering (final transform). Registers `dialect`
@@ -1444,7 +1545,12 @@ fn int main(int argc, char** argv)
             if (qc.kind == Nk.NODE_DIALECT || qc.kind == Nk.NODE_IRDL
                 || qc.kind == Nk.NODE_PGEN) has_irdl = true;
         }
-        if (has_irdl) { program = dt.run(program); }
+        if (has_irdl)
+        {
+            pt = cstats::now();
+            program = dt.run(program);
+            cstats::record_pass((char*)"irdl", pt);
+        }
     }
     if (dump_irdl) dump_irdl_report(dt);
 
@@ -1457,7 +1563,9 @@ fn int main(int argc, char** argv)
     int  mono_warnings  = 0;
     if (mono_ok)
     {
+        pt = cstats::now();
         program = mn.run(program);
+        cstats::record_pass((char*)"mono", pt);
         mono_instances = mn.instance_count_fn();
         mono_warnings  = mn.warning_count_fn();
         if (dump_mono) { mn.dump(); }
@@ -1467,7 +1575,12 @@ fn int main(int argc, char** argv)
     // def-use graph + refinements from the parser's σ/φ markers.
     ssi::SsiGraph* sg = (ssi::SsiGraph*)malloc(ssi::SsiGraph::size);
     bool ssi_ok = sg.init(&arena);
-    if (ssi_ok) sg.build(program);
+    if (ssi_ok)
+    {
+        pt = cstats::now();
+        sg.build(program);
+        cstats::record_pass((char*)"ssi-graph", pt);
+    }
     if (ssi_ok && dump_ssi) dump_ssi_graph(sg);
 
     // 7b'. MSP — explicit CFG + SSI IR (the SSI-first backend's input form).
@@ -1480,7 +1593,9 @@ fn int main(int argc, char** argv)
     vr.errors = 0; vr.blocks = 0; vr.vals = 0; vr.phis = 0; vr.sigmas = 0; vr.edges = 0; vr.undef_refs = 0; vr.effect_ops = 0; vr.effect_handles = 0; vr.effect_resumes = 0;
     if (ir_ok)
     {
+        pt = cstats::now();
         ir.build(program);
+        cstats::record_pass((char*)"ssi-ir-lower", pt);
         if (verify_frontend) { vr = ir.verify(); }
         if (dump_ir) ir.dump();
     }
@@ -1499,7 +1614,7 @@ fn int main(int argc, char** argv)
     // SSA. Re-verify afterward to confirm the SSA-CFG invariants still hold.
     sasi_opt::OptStats os;
     os.compares_folded = 0; os.branches_folded = 0; os.blocks_pruned = 0;
-    os.edges_removed = 0; os.dead_removed = 0; os.rounds = 0;
+    os.edges_removed = 0; os.dead_removed = 0; os.identities_folded = 0; os.rounds = 0;
     ssi_ir::VerifyResult vr2;
     vr2.errors = 0; vr2.undef_refs = 0; vr2.effect_ops = 0; vr2.effect_handles = 0; vr2.effect_resumes = 0;
     if (ir_ok)
@@ -1507,7 +1622,9 @@ fn int main(int argc, char** argv)
         sasi_ok = sm.init(ir);
         if (sasi_ok)
         {
+            pt = cstats::now();
             sm.extract();
+            cstats::record_pass((char*)"sasi-extract", pt);
             sv = sm.verify();
             if (dump_sasi)
             {
@@ -1518,7 +1635,9 @@ fn int main(int argc, char** argv)
             // step 4
             sasi_opt::Optimizer opt;
             opt.init(ir, sm);
+            pt = cstats::now();
             os = opt.run();
+            cstats::record_pass((char*)"sasi-opt", pt);
             if (verify_frontend) { vr2 = ir.verify(); }
             if (dump_sasi)
             {
@@ -1532,12 +1651,22 @@ fn int main(int argc, char** argv)
     // 7c. MSP — term rewriting (second MSP component). With --rewrite, collect
     // all `rewrite {...}` blocks into one rule set and apply them at every
     // `expr |> rules` / `expr |> rules*` pipeline, printing before/after.
-    if (run_rewrite) run_rewrite_pass(&arena, program);
+    if (run_rewrite)
+    {
+        pt = cstats::now();
+        run_rewrite_pass(&arena, program);
+        cstats::record_pass((char*)"rewrite", pt);
+    }
 
     // 7d. MSP — Pattern Generation Language. With --pgen, compile all `pgen`
     // declarations into one decision tree and report its shape + a self-test
     // (each pgen's own pattern must select its own action).
-    if (run_pgen) run_pgen_pass(program);
+    if (run_pgen)
+    {
+        pt = cstats::now();
+        run_pgen_pass(program);
+        cstats::record_pass((char*)"pgen", pt);
+    }
 
     // 7d-pre. Apply #[cfg(...)] stripping based on active --cfg flags
     apply_cfg_strip(program, &cfg_flags[0], cfg_count);
@@ -1583,7 +1712,9 @@ fn int main(int argc, char** argv)
         printf("=== Emitting LLVM IR → %s ===\n", &ll_path[0]);
         // Pass target triple override if specified
         if (target_triple != null) codegen::set_target_triple(target_triple);
+        pt = cstats::now();
         codegen_ok = codegen::emit_llvm_file(ir, &arena, &path_buf[0], &ll_path[0]);
+        cstats::record_pass((char*)"codegen", pt);
         if (codegen_ok)
         {
             printf("llvm emit      : ok\n");
@@ -1816,15 +1947,20 @@ fn int main(int argc, char** argv)
     printf("ir verify errors: %d\n", vr.errors);
     printf("sasi facts      : %d\n", sv.facts);
     printf("sasi sigma swept: %d\n", sasi_ok ? sm.swept : 0);
+    printf("sasi chain max  : %d\n", sasi_ok ? sm.chain_depth_max : 0);
     printf("sasi sigma left : %d\n", sv.leftover_sigma);
     printf("sasi unresolved : %d\n", sv.unresolved);
-    // SSI post-lowering pass stats (from prune_trivial_phis, dead_block, LICM, split)
-    // These are computed per-function inside lower_fn and aggregated here via
-    // a lightweight struct stored in the SsiModule (future: plumb counters).
-    printf("ssi phi pruned  : (done per-fn)\n");
-    printf("ssi dead elim   : (done per-fn)\n");
-    printf("ssi licm hoisted: (done per-fn)\n");
+    // SSI post-lowering pass stats — real totals aggregated across every
+    // lowered function by ssi_ir (each per-fn pass returns its work count).
+    if (ir_ok)
+    {
+        printf("ssi dead elim   : %d\n", ir.stat_dead_blocks);
+        printf("ssi phi pruned  : %d\n", ir.stat_phis_pruned);
+        printf("ssi licm hoisted: %d\n", ir.stat_licm_hoisted);
+        printf("ssi edges split : %d\n", ir.stat_edges_split);
+    }
     printf("opt compares    : %d\n", os.compares_folded);
+    printf("opt identities  : %d\n", os.identities_folded);
     printf("opt branches    : %d\n", os.branches_folded);
     printf("opt blocks pruned: %d\n", os.blocks_pruned);
     printf("opt dead removed: %d\n", os.dead_removed);
@@ -1847,6 +1983,10 @@ fn int main(int argc, char** argv)
     }
 
     } // end summary
+
+    // --time-passes: per-pass CPU-time accounting table (parse → codegen),
+    // plus the accounted/driver-glue breakdown. Independent of --emit-*.
+    if (time_passes) { cstats::print_report(pipeline_t0); }
 
     // The entire tree is released in one call.
     bool resolve_failed = r.had_error;

@@ -72,6 +72,9 @@ struct SasiMap
     // stats
     int       swept;       // σ instructions physically removed from blocks
     int       chains;      // facts whose source was itself a σ (chain links)
+    int       chain_depth_max;  // deepest σ-hop chain (telemetry: sizes the
+                                //   optimizer's dominating-σ crawls, whose
+                                //   iteration guards are static constants)
     bool      overflow;
 }
 
@@ -81,6 +84,7 @@ fn bool SasiMap.init(SasiMap* s, SsiModule* mod)
     s.fact_count = 0;
     s.swept = 0;
     s.chains = 0;
+    s.chain_depth_max = 0;
     s.overflow = false;
 
     s.facts = (SasiFact*)malloc(MAX_FACTS * SasiFact::size);
@@ -221,6 +225,22 @@ fn void SasiMap.link_chains(SasiMap* s)
             s.chains++;
         }
         f.root = s.resolve(f.value);
+
+        // Telemetry: count the σ hops on this fact's chain (same walk as
+        // resolve(), kept separate so resolve stays allocation-free). The
+        // max feeds the tuning of the optimizer's chain-crawl guards.
+        int hops = 0;
+        int guard = 0;
+        IrVal* cur = f.value;
+        while (cur != null && guard <= RESOLVE_GUARD)
+        {
+            SasiFact* cf = s.fact_of(cur);
+            if (cf == null || cf.source == null) break;
+            cur = cf.source;
+            hops++;
+            guard++;
+        }
+        if (hops > s.chain_depth_max) s.chain_depth_max = hops;
     }
 }
 
@@ -353,6 +373,6 @@ fn void SasiMap.dump(SasiMap* s)
         printf("\n");
     }
     SasiVerify v = s.verify();
-    printf("  -- post-strip: %d σ left in blocks, %d unresolved facts --\n",
-        v.leftover_sigma, v.unresolved);
+    printf("  -- post-strip: %d σ left in blocks, %d unresolved facts, max σ-chain %d --\n",
+        v.leftover_sigma, v.unresolved, s.chain_depth_max);
 }

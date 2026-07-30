@@ -1,0 +1,9 @@
+-- EXPECT-COUNT: lint-warn=1
+-- lint 7 (self-assignment): `y = y` with both sides resolved to the SAME
+-- binder. Exactly one warning; everything else in this program is clean, so
+-- this case also pins the lint to fire ONCE (no duplicate reports).
+fn f : i64 -> i64
+  | x ->
+      let mut y : i64 = x + 1
+      y = y
+      y

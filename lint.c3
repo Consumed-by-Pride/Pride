@@ -13,8 +13,14 @@
 //   4. Unreachable match arm / clause after a catch-all (`_` or bare binder).
 //   5. Unused binding — a `let`/parameter binder that is never referenced
 //      (skips names starting with `_`, the conventional "intentionally unused").
+//   6. Constant condition — `if` with a boolean-literal scrutinee (one arm is
+//      statically dead; usually a debugging leftover). Deliberately NOT applied
+//      to `while true`, which is the blessed infinite-loop idiom.
+//   7. Self-assignment — `x = x` where both sides resolve to THE SAME binder
+//      (a no-op, and usually a typo for a different right-hand side).
 // This pass relies on `AstNode.resolved` (set by the resolver): every use
-// points at its binder, so "unused" = a binder no use points to.
+// points at its binder, so "unused" = a binder no use points to, and
+// "self-assignment" = both sides point at the SAME binder.
 
 module lint;
 
@@ -131,6 +137,14 @@ fn void Linter.walk_body(Linter* self, Node* n)
 
         case Nk.NODE_EXPR_BLOCK:
             self.lint_block(n);
+            self.walk_children(n);
+
+        case Nk.NODE_EXPR_IF:
+            self.lint_const_condition(n);
+            self.walk_children(n);
+
+        case Nk.NODE_EXPR_ASSIGN:
+            self.lint_self_assign(n);
             self.walk_children(n);
 
         // MSP / metaprogramming bodies are untyped and unrestricted by design;
@@ -613,6 +627,48 @@ fn void Linter.lint_block(Linter* self, Node* block)
 
         if (is_diverging(stmt)) diverged = true;
     }
+}
+
+// Lint 6: `if` with a compile-time boolean literal as its scrutinee. One arm
+// can never execute; this is almost always a debugging leftover rather than
+// intent. NODE_EXPR_IF layout: children[0] = condition (see parser.parse_if;
+// children[1] is the σ-split marker, arm bodies and the φ join follow).
+// `while true` is NOT flagged anywhere: it is the idiomatic infinite loop,
+// and the project's own consistency checker requires its explicit `break`.
+fn void Linter.lint_const_condition(Linter* self, Node* ifn)
+{
+    if (ifn == null || ifn.child_count < 1) return;
+    Node* cond = ifn.children[0];
+    if (cond == null || cond.kind != Nk.NODE_LIT_BOOL) return;
+    self.warn(cond.p.lit_bool.bool_val
+        ? "constant condition: always true (the else branch is statically dead)"
+        : "constant condition: always false (the then branch is statically dead)",
+        cond.line, cond.col);
+}
+
+// Lint 7: `x = x`. Both sides must resolve to the SAME binder (the resolver
+// linked every use, so pointer equality on .resolved is exact — far stronger
+// than comparing name text, which shadowing would defeat). Conservative:
+// unresolved or differently-resolved sides are ignored (the resolver reports
+// the real error there), and non-ident targets (fields, indices, derefs) are
+// out of scope.
+fn void Linter.lint_self_assign(Linter* self, Node* asn)
+{
+    if (asn == null || asn.child_count < 2) return;
+    Node* lhs = asn.children[0];
+    Node* rhs = asn.children[1];
+    if (lhs == null || rhs == null) return;
+    if (!is_plain_ident(lhs) || !is_plain_ident(rhs)) return;
+    if (lhs.resolved == null || lhs.resolved != rhs.resolved) return;
+    self.warn("self-assignment has no effect (both sides name the same binding)",
+        asn.line, asn.col);
+}
+
+// A plain identifier use-node (binder reads); TYPEVAR is the lowercase alias
+// the parser produces for the same syntactic role.
+fn bool is_plain_ident(Node* n)
+{
+    return n != null && (n.kind == Nk.NODE_IDENT || n.kind == Nk.NODE_TYPEVAR);
 }
 
 // Does this statement always transfer control away (never falls through)?

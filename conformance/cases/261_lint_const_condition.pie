@@ -1,0 +1,9 @@
+-- EXPECT-COUNT: lint-warn=1
+-- lint 6 (constant condition): `if true` leaves the else arm statically dead.
+-- `while true` is deliberately NOT linted (blessed idiom + explicit break).
+fn f : i64 -> i64
+  | x ->
+      if true
+        x + 1
+      else
+        x

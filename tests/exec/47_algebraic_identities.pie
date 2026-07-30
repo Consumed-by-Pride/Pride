@@ -1,0 +1,59 @@
+-- EXPECT: HIT\n0\n37\n37\n37\n37\n42\n171\n171\n171\n171\n0\n0\n171\n171
+-- SASI algebraic-identity folding (sasi_opt pass 0.5) semantic guard.
+-- Every line below routes a value THROUGH an identity the optimizer folds;
+-- if any fold were unsound the printed value would change. The HIT/0 pair
+-- guards the side-effect rule: `call & 0` folds to 0, but the call (and its
+-- IO) must survive DCE — impure values are never removed.
+fn side : i64 -> i64 ! [IO]
+  | x ->
+      syscall(1, 1, "HIT\n" as i64, 4)
+      x
+
+fn print_i64_nl : i64 -> () ! [IO, Alloc]
+  | n ->
+      let buf : *u8 = alloc [u8; 25]
+      let mut pos : i64 = 0
+      let mut x : i64 = n
+      if x < 0
+        buf[pos] = 45u8
+        pos = pos + 1
+        x = 0 - x
+      if x == 0
+        buf[pos] = 48u8
+        pos = pos + 1
+      else
+        let tmp : *u8 = alloc [u8; 21]
+        let mut tlen : i64 = 0
+        while x > 0
+          tmp[tlen] = (x % 10 + 48) as u8
+          x = x / 10
+          tlen = tlen + 1
+        let mut k : i64 = tlen - 1
+        while k >= 0
+          buf[pos] = tmp[k]
+          pos = pos + 1
+          k = k - 1
+        free tmp
+      buf[pos] = 10u8
+      syscall(1, 1, buf as i64, pos + 1)
+      free buf
+
+fn main : () -> () ! [IO, Alloc]
+  | () ->
+      print_i64_nl(side(5) & 0)
+      let n : i64 = 37
+      print_i64_nl(n * 1)
+      print_i64_nl(1 * n)
+      print_i64_nl(n / 1)
+      print_i64_nl(n - 0)
+      print_i64_nl(n * 1 + 5)
+      let m : i64 = 171
+      print_i64_nl(m | 0)
+      print_i64_nl(0 | m)
+      print_i64_nl(m & -1i64)
+      print_i64_nl(m ^ 0)
+      print_i64_nl(m ^ m)
+      print_i64_nl(m & 0)
+      print_i64_nl(m << 0)
+      print_i64_nl(m >> 0)
+      syscall(231, 0)

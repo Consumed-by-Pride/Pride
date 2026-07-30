@@ -300,6 +300,16 @@ struct SsiModule
     // once from build(); fn-local lets never enter this table.
     TopLet[TOP_LET_CAP] top_lets;
     usz                 top_let_count;
+
+    // Post-lowering pass statistics, aggregated across every lowered fn.
+    // The four per-function passes (eliminate_dead_blocks, prune_trivial_phis,
+    // hoist_loop_invariants, split_critical_edges) return per-fn counts; they
+    // used to be dropped on the floor ("done per-fn" in the driver summary).
+    // Accumulated here at the call site so the driver can report real totals.
+    int       stat_dead_blocks;    // unreachable blocks eliminated
+    int       stat_phis_pruned;    // trivial (identity/single-operand) φ pruned
+    int       stat_licm_hoisted;   // loop-invariant instructions hoisted
+    int       stat_edges_split;    // critical edges split
 }
 
 // A module-scope let with a compile-time-evaluable (literal) initializer.
@@ -375,6 +385,10 @@ fn bool SsiModule.init(SsiModule* m, ast::AstArena* arena)
     m.overflow = false;
     m.defer_count = 0;
     m.pending_inner_count = 0;
+    m.stat_dead_blocks = 0;
+    m.stat_phis_pruned = 0;
+    m.stat_licm_hoisted = 0;
+    m.stat_edges_split = 0;
     return true;
 }
 
@@ -1018,10 +1032,12 @@ fn void SsiModule.lower_program(SsiModule* m, Node* n)
                 if (outer_f != null)
                 {
                     outer_f.block_count = (int)m.block_count - outer_f.block_start;
-                    m.eliminate_dead_blocks(outer_f);
-                    m.prune_trivial_phis(outer_f);
-                    m.hoist_loop_invariants(outer_f);
-                    m.split_critical_edges(outer_f);
+                    // Each pass returns its per-fn work count; aggregate into
+                    // the module-wide statistics the driver summary reports.
+                    m.stat_dead_blocks  += m.eliminate_dead_blocks(outer_f);
+                    m.stat_phis_pruned  += m.prune_trivial_phis(outer_f);
+                    m.stat_licm_hoisted += m.hoist_loop_invariants(outer_f);
+                    m.stat_edges_split  += m.split_critical_edges(outer_f);
                 }
                 // Drain pending nested fns AFTER outer fn is fully processed
                     usz pi = 0;
