@@ -141,3 +141,88 @@ fn irdl_op_name : (*IrdlSchema, i64) -> str.string.String
             };
             result
         }
+
+-- ── IRDL Dialect Type & Attribute Schemas ──────────────────────────────────
+-- Extends IRDL to validate dialect-defined custom types and attributes.
+
+struct IrdlTypeSchema {
+    type_id: i64,
+    name: ptr,
+    param_count: i64,
+    is_modal_box: bool
+}
+
+struct IrdlAttrSchema {
+    attr_id: i64,
+    name: ptr,
+    value_kind: i64
+}
+
+struct IrdlDialectRegistry {
+    name: ptr,
+    type_count: i64,
+    types: [IrdlTypeSchema; 32],
+    attr_count: i64,
+    attrs: [IrdlAttrSchema; 32]
+}
+
+fn irdl_dialect_new : ptr -> IrdlDialectRegistry
+    | name_ptr ->
+        IrdlDialectRegistry {
+            name:       name_ptr,
+            type_count: 0i64,
+            types:      [IrdlTypeSchema { type_id: 0i64, name: null, param_count: 0i64, is_modal_box: false }; 32],
+            attr_count: 0i64,
+            attrs:      [IrdlAttrSchema { attr_id: 0i64, name: null, value_kind: 0i64 }; 32]
+        }
+
+fn irdl_dialect_add_type : (*IrdlDialectRegistry, i64, ptr, i64, bool) -> bool
+    | (reg, tid, name_ptr, params, is_modal) ->
+        if reg != null && reg.type_count < 32i64 then {
+            let idx : i64 = reg.type_count;
+            reg.types[idx] = IrdlTypeSchema {
+                type_id:      tid,
+                name:         name_ptr,
+                param_count:  params,
+                is_modal_box: is_modal
+            };
+            reg.type_count = idx + 1i64;
+            true
+        } else {
+            false
+        }
+
+fn irdl_dialect_add_attr : (*IrdlDialectRegistry, i64, ptr, i64) -> bool
+    | (reg, aid, name_ptr, vkind) ->
+        if reg != null && reg.attr_count < 32i64 then {
+            let idx : i64 = reg.attr_count;
+            reg.attrs[idx] = IrdlAttrSchema {
+                attr_id:    aid,
+                name:       name_ptr,
+                value_kind: vkind
+            };
+            reg.attr_count = idx + 1i64;
+            true
+        } else {
+            false
+        }
+
+fn irdl_dialect_verify_type : (*IrdlDialectRegistry, i64, i64) -> bool
+    | (reg, tid, params) ->
+        if reg == null then {
+            false
+        } else {
+            let mut i : i64 = 0i64;
+            let mut found : bool = false;
+            while true do {
+                if i >= reg.type_count then {
+                    break;
+                };
+                if reg.types[i].type_id == tid && reg.types[i].param_count == params then {
+                    found = true;
+                    break;
+                };
+                i = i + 1i64;
+            };
+            found
+        }

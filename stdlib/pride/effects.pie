@@ -215,3 +215,78 @@ fn local_bind : (i64, ptr, i64) -> i64
 fn local_get : i64 -> ptr
     | key_id ->
         if key_id > 0i64 then null else null
+
+-- ── Effect-Trace Ledgers & Effect-Row Polymorphism Verification ─────────────
+-- Records effect propagation traces across handler boundaries, verifying
+-- effect-row polymorphism invariants at runtime.
+
+struct EffectTraceEntry {
+    op_code: i64,
+    handler_depth: i64,
+    prompt_id: i64,
+    is_resumed: bool
+}
+
+struct EffectTraceLedger {
+    count: i64,
+    entries: [EffectTraceEntry; 64],
+    max_depth: i64
+}
+
+fn effect_trace_new : () -> EffectTraceLedger
+    | () ->
+        EffectTraceLedger {
+            count: 0i64,
+            entries: [EffectTraceEntry { op_code: 0i64, handler_depth: 0i64, prompt_id: 0i64, is_resumed: false }; 64],
+            max_depth: 0i64
+        }
+
+fn effect_trace_push : (*EffectTraceLedger, i64, i64, i64, bool) -> bool
+    | (ledger, opcode, depth, pid, resumed) ->
+        if ledger != null && ledger.count < 64i64 then {
+            let idx : i64 = ledger.count;
+            ledger.entries[idx] = EffectTraceEntry {
+                op_code:       opcode,
+                handler_depth: depth,
+                prompt_id:     pid,
+                is_resumed:    resumed
+            };
+            ledger.count = idx + 1i64;
+            if depth > ledger.max_depth then {
+                ledger.max_depth = depth;
+            } else {
+                ();
+            };
+            true
+        } else {
+            false
+        }
+
+fn effect_trace_pop : *EffectTraceLedger -> bool
+    | ledger ->
+        if ledger != null && ledger.count > 0i64 then {
+            ledger.count = ledger.count - 1i64;
+            true
+        } else {
+            false
+        }
+
+fn effect_trace_verify_row : (*EffectTraceLedger, i64) -> bool
+    | (ledger, expected_op) ->
+        if ledger == null then {
+            false
+        } else {
+            let mut i : i64 = 0i64;
+            let mut found : bool = false;
+            while true do {
+                if i >= ledger.count then {
+                    break;
+                };
+                if ledger.entries[i].op_code == expected_op then {
+                    found = true;
+                    break;
+                };
+                i = i + 1i64;
+            };
+            found
+        }

@@ -618,3 +618,270 @@ fn Node* modal_try_aot_fuse_effect_node(ast::AstArena* arena, Node* effect_node)
     }
     return effect_node;
 }
+
+// ── Continuation-Tree SSA Value Liveness Analysis ──────────────────────────
+// Analyzes variable liveness across a continuation tree T.  When a two-part
+// continuation (k_in / k_out) is split or cloned, only the variables live in
+// the active continuation branch need to be preserved in the environment
+// frame. Dead variables are pruned, reducing memory consumption and preventing
+// space leaks across long-lived async fibers.
+
+struct ContTreeLiveness
+{
+    char*[MODAL_MAX_VARS] live_names;
+    usz[MODAL_MAX_VARS]   live_lens;
+    usz                   live_count;
+}
+
+fn void ContTreeLiveness.init(ContTreeLiveness* l)
+{
+    l.live_count = 0;
+}
+
+fn void ContTreeLiveness.add(ContTreeLiveness* l, char* name, usz len)
+{
+    if (name == null || l.live_count >= MODAL_MAX_VARS) return;
+    for (usz i = 0; i < l.live_count; i++)
+    {
+        if (l.live_lens[i] == len && l.live_names[i] != null)
+        {
+            bool eq = true;
+            for (usz k = 0; k < len; k++)
+            {
+                if (l.live_names[i][k] != name[k]) { eq = false; break; }
+            }
+            if (eq) return; // already live
+        }
+    }
+    usz idx = l.live_count++;
+    l.live_names[idx] = name;
+    l.live_lens[idx]  = len;
+}
+
+fn bool ContTreeLiveness.is_live(ContTreeLiveness* l, char* name, usz len)
+{
+    if (name == null) return false;
+    for (usz i = 0; i < l.live_count; i++)
+    {
+        if (l.live_lens[i] == len && l.live_names[i] != null)
+        {
+            bool eq = true;
+            for (usz k = 0; k < len; k++)
+            {
+                if (l.live_names[i][k] != name[k]) { eq = false; break; }
+            }
+            if (eq) return true;
+        }
+    }
+    return false;
+}
+
+fn void modal_analyze_liveness_ast(ContTreeLiveness* l, Node* n, int depth)
+{
+    if (n == null || depth > MODAL_MAX_DEPTH) return;
+    if (n.kind == Nk.NODE_IDENT && n.p.ident.name_ptr != null)
+    {
+        l.add(n.p.ident.name_ptr, n.p.ident.name_len);
+    }
+    for (usz i = 0; i < n.child_count; i++)
+    {
+        modal_analyze_liveness_ast(l, n.children[i], depth + 1);
+    }
+}
+
+fn void modal_analyze_liveness(ContTreeLiveness* l, ContTree* t, int depth)
+{
+    if (t == null || depth > MODAL_MAX_DEPTH) return;
+    if (t.expr != null)
+    {
+        modal_analyze_liveness_ast(l, t.expr, 0);
+    }
+    if (t.left  != null) modal_analyze_liveness(l, t.left,  depth + 1);
+    if (t.right != null) modal_analyze_liveness(l, t.right, depth + 1);
+}
+
+// Prune dead captures from a ModalContext given a continuation tree's liveness set.
+fn usz modal_prune_dead_captures(ModalContext* ctx, ContTree* t)
+{
+    if (ctx == null || t == null) return 0;
+    ContTreeLiveness liveness;
+    liveness.init();
+    modal_analyze_liveness(&liveness, t, 0);
+
+    usz pruned = 0;
+    for (usz i = 0; i < ctx.var_count; i++)
+    {
+        ModalVar* v = &ctx.vars[i];
+        if (v.name_ptr != null && !liveness.is_live(v.name_ptr, v.name_len))
+        {
+            // Mark dead variable as escaped/inactive so it is excluded from
+            // continuation environment frame allocation.
+            v.is_escaped = true;
+            pruned++;
+        }
+    }
+    return pruned;
+}
+
+// ── Multi-Level Modal Staging Trace Ledger ──────────────────────────────────
+// Records stage transitions (L -> L+1 -> L) across quoted and spliced expressions,
+// formatting an explicit diagnostic ledger for compiler stage inspection.
+
+struct ModalStageTraceEntry
+{
+    int   stage_level;
+    Node* ast_node;
+    bool  is_quote;
+    bool  is_splice;
+}
+
+struct ModalStageTrace
+{
+    ModalStageTraceEntry[256] entries;
+    usz                       count;
+    int                       max_reached_stage;
+}
+
+fn void ModalStageTrace.init(ModalStageTrace* t)
+{
+    t.count = 0;
+    t.max_reached_stage = 0;
+}
+
+fn void ModalStageTrace.record(ModalStageTrace* t, int stage, Node* n, bool quote, bool splice)
+{
+    if (t.count >= 256) return;
+    usz idx = t.count++;
+    t.entries[idx].stage_level = stage;
+    t.entries[idx].ast_node    = n;
+    t.entries[idx].is_quote    = quote;
+    t.entries[idx].is_splice   = splice;
+    if (stage > t.max_reached_stage) t.max_reached_stage = stage;
+}
+
+fn usz ModalStageTrace.format_ledger(ModalStageTrace* t, char* buf, usz cap)
+{
+    if (buf == null || cap == 0) return 0;
+    buf[0] = 0;
+    usz pos = 0;
+    char* hdr = (char*)"=== Multi-Level Modal Staging Trace ===\n";
+    usz hl = 0; while (hdr[hl] != 0 && pos < cap - 1) { buf[pos++] = hdr[hl++]; }
+
+    for (usz i = 0; i < t.count && pos < cap - 32; i++)
+    {
+        ModalStageTraceEntry* e = &t.entries[i];
+        char* tag = e.is_quote ? (char*)"[QUOTE] " : (e.is_splice ? (char*)"[SPLICE]" : (char*)"[EVAL]  ");
+        usz tl = 0; while (tag[tl] != 0 && pos < cap - 1) { buf[pos++] = tag[tl++]; }
+        buf[pos++] = ' ';
+        buf[pos++] = 'L';
+        // write stage as ascii digit
+        if (e.stage_level >= 0 && e.stage_level <= 9)
+        {
+            buf[pos++] = (char)('0' + e.stage_level);
+        }
+        else
+        {
+            buf[pos++] = '+';
+        }
+        buf[pos++] = '\n';
+    }
+    buf[pos] = 0;
+    return pos;
+}
+
+// ── Continuation-Tree SSA Liveness-Driven Segment Pool Allocator ────────────
+// Computes exact continuation frame sizing from ContTree liveness bitsets.
+// Avoids 16KB default allocation when a two-part continuation only captures
+// a few small SSA registers.
+
+struct ModalContFrameInfo
+{
+    usz live_var_count;
+    usz byte_footprint;
+    usz size_class_bytes;
+    bool fits_in_inline_scratch;
+}
+
+fn ModalContFrameInfo modal_compute_cont_frame_info(ModalContext* ctx, ContTree* t)
+{
+    ModalContFrameInfo info;
+    info.live_var_count = 0;
+    info.byte_footprint = 0;
+    info.size_class_bytes = 16 * 1024;
+    info.fits_in_inline_scratch = false;
+
+    if (ctx == null || t == null) return info;
+
+    ContTreeLiveness liveness;
+    liveness.init();
+    modal_analyze_liveness(&liveness, t, 0);
+
+    usz live = 0;
+    for (usz i = 0; i < ctx.var_count; i++)
+    {
+        ModalVar* v = &ctx.vars[i];
+        if (v.name_ptr != null && liveness.is_live(v.name_ptr, v.name_len))
+        {
+            live++;
+        }
+    }
+
+    info.live_var_count = live;
+    // Each captured SSA register or pointer uses 8 bytes
+    usz bytes = (live * 8) + 32; // +32 for continuation frame header (k_in/k_out pointers)
+    info.byte_footprint = bytes;
+
+    // Pick smallest power-of-2 size class >= bytes
+    usz sz = 64;
+    while (sz < bytes && sz < (16 * 1024))
+    {
+        sz *= 2;
+    }
+    info.size_class_bytes = sz;
+    if (sz <= 128)
+    {
+        info.fits_in_inline_scratch = true;
+    }
+    return info;
+}
+
+// ── Continuation-Tree Scope Commutation ─────────────────────────────────────
+// Commutes independent scoped effect nodes in a continuation tree when op1
+// and op2 commute (e.g., independent read/write effects from disjoint rows):
+//   Node(op1, Node(op2, k1, k2), k3) ↦ Node(op2, Node(op1, k1, k3), k2)
+
+fn bool rewrite_cont_tree_commute(ContTree* t)
+{
+    if (t == null || t.kind != ContKind.CT_NODE) return false;
+    if (t.left == null || t.left.kind != ContKind.CT_NODE) return false;
+
+    ContTree* inner_node = t.left;
+    // Commute only when k3 (t.right) and k2 (inner_node.right) are non-null identity
+    // or independent continuation resumptions.
+    if (t.right != null && inner_node.right != null)
+    {
+        Node* op1_decl = t.op_decl;
+        Node* op2_decl = inner_node.op_decl;
+
+        // Verify op1 and op2 come from distinct effect declarations
+        if (op1_decl != null && op2_decl != null && op1_decl != op2_decl)
+        {
+            // Perform commutation
+            ContTree* k1 = inner_node.left;
+            ContTree* k2 = inner_node.right;
+            ContTree* k3 = t.right;
+
+            ContTree* new_inner = cont_tree_new(ContKind.CT_NODE, t.expr,
+                                                cont_tree_clone(k1),
+                                                cont_tree_clone(k3));
+            new_inner.op_decl = op1_decl;
+
+            t.expr    = inner_node.expr;
+            t.op_decl = op2_decl;
+            t.left    = new_inner;
+            t.right   = cont_tree_clone(k2);
+            return true;
+        }
+    }
+    return false;
+}

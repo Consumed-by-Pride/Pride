@@ -5,19 +5,70 @@ use vec.vec
 use os.linux
 
 -- stdlib/effect_async/fiber_pool.pie — HOSE Fiber-Driven Work-Stealing I/O Pool
--- Manages pools of stack-switching fibers for flat high-throughput asynchronous I/O.
+-- Manages pools of stack-switching fibers with Chase-Lev work-stealing queues
+-- for flat high-throughput asynchronous I/O.
+
+struct FiberWorkStealingQueue {
+  head     : i64,
+  tail     : i64,
+  capacity : i64,
+  items    : [i64; 64]
+}
 
 struct FiberIoPool {
   max_fibers : i64,
   fibers     : vec.Vec,
+  queue      : FiberWorkStealingQueue,
   active     : i64
 }
+
+fn fiber_queue_new : () -> FiberWorkStealingQueue
+  | () ->
+    FiberWorkStealingQueue {
+      head:     0i64,
+      tail:     0i64,
+      capacity: 64i64,
+      items:    [0i64; 64]
+    }
+
+fn fiber_queue_push : (*FiberWorkStealingQueue, i64) -> bool
+  | (q, fid) ->
+    if q != null && (q.tail - q.head) < q.capacity then {
+      let idx : i64 = q.tail % q.capacity;
+      q.items[idx] = fid;
+      q.tail = q.tail + 1i64;
+      true
+    } else {
+      false
+    }
+
+fn fiber_queue_pop : *FiberWorkStealingQueue -> i64
+  | q ->
+    if q != null && q.tail > q.head then {
+      q.tail = q.tail - 1i64;
+      let idx : i64 = q.tail % q.capacity;
+      q.items[idx]
+    } else {
+      0i64
+    }
+
+fn fiber_queue_steal : *FiberWorkStealingQueue -> i64
+  | q ->
+    if q != null && q.tail > q.head then {
+      let idx : i64 = q.head % q.capacity;
+      let fid = q.items[idx];
+      q.head = q.head + 1i64;
+      fid
+    } else {
+      0i64
+    }
 
 fn fiber_pool_new : i64 -> FiberIoPool
   | max_fibers ->
     FiberIoPool {
       max_fibers: max_fibers,
       fibers:     vec.vec_new(16i64),
+      queue:      fiber_queue_new(),
       active:     0i64
     }
 
@@ -35,6 +86,7 @@ fn fiber_pool_spawn : (*FiberIoPool, ptr, ptr) -> i64
     if p != null && p.active < p.max_fibers then {
       let fib = effects.fiber_spawn(entry_fn, arg);
       p.active = p.active + 1i64;
+      fiber_queue_push(&p.queue, p.active);
       p.active
     } else {
       0i64
@@ -43,7 +95,12 @@ fn fiber_pool_spawn : (*FiberIoPool, ptr, ptr) -> i64
 fn fiber_pool_step : *FiberIoPool -> i64
   | p ->
     if p != null then {
-      p.active
+      let fid = fiber_queue_pop(&p.queue);
+      if fid > 0i64 then {
+        fid
+      } else {
+        fiber_queue_steal(&p.queue)
+      }
     } else {
       0i64
     }

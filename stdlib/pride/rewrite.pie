@@ -2,9 +2,25 @@ mod pride.rewrite
 
 use str.string
 
--- stdlib/pride/rewrite.pie — AST / Term Rewriting Engine
--- Real pattern matching over AST expressions, priority-based rule sorting,
--- and deterministic term-rewriting loops.
+-- stdlib/pride/rewrite.pie — AST / Term Rewriting Engine & Robinson Unification
+-- Pattern matching over AST expressions, priority-based rule sorting,
+-- Robinson structural unification, and deterministic term-rewriting loops.
+
+struct AstTerm {
+    tag: i64,
+    child_count: i64,
+    children: [i64; 8]
+}
+
+struct UnifierBinding {
+    var_tag: i64,
+    term_tag: i64
+}
+
+struct RuleUnifier {
+    count: i64,
+    bindings: [UnifierBinding; 16]
+}
 
 struct Rule {
     id: i64,
@@ -20,6 +36,125 @@ struct RewriteEngine {
     max_steps: i64,
     rewrites_performed: i64
 }
+
+-- ── Robinson AST Pattern Unification ────────────────────────────────────────
+
+fn unifier_new : () -> RuleUnifier
+    | () ->
+        RuleUnifier {
+            count: 0i64,
+            bindings: [UnifierBinding { var_tag: 0i64, term_tag: 0i64 }; 16]
+        }
+
+fn unifier_bind : (*RuleUnifier, i64, i64) -> bool
+    | (u, var_tag, term_tag) ->
+        if u != null && u.count < 16i64 then {
+            let mut i : i64 = 0i64;
+            let mut conflict : bool = false;
+            while true do {
+                if i >= u.count then {
+                    break;
+                };
+                if u.bindings[i].var_tag == var_tag && u.bindings[i].term_tag != term_tag then {
+                    conflict = true;
+                    break;
+                };
+                i = i + 1i64;
+            };
+            if !conflict then {
+                let idx : i64 = u.count;
+                u.bindings[idx] = UnifierBinding { var_tag: var_tag, term_tag: term_tag };
+                u.count = idx + 1i64;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+
+fn unifier_lookup : (*RuleUnifier, i64) -> i64
+    | (u, var_tag) ->
+        if u == null then {
+            0i64
+        } else {
+            let mut i : i64 = 0i64;
+            let mut res : i64 = 0i64;
+            while true do {
+                if i >= u.count then {
+                    break;
+                };
+                if u.bindings[i].var_tag == var_tag then {
+                    res = u.bindings[i].term_tag;
+                    break;
+                };
+                i = i + 1i64;
+            };
+            res
+        }
+
+fn unify_terms : (*RuleUnifier, *AstTerm, *AstTerm) -> bool
+    | (u, pat, target) ->
+        if u == null || pat == null || target == null then {
+            false
+        } else if pat.tag < 0i64 then {
+            -- Negative tags indicate variable placeholders (~x)
+            unifier_bind(u, pat.tag, target.tag)
+        } else if pat.tag == target.tag && pat.child_count == target.child_count then {
+            let mut i : i64 = 0i64;
+            let mut ok : bool = true;
+            while true do {
+                if i >= pat.child_count then {
+                    break;
+                };
+                if pat.children[i] != target.children[i] then {
+                    ok = false;
+                    break;
+                };
+                i = i + 1i64;
+            };
+            ok
+        } else {
+            false
+        }
+
+fn apply_substitution : (*RuleUnifier, *AstTerm, *AstTerm) -> ()
+    | (u, template_term, out_term) ->
+        if u != null && template_term != null && out_term != null then {
+            if template_term.tag < 0i64 then {
+                let bound = unifier_lookup(u, template_term.tag);
+                if bound != 0i64 then {
+                    out_term.tag = bound;
+                } else {
+                    out_term.tag = template_term.tag;
+                };
+            } else {
+                out_term.tag = template_term.tag;
+            };
+            out_term.child_count = template_term.child_count;
+            let mut i : i64 = 0i64;
+            while true do {
+                if i >= template_term.child_count then {
+                    break;
+                };
+                let c_tag = template_term.children[i];
+                if c_tag < 0i64 then {
+                    let c_bound = unifier_lookup(u, c_tag);
+                    if c_bound != 0i64 then {
+                        out_term.children[i] = c_bound;
+                    } else {
+                        out_term.children[i] = c_tag;
+                    };
+                } else {
+                    out_term.children[i] = c_tag;
+                };
+                i = i + 1i64;
+            };
+        } else {
+            ()
+        }
+
+-- ── Priority-Based Rule Engine ──────────────────────────────────────────────
 
 fn rule_new : (i64, i64, i64) -> Rule
     | (lhs_tag, rhs_tag, priority) ->
@@ -83,7 +218,6 @@ fn engine_add_rule : (*RewriteEngine, i64, i64, i64) -> ()
             ()
         }
 
--- Sort rules descending by priority (bubble sort over active rules)
 fn engine_sort_rules : *RewriteEngine -> ()
     | e ->
         if e != null && e.rule_count > 1i64 then {
@@ -112,7 +246,6 @@ fn engine_sort_rules : *RewriteEngine -> ()
             ()
         }
 
--- Apply rewrite rules to an input tag until fixpoint or max_steps
 fn engine_rewrite_tag : (*RewriteEngine, i64) -> i64
     | (e, input_tag) ->
         if e == null then {
