@@ -152,8 +152,8 @@ Monomorphization via `mono.c3` (Cooper/Harvey/Kennedy idom, BFS body). Generic f
 | Feature | Status |
 |---------|--------|
 | Bottom type `⊥` | ✅ |
-| `∪` union type annotation | 🔷 parse/typecheck only, no codegen |
-| `∩` intersection type annotation | 🔷 parse/typecheck only, no codegen |
+| `∪` union type annotation | ✅ Exec verified | Lowered in `codegen.c3` / `ssi_ir.c3`; verified in case 256 and showcase example |
+| `∩` intersection type annotation | ✅ Exec verified | Lowered in `codegen.c3` / `ssi_ir.c3`; verified in case 256 and showcase example |
 | Refinement types (SASI σ-nodes) | ✅ |
 
 ## §14 Explicit UB
