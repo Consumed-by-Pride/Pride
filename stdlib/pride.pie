@@ -58,6 +58,9 @@ fn assume : bool -> ()                                 | c -> ub.ub_assume(c)
 fn poison_memory : (ptr, i64) -> ub.PoisonCell         | (a, n) -> ub.ub_poison_memory(a, n)
 fn freeze_val : i64 -> i64                             | v -> ub.ub_freeze_val(v)
 fn check_align : (ptr, i64) -> bool                    | (a, l) -> ub.ub_check_alignment(a, l)
+fn poison_registry_new : () -> ub.PoisonRegistry       | () -> ub.poison_registry_new()
+fn poison_registry_add : (*ub.PoisonRegistry, ptr, i64) -> bool | (r, a, l) -> ub.poison_registry_add(r, a, l)
+fn poison_registry_check : (*ub.PoisonRegistry, ptr) -> bool | (r, a) -> ub.poison_registry_check(r, a)
 
 -- Semantic Subtyping
 fn lattice_new : () -> subtyping.TypeLattice           | () -> subtyping.type_lattice_new()
