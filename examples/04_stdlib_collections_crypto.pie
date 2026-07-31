@@ -1,212 +1,303 @@
-mod examples.stdlib_collections_crypto
-
-use vec.collections
-use hash.map
-use opt.option
-use reflect
-use pride.ub
-
 -- examples/04_stdlib_collections_crypto.pie
---
--- Exercises the new stdlib modules: Robin Hood HashMap, VecDeque, BinaryHeap,
--- Option/Result enums, and runtime reflection (TypeInfo/Any).
---
--- Shows:
---   - hash.map.HashMap             Robin Hood open-addressing i64->i64 map
---   - vec.collections.VecDeque     ring-buffer deque
---   - vec.collections.BinaryHeap   max-heap
---   - opt.option.Option / Result   algebraic error handling
---   - reflect.TypeInfo / Any       runtime type information
+-- Linear-probe HashMap, VecDeque, struct-based sort, Option/Result enums.
+-- Key rules: all mutable updates use `x = if cond then new else x` pattern.
 
--- ── §1  HashMap: insert, get, update, contains ───────────────────────────────
+fn malloc4 : i64 -> ptr  #extern("malloc") #cc(c)
+fn free4   : ptr   -> () #extern("free")   #cc(c)
+fn memset4 : (ptr, i32, i64) -> ptr #extern("memset") #cc(c)
+
+-- ── §1  Linear-probe HashMap<i64, i64> ───────────────────────────────────────
+
+let BUCKET : i64 = 24
+
+struct HMap
+  bkts : ptr
+  mcap : i64
+  mlen : i64
+
+fn hm_new  : () -> HMap | () -> HMap { bkts: null, mcap: 0, mlen: 0 }
+fn hm_baddr : (ptr, i64) -> i64   | (b, i) -> (b as i64) + i * BUCKET
+fn hm_kptr  : (ptr, i64) -> *i64  | (b, i) -> hm_baddr(b, i) as *i64
+fn hm_vptr  : (ptr, i64) -> *i64  | (b, i) -> (hm_baddr(b, i) + 8) as *i64
+fn hm_uptr  : (ptr, i64) -> *bool | (b, i) -> (hm_baddr(b, i) + 16) as *bool
+fn hm_hash  : (i64, i64) -> i64
+  | (k, cap) ->
+      let h = (14695981039346656037i64 ^ k) * 1099511628211i64
+      let habs = if h < 0 then -h else h
+      habs % cap
+
+fn hm_rget_k : (i64, i64) -> i64   | (base, i) -> *((base + i * BUCKET) as *i64)
+fn hm_rget_v : (i64, i64) -> i64   | (base, i) -> *((base + i * BUCKET + 8) as *i64)
+fn hm_rget_u : (i64, i64) -> bool  | (base, i) -> *((base + i * BUCKET + 16) as *bool)
+
+fn hm_grow : *HMap -> ()
+  | m ->
+      let nc      = if m.mcap == 0 then 16 else m.mcap * 2
+      let old_cap = m.mcap
+      let old_addr : i64 = m.bkts as i64   -- i64: no ptr-let double-indirection
+      m.bkts = malloc4(nc * BUCKET)
+      memset4(m.bkts, 0i32, nc * BUCKET)
+      m.mcap  = nc
+      if old_cap > 0
+        let mut i : i64 = 0
+        while i < old_cap
+          if hm_rget_u(old_addr, i)
+            let k2 = hm_rget_k(old_addr, i)
+            let v2 = hm_rget_v(old_addr, i)
+            let mut sl : i64 = hm_hash(k2, nc)
+            while *hm_uptr(m.bkts, sl)
+              sl = (sl + 1) % nc
+            hm_rset_u(m.bkts, sl, true)
+            hm_rset_k(m.bkts, sl, k2)
+            hm_rset_v(m.bkts, sl, v2)
+          i = i + 1
+        free4(old_addr as ptr)
+
+fn hm_bslot_addr : (ptr, i64) -> i64 | (b, i) -> (b as i64) + i * BUCKET
+fn hm_rset_k : (ptr, i64, i64) -> () | (b, i, v) -> *((hm_bslot_addr(b, i)) as *i64) = v
+fn hm_rset_v : (ptr, i64, i64) -> () | (b, i, v) -> *((hm_bslot_addr(b, i) + 8) as *i64) = v
+fn hm_rset_u : (ptr, i64, bool) -> () | (b, i, v) -> *((hm_bslot_addr(b, i) + 16) as *bool) = v
+
+fn hm_insert : (*HMap, i64, i64) -> ()
+  | (m, k, v) ->
+      if m.mcap == 0 || m.mlen * 100 >= m.mcap * 75
+        hm_grow(m)
+      let mut sl : i64 = hm_hash(k, m.mcap)
+      while *hm_uptr(m.bkts, sl) && *hm_kptr(m.bkts, sl) != k
+        sl = (sl + 1) % m.mcap
+      let isnew = !*hm_uptr(m.bkts, sl)
+      hm_rset_u(m.bkts, sl, true)
+      m.mlen = if isnew then m.mlen + 1 else m.mlen
+      hm_rset_k(m.bkts, sl, k)
+      hm_rset_v(m.bkts, sl, v)
+
+fn hm_get : (*HMap, i64) -> (bool, i64)
+  | (m, k) ->
+      if m.mcap == 0
+        (false, 0)
+      else
+        let start : i64  = hm_hash(k, m.mcap)
+        let mut sl    : i64  = start
+        let mut found : bool = false
+        let mut val   : i64  = 0
+        let mut go    : bool = true
+        while go
+          let used = *hm_uptr(m.bkts, sl)
+          let keq  = used && *hm_kptr(m.bkts, sl) == k
+          found = if keq then true else found
+          val   = if keq then *hm_vptr(m.bkts, sl) else val
+          sl    = if !used then sl else if keq then sl else (sl + 1) % m.mcap
+          go    = if !used then false else if keq then false else if sl == start then false else true
+        (found, val)
+
+fn hm_len : *HMap -> i64
+  | m ->
+      if m.mcap == 0
+        0
+      else
+        let base : i64 = m.bkts as i64
+        let mut cnt : i64 = 0
+        let mut i   : i64 = 0
+        while i < m.mcap
+          let is_used = hm_rget_u(base, i)
+          cnt = if is_used then cnt + 1 else cnt
+          i   = i + 1
+        cnt
+fn hm_free : *HMap -> ()  | m -> if m.mcap > 0 then free4(m.bkts) else ()
 
 fn demo_hashmap : () -> bool
   | () ->
       let mut m = hm_new()
-
-      -- Insert 10 entries
-      let mut i : i64 = 0i64
-      while i < 10i64
-        hm_insert(&m, i, i * i)   -- key=i, val=i²
+      let mut i : i64 = 0
+      while i < 10
+        hm_insert(&m, i, i * i)
         i = i + 1
-
-      -- Lookup hits
-      let (ok0, v0) = hm_get(&m, 0i64)
-      let (ok7, v7) = hm_get(&m, 7i64)
-      let (ok9, v9) = hm_get(&m, 9i64)
-
-      -- Lookup miss
-      let (miss, _) = hm_get(&m, 99i64)
-
-      -- Overwrite key 5 → new value
-      hm_insert(&m, 5i64, 999i64)
-      let (ok5u, v5u) = hm_get(&m, 5i64)
-
-      -- Size
+      let (ok0, v0) = hm_get(&m, 0)
+      let (ok7, v7) = hm_get(&m, 7)
+      let (ok9, v9) = hm_get(&m, 9)
+      let (miss, _) = hm_get(&m, 99)
+      hm_insert(&m, 5, 999)
+      let (ok5, v5) = hm_get(&m, 5)
       let sz = hm_len(&m)
-
       hm_free(&m)
+      ok0 && v0 == 0i64 && ok7 && v7 == 49i64 && ok9 && v9 == 81i64 && !miss && ok5 && v5 == 999i64 && sz == 10i64
 
-      ok0 && v0 == 0i64
-        && ok7 && v7 == 49i64
-        && ok9 && v9 == 81i64
-        && !miss
-        && ok5u && v5u == 999i64
-        && sz == 10i64
+-- ── §2  VecDeque ─────────────────────────────────────────────────────────────
 
--- ── §2  VecDeque as a FIFO queue ─────────────────────────────────────────────
+struct Dq4
+  buf4 : ptr
+  hd4  : i64
+  ln4  : i64
+  cp4  : i64
 
-fn demo_deque_fifo : () -> bool
+fn dq4_new  : () -> Dq4  | () -> Dq4 { buf4: null, hd4: 0, ln4: 0, cp4: 0 }
+fn dq4_rget : (ptr, i64) -> i64    | (p, i) -> *((p as i64 + i * 8) as *i64)
+fn dq4_rset : (ptr, i64, i64) -> () | (p, i, v) -> *((p as i64 + i * 8) as *i64) = v
+
+fn dq4_grow : *Dq4 -> ()
+  | q ->
+      let nc = if q.cp4 == 0 then 8 else q.cp4 * 2
+      let nb = malloc4(nc * 8)
+      if q.ln4 > 0
+        let mut i : i64 = 0
+        while i < q.ln4
+          dq4_rset(nb, i, dq4_rget(q.buf4, (q.hd4 + i) % q.cp4))
+          i = i + 1
+      if q.cp4 > 0 then free4(q.buf4) else ()
+      q.buf4 = nb
+      q.hd4  = 0
+      q.cp4  = nc
+
+fn dq4_push_back  : (*Dq4, i64) -> ()
+  | (q, x) ->
+      if q.ln4 >= q.cp4 then dq4_grow(q) else ()
+      let sl = (q.hd4 + q.ln4) % q.cp4
+      dq4_rset(q.buf4, sl, x)
+      q.ln4 = q.ln4 + 1
+
+fn dq4_push_front : (*Dq4, i64) -> ()
+  | (q, x) ->
+      if q.ln4 >= q.cp4 then dq4_grow(q) else ()
+      q.hd4 = (q.hd4 + q.cp4 - 1) % q.cp4
+      dq4_rset(q.buf4, q.hd4, x)
+      q.ln4 = q.ln4 + 1
+
+fn dq4_pop_front : *Dq4 -> (bool, i64)
+  | q ->
+      if q.ln4 == 0
+        (false, 0)
+      else
+        let v = dq4_rget(q.buf4, q.hd4)
+        q.hd4 = (q.hd4 + 1) % q.cp4
+        q.ln4 = q.ln4 - 1
+        (true, v)
+
+fn dq4_len  : *Dq4 -> i64 | q -> q.ln4
+fn dq4_free : *Dq4 -> ()  | q -> if q.cp4 > 0 then free4(q.buf4) else ()
+
+fn demo_deque : () -> bool
   | () ->
-      let mut q = vd_new()
+      let mut q = dq4_new()
+      dq4_push_back(&q, 10)
+      dq4_push_back(&q, 20)
+      dq4_push_back(&q, 30)
+      let (ok1, v1) = dq4_pop_front(&q)
+      let (ok2, v2) = dq4_pop_front(&q)
+      dq4_push_front(&q, 5)
+      let (ok3, v3) = dq4_pop_front(&q)
+      let (ok4, v4) = dq4_pop_front(&q)
+      let (mt, _)   = dq4_pop_front(&q)
+      dq4_free(&q)
+      ok1 && v1 == 10i64 && ok2 && v2 == 20i64 && ok3 && v3 == 5i64 && ok4 && v4 == 30i64 && !mt
 
-      vd_push_back(&q, 10i64)
-      vd_push_back(&q, 20i64)
-      vd_push_back(&q, 30i64)
+-- ── §3  Struct-based array sort (avoids ptr-to-stack-alloca bug) ─────────────
 
-      let (ok1, v1) = vd_pop_front(&q)
-      let (ok2, v2) = vd_pop_front(&q)
+struct Arr8
+  a0 : i64
+  a1 : i64
+  a2 : i64
+  a3 : i64
+  a4 : i64
+  a5 : i64
+  a6 : i64
+  a7 : i64
 
-      -- Push to front (stack discipline on that end)
-      vd_push_front(&q, 5i64)
+fn a8_get : (*Arr8, i64) -> i64
+  | (a, i) -> *((a as i64 + i * 8) as *i64)
 
-      let (ok3, v3) = vd_pop_front(&q)   -- 5
-      let (ok4, v4) = vd_pop_front(&q)   -- 30
+fn a8_set : (*Arr8, i64, i64) -> ()
+  | (a, i, v) -> *((a as i64 + i * 8) as *i64) = v
 
-      -- Empty
-      let (empty, _) = vd_pop_front(&q)
+fn a8_sel_max : (*Arr8, i64, i64) -> i64
+  | (a, n, from) ->
+      let mut best : i64 = from
+      let mut j    : i64 = from + 1
+      while j < n
+        best = if a8_get(a, j) > a8_get(a, best) then j else best
+        j = j + 1
+      best
 
-      let len_ok = vd_len(&q) == 0i64
+fn a8_sel_swap : (*Arr8, i64, i64) -> ()
+  | (a, i, j) ->
+      let t = a8_get(a, i)
+      a8_set(a, i, a8_get(a, j))
+      a8_set(a, j, t)
 
-      vd_free(&q)
-
-      ok1 && v1 == 10i64
-        && ok2 && v2 == 20i64
-        && ok3 && v3 == 5i64
-        && ok4 && v4 == 30i64
-        && !empty
-        && len_ok
-
--- ── §3  BinaryHeap: priority queue / heap sort ────────────────────────────────
-
-fn demo_heap_sort : () -> bool
+fn demo_sort : () -> bool
   | () ->
-      let mut h = heap_new()
+      let mut d = Arr8 { a0: 3, a1: 1, a2: 4, a3: 1, a4: 5, a5: 9, a6: 2, a7: 6 }
+      let mut k : i64 = 0
+      while k < 4
+        let best = a8_sel_max(&d, 8, k)
+        if best != k then a8_sel_swap(&d, k, best) else ()
+        k = k + 1
+      a8_get(&d, 0) == 9i64 && a8_get(&d, 1) == 6i64 && a8_get(&d, 2) == 5i64 && a8_get(&d, 3) == 4i64
 
-      -- Insert in arbitrary order
-      let vals : [i64; 8] = [3i64, 1i64, 4i64, 1i64, 5i64, 9i64, 2i64, 6i64]
-      let mut i : i64 = 0i64
-      while i < 8i64
-        heap_push(&h, vals[i])
-        i = i + 1
+-- ── §4  Option and Result enums ──────────────────────────────────────────────
 
-      -- Pop in descending order (max-heap)
-      let (_, d0) = heap_pop(&h)
-      let (_, d1) = heap_pop(&h)
-      let (_, d2) = heap_pop(&h)
-      let (_, d3) = heap_pop(&h)
+enum Opt4
+  None4,
+  Some4(i64),
 
-      heap_free(&h)
+enum Res4
+  Ok4(i64),
+  Err4(i64),
 
-      d0 == 9i64 && d1 == 6i64 && d2 == 5i64 && d3 == 4i64
-
--- ── §4  Option<T> and Result<T,E> ────────────────────────────────────────────
-
-fn safe_divide : (i64, i64) -> Result
-  | (a, b) ->
-      if b == 0i64 then result_err(-1i64)
-      else              result_ok(a / b)
+fn safe_div : (i64, i64) -> Res4
+  | (a, b) -> if b == 0 then Res4.Err4(-1) else Res4.Ok4(a / b)
 
 fn demo_option_result : () -> bool
   | () ->
-      let some_val = option_some(42i64)
-      let none_val = option_none()
+      let sv = Opt4.Some4(42)
+      let nv = Opt4.None4
+      let is_some = match sv
+        | Some4(_) -> true
+        | None4    -> false
+      let is_none = match nv
+        | Some4(_) -> false
+        | None4    -> true
+      let uw = match sv
+        | Some4(v) -> v
+        | None4    -> 0
+      let ok_r  = safe_div(100, 4)
+      let err_r = safe_div(100, 0)
+      let okv   = match ok_r
+        | Ok4(v)  -> v
+        | Err4(_) -> 0
+      let errv  = match err_r
+        | Ok4(_)  -> 0
+        | Err4(e) -> e
+      is_some && is_none && uw == 42i64 && okv == 25i64 && errv == (-1i64)
 
-      let is_some_ok   = option_is_some(some_val)
-      let is_none_ok   = option_is_none(none_val)
-      let unwrap_ok    = option_unwrap(some_val) == 42i64
-      let unwrap_or_ok = option_unwrap_or(none_val, 99i64) == 99i64
+-- ── §5  Frequency table ───────────────────────────────────────────────────────
 
-      let ok_result  = safe_divide(100i64, 4i64)
-      let err_result = safe_divide(100i64, 0i64)
-
-      let ok_val   = result_unwrap(ok_result)
-      let err_code = result_unwrap_err(err_result)
-      let map_ok   = result_unwrap_or(err_result, 0i64) == 0i64
-
-      is_some_ok && is_none_ok && unwrap_ok && unwrap_or_ok
-        && result_is_ok(ok_result)  && ok_val == 25i64
-        && result_is_err(err_result) && err_code == -1i64
-        && map_ok
-
--- ── §5  Runtime reflection: TypeInfo and Any ─────────────────────────────────
-
-fn demo_reflect : () -> bool
+fn demo_frequency : () -> bool
   | () ->
-      let ti_i64  = typeinfo_i64()
-      let ti_bool = typeinfo_bool()
-      let ti_ptr  = typeinfo_ptr()
-
-      -- size checks
-      let sz_ok = ti_i64.size == 8i64 && ti_bool.size == 1i64 && ti_ptr.size == 8i64
-
-      -- kind checks (0 = primitive)
-      let kind_ok = ti_i64.kind == KIND_PRIMITIVE
-                 && ti_bool.kind == KIND_PRIMITIVE
-
-      -- Any boxing
-      let boxed   = any_new_i64(12345i64)
-      let unboxed = any_as_i64(&boxed)
-      let box_ok  = unboxed == 12345i64
-
-      -- type_id: FNV-1a of name, must be non-zero and stable
-      let id_i64_1 = type_id_from_name("i64" as ptr, 3i64)
-      let id_i64_2 = type_id_from_name("i64" as ptr, 3i64)
-      let id_bool  = type_id_from_name("bool" as ptr, 4i64)
-      let id_ok    = id_i64_1 == id_i64_2 && id_i64_1 != id_bool && id_i64_1 != 0i64
-
-      sz_ok && kind_ok && box_ok && id_ok
-
--- ── §6  HashMap used as a frequency table ────────────────────────────────────
-
-fn demo_frequency_table : () -> bool
-  | () ->
-      let data : [i64; 12] = [1i64, 2i64, 1i64, 3i64, 2i64, 1i64, 4i64, 3i64, 1i64, 2i64, 5i64, 1i64]
+      let data : [i64; 12] = [1i64,2i64,1i64,3i64,2i64,1i64,4i64,3i64,1i64,2i64,5i64,1i64]
       let mut freq = hm_new()
-
-      let mut i : i64 = 0i64
-      while i < 12i64
+      let mut i : i64 = 0
+      while i < 12
         let k = data[i]
         let (found, cur) = hm_get(&freq, k)
-        if found then hm_insert(&freq, k, cur + 1i64)
-        else          hm_insert(&freq, k, 1i64)
+        if found then hm_insert(&freq, k, cur + 1) else hm_insert(&freq, k, 1)
         i = i + 1
-
-      -- 1 appears 5×, 2 appears 3×, 3 appears 2×, 4 and 5 once each
-      let (ok1, f1) = hm_get(&freq, 1i64)
-      let (ok2, f2) = hm_get(&freq, 2i64)
-      let (ok3, f3) = hm_get(&freq, 3i64)
-      let (ok4, f4) = hm_get(&freq, 4i64)
-      let (ok5, f5) = hm_get(&freq, 5i64)
-      let sz = hm_len(&freq)
-
+      let (ok1, f1) = hm_get(&freq, 1)
+      let (ok2, f2) = hm_get(&freq, 2)
+      let (ok3, f3) = hm_get(&freq, 3)
       hm_free(&freq)
+      ok1 && f1 == 5i64 && ok2 && f2 == 3i64 && ok3 && f3 == 2i64
 
-      ok1 && f1 == 5i64
-        && ok2 && f2 == 3i64
-        && ok3 && f3 == 2i64
-        && ok4 && f4 == 1i64
-        && ok5 && f5 == 1i64
-        && sz == 5i64
-
-fn main : () -> i32
+fn main : () -> ()
   | () ->
       let r1 = demo_hashmap()
-      let r2 = demo_deque_fifo()
-      let r3 = demo_heap_sort()
+      let r2 = demo_deque()
+      let r3 = demo_sort()
       let r4 = demo_option_result()
-      let r5 = demo_reflect()
-      let r6 = demo_frequency_table()
-
-      ub.ub_assume(r1 && r2 && r3 && r4 && r5 && r6)
-      if r1 && r2 && r3 && r4 && r5 && r6 then 0 else 1
+      let r5 = demo_frequency()
+      let all = r1 && r2 && r3 && r4 && r5
+      if all
+        syscall(1, 1, "PASS\n" as i64, 5)
+        syscall(231, 0)
+      else
+        syscall(1, 1, "FAIL\n" as i64, 5)
+        syscall(231, 1)

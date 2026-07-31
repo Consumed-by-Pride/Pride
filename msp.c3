@@ -57,7 +57,7 @@ const usz MSP_IDX_CAP = 8192;   // power of two, 4× MSP_MAX_QUOTES
 
 struct MspQuoteEntry
 {
-    uint64_t hash_code;
+    ulong hash_code;
     int      stage_level;
     Node*    ast_node;
     Node*    context_node; // explicit environment Γ' for CMTT
@@ -101,23 +101,23 @@ fn void MspQuoteRegistry.report_error(MspQuoteRegistry* r, char* msg)
 }
 
 // Compute structural FNV-1a hash of a quoted AST subtree
-fn uint64_t msp_hash_ast(Node* n, int depth)
+fn ulong msp_hash_ast(Node* n, int depth)
 {
     if (n == null || depth > MSP_MAX_DEPTH) return 14695981039346656037ULL;
-    uint64_t h = 14695981039346656037ULL;
-    h ^= (uint64_t)n.kind;
+    ulong h = 14695981039346656037ULL;
+    h ^= (ulong)n.kind;
     h *= 1099511628211ULL;
     if (n.kind == Nk.NODE_IDENT && n.p.ident.name_ptr != null)
     {
         for (usz i = 0; i < n.p.ident.name_len; i++)
         {
-            h ^= (uint64_t)n.p.ident.name_ptr[i];
+            h ^= (ulong)n.p.ident.name_ptr[i];
             h *= 1099511628211ULL;
         }
     }
     else if (n.kind == Nk.NODE_LIT_INT)
     {
-        h ^= (uint64_t)n.p.lit_int.int_val;
+        h ^= (ulong)n.p.lit_int.int_val;
         h *= 1099511628211ULL;
     }
     for (usz i = 0; i < n.child_count; i++)
@@ -161,8 +161,8 @@ fn bool msp_ast_equal(Node* a, Node* b, int depth)
 fn Node* MspQuoteRegistry.hash_cons(MspQuoteRegistry* r, Node* n, int stage, Node* ctx)
 {
     if (n == null) return null;
-    uint64_t h = msp_hash_ast(n, 0);
-    usz bucket = (usz)(h & (uint64_t)(MSP_IDX_CAP - 1));
+    ulong h = msp_hash_ast(n, 0);
+    usz bucket = (usz)(h & (ulong)(MSP_IDX_CAP - 1));
     usz chain_len = 0;
 
     usz link = r.idx[bucket];

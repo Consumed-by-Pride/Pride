@@ -560,9 +560,8 @@ fn ContTree* ast_to_cont_tree(Node* n, int depth)
                 return cur;
             }
 
-        case Nk.NODE_EXPR_RETURN:
-        case Nk.NODE_EXPR_BREAK:
-        case Nk.NODE_STMT_PANIC:
+        case Nk.NODE_STMT_RETURN:
+        case Nk.NODE_STMT_BREAK:
             return cont_tree_new(ContKind.CT_ABORT, n, null, null);
 
         case Nk.NODE_EXPR_UNIT:
@@ -832,13 +831,13 @@ fn ModalContFrameInfo modal_compute_cont_frame_info(ModalContext* ctx, ContTree*
     info.byte_footprint = bytes;
 
     // Pick smallest power-of-2 size class >= bytes
-    usz sz = 64;
-    while (sz < bytes && sz < (16 * 1024))
+    usz sz_class = 64;
+    while (sz_class < bytes && sz_class < (16 * 1024))
     {
-        sz *= 2;
+        sz_class *= 2;
     }
-    info.size_class_bytes = sz;
-    if (sz <= 128)
+    info.size_class_bytes = sz_class;
+    if (sz_class <= 128)
     {
         info.fits_in_inline_scratch = true;
     }

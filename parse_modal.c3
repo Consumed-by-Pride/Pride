@@ -139,10 +139,10 @@ fn StageOffset parse_stage_offset_from_span(char* span, usz len)
 fn Node* build_stage_node(ast::AstArena* arena, StageOffset* off, int line, int col)
 {
     if (arena == null || off == null) return null;
-    Node* n = ast::node_new(arena, Nk.NODE_STAGE, line, col);
+    Node* n = ast::node0(arena, Nk.NODE_STAGE, line, col);
     if (n == null) return null;
-    n.p.lit_int.int_val   = (long)off.offset;
-    n.p.lit_int.bits      = 64;
+    n.p.lit_int.int_val   = (ulong)off.offset;
+    n.p.lit_int.bits      = (char)64;
     n.p.lit_int.is_signed = true;
     return n;
 }
@@ -185,7 +185,7 @@ fn bool CmttBoxDecl.add_binding(CmttBoxDecl* d, char* name, usz len, Node* ty)
 fn Node* parse_cmtt_box_decl(ModalParserContext* ctx, CmttBoxDecl* decl, int line, int col)
 {
     if (ctx == null || decl == null || !decl.is_valid) return null;
-    Node* box_node = ast::node_new(ctx.arena, Nk.NODE_QUOTE, line, col);
+    Node* box_node = ast::node0(ctx.arena, Nk.NODE_QUOTE, line, col);
     if (box_node == null) return null;
 
     // Attach explicit environment bindings as leading AST children
@@ -196,18 +196,18 @@ fn Node* parse_cmtt_box_decl(ModalParserContext* ctx, CmttBoxDecl* decl, int lin
         if (id != null)
         {
             id.type_annotation = decl.env_bindings[i].type_node;
-            ast::node_add_child(box_node, id);
+            ast::add_child(ctx.arena, box_node, id);
         }
     }
 
     if (decl.quoted_expr != null)
     {
-        ast::node_add_child(box_node, decl.quoted_expr);
+        ast::add_child(ctx.arena, box_node, decl.quoted_expr);
     }
     Node* st_node = build_stage_node(ctx.arena, &decl.stage, line, col);
     if (st_node != null)
     {
-        ast::node_add_child(box_node, st_node);
+        ast::add_child(ctx.arena, box_node, st_node);
     }
     return box_node;
 }
@@ -226,24 +226,24 @@ struct OpenCodeCaseClause
 fn Node* parse_open_code_case(ModalParserContext* ctx, OpenCodeCaseClause* clause, int line, int col)
 {
     if (ctx == null || clause == null || clause.pattern_quote == null) return null;
-    Node* arm = ast::node_new(ctx.arena, Nk.NODE_MATCH_ARM, line, col);
+    Node* arm = ast::node0(ctx.arena, Nk.NODE_MATCH_ARM, line, col);
     if (arm == null) return null;
 
-    ast::node_add_child(arm, clause.pattern_quote);
+    ast::add_child(ctx.arena, arm, clause.pattern_quote);
 
     if (clause.has_guard && clause.guard_expr != null)
     {
-        Node* g = ast::node_new(ctx.arena, Nk.NODE_PATTERN_GUARD, line, col);
+        Node* g = ast::node0(ctx.arena, Nk.NODE_PATTERN_GUARD, line, col);
         if (g != null)
         {
-            ast::node_add_child(g, clause.guard_expr);
-            ast::node_add_child(arm, g);
+            ast::add_child(ctx.arena, g, clause.guard_expr);
+            ast::add_child(ctx.arena, arm, g);
         }
     }
 
     if (clause.body_expr != null)
     {
-        ast::node_add_child(arm, clause.body_expr);
+        ast::add_child(ctx.arena, arm, clause.body_expr);
     }
     return arm;
 }
@@ -263,21 +263,21 @@ struct ScopedEffectOpDecl
 fn Node* parse_scoped_effect_op(ModalParserContext* ctx, ScopedEffectOpDecl* op, int line, int col)
 {
     if (ctx == null || op == null || op.op_name == null) return null;
-    Node* op_node = ast::node_new(ctx.arena, Nk.NODE_EFFECT_OP_DECL, line, col);
+    Node* op_node = ast::node0(ctx.arena, Nk.NODE_EFFECT_OP_DECL, line, col);
     if (op_node == null) return null;
 
     Node* name_id = ast::node_ident(ctx.arena, op.op_name, op.op_len, line, col);
     if (name_id != null)
     {
-        ast::node_add_child(op_node, name_id);
+        ast::add_child(ctx.arena, op_node, name_id);
     }
 
-    Node* fn_ty = ast::node_new(ctx.arena, Nk.NODE_TYPE_FN, line, col);
+    Node* fn_ty = ast::node0(ctx.arena, Nk.NODE_TYPE_FN, line, col);
     if (fn_ty != null)
     {
-        if (op.param_types != null) ast::node_add_child(fn_ty, op.param_types);
-        if (op.ret_type != null)    ast::node_add_child(fn_ty, op.ret_type);
-        ast::node_add_child(op_node, fn_ty);
+        if (op.param_types != null) ast::add_child(ctx.arena, fn_ty, op.param_types);
+        if (op.ret_type != null)    ast::add_child(ctx.arena, fn_ty, op.ret_type);
+        ast::add_child(ctx.arena, op_node, fn_ty);
     }
     return op_node;
 }

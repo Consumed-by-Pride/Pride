@@ -8949,8 +8949,7 @@ fn void CgenModule.emit_function(CgenModule* cg, ssi_ir::SsiFunc* f)
             else
             {
                 cg.out.writes(pty);
-                // Add noalias to ptr params (pure Pride params never alias; helps vectorizer)
-                if (pty[0] == 'p') { cg.out.writes(" noalias"); }
+                // noalias removed: ptr params may alias via struct mutation
             }
             cg.out.writes(" %v");
             cg.out.writei(pv.id);
@@ -9326,7 +9325,7 @@ fn void CgenModule.emit_runtime_decls(CgenModule* cg)
     cg.out.writes("\n");
     // Attribute sets tuned for execution speed and binary size
     // #0: small pure functions (most Pride fns) — inline + willreturn for aggressive opt
-    cg.out.writes("attributes #0 = { inlinehint nounwind willreturn mustprogress }\n");
+    cg.out.writes("attributes #0 = { nounwind willreturn mustprogress }\n");
     // #1: non-inline functions
     cg.out.writes("attributes #1 = { nounwind willreturn mustprogress }\n");
     // #2: noreturn small (panic, unreachable)

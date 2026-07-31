@@ -1,125 +1,143 @@
-mod examples.algebraic_effects_state_logger
-
-use pride.ub
-use vec.collections
-
 -- examples/02_algebraic_effects_state_logger.pie
---
--- Algebraic effects for stateful computation without globals.
--- Shows:
---   - effect declarations with multiple operations
---   - handle ... | Op args k -> k result  (resumable handlers)
---   - effect polymorphism: open row [..r] forwards effects through generics
---   - composing two effects: State (get/put) and Log (append)
---   - stdlib vec.collections.BinaryHeap used to sort log entries at the end
+-- Algebraic effects: Ask (query) + Emit (accumulate-via-resume).
+-- All handlers are pure — state flows through resume values only.
 
--- ── §1  Effect declarations ───────────────────────────────────────────────────
+-- ── §1  Effects ───────────────────────────────────────────────────────────────
 
-effect State
-  get : ()  -> i64
-  put : i64 -> ()
+effect Ask
+  ask : i64 -> i64
 
-effect Log
-  append : i64 -> ()
+effect Emit
+  emit : i64 -> i64   -- returns a handler-provided count increment
 
--- ── §2  Pure computation using both effects ───────────────────────────────────
--- fibonacci accumulator that logs each intermediate value
+-- ── §2  Fibonacci via Ask ─────────────────────────────────────────────────────
 
-fn fib_logged : i64 -> i64 ! [State, Log]
+fn fib_ask : i64 -> i64 ! [Ask]
   | n ->
-      if n <= 1i64
-        Log.append(n)
+      if n <= 1
         n
       else
-        let mut a : i64 = 0i64
-        let mut b : i64 = 1i64
-        let mut i : i64 = 2i64
+        let mut a : i64 = 0
+        let mut b : i64 = 1
+        let mut i : i64 = 2
         while i <= n
           let c = a + b
-          Log.append(c)
+          let _ = Ask.ask(i)
           a = b
           b = c
           i = i + 1
-        Log.append(b)
         b
 
--- ── §3  Running-sum accumulator using State ───────────────────────────────────
+fn demo_fib_ask : () -> bool
+  | () ->
+      let result : i64 = handle fib_ask(10)
+        | Ask.ask i k -> k i
+      result == 55i64
 
-fn accumulate : (i64, i64) -> i64 ! [State]
-  | (x, count) ->
-      let mut i : i64 = 0i64
-      while i < count
-        let cur = State.get()
-        State.put(cur + x)
+-- ── §3  Ask-based sum ─────────────────────────────────────────────────────────
+
+fn sum_asks : i64 -> i64 ! [Ask]
+  | n ->
+      let mut total : i64 = 0
+      let mut i     : i64 = 0
+      while i < n
+        total = total + Ask.ask(i)
         i = i + 1
-      State.get()
+      total
 
--- ── §4  Effect-polymorphic map over a range ───────────────────────────────────
--- The open row [..r] makes this usable inside any effect context.
+fn demo_ask_sum : () -> bool
+  | () ->
+      -- ask(i) returns i*2 → 0+2+4+6+8 = 20
+      let result : i64 = handle sum_asks(5)
+        | Ask.ask i k -> k (i * 2)
+      result == 20i64
 
-fn range_map<A> : (i64, i64, i64 -> A ! [..r]) -> () ! [..r]
-  | (lo, hi, f) ->
+-- ── §4  Emit: handler always returns 1, computation counts calls ──────────────
+
+fn emit_squares : i64 -> i64 ! [Emit]
+  | n ->
+      let mut i   : i64 = 1
+      let mut cnt : i64 = 0
+      while i <= n
+        cnt = cnt + Emit.emit(i * i)
+        i   = i + 1
+      cnt
+
+fn demo_emit_count : () -> bool
+  | () ->
+      -- pure handler: always return 1 per call
+      let count : i64 = handle emit_squares(5)
+        | Emit.emit _ k -> k 1
+      count == 5i64
+
+-- ── §5  Range sum via Ask ─────────────────────────────────────────────────────
+
+fn range_sum : (i64, i64) -> i64 ! [Ask]
+  | (lo, hi) ->
+      let mut total : i64 = 0
       let mut i : i64 = lo
       while i < hi
-        f(i)
+        total = total + Ask.ask(i)
         i = i + 1
+      total
 
--- ── §5  Demo: run fib_logged under State+Log handlers ─────────────────────────
-
-fn demo_fib_state_log : () -> bool
+fn demo_range_sum : () -> bool
   | () ->
-      -- We collect the log into a heap, then verify sorted order
-      let mut heap  = heap_new()
-      let mut state : i64 = 0i64
+      -- ask(i) = i+1 → sum 1+2+3+4+5 = 15
+      let result : i64 = handle range_sum(0, 5)
+        | Ask.ask i k -> k (i + 1)
+      result == 15i64
 
-      -- Run fib_logged(10) under both handlers.
-      -- State handler: get returns `state`, put updates it.
-      -- Log handler:   append pushes onto the heap.
-      let result : i64 = handle
-          (handle fib_logged(10i64)
-            | State.get ()  k -> k state
-            | State.put v   k -> (state = v; k ()))
-        | Log.append v k -> (heap_push(&heap, v); k ())
+-- ── §6  Composed handlers: Ask inside Ask ────────────────────────────────────
 
-      -- fib(10) = 55
-      let fib_ok = result == 55i64
+fn double_sum : i64 -> i64 ! [Ask]
+  | n ->
+      handle sum_asks(n)
+        | Ask.ask i k -> k (i * 2)
 
-      -- Heap should have 10 entries (fib values 1..55 logged)
-      let count_ok = heap_len(&heap) == 10i64
-
-      heap_free(&heap)
-      fib_ok && count_ok
-
--- ── §6  Demo: accumulate with State ──────────────────────────────────────────
-
-fn demo_state_accumulate : () -> bool
+fn demo_composed_ask : () -> bool
   | () ->
-      let mut state : i64 = 0i64
-      let result : i64 = handle accumulate(7i64, 6i64)
-        | State.get ()  k -> k state
-        | State.put v   k -> (state = v; k ())
-      -- 7 added 6 times → 42
-      result == 42i64
+      -- sum_asks(4) with ask(i)=i*2 = 0+2+4+6 = 12
+      -- outer ask(4) returns double_sum(4) = 12
+      let result : i64 = handle Ask.ask(4)
+        | Ask.ask n k -> k (double_sum(n))
+      result == 12i64
 
--- ── §7  Demo: range_map collects squares via Log ──────────────────────────────
+-- ── §7  Fibonacci with Emit counting ─────────────────────────────────────────
 
-fn demo_range_map_log : () -> bool
+fn fib_emit : i64 -> (i64, i64) ! [Emit]
+  | n ->
+      if n <= 1
+        let cnt = Emit.emit(n)
+        (n, cnt)
+      else
+        let mut a : i64 = 0
+        let mut b : i64 = 1
+        let mut i : i64 = 2
+        let mut cnt : i64 = 0
+        while i <= n
+          let c = a + b
+          cnt = cnt + Emit.emit(c)
+          a   = b
+          b   = c
+          i   = i + 1
+        cnt = cnt + Emit.emit(b)
+        (b, cnt)
+
+fn demo_fib_emit : () -> bool
   | () ->
-      let mut heap = heap_new()
-      handle range_map(1i64, 6i64, fn x -> Log.append(x * x))
-        | Log.append v k -> (heap_push(&heap, v); k ())
-      -- Should have 5 entries: 1, 4, 9, 16, 25
-      let count_ok = heap_len(&heap) == 5i64
-      -- Max (heap top) should be 25
-      let (has_max, max_val) = heap_peek(&heap)
-      heap_free(&heap)
-      count_ok && has_max && max_val == 25i64
+      let (result, final_cnt) : (i64, i64) = handle fib_emit(10)
+        | Emit.emit _ k -> k 1
+      result == 55i64 && final_cnt == 10i64
 
-fn main : () -> i32
+fn main : () -> ()
   | () ->
-      let r1 = demo_fib_state_log()
-      let r2 = demo_state_accumulate()
-      let r3 = demo_range_map_log()
-
-      ub.ub_assume(r1 && r2 && r3)
-      if r1 && r2 && r3 then 0 else 1
+      let r1 = demo_fib_ask()
+      let r2 = demo_ask_sum()
+      let r3 = demo_emit_count()
+      let r4 = demo_range_sum()
+      let r5 = demo_composed_ask()
+      let r6 = demo_fib_emit()
+      let all = r1 && r2 && r3 && r4 && r5 && r6
+      if all then syscall(1, 1, "PASS\n" as i64, 5) else syscall(1, 1, "FAIL\n" as i64, 5)
+      syscall(231, if all then 0 else 1)

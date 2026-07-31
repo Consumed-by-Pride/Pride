@@ -518,8 +518,8 @@ fn void Optimizer.fold_identities(Optimizer* o)
             {
                 case Tt.TOKEN_STAR:
                     // x * 1  /  1 * x → x   (int + IEEE safe)
-                    if (c1 && k1 == 1) repl = x0;
-                    else if (c0 && k0 == 1) repl = x1;
+                    if (c1 && k1 == 1) { repl = x0; }
+                    else if (c0 && k0 == 1) { repl = x1; }
                 case Tt.TOKEN_SLASH:
                     // x / 1 → x   (no trap possible: divisor is the constant 1)
                     if (c1 && k1 == 1) repl = x0;
@@ -528,25 +528,25 @@ fn void Optimizer.fold_identities(Optimizer* o)
                     if (c1 && k1 == 0) repl = x0;
                 case Tt.TOKEN_PIPE:
                     // x | 0  /  0 | x → x   (bitwise: int-only by front-end)
-                    if (c1 && k1 == 0) repl = x0;
-                    else if (c0 && k0 == 0) repl = x1;
+                    if (c1 && k1 == 0) { repl = x0; }
+                    else if (c0 && k0 == 0) { repl = x1; }
                     // x | x → x             (idempotent)
-                    else if (x0 != null && x0 == x1) repl = x0;
+                    else if (x0 != null && x0 == x1) { repl = x0; }
                 case Tt.TOKEN_AMP:
                     // x & -1 / -1 & x → x   (all-ones mask)
-                    if (c1 && k1 == OPT_ALL_ONES) repl = x0;
-                    else if (c0 && k0 == OPT_ALL_ONES) repl = x1;
+                    if (c1 && k1 == OPT_ALL_ONES) { repl = x0; }
+                    else if (c0 && k0 == OPT_ALL_ONES) { repl = x1; }
                     // x & 0 / 0 & x → 0     (side-effect-safe: calls survive DCE)
-                    else if (c1 && k1 == 0) to_const_zero = true;
-                    else if (c0 && k0 == 0) to_const_zero = true;
+                    else if (c1 && k1 == 0) { to_const_zero = true; }
+                    else if (c0 && k0 == 0) { to_const_zero = true; }
                     // x & x → x             (idempotent)
-                    else if (x0 != null && x0 == x1) repl = x0;
+                    else if (x0 != null && x0 == x1) { repl = x0; }
                 case Tt.TOKEN_XOR:
                     // x ^ 0 / 0 ^ x → x
-                    if (c1 && k1 == 0) repl = x0;
-                    else if (c0 && k0 == 0) repl = x1;
+                    if (c1 && k1 == 0) { repl = x0; }
+                    else if (c0 && k0 == 0) { repl = x1; }
                     // x ^ x → 0   (value identity ⇒ same bits)
-                    else if (x0 != null && x0 == x1) to_const_zero = true;
+                    else if (x0 != null && x0 == x1) { to_const_zero = true; }
                 case Tt.TOKEN_LSHIFT:
                 case Tt.TOKEN_RSHIFT:
                     // x << 0  /  x >> 0 → x
