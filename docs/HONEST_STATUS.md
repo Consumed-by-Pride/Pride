@@ -15,8 +15,8 @@ many things that look implemented are actually stubs.
 The test numbers are honest:
 - **261/262 conformance cases pass** (1 failure: case 258 uses unimplemented
   `op name`/`perform`/`resume` surface syntax)
-- **43/47 exec tests pass** (4 failures: 40 has an O2 LICM codegen bug;
-  44/45/46 use unimplemented `mod`/`use` import syntax)
+- **44/47 exec tests pass** (3 failures: 44/45/46 use unimplemented `mod`/`use`
+  import syntax — pre-existing, require multi-file compiler support)
 
 ---
 
@@ -60,6 +60,7 @@ The test numbers are honest:
 - Pointer arithmetic (scales by element size)
 - Struct field read/write through pointers
 - Array element read/write
+- **`&arr[0] as *T` — address-of array element (ptr-to-ptr dedup fixed)**
 - Slice types `[T]` as `{ ptr, i64 }` fat pointers
 - Tensor/matrix operations (`@` matmul operator)
 - SIMD operations on fixed-size vectors
@@ -101,16 +102,9 @@ not a bug — the correct pattern is to accumulate state through resume values.
 ### O2 optimization interaction
 With `opt -O2`, functions that call pointer-mutating helpers (e.g. `hm_insert`
 modifying a struct through a `*HMap` pointer) inside while loops may
-miscompile.  Root cause: our `inlinehint` removal fixed the inlining trigger
-but LLVM's interprocedural alias analysis can still infer incorrect aliasing
-properties for deeply inlined call chains.  `opt -O1` is safe and recommended
-for code with this pattern.
-
-### `let mut` inside `if`-then without `else`
-`if cond then x = new else ()` compiles correctly.  
-`if cond then x = new` (without the `else ()`) hits the conditional-phi bug
-and the update is silently dropped.  Always use `else ()` for side-effectful
-conditional assignments on `let mut` bindings.
+miscompile.  Root cause: LLVM's interprocedural alias analysis can infer
+incorrect aliasing properties for deeply inlined call chains.  `opt -O1` is
+safe and recommended for code with this pattern.
 
 ### Struct literals with multi-line indented fields
 ```pie
@@ -220,15 +214,20 @@ let r = match x
 
 ---
 
-## Known Codegen Bugs
+## Known Codegen Bugs (Remaining)
 
 | Bug | Trigger | Workaround |
 |---|---|---|
-| `if cond then x=new` phi drop | conditional update of `let mut` inside `if` without `else` | Always write `else ()` |
 | O2 LICM with inlined struct-mutating fns | `opt -O2` inlines `fn(ptr_to_struct)` into caller loop | Use `opt -O1` for affected code |
-| `ptr`-typed `let` binding double-indirection | `let p : ptr = some_fn(); use_fn(p)` | Pass expression directly; avoid intermediate `let` of type `ptr` |
 | Tuple resume from function call | `k (fn_returning_tuple())` | Use `i64` encoding or literal tuples |
 | Stack-array indexed via `*[T;N]` parameter | `fn f(a: *[i64;8], i: i64)` then `a[i]` | Use raw `(a as i64 + i*8) as *i64` arithmetic |
+
+### Fixed This Session
+
+| Bug | Root cause | Fix |
+|---|---|---|
+| `&arr[0] as *T` double-indirection | `IR_UN '&'` handler always emitted `alloca ptr; store ptr v; gep ptr alloca 0` even when operand was already a `ptr`, producing a `ptr*` instead of `ptr` | Skip the alloca+store when operand type is `"ptr"`: emit identity `gep i8, ptr arg, 0` instead |
+| Test 40 (sort/search/reverse): wrong array pointer passed to fn, wrong array reads | Same double-indirection bug: `sort_array(&arr[0] as *i64, 5)` passed the alloca address instead of arr[0] address | Same fix above |
 
 ---
 
@@ -240,7 +239,7 @@ let r = match x
 | Runtime C source | 3,081 LoC (compiler_rt.c + compiler_rt_arch.c) |
 | Stdlib | 257 `.pie` files |
 | Conformance tests | **261/262 pass** |
-| Execution tests | **43/47 pass** |
+| Execution tests | **44/47 pass** (up from 43, fixed test 40) |
 | Example files | 5 (all PASS at `opt -O1`) |
 | LLVM target | LLVM 19.1.7, x86-64 Linux ELF |
 | Host compiler | c3c v0.8.2 |

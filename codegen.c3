@@ -4005,17 +4005,37 @@ fn void CgenModule.emit_val(CgenModule* cg, ssi_ir::IrVal* v, TypeTable* tm)
                 }
                 else if (v.bop == Tt.TOKEN_AMP)
                 {
-                    // &expr: address-of — emit alloca + store, return ptr
+                    // &expr: address-of.
+                    // When the operand is already a ptr (e.g. the result of an IR_ARRAY
+                    // literal or an IR_INDEX GEP), taking its address is a no-op: the ptr
+                    // value IS the address.  Wrapping it in alloca+store would produce a
+                    // ptr-to-ptr (double indirection), which miscompiles every call that
+                    // passes &arr[0] as *T and every array read-back through the same ptr.
                     char* va = (tm != null && arg != null) ? tm.get(arg.id) : null;
                     if (va == null || va[0] == 0) va = (char*)"i64";
-                    cg.out.writes("  %addr.v"); cg.out.writei(v.id);
-                    cg.out.writes(" = alloca "); cg.out.writes(va); cg.out.writes("\n");
-                    cg.out.writes("  store "); cg.out.writes(va); cg.out.writes(" ");
-                    if (arg != null) { cg.emit_vref(arg); } else { cg.out.writes("undef"); }
-                    cg.out.writes(", ptr %addr.v"); cg.out.writei(v.id); cg.out.writes("\n");
-                    cg.out.writes("  %v"); cg.out.writei(v.id);
-                    cg.out.writes(" = getelementptr inbounds "); cg.out.writes(va);
-                    cg.out.writes(", ptr %addr.v"); cg.out.writei(v.id); cg.out.writes(", i32 0\n");
+                    if (va[0] == 'p')
+                    {
+                        // arg is already a ptr; &ptr_val == ptr_val (identity).
+                        // Emit as a GEP-0 so the result has its own SSA name but
+                        // compiles away to nothing after LLVM's canonicalization.
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        cg.out.writes(" = getelementptr inbounds i8, ptr ");
+                        if (arg != null) { cg.emit_vref(arg); } else { cg.out.writes("null"); }
+                        cg.out.writes(", i64 0\n");
+                    }
+                    else
+                    {
+                        // scalar/struct arg: materialise in an alloca so the caller
+                        // gets a stable memory address.
+                        cg.out.writes("  %addr.v"); cg.out.writei(v.id);
+                        cg.out.writes(" = alloca "); cg.out.writes(va); cg.out.writes("\n");
+                        cg.out.writes("  store "); cg.out.writes(va); cg.out.writes(" ");
+                        if (arg != null) { cg.emit_vref(arg); } else { cg.out.writes("undef"); }
+                        cg.out.writes(", ptr %addr.v"); cg.out.writei(v.id); cg.out.writes("\n");
+                        cg.out.writes("  %v"); cg.out.writei(v.id);
+                        cg.out.writes(" = getelementptr inbounds "); cg.out.writes(va);
+                        cg.out.writes(", ptr %addr.v"); cg.out.writei(v.id); cg.out.writes(", i32 0\n");
+                    }
                 }
                 else if (v.bop == Tt.TOKEN_TILDE)
                 {
