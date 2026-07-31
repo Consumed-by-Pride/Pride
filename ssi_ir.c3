@@ -6096,11 +6096,19 @@ fn void SsiModule.lower_while(SsiModule* m, Node* n)
     if (pb != null) { pb.term = TermKind.TERM_BR; m.link(pre, header); }
 
     // Pre-place header φ for every binder the body reassigns.
+    // STRATEGY: use BOTH the AST-scan (collect_assigned, which catches direct assignments)
+    // AND the current env (which catches binders that collect_assigned might miss due to
+    // complex control flow — e.g. x=y where y is a loop-carried phi, causing collect_assigned
+    // to find x but env_lookup to return null for x because x resolves through a phi not yet
+    // in the env). By scanning the ENTIRE current env as well, we ensure every outer binder
+    // that is visible at the loop entry gets a pre-placed header phi, and the entry_val check
+    // naturally filters out truly loop-local binders.
     Snap assigned;
     assigned.count = 0;
     if (body != null) collect_assigned(m, body, &assigned);
 
     usz pre_mark = m.env_mark();
+
     m.cur = header;
     IrVal*[SCAN_CAP] hdr_phis;
     Node*[SCAN_CAP]  hdr_binders;
@@ -6109,8 +6117,15 @@ fn void SsiModule.lower_while(SsiModule* m, Node* n)
     for (usz i = 0; i < assigned.count; i++)
     {
         Node* b = assigned.binders[i];
+        // Use env_lookup which searches ALL env entries up to env_count (pre_mark).
+        // The env currently has the outer-scope values for all let-mut binders.
         IrVal* entry_val = m.env_lookup(b);
         if (entry_val == null) continue;   // not an outer binder → loop-local
+        // Don't create duplicate phis for the same binder (env walk may produce duplicates
+        // when the same binder has multiple env entries from shadowing in sub-scopes).
+        bool dup = false;
+        for (usz di = 0; di < nphi; di++) { if (hdr_binders[di] == b) { dup = true; break; } }
+        if (dup) continue;
         IrVal* phi = m.new_val(IrOp.IR_PHI, n);
         if (phi == null) continue;
         phi.binder = b;
@@ -6127,7 +6142,7 @@ fn void SsiModule.lower_while(SsiModule* m, Node* n)
     }
 
     // condition (reads header φ values) — terminate header with CBR.
-    IrVal* cond_val = cond != null ? m.lower_expr(cond) : null;
+IrVal* cond_val = cond != null ? m.lower_expr(cond) : null;
     IrBlock* hb = m.blk(header);
     if (hb != null) { hb.term = TermKind.TERM_CBR; hb.cond = cond_val; }
     m.link(header, body_blk);   // true → body
