@@ -1,0 +1,4 @@
+module m
+func f entry=e
+  block e
+    %1 = const.int ival=1

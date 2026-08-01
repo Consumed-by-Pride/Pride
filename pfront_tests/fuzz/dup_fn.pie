@@ -1,0 +1,5 @@
+mod t
+fn f : i64 -> i64
+  | n -> n
+fn f : i64 -> i64
+  | n -> n

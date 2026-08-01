@@ -903,6 +903,39 @@ if [ -x ./pearc ]; then
     fail=$((fail+1))
   fi
 
+  # MALFORMED INPUT MUST NOT CRASH.
+  #
+  # pfront documents three exits: 0 clean, 1 warnings, 2 errors. Anything
+  # else is a crash, and a compiler that segfaults on bad input cannot be
+  # run over a corpus to find out what else is wrong.
+  #
+  # The corpus in pfront_tests/fuzz/ is deliberately hostile: unterminated
+  # strings and block comments, unbalanced brackets in both directions, a
+  # NUL byte mid-file, bare CR line endings, mixed tabs and spaces, a
+  # 400-digit integer, 500 stacked unary minuses, non-ASCII identifiers,
+  # an invalid UTF-8 sequence, a self-referential type and a
+  # self-referential struct.
+  fz_bad=0
+  for f in pfront_tests/fuzz/*.pie; do
+    [ -e "$f" ] || continue
+    ./pfrontc "$f" >/tmp/pf_fz.out 2>&1
+    rc=$?
+    if [ "$rc" -gt 2 ]; then
+      fz_bad=$((fz_bad+1)); printf '        %s -> rc=%s\n' "$(basename "$f")" "$rc"
+    fi
+    if ! iconv -f UTF-8 -t UTF-8 /tmp/pf_fz.out >/dev/null 2>&1; then
+      fz_bad=$((fz_bad+1)); printf '        %s -> corrupt output\n' "$(basename "$f")"
+    fi
+  done
+  fz_n=$(ls pfront_tests/fuzz/*.pie 2>/dev/null | wc -l)
+  if [ "$fz_bad" = "0" ] && [ "$fz_n" -ge 20 ]; then
+    printf '  PASS  %-26s %s\n' "fuzz_no_crash" "($fz_n malformed inputs, 0 crashes)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "fuzz_no_crash" "$fz_bad of $fz_n inputs crashed or corrupted output"
+    fail=$((fail+1))
+  fi
+
   # No construct in the syntax suite may leave a lowering hole.
   sh=0
   for f in pfront_tests/syntax/x*.pie; do

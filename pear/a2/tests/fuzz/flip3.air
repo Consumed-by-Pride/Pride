@@ -1,0 +1,25 @@
+; e-SSI in its minimal form: sigma on each outgoing edge of a conditional,
+; phi at the join. The sigmas carry the facts that hake `R` possible.
+module hand
+func classify entry=entry
+  block entry
+    %1 = param name=x
+    %2 = const.int ival=0
+    %3 = bin %1 %2 op=gt
+    %4 = sigma %1 fact=gt origin=%1
+    %5 = sigma %1 fact=le origin=%1
+    branch %3 pos neg
+  end
+  block pos
+    %6 = const.int ival=1
+    jump join
+  end
+  block neg
+    %7 = const.int ival=2
+    jump join
+  end
+  block join
+    %8 = phi %6@pos %7@neg
+    ret %8
+  end
+endfunc

@@ -1,0 +1,7 @@
+module m
+func f entry=e
+  block e
+    %1 = notanopcode
+    ret %1
+  end
+endfunc

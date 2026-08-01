@@ -1,0 +1,7 @@
+module m
+func f entry=e
+  block e
+    %1 = const.int ival=1  [range=99999999999999999999..1]
+    ret %1
+  end
+endfunc

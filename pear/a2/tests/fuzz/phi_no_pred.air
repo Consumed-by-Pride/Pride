@@ -1,0 +1,7 @@
+module m
+func f entry=e
+  block e
+    %1 = phi %2@nowhere
+    ret %1
+  end
+endfunc

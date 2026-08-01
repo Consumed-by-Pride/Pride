@@ -1,0 +1,7 @@
+module m
+func f entry=e
+  block e
+    %1 = const.int ival=1  [bogus=7]
+    ret %1
+  end
+endfunc

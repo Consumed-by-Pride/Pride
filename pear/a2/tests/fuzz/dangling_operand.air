@@ -1,0 +1,7 @@
+module m
+func f entry=e
+  block e
+    %1 = bin %99 %98 op=add
+    ret %1
+  end
+endfunc

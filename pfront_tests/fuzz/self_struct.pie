@@ -1,0 +1,5 @@
+mod t
+struct S
+  s : S
+fn f : i64 -> i64
+  | n -> n
