@@ -741,6 +741,34 @@ if [ -x ./pearc ]; then
     fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "syntax_dowhile_posttest" "do-while ran its test first"
   fi
 
+  # Multi-clause dispatch is Pride's PRIMARY function syntax (section 6.1)
+  # and only the first clause used to be lowered, so the spec's own
+  # `fact` example compiled to `fn fact = 1`. Assert the dispatch exists:
+  # a test against 0, a recursive call, and a phi joining the two arms.
+  printf 'mod t\nfn fact : i64 -> i64\n  | 0i64 -> 1i64\n  | n -> n * fact(n - 1i64)\n' > /tmp/pf_fact.pie
+  fa=$(./pearc /tmp/pf_fact.pie 2>&1)
+  if echo "$fa" | grep -q 'op=eq' && echo "$fa" | grep -q 'name=fact' && echo "$fa" | grep -q 'phi '; then
+    printf '  PASS  %-26s %s\n' "syntax_multiclause" "(fact dispatches: test, recurse, join)"
+  else
+    printf '  FAIL  %-26s %s\n' "syntax_multiclause" "only the first clause was lowered"
+    pass=$((pass-1)); fail=$((fail+1))
+  fi
+  pass=$((pass+1))
+
+  # A guard must GATE its arm. N_GUARD appeared nowhere in a1, so a
+  # guarded arm ran unconditionally -- a miscompile, not a missing
+  # optimisation. Both spellings (comma and `if`) must produce a branch on
+  # the guard expression.
+  printf 'mod t\nfn f : i64 -> i64\n  | n ->\n    match n\n      | x, x > 100i64 -> 1i64\n      | _ -> 2i64\n' > /tmp/pf_grd.pie
+  gd=$(./pearc /tmp/pf_grd.pie 2>&1)
+  if echo "$gd" | grep -q 'op=gt' && echo "$gd" | grep -q 'branch '; then
+    printf '  PASS  %-26s %s\n' "syntax_guard_gates_arm" "(guard becomes a real branch)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "syntax_guard_gates_arm" "guard was dropped; arm runs unconditionally"
+    fail=$((fail+1))
+  fi
+
   # No construct in the syntax suite may leave a lowering hole.
   sh=0
   for f in pfront_tests/syntax/x*.pie; do

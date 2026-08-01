@@ -3348,11 +3348,29 @@ fn Node* Parser.parse_match(Parser* p)
         p.in_fn_sig = false;
         p.add(arm, p.parse_pattern());
         p.in_fn_sig = sv;
-        if (p.check(Tk.TOKEN_KW_IF))
+        /*
+         GUARDS, spec section 8: `| pattern, guard -> body`.
+
+         The comma spelling was added to FUNCTION CLAUSES and missed here,
+         so `match n | x, x > 0 -> ...` failed with "expected '->' after a
+         match pattern" while the identical guard on a clause worked. The
+         spec's own match examples use the comma form
+         (`| n, n < 0 → "negative"`), so this is the primary spelling
+         failing in the construct the section is about.
+
+         `in_fn_sig` is set while parsing the guard for the same reason the
+         clause path sets it: the guard is an EXPRESSION, and without the
+         flag a bare comparison against a type-like name is parsed as a
+         pattern.
+        */
+        if (p.check(Tk.TOKEN_KW_IF) || p.check(Tk.TOKEN_COMMA))
         {
             Tok g = p.advance();
             Node* guard = p.mk_at(Nk.N_GUARD, g);
+            bool sv_g = p.in_fn_sig;
+            p.in_fn_sig = true;
             p.add(guard, p.parse_expr());
+            p.in_fn_sig = sv_g;
             p.add(arm, guard);
         }
         if (!p.accept(Tk.TOKEN_ARROW) && !p.accept(Tk.TOKEN_ARROW_ASCII))

@@ -1,0 +1,70 @@
+-- Sections 6.1/6.2 (clause dispatch) and 8 (patterns).
+--
+-- Every function here is copied or adapted from the spec's own examples.
+-- Before this file existed:
+--   * only the FIRST clause of a multi-clause function was lowered, so
+--     `fact` compiled to `fn fact = 1` -- a function computing the wrong
+--     answer, not a missing feature
+--   * guards were parsed into an N_GUARD node that a1 never looked at, so
+--     a guarded arm ran UNCONDITIONALLY
+--   * the comma guard spelling the spec uses was rejected in `match` arms
+--     (it had been fixed only for function clauses)
+mod clauses_patterns
+
+fn fact : i64 -> i64
+  | 0i64 -> 1i64
+  | n -> n * fact(n - 1i64)
+
+fn gcd : (i64, i64) -> i64
+  | (a, 0i64) -> a
+  | (a, b) -> gcd(b, a % b)
+
+fn classify : i64 -> i64
+  | 0i64 -> 0i64
+  | n, n > 0i64 -> 1i64
+  | _ -> 2i64
+
+-- `if` is the other guard spelling; both must work.
+fn classify_if : i64 -> i64
+  | 0i64 -> 0i64
+  | n if n > 0i64 -> 1i64
+  | _ -> 2i64
+
+fn m_literal : i64 -> i64
+  | n ->
+    match n
+      | 0i64 -> 10i64
+      | 1i64 -> 20i64
+      | _ -> 30i64
+
+fn m_guard_comma : i64 -> i64
+  | n ->
+    match n
+      | x, x > 100i64 -> 1i64
+      | x, x > 0i64 -> 2i64
+      | _ -> 3i64
+
+fn m_or : i64 -> i64
+  | c ->
+    match c
+      | 1i64 | 2i64 | 3i64 -> 1i64
+      | _ -> 0i64
+
+fn m_tuple : (i64, i64) -> i64
+  | p ->
+    match p
+      | (0i64, 0i64) -> 0i64
+      | (a, 0i64) -> a
+      | (0i64, b) -> b
+      | (a, b) -> a + b
+
+fn m_bool : bool -> i64
+  | b ->
+    match b
+      | true -> 1i64
+      | false -> 0i64
+
+fn m_bind : i64 -> i64
+  | n ->
+    match n
+      | x -> x + 1i64

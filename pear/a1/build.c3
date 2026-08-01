@@ -2471,18 +2471,73 @@ fn uint Builder.lower_match_arms(Builder* b, Node* owner, uint scrut,
         Node* arm = arms[i];
         if (arm == null) { continue; }
 
-        // An arm is `pattern [guard] body...`.
+        /*
+         An arm is `pattern [guard] body...`.
+
+         The GUARD was being treated as part of the body. The loop below
+         used to take the first non-pattern child as the start of the body,
+         and an N_GUARD is not a pattern -- so `| n, n < 0 -> 0` lowered
+         the guard as if it were a statement and ran the arm
+         UNCONDITIONALLY. That is a miscompile: the arm fires on inputs the
+         guard excludes.
+
+         N_GUARD appeared nowhere in this file at all, in either the match
+         path or the function-clause path, so every guarded arm in the
+         language was wrong the same way.
+        */
         Node* pat = null;
+        Node* guard = null;
         usz body_at = arm.child_count;
         for (usz k = 0; k < arm.child_count; k++)
         {
             Node* c = arm.children[k];
             if (c == null) { continue; }
             if (pat == null && pfront_core::is_pattern(c.kind)) { pat = c; continue; }
+            if (c.kind == Nk.N_GUARD) { guard = c; continue; }
             if (body_at == arm.child_count) { body_at = k; }
         }
 
         uint test = b.pattern_test(pat, scrut);
+
+        /*
+         A guard is an extra test, conjoined with the pattern's.
+
+         The pattern's bindings must be in scope while the guard runs --
+         `| Some(x), x > 0` reads x -- so they are bound BEFORE the guard
+         is lowered. They are bound again in the body block below, which
+         is harmless: write_var is keyed by (binder, block) and the second
+         write is in a different block.
+
+         An irrefutable pattern with a guard has no pattern test, and the
+         guard alone becomes the test. That is the `| n, n < 0` case, and
+         getting it wrong in the other direction -- treating the arm as
+         irrefutable and ending the chain -- would delete every arm after
+         it.
+        */
+        if (guard != null && guard.child_count > 0)
+        {
+            b.bind_pattern_vars(pat, scrut);
+            uint gv = b.lower_operand(guard.children[0]);
+            if (gv != pear_air::AIR_NO_VALUE)
+            {
+                if (test == pear_air::AIR_NO_VALUE)
+                {
+                    test = gv;
+                }
+                else
+                {
+                    uint[2] gops;
+                    gops[0] = test; gops[1] = gv;
+                    uint both = b.emit(Op.AIR_BIN, &gops[0], 2, arm);
+                    if (both != pear_air::AIR_NO_VALUE)
+                    {
+                        b.m.values[both].p.op = BOp.ABO_LAND;
+                        pear_infer::infer_value(b.m, both);
+                        test = both;
+                    }
+                }
+            }
+        }
 
         uint body_blk;
         uint next_blk = pear_air::AIR_NO_BLOCK;
@@ -2947,29 +3002,141 @@ fn void Builder.lower_function(Builder* b, Node* fn_node)
     b.m.new_mem_entry(entry, fn_node.line, fn_node.col);
 
     /*
-     Only the FIRST clause is lowered. Multi-clause functions need pattern
-     dispatch, which is a match lowering that does not exist yet; lowering
-     every clause into one block would silently run them all. Counted, and
-     stated plainly rather than implied to work.
+     MULTI-CLAUSE DISPATCH, spec section 6.1.
+
+     Prolog-style clauses are Pride's PRIMARY function syntax -- the
+     spec's own `fact`, `gcd`, `classify` and `divide` examples are all
+     written this way -- and only the first clause used to be lowered.
+     `fn fact | 0 -> 1 | n -> n * fact(n-1)` therefore compiled to
+     `fn fact = 1`, which is not an imprecision but a function that
+     computes the wrong answer.
+
+     It was counted as `unsupported`, so it was visible in principle; it
+     stayed invisible in practice because this standard library uses
+     multi-clause functions exactly zero times, so the counter read 0 on
+     every module.
+
+     A clause set IS a match on the parameter, so it lowers through
+     lower_match_arms -- the same sequential decision chain, the same
+     guard handling, the same trap on fall-through. Writing a second
+     dispatch here would be two implementations of one thing.
     */
-    Node* clause = null;
+    Node*[64] clauses;
     usz clause_count = 0;
+    Node* clause = null;
     for (usz i = 0; i < fn_node.child_count; i++)
     {
         Node* c = fn_node.children[i];
         if (c != null && c.kind == Nk.N_CLAUSE)
         {
+            if (clause_count < 64) { clauses[clause_count] = c; }
             clause_count = clause_count + 1;
             if (clause == null) { clause = c; }
         }
     }
-    if (clause_count > 1) { b.unsupported = b.unsupported + (clause_count - 1); }
+    if (clause_count > 64)
+    {
+        // D6: report, never silently truncate.
+        b.unsupported = b.unsupported + (clause_count - 64);
+        clause_count = 64;
+    }
 
     if (clause == null)
     {
         // A declaration with no body (extern, interface method).
         b.m.set_term(entry, Term.TERM_RET, pear_air::AIR_NO_VALUE);
         return;
+    }
+
+    if (clause_count > 1)
+    {
+        /*
+         Every clause matches against the same incoming value, so the
+         parameter is created ONCE here and each clause's pattern is
+         tested against it. Taking the first clause's pattern as the
+         parameter, as the single-clause path does, would bind the first
+         clause's names for every arm.
+
+         Arity comes from the first clause: Pride is untyped and does not
+         reject a clause set with differing arities, so the alternative is
+         to invent a parameter count.
+        */
+        usz nparams = 0;
+        for (usz i = 0; i < clause.child_count; i++)
+        {
+            Node* c = clause.children[i];
+            if (c != null && pfront_core::is_pattern(c.kind)) { nparams = nparams + 1; }
+        }
+
+        uint scrut = pear_air::AIR_NO_VALUE;
+        if (nparams == 1)
+        {
+            uint[1] none;
+            Node* pn = null;
+            for (usz i = 0; i < clause.child_count; i++)
+            {
+                Node* c = clause.children[i];
+                if (c != null && pfront_core::is_pattern(c.kind)) { pn = c; break; }
+            }
+            scrut = b.m.new_value(entry, Op.AIR_PARAM, &none[0], 0,
+                                  pear_air::AIR_NO_ORIGIN,
+                                  pn == null ? fn_node.line : pn.line,
+                                  pn == null ? fn_node.col : pn.col);
+            if (scrut != pear_air::AIR_NO_VALUE)
+            {
+                if (pn != null) { b.m.values[scrut].p.name = pn.name_id; }
+                b.m.add_param(f, scrut);
+            }
+        }
+        else
+        {
+            /*
+             Several parameters. Each is its own AIR_PARAM, and the
+             scrutinee the clause patterns are matched against is the
+             TUPLE of them -- which is exactly what a clause like
+             `| (a, 0) -> a` already expects, since its pattern is a
+             tuple pattern.
+            */
+            uint[16] pvals;
+            usz np = 0;
+            for (usz i = 0; i < clause.child_count && np < 16; i++)
+            {
+                Node* c = clause.children[i];
+                if (c == null || !pfront_core::is_pattern(c.kind)) { continue; }
+                uint[1] none;
+                uint pv = b.m.new_value(entry, Op.AIR_PARAM, &none[0], 0,
+                                        pear_air::AIR_NO_ORIGIN, c.line, c.col);
+                if (pv == pear_air::AIR_NO_VALUE) { continue; }
+                b.m.values[pv].p.name = c.name_id;
+                b.m.add_param(f, pv);
+                pvals[np] = pv;
+                np = np + 1;
+            }
+            scrut = np == 1 ? pvals[0]
+                            : b.m.new_value(entry, Op.AIR_TUPLE, &pvals[0], np,
+                                            pear_air::AIR_NO_ORIGIN,
+                                            fn_node.line, fn_node.col);
+        }
+
+        if (scrut != pear_air::AIR_NO_VALUE)
+        {
+            uint res = b.lower_match_arms(fn_node, scrut, &clauses[0], clause_count);
+            if (b.block_open())
+            {
+                b.m.set_term(b.cur_block, Term.TERM_RET, res);
+            }
+            pear_air::AirFunc* af2 = b.m.fun(f);
+            for (usz i = 0; i < af2.block_count; i++)
+            {
+                pear_air::AirBlock* blk = b.m.blk(af2.blocks[i]);
+                if (blk != null && blk.term == Term.TERM_OPEN)
+                {
+                    b.m.set_term(blk.id, Term.TERM_RET, pear_air::AIR_NO_VALUE);
+                }
+                b.seal_block(af2.blocks[i]);
+            }
+            return;
+        }
     }
 
     // Parameters, then the body.
