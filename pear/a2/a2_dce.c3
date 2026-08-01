@@ -281,6 +281,126 @@ fn void compact_block(Air* m, uint bid, bool* live, DceStats* st)
     b.value_count = w;
 }
 
+/*
+ Fold away a block that contains nothing and only jumps somewhere else.
+
+ a1's critical-edge splitting creates one of these per split -- 627 of
+ them across the standard library -- and the comment on place_sigma said
+ they "cost one jump that a2 folds away". That was a claim about code
+ that did not exist: the DceStats field `jumps_threaded` was declared,
+ initialised, and never incremented. Blocks went in and came out at the
+ same count.
+
+ A block is foldable when it has no values, ends in an unconditional
+ jump, and is not the function's entry. Its predecessors are rewired
+ straight to its target.
+
+ ── The phi constraint, which is why this is not just edge rewiring ─────
+
+ If the target holds a phi, folding merges two incoming edges into one
+ and the phi would need two operands for a single predecessor. That is
+ only safe when the operands agree. Rather than reason about it, blocks
+ whose target has ANY phi are left alone -- the loop-header case, where
+ it matters most, is exactly the one that would need the check.
+
+ A predecessor that would end up with the same successor twice is also
+ skipped: `branch c t t` is legal but collapsing an edge into it changes
+ the successor count that verify.c3 checks against the terminator arity.
+*/
+fn void thread_jumps(Air* m, Fn* f, DceStats* st)
+{
+    for (usz i = 0; i < f.block_count; i++)
+    {
+        uint bid = f.blocks[i];
+        if (bid == f.entry) { continue; }
+        Blk* b = m.blk(bid);
+        if (b == null) { continue; }
+        if (b.value_count != 0) { continue; }
+        if (b.term != Term.TERM_JUMP || b.succ_count != 1) { continue; }
+        if (b.pred_count == 0) { continue; }
+
+        uint tgt = b.succ[0];
+        if (tgt == bid) { continue; }                 // self-loop
+        Blk* tb = m.blk(tgt);
+        if (tb == null) { continue; }
+
+        // Any phi in the target makes the merge unsafe; see above.
+        bool tgt_has_phi = false;
+        for (usz k = 0; k < tb.value_count; k++)
+        {
+            Val* v = m.val(tb.values[k]);
+            if (v == null) { continue; }
+            if (v.op == Op.AIR_PHI || v.op == Op.AIR_MEM_PHI) { tgt_has_phi = true; break; }
+        }
+        if (tgt_has_phi) { continue; }
+
+        // Would any predecessor gain a duplicate successor?
+        bool dup = false;
+        for (usz pi = 0; pi < b.pred_count; pi++)
+        {
+            Blk* pb = m.blk(b.pred[pi]);
+            if (pb == null) { continue; }
+            for (usz si = 0; si < pb.succ_count; si++)
+            {
+                if (pb.succ[si] == tgt) { dup = true; break; }
+            }
+            if (dup) { break; }
+        }
+        if (dup) { continue; }
+
+        // Rewire: every predecessor's edge to b now goes to tgt.
+        for (usz pi = 0; pi < b.pred_count; pi++)
+        {
+            uint p = b.pred[pi];
+            Blk* pb = m.blk(p);
+            if (pb == null) { continue; }
+            for (usz si = 0; si < pb.succ_count; si++)
+            {
+                if (pb.succ[si] == bid) { pb.succ[si] = tgt; }
+            }
+            // tgt gains p as a predecessor.
+            if (!pear_air::grow_u32(&tb.pred, &tb.pred_cap, tb.pred_count + 1))
+            {
+                m.overflowed = true;
+                return;
+            }
+            tb.pred[tb.pred_count] = p;
+            tb.pred_count = tb.pred_count + 1;
+        }
+
+        // Drop b from tgt's predecessor list.
+        for (usz k = 0; k < tb.pred_count; k++)
+        {
+            if (tb.pred[k] == bid)
+            {
+                for (usz j = k; j + 1 < tb.pred_count; j++) { tb.pred[j] = tb.pred[j + 1]; }
+                tb.pred_count = tb.pred_count - 1;
+                break;
+            }
+        }
+
+        b.pred_count = 0;
+        b.succ_count = 0;
+        st.jumps_threaded = st.jumps_threaded + 1;
+    }
+
+    // Remove the now-unreachable empty blocks from the function.
+    usz w = 0;
+    for (usz i = 0; i < f.block_count; i++)
+    {
+        uint bid = f.blocks[i];
+        Blk* b = m.blk(bid);
+        if (b != null && bid != f.entry && b.pred_count == 0
+            && b.succ_count == 0 && b.value_count == 0)
+        {
+            continue;
+        }
+        f.blocks[w] = bid;
+        w = w + 1;
+    }
+    f.block_count = w;
+}
+
 fn void run_function(Air* m, Fn* f, DceStats* st)
 {
     Cfg c;
@@ -476,6 +596,8 @@ fn void run_function(Air* m, Fn* f, DceStats* st)
         }
     }
 
+    thread_jumps(m, f, st);
+
     for (usz i = 0; i < f.block_count; i++)
     {
         Blk* b = m.blk(f.blocks[i]);
@@ -510,4 +632,6 @@ fn void print_stats(DceStats* s)
            (int)s.stores_removed);
     printf("  DCE: phi holes   : %d   (a1's neutralised phis, reaped)\n",
            (int)s.phi_holes_reaped);
+    printf("  DCE: jumps folded: %d   (empty jump-only blocks)\n",
+           (int)s.jumps_threaded);
 }

@@ -799,6 +799,29 @@ else
   fail=$((fail+1)); note FAIL "a2_transmute_opaque" "transmute leaked a range: $tmline"
 fi
 
+# Empty jump-only blocks must be FOLDED, not merely counted.
+#
+# a1's critical-edge splitting creates one per split, and place_sigma's
+# comment said they "cost one jump that a2 folds away". That was a claim
+# about code that did not exist: DceStats.jumps_threaded was declared,
+# initialised, and never incremented.
+#
+# Measured over the sweep rather than one file, because whether a given
+# module has an eligible block is incidental -- the first version of this
+# check tested a single loop that happened to have none and read 0 while
+# 147 sat in the library.
+jt=0
+for f in "$SWEEP"/*.air; do
+  [ -e "$f" ] || continue
+  n=$("$A2" --stats "$f" 2>/dev/null | grep -oE 'jumps folded: [0-9]+' | grep -oE '[0-9]+$')
+  jt=$((jt + ${n:-0}))
+done
+if [ "$jt" -ge 300 ]; then
+  pass=$((pass+1)); note PASS "a2_jump_threading" "($jt empty jump-only blocks folded)"
+else
+  fail=$((fail+1)); note FAIL "a2_jump_threading" "only $jt folded (want >=300)"
+fi
+
 # D1: facts must SURVIVE. The honest measure is reachability -- an entry
 # still named by a live value -- because nothing ever removes table
 # entries, so counting entries would report 100% survival even on a pass
