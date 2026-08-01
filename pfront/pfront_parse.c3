@@ -1133,7 +1133,10 @@ fn Node* Parser.parse_type_atom(Parser* p)
             p.expect(Tk.TOKEN_LPAREN, 1015, "expected '(' after typeof");
             Node* e = p.parse_expr();
             p.expect(Tk.TOKEN_RPAREN, 1015, "expected ')' after typeof operand");
-            Node* n = p.mk_at(Nk.N_TY_NAME, t);
+            // N_TY_TYPEOF, not N_TY_NAME: the child is an EXPRESSION and
+            // must be resolved as one. As an unnamed N_TY_NAME the operand
+            // was never visited and came out unresolved.
+            Node* n = p.mk_at(Nk.N_TY_TYPEOF, t);
             p.add(n, e);
             return n;
         }

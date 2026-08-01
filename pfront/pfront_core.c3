@@ -91,7 +91,6 @@ enum NodeKind : int
     N_DECL_EFFECT_OP,   // one `op : T -> U` inside an effect
     N_DECL_PARAM,       // a function parameter (binder + type)
     N_DECL_TYPEPARAM,   // generic type parameter
-    N_DECL_LABEL,       // loop label
 
     // -- clauses / arms --------------------------------------------------
     N_CLAUSE,           // `| pattern -> body` of a multi-arm fn
@@ -141,9 +140,16 @@ enum NodeKind : int
     N_EXPR_LAMBDA,
     N_EXPR_RANGE,
     N_EXPR_ASSIGN,
-    N_EXPR_PIPELINE,
+    /*
+     NOTE: `|>` does NOT use a dedicated kind. It is an N_EXPR_BINARY whose
+     operator token is TOKEN_PIPELINE, with p.aux == 1 marking the `*`
+     fixpoint form. A separate N_EXPR_PIPELINE existed with no producer and
+     no consumer, which made the enum look like it supported a construct it
+     did not. Removed rather than left as decoration.
+
+     `await` is likewise absent: it is not in the spec's 79-keyword list.
+    */
     N_EXPR_TRY,         // expr?
-    N_EXPR_AWAIT,
     N_EXPR_REF,         // &expr / &mut expr
     N_EXPR_DEREF,       // *expr
     N_EXPR_ALLOC,
@@ -151,7 +157,6 @@ enum NodeKind : int
     N_EXPR_SIZEOF,
     N_EXPR_ALIGNOF,
     N_EXPR_OFFSETOF,
-    N_EXPR_TYPEOF,
     N_EXPR_TRANSMUTE,
     N_EXPR_SYSCALL,
     N_EXPR_ASM,
@@ -228,6 +233,17 @@ enum NodeKind : int
     N_TY_EXISTS,
 
     /*
+     `typeof(expr)` — the type of an expression, spec §14's keyword list.
+     children[0] is the EXPRESSION, which must be resolved as one.
+
+     It was building an N_TY_NAME with no name and an unvisited expression
+     child, so the operand came out as an unresolved identifier and the
+     type itself was nameless. A distinct kind is what lets the resolver
+     tell "resolve my child as an expression" from "look my name up".
+    */
+    N_TY_TYPEOF,
+
+    /*
      A refinement predicate in type position, spec §13.1:
        `i32 ∩ (> 0)`, `f32 ∩ (>= 0.0) ∩ (<= 1.0)`
      `p.op` holds the comparison token, children[0] the bound expression.
@@ -241,7 +257,7 @@ enum NodeKind : int
 
 // Range markers for cheap category tests.
 const NodeKind N_DECL_FIRST = NodeKind.N_DECL_FN;
-const NodeKind N_DECL_LAST  = NodeKind.N_DECL_LABEL;
+const NodeKind N_DECL_LAST  = NodeKind.N_DECL_TYPEPARAM;
 const NodeKind N_EXPR_FIRST = NodeKind.N_EXPR_INT;
 const NodeKind N_EXPR_LAST  = NodeKind.N_EXPR_VOLATILE;
 const NodeKind N_PAT_FIRST  = NodeKind.N_PAT_WILDCARD;
@@ -930,7 +946,6 @@ fn char* kind_name(NodeKind k)
         case N_DECL_EFFECT_OP: return "effect-op";
         case N_DECL_PARAM:     return "param";
         case N_DECL_TYPEPARAM: return "typaram";
-        case N_DECL_LABEL:     return "label";
         case N_CLAUSE:         return "clause";
         case N_MATCH_ARM:      return "match-arm";
         case N_HANDLER_ARM:    return "handler-arm";
@@ -974,9 +989,7 @@ fn char* kind_name(NodeKind k)
         case N_EXPR_LAMBDA:    return "lambda";
         case N_EXPR_RANGE:     return "range";
         case N_EXPR_ASSIGN:    return "expr-assign";
-        case N_EXPR_PIPELINE:  return "pipeline";
         case N_EXPR_TRY:       return "try";
-        case N_EXPR_AWAIT:     return "await";
         case N_EXPR_REF:       return "ref";
         case N_EXPR_DEREF:     return "deref";
         case N_EXPR_ALLOC:     return "alloc";
@@ -984,7 +997,6 @@ fn char* kind_name(NodeKind k)
         case N_EXPR_SIZEOF:    return "sizeof";
         case N_EXPR_ALIGNOF:   return "alignof";
         case N_EXPR_OFFSETOF:  return "offsetof";
-        case N_EXPR_TYPEOF:    return "typeof";
         case N_EXPR_TRANSMUTE: return "transmute";
         case N_EXPR_SYSCALL:   return "syscall";
         case N_EXPR_ASM:       return "asm";
@@ -1041,6 +1053,7 @@ fn char* kind_name(NodeKind k)
         case N_TY_CONSTRAINT:  return "ty-constraint";
         case N_TY_FORALL:      return "ty-forall";
         case N_TY_EXISTS:      return "ty-exists";
+        case N_TY_TYPEOF:      return "ty-typeof";
         case N_TY_REFINE:      return "ty-refine";
         case N_KIND_COUNT:     return "?";
     }

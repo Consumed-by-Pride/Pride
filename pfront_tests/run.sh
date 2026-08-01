@@ -520,6 +520,60 @@ else
   "$BIN" /tmp/pf_data.pie --plain 2>&1 | grep 'error \[' | sed 's/^/      /' | head -6
 fi
 
+# NO ORPHAN NODE KINDS.
+#
+# A NodeKind that is declared and named but never PRODUCED looks
+# implemented and is not. That is precisely how `typeof` hid: it built an
+# unnamed N_TY_NAME whose expression child the resolver never visited, so
+# the operand came out unresolved while the file still reported 0 errors.
+#
+# Two kinds (N_EXPR_PIPELINE, N_EXPR_AWAIT) had no producer AND no
+# consumer and were deleted. The rest must all have a producer.
+#
+# Exemptions are listed explicitly with a reason, so adding one is a
+# deliberate act rather than an oversight.
+orphans=""
+for k in $(grep -oE "^\s+N_[A-Z0-9_]+," pfront/pfront_core.c3 | tr -d ' ,'); do
+  case "$k" in
+    # Structural markers, produced by the loader rather than the parser.
+    N_PROGRAM|N_INVALID|N_KIND_COUNT) continue ;;
+    # Aliases the parser deliberately never emits: an assignment is always
+    # N_STMT_ASSIGN, a qualified name is always N_MODULE_PATH.
+    N_STMT_EXPR|N_EXPR_PATH|N_EXPR_ASSIGN) continue ;;
+    # `loop` is not in the spec's 79-keyword list; kept as a reserved slot.
+    N_EXPR_LOOP) continue ;;
+  esac
+  if ! grep -q "Nk\.$k" pfront/pfront_parse.c3 && ! grep -q "Nk\.$k" pfront/pfront_ext.c3 \
+     && ! grep -q "NodeKind\.$k" pfront/pfront_parse.c3; then
+    orphans="$orphans $k"
+  fi
+done
+if [ -z "$orphans" ]; then
+  pass=$((pass+1)); printf '  PASS  %-26s (every node kind has a producer)\n' "no_orphan_kinds"
+else
+  fail=$((fail+1)); printf '  FAIL  %-26s declared but never produced:%s\n' "no_orphan_kinds" "$orphans"
+fi
+
+# `typeof(e)` must resolve its OPERAND as an expression. It produced an
+# unnamed N_TY_NAME, so the operand was never visited and came out
+# unresolved — with the file still reporting zero errors, because an
+# unresolved name inside a type annotation is only a note.
+cat > /tmp/pf_typeof.pie <<'PIE'
+mod t
+fn f : i64 -> i64
+  | n ->
+    let t : typeof(n) = n
+    t
+PIE
+tof=$("$BIN" /tmp/pf_typeof.pie --plain --dump-ast --quiet 2>&1)
+t_unres=$(echo "$tof" | grep -c "UNRESOLVED")
+t_kind=$(echo "$tof" | grep -c "ty-typeof")
+if [ "$t_unres" = "0" ] && [ "$t_kind" = "1" ]; then
+  pass=$((pass+1)); printf '  PASS  %-26s (typeof operand resolved)\n' "typeof_operand"
+else
+  fail=$((fail+1)); printf '  FAIL  %-26s unresolved=%s ty-typeof=%s\n' "typeof_operand" "$t_unres" "$t_kind"
+fi
+
 # The purity interlock: exactly ONE of two dead stores may be removed. The
 # other has a function call as its initializer and MUST survive. This is the
 # single most important correctness property of the DCE pass.

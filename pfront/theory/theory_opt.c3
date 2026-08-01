@@ -128,10 +128,9 @@ fn bool is_pure_kind(Nk k)
         case N_EXPR_SIZEOF:
         case N_EXPR_ALIGNOF:
         case N_EXPR_OFFSETOF:
-        case N_EXPR_TYPEOF:
             return true;
         // Everything else — calls, assignments, perform, asm, syscall,
-        // atomics, volatile, alloc/free, deref (may fault), await, try —
+        // atomics, volatile, alloc/free, deref (may fault), try —
         // is treated as effectful. Conservative by construction.
         default:
             return false;

@@ -977,6 +977,12 @@ fn void Resolver.resolve_type(Resolver* r, Node* t)
             }
             r.pop_scope();
         }
+        case N_TY_TYPEOF:
+        {
+            // The operand is an expression, resolved in the enclosing
+            // scope; the type itself is inferred from it later.
+            for (usz i = 0; i < t.child_count; i++) { r.resolve_expr(t.children[i]); }
+        }
         case N_TY_REFINE:
         {
             // The bound is an ordinary expression (`(> 0)`), resolved in
