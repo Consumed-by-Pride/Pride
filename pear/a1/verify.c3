@@ -81,6 +81,7 @@ struct Report
     usz unreachable_blocks;
 
     usz phi_count;
+    usz mem_phi_count;    // M: memory joins. a1 places none; a2 does.
     usz sigma_count;
     usz effect_count;
 
@@ -100,7 +101,7 @@ fn void Report.init(Report* r)
     r.errors = 0; r.warnings = 0;
     r.blocks_checked = 0; r.values_checked = 0;
     r.reachable_blocks = 0; r.unreachable_blocks = 0;
-    r.phi_count = 0; r.sigma_count = 0; r.effect_count = 0;
+    r.phi_count = 0; r.mem_phi_count = 0; r.sigma_count = 0; r.effect_count = 0;
     r.dom_checked = 0; r.sigma_checked = 0;
     r.msg_count = 0;
 }
@@ -133,6 +134,7 @@ fn void print_report(Report* r)
            (int)r.blocks_checked, (int)r.reachable_blocks, (int)r.unreachable_blocks);
     printf("  values           : %d\n", (int)r.values_checked);
     printf("  phi / sigma      : %d / %d\n", (int)r.phi_count, (int)r.sigma_count);
+    printf("  mem-phi          : %d\n", (int)r.mem_phi_count);
     printf("  effectful values : %d\n", (int)r.effect_count);
     printf("  dominance checks : %d\n", (int)r.dom_checked);
     printf("  sigma-edge checks: %d\n", (int)r.sigma_checked);
@@ -464,9 +466,29 @@ fn void check_function(Air* m, Fn* f, Report* r)
                 if (m.val(o) == null) { r.err("operand references a value that does not exist", vid); }
             }
 
-            if (v.op == Op.AIR_PHI)
+            /*
+             MEM_PHI is a φ in every structural respect and must be checked
+             as one.
+
+             It was omitted here, and the omission was invisible for as long
+             as nothing produced one: a1 never places a memory φ (its memory
+             versioning is a linear walk with no join), so the first
+             AIR_MEM_PHI in the project's history came from a2's MemorySSA.
+             Until then this checked nothing, which is exactly the shape of
+             a test that cannot fail.
+
+             The consequence was not a missed check but a WRONG one. Falling
+             through to the ordinary-value path meant each operand was
+             required to dominate the φ's own block, when a φ operand only
+             has to dominate the edge it arrives on. Every correct memory φ
+             on a loop header was therefore reported as a dominance error.
+            */
+            bool is_any_phi = v.op == Op.AIR_PHI || v.op == Op.AIR_MEM_PHI;
+
+            if (is_any_phi)
             {
-                r.phi_count = r.phi_count + 1;
+                if (v.op == Op.AIR_PHI) { r.phi_count = r.phi_count + 1; }
+                else { r.mem_phi_count = r.mem_phi_count + 1; }
 
                 // ── STRUCTURAL: φ must come before any non-φ ────────────
                 // A φ is a parallel copy on the incoming edges, so it has no
@@ -562,7 +584,7 @@ fn void check_function(Air* m, Fn* f, Report* r)
 
                 r.dom_checked = r.dom_checked + 1;
 
-                if (v.op == Op.AIR_PHI)
+                if (v.op == Op.AIR_PHI || v.op == Op.AIR_MEM_PHI)
                 {
                     uint inb = oi < v.inc_count ? m.phi_blocks[v.inc_off + oi]
                                                 : pear_air::AIR_NO_BLOCK;

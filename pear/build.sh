@@ -34,4 +34,15 @@ PFRONT=$(ls pfront/*.c3 | grep -v pfront_main.c3)
 [ -f pearc ] || { echo "FAILED: pearc"; exit 2; }
 chmod +x pearc
 
-echo "built: pear_a1_test pearc"
+# pear_a2 reads and writes .air. It links the a1 CORE (the datatype, the
+# reader, the writer, the verifier) but NOT build.c3 -- a2 must not be able
+# to reach a PNode even by accident, which is D5 enforced by the link line
+# rather than by convention. pear_tests/run.sh greps for the same property.
+A2="pear/a2/a2_cfg.c3 pear/a2/a2_facts.c3 pear/a2/a2_range.c3 \
+    pear/a2/a2_memssa.c3 pear/a2/a2_sccp.c3 pear/a2/a2_dce.c3"
+"$C3" compile $A1_CORE $A2 pear/a2/a2_main.c3 pfront/pfront_core.c3 \
+      -o pear_a2 2>&1 | grep -v "^Program linked" || true
+[ -f pear_a2 ] || { echo "FAILED: pear_a2"; exit 2; }
+chmod +x pear_a2
+
+echo "built: pear_a1_test pearc pear_a2"

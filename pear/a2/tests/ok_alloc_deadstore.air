@@ -1,0 +1,18 @@
+; A local allocation written but never read, and a second one that IS read.
+; Exercises DCE's dead-store proof and MemorySSA's noalias, neither of which
+; the stdlib reaches: it has 1,509 stores and 0 alloc sites.
+module allocs
+func f pub entry=e
+  block e
+    %1 = mem.entry
+    %2 = const.int ival=64
+    %3 = alloc %2
+    %4 = const.int ival=7
+    %5 = store.ptr %3 %4
+    %6 = alloc %2
+    %7 = const.int ival=9
+    %8 = store.ptr %6 %7
+    %9 = load.ptr %6
+    ret %9
+  end
+endfunc

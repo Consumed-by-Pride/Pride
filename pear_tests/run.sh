@@ -601,6 +601,184 @@ else
   fail=$((fail+1)); note FAIL "sigma_split_preserves" "err=$bk_err sigmas=$bk_sig ge=$bk_ge eq=$bk_eq"
 fi
 
+# ════════════════════════════════════════════════════════════════════════
+# a2 — analysis and optimisation on AIR
+# ════════════════════════════════════════════════════════════════════════
+A2=./pear_a2
+
+# a2 reads .air FILES, not an in-memory module handed over by pearc. That
+# is D3 working as intended -- a stage that could only run on a live
+# pointer could not be tested against IR no compiler produced -- but it
+# means the sweep needs the stdlib lowered to disk first.
+#
+# Regenerated here rather than cached in /tmp, which does not survive
+# between sessions. Without this the sweep silently iterates over an empty
+# glob and reports a pass on zero modules.
+SWEEP=/tmp/pear_a2_sweep
+rm -rf "$SWEEP"; mkdir -p "$SWEEP"
+for f in stdlib/*.pie stdlib/*/*.pie; do
+  [ -e "$f" ] || continue
+  "$PEARC" -I stdlib "$f" > "$SWEEP/$(echo "$f" | tr '/' '_').air" 2>/dev/null || true
+done
+sweep_n=$(ls "$SWEEP"/*.air 2>/dev/null | wc -l)
+
+# a2's own fixtures must analyse clean. ok_* verify with no errors.
+for f in pear/a2/tests/ok_*.air; do
+  [ -e "$f" ] || continue
+  name=$(basename "$f" .air)
+  errs=$("$A2" --stats "$f" 2>&1 | grep 'errors / warnings' | grep -oE '[0-9]+ / [0-9]+' | cut -d' ' -f1)
+  if [ "${errs:-1}" = "0" ]; then
+    pass=$((pass+1)); note PASS "a2_fixture_$name" "(AIR' verifies clean)"
+  else
+    fail=$((fail+1)); note FAIL "a2_fixture_$name" "($errs errors in AIR')"
+    "$A2" --stats "$f" 2>&1 | grep '    - ' | head -3 | sed 's/^/      /'
+  fi
+done
+
+# R: the loop bound. a1 reports [-9223372036854775807,100] for the counter
+# because its single forward pass joins a phi against a back edge it has
+# not computed. a2 must widen and narrow to the EXACT interval.
+#
+# Asserting the interval and not just "has a range" is the point: the first
+# version of the interval arithmetic collapsed to top on overflow and gave
+# a garbage lower bound that still counted as ranged.
+lr=$("$A2" pear/a2/tests/ok_loop_range.air 2>&1)
+if echo "$lr" | grep -q 'phi .*\[range=0\.\.100' && echo "$lr" | grep -q 'sigma .*fact=lt.*\[range=0\.\.99\]'; then
+  pass=$((pass+1)); note PASS "a2_R_loop_bound" "(counter [0,100], refined [0,99])"
+else
+  fail=$((fail+1)); note FAIL "a2_R_loop_bound" "widening/narrowing did not converge"
+  echo "$lr" | grep -E 'phi |sigma ' | sed 's/^/      /' | head -4
+fi
+
+# The payoff: R + SCCP must ELIMINATE a bounds check, not merely report it
+# decidable. `i & 15 < 16` is always true, so the branch folds to a jump
+# and the trap block goes away. a1 reports `decided cmps: 1` and changes
+# nothing; that number was a promissory note until this fired.
+bc=$("$A2" pear/a1/tests/ok_erm_bounds.air 2>&1)
+bc_blocks=$(echo "$bc" | grep -c '^  block ')
+if ! echo "$bc" | grep -q 'trap' && [ "$bc_blocks" = "2" ] && echo "$bc" | grep -q 'jump ok'; then
+  pass=$((pass+1)); note PASS "a2_bounds_check_removed" "(branch folded, trap block deleted)"
+else
+  fail=$((fail+1)); note FAIL "a2_bounds_check_removed" "check survived ($bc_blocks blocks)"
+fi
+
+# M: MemorySSA must place a memory phi at a join. a1 places NONE -- its
+# memory versioning is a linear walk with no notion of a join at all -- so
+# any non-zero count here is a capability a1 does not have.
+#
+# LLVM cannot serialise MemorySSA to .ll at any optimisation level, so
+# there is no equivalent line to compare against. That is a capability
+# gap, not a density one.
+mp=0
+for f in /tmp/pear_a2_sweep/*.air; do
+  [ -e "$f" ] || continue
+  n=$("$A2" --stats "$f" 2>/dev/null | grep -oE 'mem-phi placed: [0-9]+' | grep -oE '[0-9]+$')
+  mp=$((mp + ${n:-0}))
+done
+if [ "$mp" -ge 100 ]; then
+  pass=$((pass+1)); note PASS "a2_M_memphi" "($mp memory phis placed; a1 places 0)"
+else
+  fail=$((fail+1)); note FAIL "a2_M_memphi" "only $mp memory phis (want >=100)"
+fi
+
+# M and DCE on an allocation. The stdlib has 1,509 stores and ZERO alloc
+# sites, so neither the noalias proof nor the dead-store proof is reached
+# by the sweep above -- both would sit permanently at 0 and look like dead
+# code. This fixture exercises them.
+al=$("$A2" --stats pear/a2/tests/ok_alloc_deadstore.air 2>&1)
+al_na=$(echo "$al" | grep -oE 'M: noalias       : [0-9]+' | grep -oE '[0-9]+$')
+al_ds=$(echo "$al" | grep -oE 'DCE: dead stores : [0-9]+' | grep -oE '[0-9]+$')
+if [ "${al_na:-0}" -ge 1 ] && [ "${al_ds:-0}" -ge 1 ]; then
+  pass=$((pass+1)); note PASS "a2_M_alloc" "($al_na noalias, $al_ds dead store removed)"
+else
+  fail=$((fail+1)); note FAIL "a2_M_alloc" "noalias=$al_na dead_stores=$al_ds (want >=1 each)"
+fi
+
+# The verifier must CHECK memory phis by the PHI rule, not the ordinary
+# value rule.
+#
+# AIR_MEM_PHI went unmentioned in verify.c3 for as long as nothing produced
+# one: a1 places no memory phi, so the omission was invisible for the whole
+# life of the project. When a2 started placing them they fell through to
+# the ordinary-value dominance check -- which demands that an operand
+# dominate the USE, where a phi operand only has to dominate the incoming
+# EDGE -- and every correct memory phi on a loop header was rejected.
+#
+# Asserting the counter alone is NOT enough, and this was checked: with the
+# fix reverted the whole suite still passed, because DCE deletes the memory
+# phis before the final verify and the counter reads zero either way. So
+# the assertion runs --no-dce over a module with a loop-carried memory phi
+# and requires BOTH that the verifier counts them and that it accepts them.
+# Reverting the fix makes this report dominance errors.
+mpf=/tmp/pear_a2_sweep/stdlib_diag_demangle.pie.air
+if [ -e "$mpf" ]; then
+  mpo=$("$A2" --no-dce --stats "$mpf" 2>&1)
+  mpv=$(echo "$mpo" | grep -oE 'mem-phi          : [0-9]+' | grep -oE '[0-9]+$')
+  mpe=$(echo "$mpo" | grep 'errors / warnings' | grep -oE '[0-9]+ / [0-9]+' | cut -d' ' -f1)
+  if [ "${mpv:-0}" -ge 1 ] && [ "${mpe:-1}" = "0" ]; then
+    pass=$((pass+1)); note PASS "a2_verify_knows_memphi" "($mpv mem-phis checked by the phi rule, 0 errors)"
+  else
+    fail=$((fail+1)); note FAIL "a2_verify_knows_memphi" "counted=$mpv errors=$mpe (want >=1 and 0)"
+    echo "$mpo" | grep '    - ' | head -3 | sed 's/^/      /'
+  fi
+else
+  fail=$((fail+1)); note FAIL "a2_verify_knows_memphi" "sweep fixture missing"
+fi
+
+# a2 over the whole standard library: every module must still verify after
+# being optimised. An optimiser that produces malformed IR is worse than no
+# optimiser, and this is the assertion that makes every metric above
+# conditional on the result still being a well-formed program.
+a2_ok=0; a2_bad=0
+for f in /tmp/pear_a2_sweep/*.air; do
+  [ -e "$f" ] || continue
+  if "$A2" --stats "$f" >/dev/null 2>&1; then a2_ok=$((a2_ok+1)); else a2_bad=$((a2_bad+1)); fi
+done
+if [ "$a2_bad" = "0" ] && [ "$a2_ok" -ge 200 ]; then
+  pass=$((pass+1)); note PASS "a2_stdlib_verify" "($a2_ok modules optimise and re-verify)"
+else
+  fail=$((fail+1)); note FAIL "a2_stdlib_verify" "$a2_bad of $((a2_ok+a2_bad)) modules broke"
+fi
+
+# D1: facts must SURVIVE. The honest measure is reachability -- an entry
+# still named by a live value -- because nothing ever removes table
+# entries, so counting entries would report 100% survival even on a pass
+# that deleted the whole program.
+sv=$("$A2" --verify-facts pear/a2/tests/ok_loop_range.air 2>&1)
+est=$(echo "$sv" | grep -oE 'facts established: [0-9]+' | grep -oE '[0-9]+$')
+rch=$(echo "$sv" | grep -oE 'facts reachable  : [0-9]+' | grep -oE '[0-9]+$')
+if [ "${est:-0}" -ge 5 ] && [ "${rch:-0}" -ge 5 ] && [ "${rch:-0}" -le "${est:-0}" ]; then
+  pass=$((pass+1)); note PASS "a2_D1_survival" "($rch of $est facts still reachable)"
+else
+  fail=$((fail+1)); note FAIL "a2_D1_survival" "established=$est reachable=$rch"
+fi
+
+# Nothing in a2 may be DEFINED AND NEVER CALLED.
+#
+# This is the guard for the original defect: code that looks implemented,
+# compiles, reads plausibly, and is wired to nothing. It caught two real
+# cases the moment it was written -- `add_ovf`, left behind when the
+# interval arithmetic switched to saturating, and `touches_memory`, which
+# was written for a classification the renamer ended up doing inline.
+#
+# Method names are checked by their bare name, which can collide across
+# types; the threshold is therefore "appears exactly once in the whole
+# stage", i.e. only at its own definition.
+orphans=""
+for f in pear/a2/*.c3; do
+  while read -r fname; do
+    [ -z "$fname" ] && continue
+    uses=$(cat pear/a2/*.c3 pear/a1/*.c3 2>/dev/null | grep -cE "\b$fname\b")
+    [ "${uses:-0}" -le 1 ] && orphans="$orphans $fname"
+  done < <(grep -oE '^fn [A-Za-z_][A-Za-z0-9_*]* [A-Za-z_][A-Za-z0-9_]*\(' "$f" \
+           | sed 's/(.*//; s/.* //')
+done
+if [ -z "$orphans" ]; then
+  pass=$((pass+1)); note PASS "a2_no_orphans" "(every function in a2 is called)"
+else
+  fail=$((fail+1)); note FAIL "a2_no_orphans" "defined and never called:$orphans"
+fi
+
 # ── D5 property: stage isolation, enforced by grep ──────────────────────
 #
 # PEAR.md D5: no stage after a1 may read a PNode. codegen.c3 has 285
