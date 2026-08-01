@@ -809,6 +809,41 @@ if [ -x ./pearc ]; then
     fail=$((fail+1))
   fi
 
+  # `handle` did not parse AT ALL. `|` is both bitwise-or and the arm
+  # separator, and the computation is parsed with a function that
+  # continues across the layout, so `handle c(n)` swallowed the `|` of the
+  # first arm as an operator. Assert the handler structure survives into
+  # the IR.
+  printf 'mod t\neffect E\n  op : i64 -> i64\nfn c : i64 -> i64 ! [E]\n  | n -> perform E.op(n)\nfn f : i64 -> i64\n  | n ->\n    handle c(n)\n      | E.op v k -> k v\n' > /tmp/pf_h.pie
+  perr=$(./pfrontc /tmp/pf_h.pie 2>&1 | grep -c "error\[")
+  hh=$(./pearc /tmp/pf_h.pie 2>&1)
+  if [ "$perr" = "0" ] && echo "$hh" | grep -q 'handle.arm' && echo "$hh" | grep -q 'perform'; then
+    printf '  PASS  %-26s %s\n' "syntax_handle_parses" "(handler arms survive to AIR)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "syntax_handle_parses" "handle broke ($perr parse errors)"
+    fail=$((fail+1))
+  fi
+
+  # Continuations resume by JUXTAPOSITION (section 10.3): `k v` calls k
+  # with v. It was implemented nowhere -- `k v` parsed as two separate
+  # expressions, so the arm body was just `k` and the argument escaped the
+  # arm and surfaced as an unresolved name outside it.
+  #
+  # The guard matters as much as the feature: `then` is a soft keyword
+  # lexed as IDENT, so the first version of this rule turned
+  # `if a > b then a else b` into `(b then) a` and broke every inline if.
+  printf 'mod t\neffect E\n  op : i64 -> i64\nfn c : i64 -> i64 ! [E]\n  | n -> perform E.op(n)\nfn f : i64 -> i64\n  | n ->\n    handle c(n)\n      | E.op v k -> k v\nfn g : (i64,i64) -> i64\n  | (a,b) -> if a > b then a else b\n' > /tmp/pf_jx.pie
+  jx=$(./pfrontc /tmp/pf_jx.pie 2>&1 | grep -c "error\[")
+  jxa=$(./pfrontc --dump-ast /tmp/pf_jx.pie 2>&1)
+  if [ "$jx" = "0" ] && echo "$jxa" | grep -q "ident 'k'  -> pat-ident 'k'"; then
+    printf '  PASS  %-26s %s\n' "syntax_juxtaposition" "(k v is a call; then/else unaffected)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "syntax_juxtaposition" "juxtaposition broken ($jx errors)"
+    fail=$((fail+1))
+  fi
+
   # No construct in the syntax suite may leave a lowering hole.
   sh=0
   for f in pfront_tests/syntax/x*.pie; do

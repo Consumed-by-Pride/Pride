@@ -1,0 +1,57 @@
+-- Sections 10 (algebraic effects) and 12 (generics and where clauses).
+--
+-- Every `handle` in the language failed to parse before this file
+-- existed. `|` is both bitwise-or and the arm separator, and the
+-- computation was parsed with a function that continues across the
+-- layout -- so `handle c(n)` followed by `| E.op v k -> v` was absorbed
+-- as `c(n) | E.op` and the arm body reported "expected an expression".
+mod effects_generics
+
+effect State
+  get : () -> i64
+  put : i64 -> ()
+
+effect Emit
+  one : i64 -> i64
+
+fn uses_state : i64 -> i64 ! [State]
+  | n -> perform State.get()
+
+fn uses_emit : i64 -> i64 ! [Emit]
+  | n -> perform Emit.one(n)
+
+-- Continuations resume by juxtaposition: `k v` (section 10.3).
+fn handle_juxta : i64 -> i64
+  | n ->
+    handle uses_state(n)
+      | State.get () k -> k 42i64
+
+-- `resume v` is the other spelling of the same thing.
+fn handle_resume : i64 -> i64
+  | n ->
+    handle uses_state(n)
+      | State.get () k -> resume 7i64
+
+-- Several arms, and an arm with a real parameter rather than unit.
+fn handle_multi : i64 -> i64
+  | n ->
+    handle uses_emit(n)
+      | Emit.one v k -> k v
+
+-- Section 12: type parameters, constraints, where clauses.
+fn identity<A> : A -> A
+  | x -> x
+
+fn apply2<A, B> : (A, B) -> A
+  | (a, b) -> a
+
+fn max_of<T : Ord> : (T, T) -> T
+  | (a, b) -> if a > b then a else b
+
+type Pair<A, B> = struct
+  fst : A
+  snd : B
+
+fn mk_pair<A, B, C> : (A, B) -> C
+  where C = Pair<A, B>
+  | (a, b) -> Pair { fst: a, snd: b }

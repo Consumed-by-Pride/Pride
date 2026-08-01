@@ -75,6 +75,47 @@ struct Parser
     // them while parsing a control-flow condition.
     bool  no_struct_lit;
 
+    /*
+     `|` is bitwise-or AND the handler-arm separator, and the two are
+     ambiguous across a newline:
+
+         handle c(n)
+           | E.op v k -> v
+
+     The computation `c(n)` is parsed with parse_block_or_expr, which
+     continues across the layout, so the `|` opening the first arm was
+     absorbed as an infix operator and the whole handler became
+     `c(n) | E.op`. Every handler in the language failed this way with
+     "expected an expression" at the arm body.
+
+     Suppressed while parsing a handler's computation, exactly as
+     no_struct_lit is suppressed while parsing an `if` condition. It is a
+     parser-state flag rather than a precedence change because `|` is a
+     perfectly good operator everywhere else, including inside the
+     computation's own parenthesised subexpressions.
+    */
+    bool  no_pipe_infix;
+
+    /*
+     Application by juxtaposition -- `k v` calls k with v -- is how the
+     spec resumes a continuation (section 10.3) and it is listed in the
+     precedence table (section 24) as the way curried calls are written.
+     It was implemented nowhere: `k v` parsed as two separate expressions,
+     so the arm body was just `k` and the argument escaped the arm
+     entirely, surfacing as an unresolved name at the outer level.
+
+     Enabled ONLY inside a handler-arm body. Juxtaposition is genuinely
+     ambiguous with statement sequencing -- in a clause body
+         f x
+         g y
+     two adjacent identifiers are two statements, and this standard
+     library is full of them. The spec introduces juxtaposition
+     specifically for continuation resumption, so that is where it is
+     turned on. Widening it later needs a real disambiguation rule, not a
+     flag.
+    */
+    bool  juxta_apply;
+
     // INDENTs absorbed by line-continuation. Each one has a matching DEDENT
     // that must be dropped when the continued expression finishes, otherwise
     // the enclosing block sees a spurious close.
@@ -123,6 +164,8 @@ fn void Parser.init(Parser* p, pfront_lex::Lexer* lx, Arena* a,
     p.depth_reported = false;
     p.in_fn_sig = false;
     p.no_struct_lit = false;
+    p.no_pipe_infix = false;
+    p.juxta_apply = false;
     p.cont_indents = 0;
     p.deferred_dedents = 0;
     p.stmt_indent = 0;
@@ -1776,6 +1819,12 @@ fn Node* Parser.parse_expr_prec(Parser* p, int min_prec)
         }
 
         int prec = infix_prec(t);
+        /*
+         Inside a handler's computation a `|` opens an ARM, not a bitwise
+         or. See Parser.no_pipe_infix. Checked here rather than in
+         infix_prec so the table stays a pure function of the token.
+        */
+        if (t == Tk.TOKEN_PIPE && p.no_pipe_infix) { break; }
         if (prec == 0 || prec < min_prec) { break; }
         Tok op = p.advance();
         // Symmetric case: the operator is at END of line and the operand is on
@@ -2059,12 +2108,65 @@ fn bool tok_is_member_name(Tk t)
     return v >= lo && v <= hi;
 }
 
+/*
+ Is this token the start of an argument in a juxtaposition application?
+
+ Deliberately narrow: an identifier or a literal, on the SAME LINE. A
+ parenthesised expression is excluded because `k (a)` is already an
+ ordinary call, and anything operator-shaped is excluded because `k - 1`
+ is subtraction, not application to a negative literal.
+*/
+fn bool tok_is_juxta_arg(Tk t)
+{
+    switch (t)
+    {
+        case TOKEN_IDENT:
+        case TOKEN_LIT_INT:
+        case TOKEN_LIT_FLOAT:
+        case TOKEN_LIT_BOOL:
+        case TOKEN_LIT_CHAR:
+        case TOKEN_LIT_STRING:
+        case TOKEN_LIT_NULL:
+            return true;
+        default:
+            return false;
+    }
+}
+
 fn Node* Parser.parse_postfix(Parser* p)
 {
     Node* e = p.parse_primary();
     while (true)
     {
         Tk t = p.ct();
+        /*
+         Juxtaposition: `k v`. Only inside a handler arm (see
+         Parser.juxta_apply), only when the argument is a bare identifier
+         or literal, and only on the same line -- a following line is the
+         next statement, not an argument.
+        */
+        /*
+         `then` and `else` are SOFT keywords: the lexer hands them over as
+         plain TOKEN_IDENT so they stay usable as variable names. Every
+         lookahead that asks "does an identifier follow?" must exclude
+         them -- the comment on at_then says exactly this, and this rule
+         walked straight into it: `if a > b then a else b` parsed
+         `b then` as a juxtaposition call and then `(b then) a` as
+         another, leaving `then` unresolved.
+        */
+        if (p.juxta_apply && tok_is_juxta_arg(t) && e != null
+            && !tok_is_then(p.cur())
+            && p.cur().line == e.line)
+        {
+            Node* call = p.mk_at(Nk.N_EXPR_CALL, p.cur());
+            p.add(call, e);
+            p.add(call, p.parse_primary());
+            // Same as a parenthesised call: potentially effectful until
+            // resolution computes the real set.
+            call.effects = call.effects | pfront_core::EFF_IO;
+            e = call;
+            continue;
+        }
         if (t == Tk.TOKEN_LPAREN)
         {
             Tok lp = p.advance();
@@ -3411,7 +3513,10 @@ fn Node* Parser.parse_handle(Parser* p)
 {
     Tok t = p.advance();
     Node* n = p.mk_at(Nk.N_EXPR_HANDLE, t);
+    bool saved_pipe = p.no_pipe_infix;
+    p.no_pipe_infix = true;
     p.add(n, p.parse_block_or_expr());
+    p.no_pipe_infix = saved_pipe;
     p.skip_layout();
     while (p.check(Tk.TOKEN_PIPE))
     {
@@ -3693,7 +3798,10 @@ fn Node* Parser.parse_arm_body(Parser* p)
     }
     bool saved = p.in_fn_sig;
     p.in_fn_sig = true;
+    bool saved_jx = p.juxta_apply;
+    p.juxta_apply = true;
     Node* e = p.parse_stmt_expr_only();
+    p.juxta_apply = saved_jx;
     // A semicolon chains further statements on the same line:
     //   `| code -> syscall1(NR_EXIT_GROUP, code); unreachable`
     // Collect them into a block so the arm yields the LAST value.
