@@ -670,6 +670,91 @@ else
   fail=$((fail+1)); printf '  FAIL  %-26s modules=%s bound=%s (want >=3, >=2)\n' "modsys" "$ms_mods" "$ms_bound"
 fi
 
+# ── SYNTAX SUITE: written from the SPEC, not from the implementation ────
+#
+# pfront_tests/syntax/ exists because every earlier test was written
+# against constructs the compiler already handled, so a construct the spec
+# lists and nothing exercises stayed broken indefinitely. These files are
+# generated from section 24's operator table and section 7's control-flow
+# list. On their first run they found eight defects, four of them silent
+# miscompiles rather than parse errors.
+for f in pfront_tests/syntax/x*.pie; do
+  [ -e "$f" ] || continue
+  name=$(basename "$f" .pie)
+  errs=$(./pfrontc -I stdlib "$f" 2>&1 | grep -cE "error\[")
+  if [ "$errs" = "0" ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "syntax_$name" "(parses clean)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "syntax_$name" "($errs parse errors)"
+    ./pfrontc -I stdlib "$f" 2>&1 | grep "error\[" | head -3 | sed 's/^/      /'
+  fi
+done
+
+# `not x` and `¬x` are LOGICAL negation. Both lowered to bitwise
+# complement (AUO_BNOT) because only TOKEN_BANG was mapped, so `not true`
+# became ~1 = -2 rather than false. Assert the opcode, since the parse was
+# always fine and only the lowering was wrong.
+if [ -x ./pearc ]; then
+  nt=$(printf 'mod t\nfn f : bool -> bool\n  | p -> not p\nfn g : bool -> bool\n  | p -> ¬ p\n' > /tmp/pf_not.pie; ./pearc /tmp/pf_not.pie 2>&1)
+  n_not=$(echo "$nt" | grep -c 'op=not')
+  n_bnot=$(echo "$nt" | grep -c 'op=bnot')
+  if [ "$n_not" = "2" ] && [ "$n_bnot" = "0" ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "syntax_not_is_logical" "(not/¬ lower to op=not, not bnot)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "syntax_not_is_logical" "op=not:$n_not op=bnot:$n_bnot (want 2/0)"
+  fi
+
+  # `and`/`or` are core keywords (section 25). Only && and || were mapped,
+  # so the keyword spellings lowered to AIR_UNKNOWN.
+  ao=$(printf 'mod t\nfn f : (bool,bool) -> bool\n  | (p,q) -> p and q\nfn g : (bool,bool) -> bool\n  | (p,q) -> p or q\n' > /tmp/pf_ao.pie; ./pearc /tmp/pf_ao.pie 2>&1)
+  if echo "$ao" | grep -q 'op=land' && echo "$ao" | grep -q 'op=lor' && ! echo "$ao" | grep -q 'unknown'; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "syntax_and_or_keywords" "(and/or lower like &&/||)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "syntax_and_or_keywords" "keyword and/or did not lower"
+  fi
+
+  # `for` must become a REAL loop, not a hole. Assert the induction
+  # variable is bounded by the range: `for i in 0..16` gives i in [0,16] at
+  # the header and [0,15] in the body, which is the fact that removes a
+  # bounds check. Before this, `for` lowered to AIR_UNKNOWN.
+  printf 'mod t\nfn f : i64 -> i64\n  | u ->\n    let mut s = 0i64\n    for i in 0i64..16i64\n      s = s + i\n    s\n' > /tmp/pf_for.pie
+  ./pearc /tmp/pf_for.pie > /tmp/pf_for.air 2>/dev/null
+  if [ -x ./pear_a2 ] && ./pear_a2 /tmp/pf_for.air 2>/dev/null | grep -qE 'sigma .*\[range=0\.\.15( |\])'; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "syntax_for_is_a_loop" "(for i in 0..16 proves i in [0,15] in body)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "syntax_for_is_a_loop" "for did not lower to a bounded loop"
+  fi
+
+  # do-while runs its BODY FIRST. With the entry edge pointing at the
+  # header the body was hoisted into the entry block and ran once
+  # regardless of the condition -- a miscompile, not an imprecision.
+  printf 'mod t\nfn f : i64 -> i64\n  | n ->\n    let mut i = 0i64\n    do\n      i = i + 1i64\n    while i < n\n    i\n' > /tmp/pf_dw.pie
+  dw=$(./pearc /tmp/pf_dw.pie 2>/dev/null)
+  dw_entry=$(echo "$dw" | grep -oE 'entry=\S+' | head -1 | cut -d= -f2)
+  # Match the block HEADER by prefix: a block line may carry a `; pred=`
+  # suffix, so an exact-string compare finds nothing.
+  dw_tgt=$(echo "$dw" | awk -v e="$dw_entry" '$1=="block" && $2==e {f=1} f && $1=="jump" {print $2; exit}')
+  dw_body=$(echo "$dw" | awk -v b="$dw_tgt" '$1=="block" && $2==b {f=1;next} f && $1=="end" {exit} f')
+  if echo "$dw_body" | grep -q 'op=add' && ! echo "$dw_body" | grep -q 'op=lt'; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "syntax_dowhile_posttest" "(entry jumps to the body, not the test)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "syntax_dowhile_posttest" "do-while ran its test first"
+  fi
+
+  # No construct in the syntax suite may leave a lowering hole.
+  sh=0
+  for f in pfront_tests/syntax/x*.pie; do
+    [ -e "$f" ] || continue
+    n=$(./pearc -I stdlib --stats "$f" 2>/dev/null | grep -oE 'unsupported      : [0-9]+' | grep -oE '[0-9]+$')
+    sh=$((sh + ${n:-0}))
+  done
+  if [ "$sh" = "0" ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "syntax_no_lowering_holes" "(every syntax file lowers with 0 unknowns)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "syntax_no_lowering_holes" "$sh AIR_UNKNOWN across the syntax suite"
+  fi
+fi
+
 echo "---"
 echo "pfront regression: pass=$pass fail=$fail"
 

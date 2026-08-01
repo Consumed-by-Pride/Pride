@@ -1,0 +1,99 @@
+-- Section 7, every control-flow form the spec lists, including the three
+-- that were broken when this file was written:
+--   `for`   parsed but lowered to AIR_UNKNOWN -- the loop did not exist
+--           in the IR at all
+--   `do`    had no statement-position rule; `do body while cond` failed
+--           with "expected an expression" at the trailing while
+--   `defer` parsed and then lowered to a hole, so the deferred body's
+--           effects were attached to nothing
+mod control_flow
+
+fn ifelse : i64 -> i64
+  | n ->
+    if n > 10i64
+      1i64
+    else if n > 5i64
+      2i64
+    else
+      3i64
+
+fn inline_if : (i64, i64) -> i64
+  | (a, b) -> if a > b then a else b
+
+fn wloop : i64 -> i64
+  | n ->
+    let mut i = 0i64
+    while i < n
+      i = i + 1i64
+    i
+
+-- Post-test: the body must run BEFORE the first test. Lowering this with
+-- the entry edge pointing at the header put the body in the entry block
+-- and ran it exactly once.
+fn dowhile : i64 -> i64
+  | n ->
+    let mut i = 0i64
+    do
+      i = i + 1i64
+    while i < n
+    i
+
+fn for_excl : i64 -> i64
+  | n ->
+    let mut s = 0i64
+    for i in 0i64..n
+      s = s + i
+    s
+
+fn for_incl : i64 -> i64
+  | n ->
+    let mut s = 0i64
+    for i in 0i64..=n
+      s = s + i
+    s
+
+fn for_step : i64 -> i64
+  | n ->
+    let mut s = 0i64
+    for i in 0i64..n by 2i64
+      s = s + i
+    s
+
+fn brk_cont : i64 -> i64
+  | n ->
+    let mut i = 0i64
+    let mut s = 0i64
+    while i < n
+      i = i + 1i64
+      if i == 3i64
+        continue
+      if i == 7i64
+        break
+      s = s + i
+    s
+
+fn early_return : i64 -> i64
+  | n ->
+    if n < 0i64
+      return 0i64
+    n
+
+fn sink : i64 -> i64
+  | x -> x
+
+fn with_defer : i64 -> i64
+  | n ->
+    defer sink(n)
+    n + 1i64
+
+fn diverge_trap : i64 -> i64
+  | n ->
+    if n < 0i64
+      trap
+    n
+
+fn diverge_unreachable : i64 -> i64
+  | n ->
+    if n < 0i64
+      unreachable
+    n

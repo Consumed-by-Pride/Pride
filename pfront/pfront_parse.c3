@@ -3576,6 +3576,7 @@ fn bool tok_starts_stmt(Tk t)
         case TOKEN_KW_RETURN:
         case TOKEN_KW_BREAK:
         case TOKEN_KW_CONTINUE:
+        case TOKEN_KW_DO:      // `do body while cond`
         case TOKEN_KW_DEFER:
         case TOKEN_KW_IF:
         case TOKEN_KW_WHILE:
@@ -3932,6 +3933,81 @@ fn Node* Parser.parse_stmt(Parser* p)
                 n.p.sptr = lb.start;
                 n.p.slen = lb.len;
             }
+            p.end_stmt();
+            return n;
+        }
+        case TOKEN_KW_DO:
+        {
+            /*
+             `do body while cond` (spec section 7).
+
+             `do` was recognised only as the OPTIONAL body-introducer of a
+             `while`/`for` header, never in statement position, so a
+             do-while loop failed with "expected an expression" at the
+             trailing `while`.
+
+             Reuses N_EXPR_WHILE with NF_POSTTEST: same condition, same
+             body, same break/continue targets, one bit of difference.
+            */
+            p.advance();
+            Node* n = p.mk_at(Nk.N_EXPR_WHILE, t);
+            n.flags = n.flags | pfront_core::NF_POSTTEST;
+            Node* body = p.parse_block_or_expr();
+            p.settle_continuation();
+            /*
+             The trailing `while` sits at the DO's own indentation, so the
+             body's layout block has already closed and a DEDENT is
+             pending. Look past it -- but only far enough to see whether
+             this really is a do-while, and only CONSUME it if it is.
+
+             Consuming unconditionally would swallow the dedent that ends
+             a bare `do` block and desynchronise every following
+             statement, which is the same class of bug as the match-arm
+             DEDENT that once ate the next top-level fn.
+            */
+            /*
+             The trailing `while` sits at the DO's own indentation, so the
+             body's layout block has closed and the token stream reads
+             DEDENT NEWLINE while -- verified with the token dumper rather
+             than assumed, after two wrong guesses that skipped only
+             DEDENTs and never fired.
+
+             Scan past any run of DEDENT/NEWLINE to see whether a `while`
+             really follows, and consume them ONLY if it does. Consuming
+             unconditionally would swallow the dedent that ends a bare
+             `do` block and desynchronise everything after it -- the same
+             class of bug as the match-arm DEDENT that once ate the
+             following top-level fn.
+            */
+            usz look = 0;
+            while (look < 8)
+            {
+                Tk lt = p.peek(look).type;
+                if (lt != Tk.TOKEN_DEDENT && lt != Tk.TOKEN_NEWLINE) { break; }
+                look = look + 1;
+            }
+            if (look > 0 && p.peek(look).type == Tk.TOKEN_KW_WHILE)
+            {
+                for (usz d = 0; d < look; d++) { p.advance(); }
+            }
+            if (p.accept(Tk.TOKEN_KW_WHILE))
+            {
+                bool saved = p.no_struct_lit;
+                p.no_struct_lit = true;
+                p.add(n, p.parse_expr());
+                p.no_struct_lit = saved;
+            }
+            else
+            {
+                /*
+                 `do` with no trailing `while` is a bare block, which the
+                 stdlib writes. Keep it as one rather than inventing a
+                 condition: a synthesised `true` would turn a block into
+                 an infinite loop.
+                */
+                return body;
+            }
+            p.add(n, body);
             p.end_stmt();
             return n;
         }

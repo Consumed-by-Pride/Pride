@@ -56,6 +56,16 @@ const uint NF_ERROR       = 4096;   // error-recovery placeholder
 const uint NF_SYNTHETIC   = 8192;   // compiler-generated, not from source
 const uint NF_ADDR_TAKEN  = 16384;  // `&x` appears somewhere
 const uint NF_TAIL        = 32768;  // tail-call annotated
+/*
+ A `do ... while cond` loop: the body runs BEFORE the first test.
+
+ Carried as a flag on N_EXPR_WHILE rather than as its own node kind
+ because everything else about the two is identical -- one condition, one
+ body, the same break/continue targets -- and a separate kind would mean
+ every consumer needs a second case that does the same thing. The flag is
+ the difference, and it is exactly one bit of difference.
+*/
+const uint NF_POSTTEST    = 65536;  // do { body } while cond
 
 // ── AST vocabulary ──────────────────────────────────────────────────────────
 // Grouped so range checks (is_decl / is_expr / is_pattern / is_type) are

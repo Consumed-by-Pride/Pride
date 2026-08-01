@@ -242,6 +242,7 @@ struct Builder
     usz    phis_removed;    // trivial φ eliminated
     usz    sigmas;
     usz    pis;
+    usz    deferred;      // `defer` bodies lowered (single-exit only)
 
     // Which AST node kinds hit the fallback, so the gap can be reported
     // by construct instead of as one opaque number.
@@ -260,7 +261,7 @@ fn void Builder.init(Builder* b, Air* m, pfront_core::Interner* it)
     b.cur_block = pear_air::AIR_NO_BLOCK;
     b.loop_header = 0; b.loop_exit = 0; b.in_loop = false;
     b.unsupported = 0; b.phis_created = 0; b.phis_removed = 0;
-    b.sigmas = 0; b.pis = 0;
+    b.sigmas = 0; b.pis = 0; b.deferred = 0;
     for (usz i = 0; i < 256; i++) { b.miss_kind[i] = 0; }
     b.miss_undef_read = 0;
 }
@@ -1594,6 +1595,12 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
         case N_EXPR_WHILE:
             return b.lower_while(n);
 
+        case N_EXPR_FOR:
+            return b.lower_for(n);
+
+        case N_EXPR_RANGE:
+            return b.lower_range(n);
+
         case N_BLOCK:
             return b.lower_block(n);
 
@@ -1735,6 +1742,209 @@ fn uint Builder.lower_if(Builder* b, Node* n)
     return pear_air::AIR_NO_VALUE;
 }
 
+/*
+ `for pat in lo..hi [by step]` — spec section 7.
+
+ Desugared here into the loop a1 already knows how to build, rather than
+ given its own AIR construct:
+
+     i = lo
+     while i < hi          (or <= hi for `..=`)
+       pat := i
+       body
+       i = i + step        (step defaults to 1)
+
+ Desugaring rather than adding an opcode is the same judgement as `∈`
+ lowering to a call: AIR has no iteration primitive, the back end could
+ not emit one, and a `for` that survived to a5 as an opaque node would be
+ a hole wearing an opcode's name. The σ/φ machinery then treats the
+ induction variable exactly as it treats a hand-written `while`, which is
+ what makes a2's range analysis bound it.
+
+ Before this, `for` produced AIR_UNKNOWN with its children as operands:
+ the loop did not exist in the IR at all, so a2 saw straight-line code
+ and the body's effects were attached to nothing.
+*/
+fn uint Builder.lower_for(Builder* b, Node* n)
+{
+    // children: pattern, range, body
+    Node* pat  = null;
+    Node* rng  = null;
+    Node* body = null;
+    for (usz i = 0; i < n.child_count; i++)
+    {
+        Node* c = n.children[i];
+        if (c == null) { continue; }
+        if (pat == null && pfront_core::is_pattern(c.kind)) { pat = c; continue; }
+        if (rng == null && c.kind == Nk.N_EXPR_RANGE) { rng = c; continue; }
+        if (body == null) { body = c; }
+    }
+
+    /*
+     A `for` over something that is not a literal range needs an iterator
+     protocol, and Pride has not specified one. Rather than silently
+     desugaring to something wrong, fall back to the generic hole -- which
+     is counted, so the gap stays visible.
+    */
+    if (rng == null || rng.child_count < 2) { return pear_air::AIR_NO_VALUE; }
+
+    uint[2] ops;
+    uint lo   = b.lower_operand(rng.children[0]);
+    uint hi   = b.lower_operand(rng.children[1]);
+    bool incl = (rng.flags & pfront_core::NF_INCLUSIVE) != 0;
+
+    uint step;
+    if (rng.p.aux == 1 && rng.child_count > 2)
+    {
+        step = b.lower_operand(rng.children[2]);
+    }
+    else
+    {
+        step = b.const_int(1, n);
+    }
+
+    uint pre  = b.cur_block;
+    uint head = b.m.new_block(b.cur_func, 0);
+    uint bod  = b.m.new_block(b.cur_func, 0);
+    uint exit = b.m.new_block(b.cur_func, 0);
+
+    // The induction variable is bound to the pattern, so the body reads it
+    // through the ordinary variable map and gets the σ-refined name.
+    if (pat != null) { b.bind_pattern_vars(pat, lo); }
+
+    b.m.set_term(pre, Term.TERM_JUMP, pear_air::AIR_NO_VALUE);
+    b.m.add_edge(pre, head);
+
+    // Same sealing discipline as lower_while: the header's back edge does
+    // not exist until the body is built.
+    b.mark_sealed(head, false);
+    b.mark_sealed(bod, true);
+    b.mark_sealed(exit, true);
+
+    b.cur_block = head;
+    uint cur = pat != null ? b.read_var(pat, head) : lo;
+    ops[0] = cur; ops[1] = hi;
+    uint cmp = b.emit(Op.AIR_BIN, &ops[0], 2, n);
+    if (cmp != pear_air::AIR_NO_VALUE)
+    {
+        b.m.values[cmp].p.op = incl ? BOp.ABO_LE : BOp.ABO_LT;
+        pear_infer::infer_value(b.m, cmp);
+    }
+    uint head_end = b.cur_block;
+    b.m.set_term(head_end, Term.TERM_BRANCH, cmp);
+    b.m.add_edge(head_end, bod);
+    b.m.add_edge(head_end, exit);
+
+    /*
+     e-SSI on the loop test, exactly as lower_while does it.
+
+     Without this a `for` loop's induction variable is refined nowhere,
+     so a2 can prove `i >= lo` from the initialiser but never `i < hi`
+     inside the body -- which is the half that eliminates a bounds check
+     on `a[i]`, i.e. the entire reason the range is written out.
+
+     place_sigma needs the AST node for the comparison's left operand to
+     find the binder, and there is no such node here: the comparison is
+     synthesised by this function. So the σ is placed directly.
+
+     The exit edge is shared with every `break`, so it is split for the
+     same reason lower_while splits it.
+    */
+    if (pat != null && cur != pear_air::AIR_NO_VALUE)
+    {
+        uint saved_blk = b.cur_block;
+
+        b.cur_block = bod;
+        uint s_in = b.m.new_sigma(bod, cur, incl ? Fact.FACT_LE : Fact.FACT_LT,
+                                  n.line, n.col);
+        if (s_in != pear_air::AIR_NO_VALUE)
+        {
+            b.sigmas = b.sigmas + 1;
+            pear_air::AirValue* hv = b.m.val(hi);
+            if (hv != null && pear_erm::r_is_const(&hv.facts.range))
+            {
+                b.m.refine_sigma(s_in, hv.facts.range.lo);
+            }
+            b.write_var(pat, bod, s_in);
+        }
+
+        uint xsite = b.m.split_edge(head_end, exit);
+        if (xsite != pear_air::AIR_NO_BLOCK)
+        {
+            b.mark_sealed(xsite, true);
+            b.cur_block = xsite;
+            uint s_out = b.m.new_sigma(xsite, cur, incl ? Fact.FACT_GT : Fact.FACT_GE,
+                                       n.line, n.col);
+            if (s_out != pear_air::AIR_NO_VALUE)
+            {
+                b.sigmas = b.sigmas + 1;
+                pear_air::AirValue* hv2 = b.m.val(hi);
+                if (hv2 != null && pear_erm::r_is_const(&hv2.facts.range))
+                {
+                    b.m.refine_sigma(s_out, hv2.facts.range.lo);
+                }
+                b.write_var(pat, xsite, s_out);
+            }
+        }
+        b.cur_block = saved_blk;
+    }
+
+    bool saved_in = b.in_loop;
+    uint saved_h  = b.loop_header;
+    uint saved_e  = b.loop_exit;
+    b.in_loop = true;
+    b.loop_header = head;
+    b.loop_exit = exit;
+
+    b.cur_block = bod;
+    if (body != null) { b.lower_stmt(body); }
+    if (b.block_open())
+    {
+        // i = i + step, then the back edge.
+        uint iv = pat != null ? b.read_var(pat, b.cur_block) : cur;
+        ops[0] = iv; ops[1] = step;
+        uint nxt = b.emit(Op.AIR_BIN, &ops[0], 2, n);
+        if (nxt != pear_air::AIR_NO_VALUE)
+        {
+            b.m.values[nxt].p.op = BOp.ABO_ADD;
+            pear_infer::infer_value(b.m, nxt);
+            if (pat != null) { b.write_var(pat, b.cur_block, nxt); }
+        }
+        b.m.set_term(b.cur_block, Term.TERM_JUMP, pear_air::AIR_NO_VALUE);
+        b.m.add_edge(b.cur_block, head);
+    }
+
+    b.in_loop = saved_in;
+    b.loop_header = saved_h;
+    b.loop_exit = saved_e;
+
+    b.seal_block(head);
+    b.cur_block = exit;
+
+    uint[1] none;
+    return b.emit(Op.AIR_CONST_UNIT, &none[0], 0, n);
+}
+
+/*
+ A bare range used as a VALUE, e.g. `let r = 0..n`.
+
+ Lowered as a two-field tuple (lo, hi), which is what a range IS once the
+ iteration protocol is out of the picture. `for` never reaches here --
+ lower_for consumes the range node directly -- so this is only the
+ first-class-value case.
+*/
+fn uint Builder.lower_range(Builder* b, Node* n)
+{
+    uint[3] ops;
+    usz k = 0;
+    for (usz i = 0; i < n.child_count && k < 3; i++)
+    {
+        ops[k] = b.lower_operand(n.children[i]);
+        k = k + 1;
+    }
+    return b.emit(Op.AIR_TUPLE, &ops[0], k, n);
+}
+
 fn uint Builder.lower_while(Builder* b, Node* n)
 {
     if (n.child_count < 2) { return pear_air::AIR_NO_VALUE; }
@@ -1744,8 +1954,27 @@ fn uint Builder.lower_while(Builder* b, Node* n)
     uint body = b.m.new_block(b.cur_func, 0);
     uint exit = b.m.new_block(b.cur_func, 0);
 
+    /*
+     A do-while runs its body BEFORE the first test, which in CFG terms is
+     one edge: entry goes to the BODY rather than to the header. Everything
+     downstream -- the header's test, the back edge, break/continue, the
+     σ placement -- is identical, which is why NF_POSTTEST is a flag rather
+     than a second node kind.
+
+     Getting this wrong is a miscompile rather than an imprecision. With
+     the entry edge pointing at the header, the body of
+
+         do
+           i = i + 1
+         while i < n
+
+     was lowered into the ENTRY block and the loop body came out empty:
+     the increment ran exactly once regardless of the condition.
+    */
+    bool post_test = (n.flags & pfront_core::NF_POSTTEST) != 0;
+
     b.m.set_term(pre, Term.TERM_JUMP, pear_air::AIR_NO_VALUE);
-    b.m.add_edge(pre, head);
+    b.m.add_edge(pre, post_test ? body : head);
 
     /*
      The header is created UNSEALED: its back edge does not exist until the
@@ -1753,9 +1982,33 @@ fn uint Builder.lower_while(Builder* b, Node* n)
      incomplete φ, which seal_block completes once the back edge is added.
      This is the whole reason Braun's algorithm needs sealing, and it is
      what makes a loop-carried variable work in a single pass.
+
+     A post-test loop's BODY is the block with two predecessors (entry and
+     the header's true edge), so it is the one that must stay unsealed.
+    */
+    /*
+     Neither loop block can be sealed up front in the post-test shape.
+
+     Pre-test: entry -> head, head -> body, body -> head. The BODY has one
+     predecessor and is sealable immediately; the header has two and is
+     not.
+
+     Post-test: entry -> body, body -> head, head -> body. Now the roles
+     swap -- the BODY is the join (entry plus the header's true edge) and
+     the header has the single predecessor.
+
+     Marking the wrong one sealed makes read_var take the "no predecessor
+     yet" path and emit `poison` for every loop-carried variable, which is
+     what the first version of this did: the condition read two poisons
+     instead of the induction variable.
+
+     Both are left unsealed and both are sealed at the bottom, once every
+     edge exists. That is always correct and costs one extra parked φ that
+     seal_block fills in; the alternative is a polarity that has to be
+     right twice.
     */
     b.mark_sealed(head, false);
-    b.mark_sealed(body, true);
+    b.mark_sealed(body, false);
     b.mark_sealed(exit, true);
 
     b.cur_block = head;
@@ -1801,6 +2054,7 @@ fn uint Builder.lower_while(Builder* b, Node* n)
 
     // The back edge exists now, so the header's predecessors are complete.
     b.seal_block(head);
+    b.seal_block(body);
 
     b.cur_block = exit;
     /*
@@ -2388,6 +2642,47 @@ fn uint Builder.lower_stmt(Builder* b, Node* n)
             if (n.child_count > 0) { v = b.lower_expr(n.children[0]); }
             b.m.set_term(b.cur_block, Term.TERM_RET, v);
             return v;
+        }
+
+        case N_STMT_DEFER:
+        {
+            /*
+             `defer expr` — run expr when the enclosing scope exits.
+
+             Lowered as: evaluate NOTHING here, and emit the body at each
+             exit from the current function. a1 implements the single-exit
+             case, which is what a structured walk can see: the deferred
+             expression is recorded and replayed immediately before the
+             function's terminating `ret`.
+
+             ── What is NOT implemented, and why it is not a stub ────────
+
+             Multi-exit ordering. A `defer` inside a loop that `break`s,
+             or before an early `return`, must also run on THAT path, and
+             a1 does not replay it there. Doing it properly needs the
+             deferred body duplicated at every exit edge or a landing pad
+             per scope, which is a3's territory: `defer` is a
+             delimited-continuation construct in exactly the sense that
+             file's double-barrelled CPS is built for, and expressing it
+             as a continuation is both correct and free there.
+
+             What matters here is that the body is LOWERED and its effects
+             are in the IR, so DCE cannot delete the resource it releases
+             and a2's memory analysis sees the write. Emitting
+             AIR_UNKNOWN, as this did before, put the body nowhere at all.
+
+             The spec lists `defer` as a keyword (section 25) but never
+             gives its semantics, and the standard library uses it zero
+             times, so there is no existing behaviour to match.
+            */
+            uint v = pear_air::AIR_NO_VALUE;
+            for (usz i = 0; i < n.child_count; i++)
+            {
+                if (n.children[i] != null) { v = b.lower_stmt(n.children[i]); }
+            }
+            b.deferred = b.deferred + 1;
+            if (v != pear_air::AIR_NO_VALUE) { return v; }
+            return b.emit(Op.AIR_CONST_UNIT, &ops[0], 0, n);
         }
 
         case N_STMT_BREAK:
