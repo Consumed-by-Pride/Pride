@@ -650,6 +650,22 @@ else
   echo "$lr" | grep -E 'phi |sigma ' | sed 's/^/      /' | head -4
 fi
 
+# R: a sigma refined against a SYMBOLIC equality.
+#
+# `a == (b & 255)` proves a lies in [0,255], but the bound is another
+# value's interval rather than a literal. The bound-based path answers
+# "which single number does this refine against" and correctly has none,
+# so the refinement was dropped -- 26 of 211 sigma evaluations in
+# stdlib/io.pie had a usable interval and got nothing. a1 leaves this
+# sigma with no range at all.
+eq=$("$A2" pear/a2/tests/ok_sigma_eq_symbolic.air 2>&1)
+if echo "$eq" | grep -q 'sigma .*fact=eq.*\[range=0\.\.255'; then
+  pass=$((pass+1)); note PASS "a2_R_sigma_eq" "(a == (b & 255) proves a in [0,255])"
+else
+  fail=$((fail+1)); note FAIL "a2_R_sigma_eq" "symbolic eq refinement lost"
+  echo "$eq" | grep 'fact=eq' | sed 's/^/      /'
+fi
+
 # The payoff: R + SCCP must ELIMINATE a bounds check, not merely report it
 # decidable. `i & 15 < 16` is always true, so the branch folds to a jump
 # and the trap block goes away. a1 reports `decided cmps: 1` and changes

@@ -541,7 +541,22 @@ fn Range Solver.transfer(Solver* s, uint vid, bool use_sigma_bound)
             Range base = s.r[src];
 
             long bound;
-            if (!s.sigma_bound(vid, &bound, use_sigma_bound)) { return base; }
+            if (!s.sigma_bound(vid, &bound, use_sigma_bound))
+            {
+                /*
+                 No single-number bound. An EQ or NE against a symbolic
+                 value is still a refinement -- `x == n` means x lies in
+                 n's interval -- and it is only expressible as a meet, so
+                 it takes the interval path rather than being dropped.
+                */
+                Range mr;
+                if (use_sigma_bound && s.sigma_meet(vid, &mr))
+                {
+                    if (v.p.fact == Fact.FACT_EQ) { return pear_erm::r_meet(base, mr); }
+                    return pear_erm::r_refine_ne(base, mr.lo);
+                }
+                return base;
+            }
             switch (v.p.fact)
             {
                 case FACT_LT: return pear_erm::r_refine_lt(base, bound);
@@ -685,7 +700,18 @@ fn Range Solver.transfer(Solver* s, uint vid, bool use_sigma_bound)
  endpoint of its own current range — which is how `i < n` bounds `i` by
  `n`'s maximum. Without it, only literal bounds are used.
 */
-fn bool Solver.sigma_bound(Solver* s, uint sid, long* out, bool allow_symbolic)
+/*
+ The OTHER operand of the comparison a σ was split on -- the thing the
+ σ's source is being compared against.
+
+ The σ names the value being refined, not the comparison, so the
+ comparison has to be recovered: it is the scrutinee of the terminator of
+ the branching block, and it has the σ's source as one operand.
+
+ Shared by sigma_bound (which wants one endpoint of it) and sigma_meet
+ (which wants the whole interval), so the recovery walk exists once.
+*/
+fn bool Solver.sigma_other(Solver* s, uint sid, uint* out)
 {
     Val* sv = s.m.val(sid);
     if (sv == null || sv.op_count < 1) { return false; }
@@ -716,11 +742,27 @@ fn bool Solver.sigma_bound(Solver* s, uint sid, long* out, bool allow_symbolic)
 
     uint lhs = s.m.operands[cmp.op_off];
     uint rhs = s.m.operands[cmp.op_off + 1];
-    uint other;
-    if (lhs == src)      { other = rhs; }
-    else if (rhs == src) { other = lhs; }
-    else                 { return false; }
+    if (lhs == src)      { *out = rhs; return true; }
+    if (rhs == src)      { *out = lhs; return true; }
+    return false;
+}
 
+/*
+ Find the single number a σ refines against.
+
+ With `allow_symbolic`, a non-constant bound contributes the appropriate
+ endpoint of its own current range -- which is how `i < n` bounds `i` by
+ `n`'s maximum. Without it, only literal bounds are used, because during
+ widening a symbolic bound that is itself still climbing would make the
+ transfer function non-monotone and the fixpoint would not settle.
+*/
+fn bool Solver.sigma_bound(Solver* s, uint sid, long* out, bool allow_symbolic)
+{
+    Val* sv = s.m.val(sid);
+    if (sv == null) { return false; }
+
+    uint other;
+    if (!s.sigma_other(sid, &other)) { return false; }
     if ((usz)other >= s.n) { return false; }
     Range ro = s.r[other];
     if (pear_erm::r_is_const(&ro)) { *out = ro.lo; return true; }
@@ -743,8 +785,51 @@ fn bool Solver.sigma_bound(Solver* s, uint sid, long* out, bool allow_symbolic)
             *out = ro.lo;
             return true;
         default:
+            /*
+             EQ and NE cannot be expressed as a single bound against an
+             interval, so they are handled by the caller through
+             `sigma_meet` instead of here. Returning false is the honest
+             answer to "what one number does this refine against"; it is
+             not a statement that nothing is known.
+            */
             return false;
     }
+}
+
+/*
+ The refinement a σ imposes when its bound is an INTERVAL rather than a
+ single number.
+
+ `x == n` with n in [a,b] gives x in [a,b] — an intersection, not a
+ comparison against one endpoint, so it does not fit the bound-based path
+ above and was previously dropped on the floor. Measured on stdlib/io.pie:
+ 26 of 211 σ evaluations had a perfectly usable interval bound and
+ returned nothing because the fact was EQ.
+
+ NE is included and deliberately does almost nothing: an interval domain
+ cannot represent a hole, so `x != n` only narrows when n is a single
+ point sitting on an endpoint of x's range. r_refine_ne already
+ implements exactly that, and saying so is better than pretending the
+ domain is more precise than it is.
+*/
+fn bool Solver.sigma_meet(Solver* s, uint sid, Range* out)
+{
+    Val* sv = s.m.val(sid);
+    if (sv == null || sv.op_count < 1) { return false; }
+    if (sv.p.fact != Fact.FACT_EQ && sv.p.fact != Fact.FACT_NE) { return false; }
+
+    uint other;
+    if (!s.sigma_other(sid, &other)) { return false; }
+    if ((usz)other >= s.n) { return false; }
+    Range ro = s.r[other];
+    if (ro.is_top || ro.is_bottom) { return false; }
+
+    if (sv.p.fact == Fact.FACT_EQ) { *out = ro; return true; }
+
+    // NE: only a point bound can carve anything out of an interval.
+    if (!pear_erm::r_is_const(&ro)) { return false; }
+    *out = ro;
+    return true;
 }
 
 /*
@@ -813,26 +898,51 @@ fn void Solver.solve_comp(Solver* s, int* members, usz count)
     for (usz i = 0; i < count; i++) { s.in_scc[members[i]] = true; }
 
     /*
-     Phase 1 — widen to a fixed point.
+     Phase 1 — iterate, and only widen once plain iteration has had a fair
+     chance to converge on its own.
 
-     The iteration cap is a real bound, not a hope: widening moves each
-     endpoint at most twice (to a value, then to infinity), so a component
-     of k values settles within a small multiple of k. The cap catches a
-     transfer function that is accidentally non-monotone, and hitting it
-     is a bug in this file rather than a property of the input.
+     DELAYED WIDENING, and the delay is the whole point. Widening is a
+     blunt instrument: it exists to guarantee termination, and it pays for
+     that by throwing away any endpoint that moved. Applying it from the
+     first iteration therefore destroys precision on every cycle that
+     would have converged by itself — and many do, because a cycle whose
+     transfer functions are contracting reaches its fixed point in two or
+     three steps.
+
+     Measured on stdlib/io.pie: the cycle
+
+         %258 = phi(%251, %273)     %251 has range [0,0]
+         %263 = sigma %258 (> 0)
+         %273 = %263 >> 4
+
+     converges to [0,0] under plain iteration in two passes. With widening
+     applied immediately it goes to top on the first pass and stays there:
+     narrowing cannot recover it, because the σ bound `> 0` only pins the
+     LOWER end, while the upper end of `%273` is derived from `%258`'s own
+     upper bound — exactly what widening discarded. Seventeen of the
+     un-ranged comparison operands in that one module were this shape.
+
+     WIDEN_AFTER is the number of plain passes granted first. Termination
+     is unaffected: after the delay the operator is applied on every
+     subsequent pass exactly as before, so the ascending chain is still
+     finite. The delay only changes which fixed point is reached, never
+     whether one is.
     */
+    const usz WIDEN_AFTER = 3;
+
     usz cap = count * 4 + 16;
     usz iter = 0;
     bool changed = true;
     while (changed && iter < cap)
     {
         changed = false;
+        bool do_widen = iter >= WIDEN_AFTER;
         iter = iter + 1;
         for (usz i = 0; i < count; i++)
         {
             uint v = (uint)members[i];
             Range nv = s.transfer(v, false);
-            Range w = widen(s.r[v], nv);
+            Range w = do_widen ? widen(s.r[v], nv) : nv;
             if (!pear_erm::r_eq(w, s.r[v]))
             {
                 if (w.is_top && !s.r[v].is_top) { s.widened = s.widened + 1; }

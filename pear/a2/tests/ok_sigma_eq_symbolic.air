@@ -1,0 +1,41 @@
+; A sigma refined against a SYMBOLIC equality.
+;
+; `a == (b & 255)` proves `a` lies in [0,255], but the bound is not a
+; literal: it is another value's interval. sigma_bound answers "what one
+; number does this refine against" and correctly has no answer for EQ
+; against an interval, so this refinement was dropped entirely -- 26 of
+; 211 sigma evaluations in stdlib/io.pie alone had a perfectly usable
+; interval bound and returned nothing.
+;
+; sigma_meet handles it as an intersection instead. a1 leaves the eq-sigma
+; with no range at all; a2 must give it [0,255].
+;
+; NE is deliberately NOT symmetric here. An interval domain cannot
+; represent a hole, so `a != (b & 255)` narrows only when the bound is a
+; single point on an endpoint -- which is what r_refine_ne already does,
+; and claiming more would be claiming precision the domain does not have.
+func f entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=_
+    %3 = load.field %2 index=0  [mem=use:0<-0 nonlocal]
+    %4 = load.field %2 index=1  [mem=use:0<-0]
+    %5 = const.int ival=255  [range=255..255 w=64 kb=18446744073709551360/255]
+    %6 = bin %4 %5 op=and  [range=0..255]
+    %7 = bin %3 %6 op=eq  [range=0..1 w=1]
+    branch %7 b2 b3
+  end
+  block b2  ; pred=b1
+    %8 = sigma %3 fact=eq  [nonlocal] origin=%3
+    jump b4
+  end
+  block b3  ; pred=b1
+    %9 = sigma %3 fact=ne origin=%3
+    %10 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    jump b4
+  end
+  block b4  ; pred=b2,b3
+    %11 = phi %8@b2 %10@b3  [nonlocal]
+    ret %11
+  end
+endfunc
