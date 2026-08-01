@@ -336,6 +336,21 @@ struct BidiChecker
     Arena*                 arena;
     char*                  file;
 
+    /*
+     Storage for the rendered type in a mismatch diagnostic.
+
+     A DiagBag keeps `hint` as a bare char* and prints it with %s long
+     after the producing call returns, so this cannot be a local in
+     report_mismatch -- which is where it was. Same dangling-stack-buffer
+     bug as theory_pglcert.c3's witness rendering, found by the same
+     sweep for `char[N]` locals reaching a diag call.
+
+     Unlike that one this needed no torture case to be wrong; it was
+     simply never observed, because --strict-types has to be on for the
+     diagnostic to be emitted at all.
+    */
+    char[128]              mismatch_buf;
+
     int   current_ctx;
     Level current_level;
 
@@ -632,16 +647,20 @@ fn void BidiChecker.report_mismatch(BidiChecker* bc, Node* at, int expected, int
 {
     bc.mismatches = bc.mismatches + 1;
     if (!bc.strict || at == null) { return; }
+    /*
+     `be` stays a local: it is rendered and never escapes. `bg` becomes
+     the hint, so it must outlive this frame and lives on the checker.
+    */
     char[128] be;
-    char[128] bg;
     usz pe = 0;
     usz pg = 0;
     be[0] = 0;
-    bg[0] = 0;
+    bc.mismatch_buf[0] = 0;
     bc.store.write(expected, &be[0], 128, &pe, 0);
-    bc.store.write(got, &bg[0], 128, &pg, 0);
+    bc.store.write(got, &bc.mismatch_buf[0], 128, &pg, 0);
     bc.diags.add(pfront_core::Severity.SEV_ERROR, pfront_core::Phase.PH_RESOLVE,
-                 3301, at.line, at.col, "modal type mismatch", &bg[0], bc.file);
+                 3301, at.line, at.col, "modal type mismatch",
+                 &bc.mismatch_buf[0], bc.file);
 }
 
 // The box environment list, if the quotation carries one.

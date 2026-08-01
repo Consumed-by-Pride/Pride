@@ -419,6 +419,31 @@ struct PglCertifier
     pfront_core::Interner* interner;
     char*                  file;
 
+    /*
+     Storage for the rendered counter-example that report_certificate
+     hands to the diagnostic.
+
+     A DiagBag stores `hint` as a bare char* and prints it with %s long
+     after the producing call has returned, so the buffer CANNOT live on
+     report_certificate's stack -- which is where it was. The frame was
+     gone by print time and the "= help:" line emitted whatever was in
+     that memory: on a 500-arm match it printed raw pointer bytes
+     (\xd0[\xc7x\x08\x7f), which made the compiler's own output invalid
+     UTF-8.
+
+     Found by generating a 500-arm match, not by reading the code: the
+     bug needs enough intervening stack traffic between the render and
+     the print for the frame to be overwritten, so small inputs print
+     plausible-looking text and hide it.
+
+     One buffer per certifier is enough because the diagnostic is emitted
+     immediately and the certifier outlives the whole run. If several
+     witnesses were ever pending at once this would need one per diag,
+     and the assertion in pfront_tests would catch that as the same
+     corruption.
+    */
+    char[256]              witness_buf;
+
     usz matches_certified;
     usz proved_exhaustive;
     usz witnesses_found;
@@ -718,17 +743,20 @@ fn void PglCertifier.report_certificate(PglCertifier* pc, Node* at,
 {
     if (!cert.exhaustive && cert.witness >= 0)
     {
-        char[256] buf;
         usz pos = 0;
-        buf[0] = 0;
-        pc.witnesses.render(cert.witness, pc.interner, &buf[0], 256, &pos, 0);
+        pc.witness_buf[0] = 0;
+        pc.witnesses.render(cert.witness, pc.interner, &pc.witness_buf[0],
+                            256, &pos, 0);
         // A named counter-example is the whole point: "not exhaustive" alone
         // sends the reader hunting.
+        //
+        // The buffer lives on the CERTIFIER, not on this stack frame: the
+        // DiagBag keeps the pointer and prints it after this returns.
         pc.diags.add(pfront_core::Severity.SEV_WARNING,
                      pfront_core::Phase.PH_RESOLVE, 4090,
                      at == null ? 0 : at.line, at == null ? 0 : at.col,
                      "match is not exhaustive; this value is unhandled",
-                     &buf[0], pc.file);
+                     &pc.witness_buf[0], pc.file);
     }
     for (usz i = 0; i < cert.unreachable_count; i++)
     {

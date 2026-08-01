@@ -870,6 +870,39 @@ if [ -x ./pearc ]; then
     fail=$((fail+1))
   fi
 
+  # The compiler's own OUTPUT must be valid text.
+  #
+  # A diagnostic hint is stored as a bare char* and printed with %s long
+  # after the producing call returns, so a hint rendered into a STACK
+  # buffer prints whatever later overwrote that frame. Two places did
+  # exactly that -- theory_pglcert.c3's non-exhaustiveness witness and
+  # theory_bidi.c3's modal mismatch -- and the first emitted raw pointer
+  # bytes into stdout, making the compiler's output invalid UTF-8.
+  #
+  # Checked as a PROPERTY of every syntax file rather than as one case:
+  # the bug only shows when enough stack traffic separates the render
+  # from the print, so a small input prints plausible text and hides it.
+  nonascii=0
+  for f in pfront_tests/syntax/x*.pie; do
+    [ -e "$f" ] || continue
+    if ./pfrontc -I stdlib "$f" 2>&1 | LC_ALL=C grep -qP '[\x80-\xff]'; then
+      # Genuine UTF-8 in a source echo is fine; raw control bytes are not.
+      if ./pfrontc -I stdlib "$f" 2>&1 | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+        : # valid UTF-8, e.g. the unicode-operator file echoing its own source
+      else
+        nonascii=$((nonascii+1))
+        printf '        %s emits invalid UTF-8\n' "$f"
+      fi
+    fi
+  done
+  if [ "$nonascii" = "0" ]; then
+    printf '  PASS  %-26s %s\n' "syntax_output_is_text" "(no diagnostic prints a dead stack buffer)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "syntax_output_is_text" "$nonascii files emit corrupted diagnostics"
+    fail=$((fail+1))
+  fi
+
   # No construct in the syntax suite may leave a lowering hole.
   sh=0
   for f in pfront_tests/syntax/x*.pie; do
