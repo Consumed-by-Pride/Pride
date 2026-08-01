@@ -732,7 +732,7 @@ fn Fact fact_false_of(BOp op)
 // ════════════════════════════════════════════════════════════════════════
 
 /*
- Place σ for a branch, in the SUCCESSOR block.
+ Place σ for a branch, on the EDGE the fact holds on.
 
  The σ belongs at the top of the target block rather than in the branching
  block: it names the value as it is on THAT edge, and putting both edges'
@@ -740,12 +740,41 @@ fn Fact fact_false_of(BOp op)
  the same point — which is precisely what verify.c3's SSI property 4 check
  rejects.
 
+ ── The critical edge ───────────────────────────────────────────────────
+ That reasoning only holds when the target has ONE predecessor. If it has
+ several, the σ asserts its fact on paths that never took the branch, and
+ every consumer of `R` downstream then reasons from a false premise.
+
+ Two shapes in this file produced exactly that, and neither is exotic:
+
+   `if c then ...` with no else — the false edge goes straight to the JOIN,
+   which the true arm also reaches.
+
+   `while c ...` — the false edge goes to the loop exit, which every
+   `break` in the body also targets.
+
+ Measured before the fix: 244 of 2,246 σ across the standard library
+ (10.9%) sat in a block with more than one predecessor. `brk.pie` is the
+ minimal case — the loop exit carried `fact=ge` from `i < n` while also
+ being reachable from a `break` taken when `i == 5`.
+
+ The verifier could not see it. Every structural property still held: the
+ σ had one operand, carried a fact, inherited its origin, and dominated
+ its uses. It was the MEANING that was wrong, which is the failure mode
+ D1 exists to prevent and the reason this is fixed here rather than
+ defended against in a2.
+
+ The fix is to split the edge and put the σ in the new block, so the fact
+ is asserted exactly where it is true. Splitting rather than suppressing
+ also keeps the information: the join then gets a φ merging the refined
+ and unrefined names instead of losing the refinement entirely.
+
  Only a comparison against something produces a useful fact, and only a
  variable operand is worth splitting: splitting a constant renames a value
  whose range is already exact.
 */
 fn void Builder.place_sigma(Builder* b, Node* cond, uint cond_val,
-                            uint target, bool on_true)
+                            uint from, uint target, bool on_true, bool shared)
 {
     if (cond == null || cond.kind != Nk.N_EXPR_BINARY) { return; }
     pear_air::AirValue* cv = b.m.val(cond_val);
@@ -755,33 +784,66 @@ fn void Builder.place_sigma(Builder* b, Node* cond, uint cond_val,
     Fact f = on_true ? fact_true_of(op) : fact_false_of(op);
     if (f == Fact.FACT_NONE) { return; }
 
+    // The binder behind the left operand, if it is a plain variable read.
+    // Checked BEFORE splitting so a branch that yields no σ does not leave
+    // an empty block behind for a2 to clean up.
+    Node* lb = cond.child_count > 0 ? cond.children[0] : null;
+    if (lb == null || lb.kind != Nk.N_EXPR_IDENT || lb.resolved == null) { return; }
+
     uint lhs = b.m.operands[cv.op_off];
     uint rhs = b.m.operands[cv.op_off + 1];
 
-    // The binder behind the left operand, if it is a plain variable read.
-    Node* lb = cond.child_count > 0 ? cond.children[0] : null;
-    if (lb != null && lb.kind == Nk.N_EXPR_IDENT && lb.resolved != null)
+    /*
+     Split when the target is a join. The σ goes in the new single-
+     predecessor block, which is reached only by this edge.
+
+     If the split fails (allocation, or the edge is not there), place no σ
+     at all. Losing a refinement costs precision; asserting it on the wrong
+     path costs correctness.
+    */
+    /*
+     `shared` is the caller's statement that this target WILL gain further
+     predecessors after the σ is placed. It cannot be discovered by looking
+     at pred_count here: at this moment an `if`'s join has exactly one
+     predecessor and only acquires the true arm's edge later, and a loop
+     exit acquires its `break` edges only while the body is being built.
+     Checking pred_count alone therefore split nothing and left the bug in
+     place — the count is right, just not yet.
+
+     So the split is driven by the construct's own knowledge of its shape,
+     and pred_count > 1 is kept as well for the case where the target is
+     already a join on arrival.
+    */
+    uint site = target;
+    pear_air::AirBlock* tb = b.m.blk(target);
+    if (shared || (tb != null && tb.pred_count > 1))
     {
-        uint saved = b.cur_block;
-        b.cur_block = target;
-        uint s = b.m.new_sigma(target, lhs, f, cond.line, cond.col);
-        if (s != pear_air::AIR_NO_VALUE)
-        {
-            b.sigmas = b.sigmas + 1;
-            // Narrow immediately when the bound is a known constant; a
-            // symbolic bound is left for a2.
-            pear_air::AirValue* rv = b.m.val(rhs);
-            if (rv != null && pear_erm::r_is_const(&rv.facts.range))
-            {
-                b.m.refine_sigma(s, rv.facts.range.lo);
-            }
-            // Rebind the variable in the target block so every use there
-            // sees the REFINED name. Without this the σ is dead and the
-            // whole e-SSI apparatus is decorative.
-            b.write_var(lb.resolved, target, s);
-        }
-        b.cur_block = saved;
+        site = b.m.split_edge(from, target);
+        if (site == pear_air::AIR_NO_BLOCK) { return; }
+        // A split block is complete the moment it is made: exactly one
+        // predecessor, which already exists.
+        b.mark_sealed(site, true);
     }
+
+    uint saved = b.cur_block;
+    b.cur_block = site;
+    uint s = b.m.new_sigma(site, lhs, f, cond.line, cond.col);
+    if (s != pear_air::AIR_NO_VALUE)
+    {
+        b.sigmas = b.sigmas + 1;
+        // Narrow immediately when the bound is a known constant; a
+        // symbolic bound is left for a2.
+        pear_air::AirValue* rv = b.m.val(rhs);
+        if (rv != null && pear_erm::r_is_const(&rv.facts.range))
+        {
+            b.m.refine_sigma(s, rv.facts.range.lo);
+        }
+        // Rebind the variable in the σ's block so every use reached
+        // through it sees the REFINED name. Without this the σ is dead and
+        // the whole e-SSI apparatus is decorative.
+        b.write_var(lb.resolved, site, s);
+    }
+    b.cur_block = saved;
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -1522,9 +1584,20 @@ fn uint Builder.lower_if(Builder* b, Node* n)
     b.m.add_edge(entry, bt);
     b.m.add_edge(entry, be != 0 ? be : bj);
 
-    // e-SSI: one σ per outgoing edge, in the successor.
-    b.place_sigma(cond_n, cond, bt, true);
-    b.place_sigma(cond_n, cond, be != 0 ? be : bj, false);
+    /*
+     e-SSI: one σ per outgoing edge, placed where the fact actually holds.
+
+     The true arm and (when present) the else arm are PRIVATE to this `if`:
+     nothing else jumps to them, so the σ can sit at the top of the arm.
+
+     With no else, the false edge goes straight to the JOIN, which the true
+     arm also reaches — a critical edge. Passing `shared` there tells
+     place_sigma to split it, because at this instant the join still has
+     only one predecessor and looking at pred_count would see nothing
+     wrong.
+    */
+    b.place_sigma(cond_n, cond, entry, bt, true, false);
+    b.place_sigma(cond_n, cond, entry, be != 0 ? be : bj, false, be == 0);
 
     b.cur_block = bt;
     uint tv = b.lower_expr(n.children[1]);
@@ -1615,8 +1688,19 @@ fn uint Builder.lower_while(Builder* b, Node* n)
     b.m.add_edge(head_end, body);
     b.m.add_edge(head_end, exit);
 
-    b.place_sigma(cond_n, cond, body, true);
-    b.place_sigma(cond_n, cond, exit, false);
+    /*
+     The body is private to the loop — `continue` targets the header, not
+     the body — so the true-edge σ can sit at its top.
+
+     The exit is every `break`'s target as well as the loop's normal way
+     out, so the false edge is critical whenever the body contains a
+     `break`. Whether it does is not known until the body is lowered, which
+     happens after this point, so the edge is split unconditionally: an
+     extra empty block on a loop exit costs one jump that a2 folds away,
+     while an unsound `i >= n` on the break path costs correctness.
+    */
+    b.place_sigma(cond_n, cond, head_end, body, true, false);
+    b.place_sigma(cond_n, cond, head_end, exit, false, true);
 
     bool saved_in = b.in_loop;
     uint saved_h = b.loop_header;

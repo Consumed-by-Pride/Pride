@@ -544,6 +544,63 @@ else
   fail=$((fail+1)); note FAIL "d3_canonical" "(forward-reference round-trip broken)"
 fi
 
+# ── σ SOUNDNESS: a refinement must only hold where it is true ───────────
+#
+# A σ records the fact that holds on ONE EDGE. If it sits in a block with
+# more than one predecessor, it asserts that fact on paths that never took
+# the branch, and a2's range analysis then narrows ranges on those paths
+# and deletes live code on the strength of it.
+#
+# This was REAL, not hypothetical: 244 of 2,246 σ across the stdlib (10.9%)
+# were placed this way, from two shapes — an `if` with no else, whose false
+# edge runs into the join, and a `while` whose exit is also every `break`'s
+# target. The verifier could not catch it because every STRUCTURAL property
+# still held; only the meaning was wrong.
+#
+# Checked over the whole stdlib rather than on a fixture, because the two
+# bad shapes are ordinary code and a fixture would only prove the fixture.
+sig_tot=0; sig_bad=0
+for f in stdlib/*.pie stdlib/*/*.pie; do
+  [ -e "$f" ] || continue
+  r=$("$PEARC" -I stdlib "$f" 2>/dev/null | awk '
+    /^  block /{np=0; if (match($0,/pred=/)) {s=substr($0,RSTART+5); np=split(s,a,",")}}
+    /= sigma /{tot++; if (np>1) bad++}
+    END{print tot+0, bad+0}')
+  sig_tot=$((sig_tot + $(echo $r | cut -d' ' -f1)))
+  sig_bad=$((sig_bad + $(echo $r | cut -d' ' -f2)))
+done
+if [ "$sig_bad" = "0" ] && [ "$sig_tot" -ge 2000 ]; then
+  pass=$((pass+1)); note PASS "sigma_edge_soundness" "($sig_tot sigmas, 0 on a merge)"
+else
+  fail=$((fail+1)); note FAIL "sigma_edge_soundness" "$sig_bad of $sig_tot sigmas assert a fact at a merge"
+fi
+
+# The split must PRESERVE the refinement, not dodge the problem by dropping
+# the σ. Suppressing it would also score 0 above, so assert the count too:
+# a loop whose exit is shared with a `break` must still yield both the
+# `i >= n` name and the `i == 5` name, merged by a phi at the join.
+cat > /tmp/pear_t_brk.pie <<'PIE'
+mod t
+fn f : i64 -> i64
+  | n ->
+    let mut i = 0i64
+    while i < n
+      if i == 5i64
+        break
+      i = i + 1i64
+    i
+PIE
+bk=$("$PEARC" --verify /tmp/pear_t_brk.pie 2>&1)
+bk_err=$(echo "$bk" | grep 'errors / warnings' | grep -oE '[0-9]+ / [0-9]+' | cut -d' ' -f1)
+bk_sig=$(echo "$bk" | grep -oE 'sigma / pi       : [0-9]+' | grep -oE '[0-9]+$')
+bk_ge=$(echo "$bk" | grep -c 'fact=ge')
+bk_eq=$(echo "$bk" | grep -c 'fact=eq')
+if [ "${bk_err:-1}" = "0" ] && [ "${bk_sig:-0}" -ge 4 ] && [ "$bk_ge" -ge 1 ] && [ "$bk_eq" -ge 1 ]; then
+  pass=$((pass+1)); note PASS "sigma_split_preserves" "($bk_sig sigmas kept, both edges refined)"
+else
+  fail=$((fail+1)); note FAIL "sigma_split_preserves" "err=$bk_err sigmas=$bk_sig ge=$bk_ge eq=$bk_eq"
+fi
+
 # ── D5 property: stage isolation, enforced by grep ──────────────────────
 #
 # PEAR.md D5: no stage after a1 may read a PNode. codegen.c3 has 285

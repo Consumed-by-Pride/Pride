@@ -1208,6 +1208,115 @@ fn void AirModule.add_edge(AirModule* m, uint from, uint to)
     t.pred_count = t.pred_count + 1;
 }
 
+/*
+ Splice a fresh empty block onto the edge `from -> to`, and return it.
+
+ This exists for σ placement, and the bug it fixes was a real one that the
+ verifier could not see.
+
+ A σ records the fact that holds ON ONE EDGE. Placing it at the top of the
+ edge's target block is only sound when that block is reached by no other
+ edge — otherwise the fact is asserted on paths where it does not hold. Two
+ shapes in a1 broke that:
+
+   `if c then ...` with no else, whose false edge goes straight to the JOIN
+   the true arm also reaches, and
+
+   `while c ...`, whose false edge goes to the loop exit that every `break`
+   also targets.
+
+ Measured on the standard library before the fix: 244 of 2,246 σ (10.9%)
+ sat in a block with more than one predecessor. a2's range analysis reads
+ exactly those facts, so it would have narrowed ranges on paths where the
+ comparison never happened and deleted live code on the strength of it.
+
+ Splitting is also the more INFORMATIVE fix, not merely the safe one. With
+ the σ on its own edge, the join gets a φ merging the refined and
+ unrefined names, so
+
+     if x > 100 { x = 0 }
+
+ leaves `x <= 100` provable at the join — the then-arm gives 0, the split
+ edge gives `x <= 100`, and their join is still bounded. Suppressing the σ
+ instead would lose that.
+
+ Successor POSITION is preserved: succ[0] is a branch's then-arm and succ[1]
+ its else-arm, so replacing in place rather than removing and appending is
+ load-bearing.
+*/
+fn uint AirModule.split_edge(AirModule* m, uint from, uint to)
+{
+    AirBlock* f = m.blk(from);
+    AirBlock* t = m.blk(to);
+    if (f == null || t == null) { return AIR_NO_BLOCK; }
+
+    uint mid = m.new_block(f.func, 0);
+    if (mid == AIR_NO_BLOCK) { return AIR_NO_BLOCK; }
+
+    // new_block grows m.blocks and may therefore have reallocated it. Both
+    // earlier pointers are dead; ids are not. This is the same hazard that
+    // made new_pi crash on stdlib/io.pie.
+    f = m.blk(from);
+    t = m.blk(to);
+    if (f == null || t == null) { return AIR_NO_BLOCK; }
+
+    bool replaced = false;
+    for (usz i = 0; i < f.succ_count; i++)
+    {
+        if (f.succ[i] == to) { f.succ[i] = mid; replaced = true; break; }
+    }
+    // No such edge: refuse rather than inventing one. The caller falls back
+    // to placing no σ at all, which is imprecise but never wrong.
+    if (!replaced) { return AIR_NO_BLOCK; }
+
+    // Drop exactly ONE occurrence of `from`: `branch c same same` legally
+    // lists the same predecessor twice and only one edge was redirected.
+    for (usz i = 0; i < t.pred_count; i++)
+    {
+        if (t.pred[i] == from)
+        {
+            for (usz j = i; j + 1 < t.pred_count; j++) { t.pred[j] = t.pred[j + 1]; }
+            t.pred_count = t.pred_count - 1;
+            break;
+        }
+    }
+
+    if (!grow_u32(&m.blocks[mid].pred, &m.blocks[mid].pred_cap, 1))
+    {
+        m.overflowed = true;
+        return AIR_NO_BLOCK;
+    }
+    m.blocks[mid].pred[0] = from;
+    m.blocks[mid].pred_count = 1;
+    m.set_term(mid, AirTerm.TERM_JUMP, AIR_NO_VALUE);
+    m.add_edge(mid, to);
+
+    /*
+     Any φ already in `to` names `from` as the block its operand arrives
+     from. That operand now arrives through `mid`. Missing this would leave
+     a φ naming a block that is no longer a predecessor, which verify.c3
+     rejects outright.
+    */
+    t = m.blk(to);
+    if (t != null)
+    {
+        for (usz i = 0; i < t.value_count; i++)
+        {
+            AirValue* v = m.val(t.values[i]);
+            if (v == null) { continue; }
+            if (v.op != AirOp.AIR_PHI && v.op != AirOp.AIR_MEM_PHI) { continue; }
+            for (usz k = 0; k < v.inc_count; k++)
+            {
+                if (m.phi_blocks[v.inc_off + k] == from)
+                {
+                    m.phi_blocks[v.inc_off + k] = mid;
+                }
+            }
+        }
+    }
+    return mid;
+}
+
 fn void AirModule.set_term(AirModule* m, uint block, AirTerm term, uint value)
 {
     AirBlock* b = m.blk(block);
