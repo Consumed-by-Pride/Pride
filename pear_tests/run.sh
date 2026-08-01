@@ -482,6 +482,38 @@ else
   fail=$((fail+1)); note FAIL "stdlib_coverage" "$sw_fns fns, $cov% coverage (want >=3900 / >=94%)"
 fi
 
+# D3's REAL test: every stdlib module's AIR must survive its own round
+# trip AND still verify.
+#
+# The self-test round-trips hand-built fixtures. That is not the same
+# thing: real a1 output contains constructs the fixtures do not. 85 of 258
+# modules failed this when it was first run, because `is_phi_hole` — a
+# flag verification depends on — was not printable, so a neutralised phi
+# came back as an ordinary const.unit between two phis.
+#
+# If serialised AIR verifies differently from in-memory AIR, then a2
+# reading a .air file sees a different module than a2 reading a1's
+# memory, and D3's promise that stages can be developed against text
+# files is void.
+rt_fail=0; rt_n=0
+for f in $(find stdlib -name '*.pie' | sort); do
+  "$PEARC" -I stdlib "$f" > /tmp/pear_rt.air 2>/dev/null
+  [ -s /tmp/pear_rt.air ] || continue
+  rt_n=$((rt_n+1))
+  if ! "$BIN" /tmp/pear_rt.air >/tmp/pear_rt.log 2>&1; then
+    rt_fail=$((rt_fail+1))
+    if [ "$rt_fail" = "1" ]; then
+      echo "      first failure: $f"
+      grep '    - ' /tmp/pear_rt.log | sed 's/^/        /' | head -3
+    fi
+  fi
+done
+if [ "$rt_fail" = "0" ] && [ "$rt_n" -ge 250 ]; then
+  pass=$((pass+1)); note PASS "stdlib_roundtrip" "($rt_n modules re-parse and verify)"
+else
+  fail=$((fail+1)); note FAIL "stdlib_roundtrip" "$rt_fail of $rt_n modules failed their round trip"
+fi
+
 # ── D3 property: the text form is CANONICAL ─────────────────────────────
 #
 # Printed ids are assigned in traversal order, not construction order, so

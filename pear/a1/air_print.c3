@@ -217,6 +217,10 @@ fn void Numbering.build(Numbering* nb, Air* m)
             if (b == null) { continue; }
             for (usz vi = 0; vi < b.value_count; vi++)
             {
+                // Skip holes here as well, so printed ids stay contiguous
+                // and the numbering matches what is actually emitted.
+                Val* hv = m.val(b.values[vi]);
+                if (hv != null && hv.is_phi_hole) { continue; }
                 nb.assign(b.values[vi]);
             }
         }
@@ -529,6 +533,27 @@ fn void print_block(Out* o, Air* m, Numbering* nb, uint bid, bool with_origin)
 
     for (usz i = 0; i < b.value_count; i++)
     {
+        /*
+         PHI HOLES ARE NOT SERIALISED.
+
+         remove_trivial_phi neutralises a trivial φ in place and marks the
+         slot, because deleting from the middle of a block invalidates
+         every position other code holds DURING construction. Nothing
+         references the slot afterwards.
+
+         That constraint does not apply to the text form, and emitting the
+         hole was actively harmful: `is_phi_hole` is not printable, so
+         after a round trip the hole became an ordinary const.unit sitting
+         between two φ and verification failed with "phi appears after a
+         non-phi value". 85 of 258 stdlib modules could not survive their
+         own round trip.
+
+         That breaks D3's promise directly — a2 reading a .air file would
+         see a different module than a2 reading a1's memory. Omitting the
+         holes removes the concept from the serialised form entirely.
+        */
+        pear_air::AirValue* hv = m.val(b.values[i]);
+        if (hv != null && hv.is_phi_hole) { continue; }
         print_value(o, m, nb, b.values[i], with_origin);
     }
     print_term(o, m, nb, bid);
