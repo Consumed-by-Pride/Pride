@@ -142,7 +142,16 @@ fn void Verifier.walk(Verifier* v, Node* n, Node* expect_parent, int depth)
     if (expect_parent != null && n.parent != expect_parent) { v.bad_parent = v.bad_parent + 1; }
     if (n.kind == Nk.N_EXPR_IDENT)
     {
-        if (n.resolved == null && n.sym == null) { v.unresolved_idents = v.unresolved_idents + 1; }
+        // A module-path PREFIX (`os` in `os.linux.malloc(n)`) names a module,
+        // not a value, so it has no declaration to point `resolved`/`sym` at.
+        // The resolver records that it was accounted for by setting
+        // NF_RESOLVED (see mark_chain_resolved). Counting purely on the two
+        // pointers reported 3,389 phantom "unresolved" identifiers across the
+        // stdlib while the compiler emitted ZERO errors -- a number that
+        // invited exactly the wrong conclusion about front-end health.
+        bool accounted = n.resolved != null || n.sym != null
+                      || (n.flags & pfront_core::NF_RESOLVED) != 0;
+        if (!accounted) { v.unresolved_idents = v.unresolved_idents + 1; }
         else { v.resolved_idents = v.resolved_idents + 1; }
     }
     if (pfront_core::is_type(n.kind) && n.kind == Nk.N_TY_NAME)

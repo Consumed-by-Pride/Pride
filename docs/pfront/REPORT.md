@@ -1,6 +1,6 @@
 # `pfront` — measured results
 
-**Verified 2026-07-31** · c3c 0.8.1 · LLVM 22.1.8 · Debian 13 trixie x86-64
+**Verified 2026-08-01** · c3c 0.8.1 · LLVM 22.1.8 · Debian 13 trixie x86-64
 
 Every number here was produced by running the compiler. Nothing is estimated.
 
@@ -10,11 +10,21 @@ Every number here was produced by running the compiler. Nothing is estimated.
 
 | Metric | Value | Baseline |
 |---|---:|---:|
-| `pfront` regression suite | **61 / 61** | 43 at session start |
-| stdlib self-clean | **119 / 253** | **4** before the rewrite |
+| `pfront` regression suite | **100 / 100** | 43 at session start |
+| stdlib self-clean | **258 / 258** | **4** before the rewrite |
+| megaload (all 258 modules, one unit) | **0 errors**, 164 ms | 432 errors |
+| identifiers accounted for | **33,508 / 33,508 (100%)** | — |
+| AST invariant violations | **0** across 258 files | — |
 | legacy conformance | **261 / 262** | unchanged (frozen) |
-| front-end LoC | 32,440 across 34 modules | — |
+| legacy exec tests | **44 / 47** | unchanged (frozen) |
+| front-end LoC | 34,423 across 35 modules | — |
 | stale code deleted | **34,020 lines** | — |
+
+The megaload number is the one that matters. Several bugs were invisible
+per-file and appeared only when every module was loaded into a single
+compilation unit — a file that is clean alone but breaks in a large graph is
+the hardest kind to place, so that configuration is now a permanent
+regression assertion rather than an occasional manual check.
 
 ---
 
@@ -34,15 +44,22 @@ declaration-heavy modules are not.
 
 ---
 
-## Optimizer, on the real stdlib (253 files)
+## Optimizer, on the real stdlib (258 files)
 
 ```
-useless exprs    : 115        dead stores      :  44
-algebraic        :   9        const-fold arith :   1
-branches folded  :   1        unreachable      :   0
-blocks flattened :   0        files changed    :  35 / 253
-nodes 125,481 -> 125,039      (442 removed, 0.3%)
+useless exprs    :   5        dead stores      :  28
+algebraic        :   8        branches folded  :   1
+unreachable      :   0        loops removed    :   0
+blocks flattened :   0        files changed    :  18 / 258
+nodes 127,268 -> 127,070      (198 removed, 0.16%)
 ```
+
+Note this is *lower* than the 442 nodes (0.3%) reported previously, over
+*more* files. Nothing regressed: the earlier sweep ran before several parser
+fixes, and code that had been silently mis-parsed (whole functions reparented
+into their predecessors — see the hanging-indent bug) is now shaped correctly,
+which leaves the optimizer less accidental debris to remove. A smaller number
+here is the honest consequence of a more correct parse.
 
 `blocks flattened : 0` is honest: that pass needs a folded branch to expose a
 spliceable block, and stdlib code has none. It is exercised by the regression
@@ -62,13 +79,13 @@ suite, so it is tested, but its real-world value is **unproven**.
 ## Semi-pruned liveness, on the real stdlib
 
 ```
-3,788 functions analysed · 13,804 basic blocks · 0 capacity overflows
-7,059 variables non-local (need a φ)
-6,497 variables block-local (need none)
-→ 47% of all variables need NO φ
+14,340 basic blocks analysed · 0 capacity overflows
+ 5,967 variables non-local (need a φ)
+ 6,714 variables block-local (need none)
+→ 53% of all variables need NO φ
 ```
 
-That 47% is the semi-pruned payoff, measured rather than cited.
+That 53% is the semi-pruned payoff, measured rather than cited.
 
 The classification is asserted in both directions, because a pass that put
 everything in one bucket would still "run":
@@ -175,19 +192,16 @@ deletions.
    `codegen.c3` still consume the legacy `ast::AstNode`, not
    `pfront_core::PNode`. This is the next major piece of work.
 
-2. **119 / 253 stdlib modules, not 253.** The remaining 134 have real parse
-   failures. One known layout case is documented and reproducible: a wrapped
-   condition whose continuation line is indented to the same column as the
-   body —
-
-   ```pride
-   if (a) ||
-      (b)
-     body
-   ```
-
-   The lexer realigns its indent stack so no INDENT is emitted for `body`.
-   Four fixes were attempted and all reverted. Affects ~39 stdlib sites.
+2. **~~119 / 253 stdlib modules~~ — now 258 / 258.** The wrapped-condition
+   layout case referred to here is fixed, as is the deeper defect behind it:
+   the lexer's hanging-indent realign *overwrote* an enclosing indent level
+   instead of pushing a new one, destroying live blocks so their closing
+   DEDENT was never emitted. Two wrapped `else if` links were enough to walk
+   the indent stack down to index 0 and clobber the file level, after which
+   the next top-level function was parsed **inside** its predecessor with
+   **zero diagnostics**. That silence is why an error-count test could not
+   catch it, and why the regression assertions here are structural (AST depth,
+   top-level declaration counts, binder identity) rather than count-based.
 
 3. **Liveness is intra-procedural.** A store to a variable captured by a
    closure or reachable through a pointer is conservatively kept.
@@ -205,11 +219,16 @@ deletions.
 
 ```sh
 /tmp/c3/c3c compile pfront/*.c3 pfront/theory/*.c3 -o pfrontc
-chmod +x pfrontc
-bash pfront_tests/run.sh          # 61/61, then the 253-module sweep
+chmod +x pfrontc                  # workspace snapshots drop the exec bit
+bash pfront_tests/run.sh          # 100/100, then the 258-module sweep
+bash experiments/run.sh           # 14/14
 
 # legacy, must stay green
-bash build.sh
 export PATH=/usr/lib/llvm-22/bin:$PATH
+bash build.sh
 bash conformance/run.sh           # 261/262
+bash tests/run_exec.sh            # 44/47
 ```
+
+`pfront_tests/run.sh` builds the megaload file itself, so the whole-graph
+check runs on every invocation — it is not a separate manual step.

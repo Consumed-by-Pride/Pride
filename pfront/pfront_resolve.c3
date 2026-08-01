@@ -1160,6 +1160,14 @@ fn bool Resolver.try_resolve_module_chain(Resolver* r, Node* e)
                     e.flags = e.flags | pfront_core::NF_RESOLVED;
                     r.resolved_count = r.resolved_count + 1;
                     if (s.decl != null) { s.decl.flags = s.decl.flags | pfront_core::NF_USED; }
+                    // Flag the RECEIVER chain too. `os` in `os.linux.PROT_READ`
+                    // names a module and has no declaration to point at, so
+                    // without this it was reported as an unresolved identifier
+                    // even though the whole chain resolved. The qualified-CALL
+                    // path already did this; the value path did not, which is
+                    // why `os.linux.malloc(n)` looked clean but
+                    // `os.linux.PROT_READ` did not.
+                    mark_chain_resolved(e.child(0));
                     return true;
                 }
             }

@@ -22,7 +22,8 @@ exports collected before any resolution (so import order is irrelevant), and
 identifiers interned at parse time so cross-module lookup is a `uint`
 comparison rather than a `memcmp`.
 
-**Result: 249 / 258 stdlib modules self-clean, from a baseline of 4.**
+**Result: 258 / 258 stdlib modules self-clean, from a baseline of 4** — and all
+258 load into a single compilation unit with 0 errors in 164 ms.
 
 ---
 
@@ -31,7 +32,7 @@ comparison rather than a `memcmp`.
 ```sh
 /tmp/c3/c3c compile pfront/*.c3 pfront/theory/*.c3 -o pfrontc
 chmod +x pfrontc                # snapshots drop the exec bit
-bash pfront_tests/run.sh        # 61 pass / 0 fail
+bash pfront_tests/run.sh        # 100 pass / 0 fail
 ```
 
 ---
@@ -175,4 +176,7 @@ stages 102ms · verifier 11ms · TOTAL 1,038ms
    stores removed), the CFG back edge, the semi-pruned split, and the full
    fold→flatten→unreachable cascade.
 
-Then a **253-module stdlib sweep** reporting self-clean count.
+Then a **258-module stdlib sweep** reporting self-clean count, plus a
+**megaload** assertion that loads every stdlib module into one compilation
+unit — the configuration that exposes alias/module and local/module collisions
+that are invisible file-by-file.

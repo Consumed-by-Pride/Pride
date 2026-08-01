@@ -117,8 +117,8 @@ a false positive miscompiles.
 
 ```
 $ bash pfront_tests/run.sh
-pfront regression: pass=37 fail=0
-stdlib self-clean: 119 / 253   (baseline before rewrite: 4)
+pfront regression: pass=100 fail=0
+stdlib self-clean: 258 / 258   (baseline before rewrite: 4)
 ```
 
 | Test | Asserts |

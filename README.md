@@ -53,7 +53,8 @@ work has not broken anything.
 
 The rewrite exists because the legacy front end had no module system: `use`
 parsed but never opened a second file, so only 4 of 257 stdlib modules
-compiled. `pfront` gets **249 / 258**.
+compiled. `pfront` gets **258 / 258**, and loads all of them into one
+compilation unit with 0 errors.
 
 ---
 

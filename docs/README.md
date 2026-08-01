@@ -78,12 +78,13 @@ module system**: `use` was lexed, parsed and hoisted, but the compiler never
 opened a second file and exited 0 silently. Only **4 of 257** stdlib modules
 were compilable, and all four were empty shells.
 
-`pfront` currently gets **249 / 258** stdlib modules self-clean.
+`pfront` gets **258 / 258** stdlib modules self-clean, and loads all 258 into
+a single compilation unit with **0 errors** in 164 ms.
 
 ```sh
 /tmp/c3/c3c compile pfront/*.c3 pfront/theory/*.c3 -o pfrontc
 chmod +x pfrontc
-bash pfront_tests/run.sh   # 84/84
+bash pfront_tests/run.sh   # 100/100
 ```
 
 ---

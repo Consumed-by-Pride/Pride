@@ -311,6 +311,24 @@ else
   fail=$((fail+1)); printf '  FAIL  %-26s megaload: %s errors over %s modules\n' "megaload" "$mega_err" "$mega_mod"
 fi
 
+# Every identifier in the standard library must be ACCOUNTED FOR: bound to a
+# declaration, or flagged as a module-path segment. A module prefix (`os` in
+# `os.linux.PROT_READ`) has no declaration to point at, and the value path
+# used to leave it unflagged -- reporting 3,389 phantom unresolved names
+# across the stdlib while emitting zero errors. Sweep a representative set
+# of heavy modules and require a clean zero.
+sweep_unres=0
+for m in stdlib/mem.pie stdlib/io.pie stdlib/ast.pie stdlib/fmt/parse_float.pie \
+         stdlib/hash/wyhash.pie stdlib/os/linux/io_uring.pie stdlib/pride/rewrite.pie; do
+  u=$("$BIN" "$m" -I stdlib --plain 2>&1 | grep 'idents unresolved' | grep -oE '[0-9]+')
+  sweep_unres=$((sweep_unres + ${u:-0}))
+done
+if [ "$sweep_unres" = "0" ]; then
+  pass=$((pass+1)); printf '  PASS  %-26s (7 heavy modules: 0 unaccounted idents)\n' "ident_accounting"
+else
+  fail=$((fail+1)); printf '  FAIL  %-26s %s unaccounted identifiers\n' "ident_accounting" "$sweep_unres"
+fi
+
 # The purity interlock: exactly ONE of two dead stores may be removed. The
 # other has a function call as its initializer and MUST survive. This is the
 # single most important correctness property of the DCE pass.
