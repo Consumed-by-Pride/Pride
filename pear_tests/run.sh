@@ -263,6 +263,68 @@ else
   fail=$((fail+1)); note FAIL "build_overflow_ops" "only $n_ovf of 3 distinct opcodes"
 fi
 
+# MATCH must lower to a real decision chain, not a placeholder. This was
+# the single largest unimplemented construct; asserting the phi and the
+# per-arm tests stops it silently regressing to a stub.
+cat > /tmp/pear_t_match.pie <<'PIE'
+mod t
+enum Color
+  Red
+  Green
+fn f : (Color, i64) -> i64
+  | (c, n) ->
+    match c
+    | Color.Red -> 1i64
+    | Color.Green -> n
+    | _ -> 0i64
+PIE
+mt=$("$PEARC" --verify /tmp/pear_t_match.pie 2>&1)
+mt_err=$(echo "$mt" | grep 'errors / warnings' | grep -oE '[0-9]+ / [0-9]+' | cut -d' ' -f1)
+mt_tests=$(echo "$mt" | grep -c 'op=eq')
+mt_phi=$(echo "$mt" | grep -c 'phi ')
+mt_unk=$(echo "$mt" | grep -c '= unknown')
+if [ "${mt_err:-1}" = "0" ] && [ "$mt_tests" -ge 2 ] && [ "$mt_phi" -ge 1 ] && [ "$mt_unk" = "0" ]; then
+  pass=$((pass+1)); note PASS "build_match" "($mt_tests arm tests, phi at join, 0 unknown)"
+else
+  fail=$((fail+1)); note FAIL "build_match" "errors=$mt_err tests=$mt_tests phi=$mt_phi unknown=$mt_unk"
+fi
+
+# Tuple destructuring in a `let` must bind every component. Matching only
+# a bare identifier left them unwritten, and every later use became an
+# undefined read -- 104 holes in siphash.pie from this alone.
+cat > /tmp/pear_t_tuple.pie <<'PIE'
+mod t
+fn pair : i64 -> (i64, i64)
+  | n -> (n, n)
+fn use_pair : i64 -> i64
+  | n ->
+    let (a, b) = pair(n)
+    a + b
+PIE
+tp=$("$PEARC" /tmp/pear_t_tuple.pie 2>&1)
+if ! echo "$tp" | grep -q '= unknown'; then
+  pass=$((pass+1)); note PASS "build_tuple_let" "(let (a,b) = f() binds both)"
+else
+  fail=$((fail+1)); note FAIL "build_tuple_let" "tuple binders left undefined"
+fi
+
+# A top-level function used as a value must be a func.ref, not an
+# undefined variable read. This was 3,104 of 3,466 holes: every `f(x)`
+# where f is an ordinary top-level function.
+cat > /tmp/pear_t_fnref.pie <<'PIE'
+mod t
+fn helper : i64 -> i64
+  | x -> x + 1i64
+fn caller : i64 -> i64
+  | n -> helper(n)
+PIE
+fr=$("$PEARC" /tmp/pear_t_fnref.pie 2>&1)
+if echo "$fr" | grep -q 'func.ref' && ! echo "$fr" | grep -q '= unknown'; then
+  pass=$((pass+1)); note PASS "build_func_ref" "(top-level fn reference resolved)"
+else
+  fail=$((fail+1)); note FAIL "build_func_ref" "function reference not lowered"
+fi
+
 # ── THE REAL TEST: the whole standard library ───────────────────────────
 #
 # 258 modules through pfront and into AIR. Asserts three things a small
@@ -294,9 +356,45 @@ else
   fail=$((fail+1)); note FAIL "stdlib_verify" "$sw_err modules produced invalid AIR"
 fi
 
-# Coverage, reported whether flattering or not. 95% is the current number;
-# the gap is dominated by `match`, which is not lowered at all.
+# COVERAGE MUST BE TOTAL. Not "high" — total.
+#
+# An AIR_UNKNOWN is a hole: a construct a1 could not translate. Any number
+# above zero means some real Pride code has no lowering, and a coverage
+# PERCENTAGE invites shipping the remainder. Counting per-value also
+# flattered the result badly — 95% of values was 56% of FUNCTIONS, because
+# holes cluster and one unknown ruins the function containing it.
+#
+# So this asserts two absolutes: zero unknowns anywhere, and every function
+# fully lowered.
+#
+# AIR_POISON is NOT counted against this. It marks a read in a block with
+# no predecessors, where no reaching definition exists and none can. That
+# is unreachable code, not an untranslated construct, and a2 deletes it.
 cov=$(( (sw_vals - sw_unsup) * 100 / (sw_vals > 0 ? sw_vals : 1) ))
+
+sw_unknown=0; sw_fn_total=0; sw_fn_clean=0
+for f in $(find stdlib -name '*.pie' | sort); do
+  air=$(timeout 20 "$PEARC" -I stdlib "$f" 2>/dev/null)
+  sw_unknown=$((sw_unknown + $(echo "$air" | grep -c '= unknown')))
+  sw_fn_total=$((sw_fn_total + $(echo "$air" | grep -c '^func ')))
+  sw_fn_clean=$((sw_fn_clean + $(echo "$air" | awk '
+      /^func /{f=1; bad=0}
+      /= unknown/{if(f) bad=1}
+      /^endfunc/{if(f && !bad) c++; f=0}
+      END{print c+0}')))
+done
+
+if [ "$sw_unknown" = "0" ]; then
+  pass=$((pass+1)); note PASS "stdlib_no_unknown" "(0 AIR_UNKNOWN across $sw_vals values)"
+else
+  fail=$((fail+1)); note FAIL "stdlib_no_unknown" "$sw_unknown untranslated constructs remain"
+fi
+
+if [ "$sw_fn_clean" = "$sw_fn_total" ] && [ "$sw_fn_total" -ge 4000 ]; then
+  pass=$((pass+1)); note PASS "stdlib_fn_complete" "($sw_fn_clean/$sw_fn_total functions fully lowered)"
+else
+  fail=$((fail+1)); note FAIL "stdlib_fn_complete" "$sw_fn_clean/$sw_fn_total fully lowered"
+fi
 # Threshold set just under the measured 95%. Deliberately tight: a
 # regression that reintroduced the hardcoded-token bug still showed 92%,
 # so a loose bar would have let it through as "fine".

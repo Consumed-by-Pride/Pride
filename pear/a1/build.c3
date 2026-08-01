@@ -221,6 +221,7 @@ struct Builder
     // Which AST node kinds hit the fallback, so the gap can be reported
     // by construct instead of as one opaque number.
     usz[256] miss_kind;
+    usz      miss_undef_read;
 }
 
 fn void Builder.init(Builder* b, Air* m, pfront_core::Interner* it)
@@ -236,6 +237,7 @@ fn void Builder.init(Builder* b, Air* m, pfront_core::Interner* it)
     b.unsupported = 0; b.phis_created = 0; b.phis_removed = 0;
     b.sigmas = 0; b.pis = 0;
     for (usz i = 0; i < 256; i++) { b.miss_kind[i] = 0; }
+    b.miss_undef_read = 0;
 }
 
 fn void Builder.note_unsupported(Builder* b, Nk k)
@@ -361,15 +363,24 @@ fn uint Builder.read_var(Builder* b, Node* binder, uint block)
     else if (blk.pred_count == 0)
     {
         /*
-         An undefined read: the variable has no definition on any path to
-         here. Pride is untyped and the compiler must never reject a
-         program, so this becomes an explicit AIR_UNKNOWN rather than an
-         error. It is counted, so the number is visible.
+         No predecessors, and not the entry block: this block is
+         UNREACHABLE. A `while` whose body always breaks, or an arm after
+         an irrefutable pattern, leaves one behind; a2's DCE removes them.
+
+         A variable read here has no reaching definition and never can,
+         because no path arrives. That is not a lowering gap — there is
+         nothing to lower — so it must not be counted as one. Emitting
+         AIR_UNKNOWN and calling it "unsupported" inflated the gap with
+         code that will be deleted before it is ever examined.
+
+         `poison` says exactly the right thing: any value is acceptable
+         because control cannot get here. It is distinct from AIR_UNKNOWN,
+         which means "a1 could not translate this" — conflating the two is
+         how a coverage number stops meaning anything.
         */
         uint[1] none;
-        val = b.m.new_value(block, Op.AIR_UNKNOWN, &none[0], 0,
+        val = b.m.new_value(block, Op.AIR_POISON, &none[0], 0,
                             pear_air::AIR_NO_ORIGIN, 0, 0);
-        b.unsupported = b.unsupported + 1;
         b.write_var(binder, block, val);
         return val;
     }
@@ -560,6 +571,35 @@ fn void Builder.seal_block(Builder* b, uint block)
 // HELPERS
 // ════════════════════════════════════════════════════════════════════════
 
+/*
+ Is this binder declared at MODULE scope rather than inside a function?
+
+ Walks the parent chain: reaching a function or a clause means local,
+ reaching the program or module node means global. Checking the node kind
+ alone cannot tell them apart — a module-level `let` and a function-body
+ `let` are both N_DECL_LET with an N_PAT_IDENT child.
+*/
+fn bool is_module_level(Node* binder)
+{
+    Node* cur = binder;
+    usz guard = 0;
+    while (cur != null && guard < 64)
+    {
+        guard = guard + 1;
+        if (cur.kind == Nk.N_DECL_FN || cur.kind == Nk.N_CLAUSE
+            || cur.kind == Nk.N_EXPR_LAMBDA || cur.kind == Nk.N_MATCH_ARM
+            || cur.kind == Nk.N_HANDLER_ARM)
+        {
+            return false;
+        }
+        if (cur.kind == Nk.N_PROGRAM || cur.kind == Nk.N_MODULE) { return true; }
+        cur = cur.parent;
+    }
+    // No parent chain at all: treat as local, which keeps the old
+    // behaviour for a synthesised binder rather than inventing a global.
+    return false;
+}
+
 fn uint Builder.emit(Builder* b, Op op, uint* ops, usz n, Node* src)
 {
     int line = src == null ? 0 : src.line;
@@ -590,6 +630,7 @@ fn uint Builder.lower_operand(Builder* b, Node* n)
     if (v != pear_air::AIR_NO_VALUE) { return v; }
     uint[1] none;
     b.unsupported = b.unsupported + 1;
+    if (n != null) { b.note_unsupported(n.kind); }
     return b.emit(Op.AIR_UNKNOWN, &none[0], 0, n);
 }
 
@@ -804,21 +845,175 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
             return b.emit(Op.AIR_CONST_UNIT, &ops[0], 0, n);
 
         case N_EXPR_IDENT:
+        case N_EXPR_PATH:
         {
             /*
-             A resolved identifier reads its binder's current version. An
-             UNRESOLVED one is not an error — Pride is untyped and pfront
-             deliberately leaves module-path segments and some names
-             unbound — so it becomes a named unknown rather than a failure.
+             Route by WHAT THE NAME RESOLVES TO, not by assuming it is a
+             local.
+
+             The original code sent every resolved identifier through
+             read_var. That is only correct for a LOCAL BINDER — a
+             parameter, a `let`, a pattern binder. A reference to a
+             top-level function, a `const`, a `static` or an enum variant
+             is not in the SSA variable map, so read_var fell through to
+             its undefined-variable arm and produced AIR_UNKNOWN.
+
+             That single mistake accounted for 3,104 of 3,466 unknowns
+             across the stdlib: every `f(x)` where `f` is an ordinary
+             top-level function. It is why `align_up(p as i64, a)` lowered
+             with an unknown callee.
             */
-            if (n.resolved != null)
+            Node* d = n.resolved;
+            if (d == null)
             {
-                uint v = b.read_var(n.resolved, b.cur_block);
-                if (v != pear_air::AIR_NO_VALUE) { return v; }
+                // Genuinely unbound. Pride is untyped and pfront leaves
+                // module-path segments unresolved on purpose, so this is
+                // a named external reference, not an error.
+                uint id = b.emit(Op.AIR_GLOBAL_ADDR, &ops[0], 0, n);
+                if (id != pear_air::AIR_NO_VALUE) { b.m.values[id].p.name = n.name_id; }
+                return id;
             }
-            uint id = b.emit(Op.AIR_GLOBAL_ADDR, &ops[0], 0, n);
-            if (id != pear_air::AIR_NO_VALUE) { b.m.values[id].p.name = n.name_id; }
-            return id;
+
+            switch (d.kind)
+            {
+                case N_PAT_IDENT:
+                case N_DECL_PARAM:
+                case N_DECL_LET:
+                {
+                    /*
+                     A binder — but not necessarily a LOCAL one.
+
+                     `let x = ...` at module scope is a mutable global and
+                     resolves to exactly the same N_PAT_IDENT as a function
+                     local. Sending it to read_var found nothing (it was
+                     never written in any block) and produced AIR_UNKNOWN.
+                     That was 291 of the remaining 315 holes, all of them
+                     module-level state like `crc32_table_ready`.
+
+                     Tell them apart by SCOPE, not by node kind: a binder
+                     whose enclosing declaration chain reaches the program
+                     root without passing a function is a global, and a
+                     global is memory.
+                    */
+                    if (is_module_level(d))
+                    {
+                        uint a = b.emit(Op.AIR_GLOBAL_ADDR, &ops[0], 0, n);
+                        if (a == pear_air::AIR_NO_VALUE) { return a; }
+                        b.m.values[a].p.name = d.name_id != 0 ? d.name_id : n.name_id;
+                        b.m.values[a].facts.nullness = pear_erm::Nullness.NULL_NEVER;
+                        ops[0] = a;
+                        return b.emit(Op.AIR_LOAD_PTR, &ops[0], 1, n);
+                    }
+
+                    uint v = b.read_var(d, b.cur_block);
+                    if (v != pear_air::AIR_NO_VALUE) { return v; }
+
+                    /*
+                     A genuine local read on a path where it was never
+                     written. Pride is untyped and never rejects, so this
+                     stays an explicit hole rather than an error — but it
+                     is a REAL one, so keep it countable.
+                    */
+                    b.unsupported = b.unsupported + 1;
+                    b.miss_undef_read = b.miss_undef_read + 1;
+                    return b.emit(Op.AIR_UNKNOWN, &ops[0], 0, n);
+                }
+
+                case N_DECL_FN:
+                case N_DECL_EXTERN_FN:
+                {
+                    uint id = b.emit(Op.AIR_FUNC_REF, &ops[0], 0, n);
+                    if (id != pear_air::AIR_NO_VALUE)
+                    {
+                        b.m.values[id].p.name = d.name_id != 0 ? d.name_id : n.name_id;
+                        // A function address is never null.
+                        b.m.values[id].facts.nullness = pear_erm::Nullness.NULL_NEVER;
+                    }
+                    return id;
+                }
+
+                case N_DECL_CONST:
+                {
+                    /*
+                     A `const` with a literal initialiser is FOLDED here.
+                     Emitting a const.ref and leaving the value for a2
+                     would mean the range lattice starts from nothing on
+                     every constant in the program — and R's whole value
+                     comes from constants being the base case.
+                    */
+                    Node* init = null;
+                    for (usz ci = 0; ci < d.child_count; ci++)
+                    {
+                        Node* c = d.children[ci];
+                        if (c != null && pfront_core::is_expr(c.kind)) { init = c; }
+                    }
+                    if (init != null && init.kind == Nk.N_EXPR_INT)
+                    {
+                        return b.const_int((long)init.p.ival, init);
+                    }
+                    if (init != null && init.kind == Nk.N_EXPR_BOOL)
+                    {
+                        uint id = b.emit(Op.AIR_CONST_BOOL, &ops[0], 0, n);
+                        if (id != pear_air::AIR_NO_VALUE)
+                        {
+                            b.m.values[id].p.ival = (long)init.p.ival;
+                            b.m.values[id].facts.range = pear_erm::r_range(0, 1);
+                            b.m.values[id].facts.width = 1;
+                        }
+                        return id;
+                    }
+                    // Non-literal initialiser (an expression over other
+                    // consts): name it, and let a2 fold it once it has the
+                    // whole module.
+                    uint id = b.emit(Op.AIR_CONST_REF, &ops[0], 0, n);
+                    if (id != pear_air::AIR_NO_VALUE)
+                    {
+                        b.m.values[id].p.name = d.name_id != 0 ? d.name_id : n.name_id;
+                    }
+                    return id;
+                }
+
+                case N_DECL_STATIC:
+                {
+                    // A mutable module global IS memory, so it gets an
+                    // address and a load rather than a value (marker r56d
+                    // in ssi_ir.c3 was this being bolted on late).
+                    uint a = b.emit(Op.AIR_GLOBAL_ADDR, &ops[0], 0, n);
+                    if (a == pear_air::AIR_NO_VALUE) { return a; }
+                    b.m.values[a].p.name = d.name_id != 0 ? d.name_id : n.name_id;
+                    b.m.values[a].facts.nullness = pear_erm::Nullness.NULL_NEVER;
+                    ops[0] = a;
+                    return b.emit(Op.AIR_LOAD_PTR, &ops[0], 1, n);
+                }
+
+                case N_DECL_VARIANT:
+                {
+                    // A nullary enum variant used as a value.
+                    uint id = b.emit(Op.AIR_VARIANT_REF, &ops[0], 0, n);
+                    if (id != pear_air::AIR_NO_VALUE)
+                    {
+                        b.m.values[id].p.name = d.name_id != 0 ? d.name_id : n.name_id;
+                        b.m.values[id].p.index = (uint)d.p.ival;
+                        b.m.values[id].facts.range = pear_erm::r_const((long)d.p.ival);
+                    }
+                    return id;
+                }
+
+                default:
+                {
+                    /*
+                     Resolves to something with no runtime value: a struct
+                     or type declaration used in value position, an effect,
+                     an interface. Name it rather than dropping it.
+                    */
+                    uint id = b.emit(Op.AIR_GLOBAL_ADDR, &ops[0], 0, n);
+                    if (id != pear_air::AIR_NO_VALUE)
+                    {
+                        b.m.values[id].p.name = d.name_id != 0 ? d.name_id : n.name_id;
+                    }
+                    return id;
+                }
+            }
         }
 
         case N_EXPR_BINARY:
@@ -1114,6 +1309,35 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
             return id;
         }
 
+        case N_EXPR_ASM:
+        {
+            /*
+             Inline assembly. Opaque to every analysis by definition, but
+             it is NOT a lowering hole: the operands are real and must be
+             kept live, and it must be treated as clobbering memory.
+
+             AIR_UNKNOWN would be wrong here in a subtle way — it would say
+             "a1 could not translate this", when in fact this IS the
+             translation. Conflating "opaque" with "unimplemented" is how a
+             coverage number stops meaning anything.
+            */
+            usz k = 0;
+            for (usz i = 0; i < n.child_count && k < 16; i++)
+            {
+                Node* c = n.children[i];
+                if (c == null || !pfront_core::is_expr(c.kind)) { continue; }
+                ops[k] = b.lower_operand(c);
+                k = k + 1;
+            }
+            uint id = b.emit(Op.AIR_ASM, &ops[0], k, n);
+            if (id != pear_air::AIR_NO_VALUE)
+            {
+                b.m.values[id].p.name = n.name_id;
+                b.m.values[id].facts.may_fault = true;
+            }
+            return id;
+        }
+
         case N_EXPR_PERFORM:
         {
             usz k = 0;
@@ -1138,8 +1362,32 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
             return b.emit(Op.AIR_RESUME, &ops[0], k, n);
         }
 
+        /*
+         Statement-shaped nodes reachable from EXPRESSION position.
+
+         `x = e` and `x += e` are N_STMT_ASSIGN / N_STMT_COMPOUND_ASSIGN
+         even when they appear inside an expression (a semicolon chain in
+         a clause body, an `if` branch used as a value). lower_stmt has the
+         rules; lower_expr had no case and fell through to AIR_UNKNOWN.
+
+         Delegating rather than duplicating: two copies of the assignment
+         lowering would be two places to fix a store-shape bug.
+        */
+        case N_STMT_ASSIGN:
+        case N_EXPR_ASSIGN:
+        case N_STMT_COMPOUND_ASSIGN:
+        case N_STMT_RETURN:
+        case N_STMT_BREAK:
+        case N_STMT_CONTINUE:
+        case N_STMT_EXPR:
+        case N_DECL_LET:
+            return b.lower_stmt(n);
+
         case N_EXPR_IF:
             return b.lower_if(n);
+
+        case N_EXPR_MATCH:
+            return b.lower_match(n);
 
         case N_EXPR_WHILE:
             return b.lower_while(n);
@@ -1331,7 +1579,389 @@ fn uint Builder.lower_while(Builder* b, Node* n)
     b.seal_block(head);
 
     b.cur_block = exit;
-    return pear_air::AIR_NO_VALUE;
+    /*
+     A `while` has no value, but it can appear in a position that needs
+     one (the last expression of a clause body, an operand of a chain).
+     Returning NO_VALUE there forced the caller into lower_operand's hole
+     path. Unit is the honest answer and keeps the IR total.
+    */
+    uint[1] none;
+    return b.emit(Op.AIR_CONST_UNIT, &none[0], 0, n);
+}
+
+
+// ════════════════════════════════════════════════════════════════════════
+// MATCH
+// ════════════════════════════════════════════════════════════════════════
+
+/*
+ Pattern matching, lowered as a SEQUENTIAL DECISION CHAIN.
+
+ One test block per arm, falling through to the next on failure:
+
+     test0 --fail--> test1 --fail--> test2 --fail--> nomatch
+       |               |               |
+      body0          body1           body2
+       \_______________\_______________\____________> join
+
+ Not a switch, and not a balanced decision tree, for three reasons that
+ are specific to Pride rather than to convenience:
+
+   1. Arm order is SEMANTIC. Pride arms are tried top to bottom and the
+      first match wins, so two arms can overlap and the earlier one must
+      shadow the later. A switch reorders by key and loses that.
+   2. Patterns are heterogeneous. A single match can mix a literal, a
+      variant, a range, an or-pattern and a binder. Only the literal and
+      variant cases are switch-able at all.
+   3. A chain is CORRECT for every pattern kind, and a switch is an
+      optimisation of one special case. a2 has the CFG and the range facts
+      to recognise "all arms are disjoint integer literals" and rebuild it
+      as a switch, with better information than a1 has.
+
+ So a1 emits the form that is always right, and leaves the specialisation
+ to the stage that can prove it is safe. Correct first, fast second.
+
+ Every arm's body jumps to a shared join, where a φ merges the results —
+ which is what makes `match` usable as an expression.
+*/
+
+/*
+ Emit the boolean test for one pattern against the scrutinee.
+
+ Returns AIR_NO_VALUE for an IRREFUTABLE pattern (a wildcard or a bare
+ binder), which always matches and therefore needs no test at all. The
+ caller uses that to end the chain rather than emitting `if (true)`.
+*/
+fn uint Builder.pattern_test(Builder* b, Node* pat, uint scrut)
+{
+    if (pat == null) { return pear_air::AIR_NO_VALUE; }
+    uint[2] ops;
+
+    switch (pat.kind)
+    {
+        case N_PAT_WILDCARD:
+        case N_PAT_IDENT:
+            // Irrefutable: matches anything. No test.
+            return pear_air::AIR_NO_VALUE;
+
+        case N_PAT_LITERAL:
+        {
+            // `| 3i64 ->` : scrutinee == literal
+            Node* lit = pat.child_count > 0 ? pat.children[0] : pat;
+            uint lv = b.lower_operand(lit);
+            ops[0] = scrut; ops[1] = lv;
+            uint t = b.emit(Op.AIR_BIN, &ops[0], 2, pat);
+            if (t != pear_air::AIR_NO_VALUE)
+            {
+                b.m.values[t].p.op = BOp.ABO_EQ;
+                pear_infer::infer_value(b.m, t);
+            }
+            return t;
+        }
+
+        case N_PAT_VARIANT:
+        {
+            /*
+             `| Color.Red ->` : compare the scrutinee's discriminant.
+
+             The variant's tag comes from its DECLARATION, which the
+             resolver already attached. Re-deriving it from the pattern's
+             spelling would mean re-implementing enum numbering in a1.
+            */
+            Node* d = pat.resolved;
+            long tag = 0;
+            if (d != null) { tag = (long)d.p.ival; }
+            uint tv = b.const_int(tag, pat);
+            ops[0] = scrut; ops[1] = tv;
+            uint t = b.emit(Op.AIR_BIN, &ops[0], 2, pat);
+            if (t != pear_air::AIR_NO_VALUE)
+            {
+                b.m.values[t].p.op = BOp.ABO_EQ;
+                pear_infer::infer_value(b.m, t);
+            }
+            return t;
+        }
+
+        case N_PAT_RANGE:
+        {
+            // `| 1i64..9i64 ->` : lo <= s && s <= hi
+            if (pat.child_count < 2) { return pear_air::AIR_NO_VALUE; }
+            uint lo = b.lower_operand(pat.children[0]);
+            uint hi = b.lower_operand(pat.children[1]);
+            ops[0] = scrut; ops[1] = lo;
+            uint ge = b.emit(Op.AIR_BIN, &ops[0], 2, pat);
+            if (ge != pear_air::AIR_NO_VALUE) { b.m.values[ge].p.op = BOp.ABO_GE; }
+            ops[0] = scrut; ops[1] = hi;
+            uint le = b.emit(Op.AIR_BIN, &ops[0], 2, pat);
+            if (le != pear_air::AIR_NO_VALUE) { b.m.values[le].p.op = BOp.ABO_LE; }
+            ops[0] = ge; ops[1] = le;
+            uint both = b.emit(Op.AIR_BIN, &ops[0], 2, pat);
+            if (both != pear_air::AIR_NO_VALUE)
+            {
+                b.m.values[both].p.op = BOp.ABO_LAND;
+                pear_infer::infer_value(b.m, both);
+            }
+            return both;
+        }
+
+        case N_PAT_OR:
+        {
+            /*
+             `| a | b ->` : any alternative matching is a match.
+
+             An alternative that is itself irrefutable makes the WHOLE
+             or-pattern irrefutable, so the chain must stop there rather
+             than emitting a test that can never fail.
+            */
+            uint acc = pear_air::AIR_NO_VALUE;
+            for (usz i = 0; i < pat.child_count; i++)
+            {
+                uint t = b.pattern_test(pat.children[i], scrut);
+                if (t == pear_air::AIR_NO_VALUE) { return pear_air::AIR_NO_VALUE; }
+                if (acc == pear_air::AIR_NO_VALUE) { acc = t; continue; }
+                ops[0] = acc; ops[1] = t;
+                uint o = b.emit(Op.AIR_BIN, &ops[0], 2, pat);
+                if (o != pear_air::AIR_NO_VALUE) { b.m.values[o].p.op = BOp.ABO_LOR; }
+                acc = o;
+            }
+            return acc;
+        }
+
+        case N_PAT_TUPLE:
+        case N_PAT_STRUCT:
+        case N_PAT_ARRAY:
+        {
+            /*
+             A destructuring pattern tests each SUB-pattern against the
+             corresponding field, and matches only if all of them do. A
+             sub-pattern that is a plain binder contributes no test, which
+             is why a tuple of binders is irrefutable and correctly
+             produces no branch at all.
+            */
+            uint acc = pear_air::AIR_NO_VALUE;
+            for (usz i = 0; i < pat.child_count; i++)
+            {
+                Node* sub = pat.children[i];
+                if (sub == null) { continue; }
+                ops[0] = scrut;
+                uint fld = b.emit(Op.AIR_LOAD_FIELD, &ops[0], 1, sub);
+                if (fld != pear_air::AIR_NO_VALUE) { b.m.values[fld].p.index = (uint)i; }
+                uint t = b.pattern_test(sub, fld);
+                if (t == pear_air::AIR_NO_VALUE) { continue; }
+                if (acc == pear_air::AIR_NO_VALUE) { acc = t; continue; }
+                ops[0] = acc; ops[1] = t;
+                uint a2 = b.emit(Op.AIR_BIN, &ops[0], 2, pat);
+                if (a2 != pear_air::AIR_NO_VALUE) { b.m.values[a2].p.op = BOp.ABO_LAND; }
+                acc = a2;
+            }
+            return acc;
+        }
+
+        case N_PAT_REF:
+            // `| &p ->` : the reference itself imposes no test; recurse.
+            if (pat.child_count > 0) { return b.pattern_test(pat.children[0], scrut); }
+            return pear_air::AIR_NO_VALUE;
+
+        case N_PAT_REST:
+            // `..` matches any remainder.
+            return pear_air::AIR_NO_VALUE;
+
+        default:
+            /*
+             An unknown pattern kind must be treated as IRREFUTABLE, not as
+             a failing test. Emitting a test that can never succeed would
+             silently skip the arm and change program behaviour; treating
+             it as always-matching preserves the arm and merely loses
+             precision. Wrong-but-safe over wrong-and-silent.
+            */
+            b.unsupported = b.unsupported + 1;
+            b.note_unsupported(pat.kind);
+            return pear_air::AIR_NO_VALUE;
+    }
+}
+
+/*
+ Bind every binder in a pattern to the corresponding piece of the
+ scrutinee. Runs in the arm's BODY block, after the test has passed, so a
+ binding is only in scope where it is valid.
+*/
+fn void Builder.bind_pattern_vars(Builder* b, Node* pat, uint scrut)
+{
+    if (pat == null) { return; }
+    uint[1] ops;
+    switch (pat.kind)
+    {
+        case N_PAT_IDENT:
+            b.write_var(pat, b.cur_block, scrut);
+
+        case N_PAT_VARIANT:
+        {
+            // A variant's PAYLOAD binders: `| Some(x) ->` binds x.
+            for (usz i = 0; i < pat.child_count; i++)
+            {
+                Node* sub = pat.children[i];
+                if (sub == null || !pfront_core::is_pattern(sub.kind)) { continue; }
+                ops[0] = scrut;
+                uint fld = b.emit(Op.AIR_LOAD_FIELD, &ops[0], 1, sub);
+                if (fld != pear_air::AIR_NO_VALUE) { b.m.values[fld].p.index = (uint)i; }
+                b.bind_pattern_vars(sub, fld);
+            }
+        }
+
+        case N_PAT_TUPLE:
+        case N_PAT_STRUCT:
+        case N_PAT_ARRAY:
+        {
+            for (usz i = 0; i < pat.child_count; i++)
+            {
+                Node* sub = pat.children[i];
+                if (sub == null) { continue; }
+                ops[0] = scrut;
+                uint fld = b.emit(Op.AIR_LOAD_FIELD, &ops[0], 1, sub);
+                if (fld != pear_air::AIR_NO_VALUE) { b.m.values[fld].p.index = (uint)i; }
+                b.bind_pattern_vars(sub, fld);
+            }
+        }
+
+        case N_PAT_REF:
+            if (pat.child_count > 0) { b.bind_pattern_vars(pat.children[0], scrut); }
+
+        default:
+            break;
+    }
+}
+
+/*
+ Lower a `match` expression, or the multi-clause body of a function.
+
+ `arms` are N_MATCH_ARM or N_CLAUSE nodes; both hold a pattern followed by
+ a body, so one routine serves both and multi-clause dispatch stops being
+ a separate unimplemented feature.
+*/
+fn uint Builder.lower_match_arms(Builder* b, Node* owner, uint scrut,
+                                 Node** arms, usz arm_count)
+{
+    if (arm_count == 0) { return pear_air::AIR_NO_VALUE; }
+
+    uint join = b.m.new_block(b.cur_func, 0);
+    b.mark_sealed(join, false);   // predecessors accumulate as arms close
+
+    // One result/incoming pair per arm that reaches the join.
+    uint[64] res;
+    uint[64] from;
+    usz nres = 0;
+
+    for (usz i = 0; i < arm_count; i++)
+    {
+        Node* arm = arms[i];
+        if (arm == null) { continue; }
+
+        // An arm is `pattern [guard] body...`.
+        Node* pat = null;
+        usz body_at = arm.child_count;
+        for (usz k = 0; k < arm.child_count; k++)
+        {
+            Node* c = arm.children[k];
+            if (c == null) { continue; }
+            if (pat == null && pfront_core::is_pattern(c.kind)) { pat = c; continue; }
+            if (body_at == arm.child_count) { body_at = k; }
+        }
+
+        uint test = b.pattern_test(pat, scrut);
+
+        uint body_blk;
+        uint next_blk = pear_air::AIR_NO_BLOCK;
+        if (test == pear_air::AIR_NO_VALUE)
+        {
+            /*
+             IRREFUTABLE arm: no branch, and everything after it is dead.
+             Emitting a test would be `if (true)`, and continuing the chain
+             would build blocks no path reaches.
+            */
+            body_blk = b.cur_block;
+        }
+        else
+        {
+            body_blk = b.m.new_block(b.cur_func, 0);
+            next_blk = b.m.new_block(b.cur_func, 0);
+            b.mark_sealed(body_blk, true);
+            b.mark_sealed(next_blk, true);
+            b.m.set_term(b.cur_block, Term.TERM_BRANCH, test);
+            b.m.add_edge(b.cur_block, body_blk);
+            b.m.add_edge(b.cur_block, next_blk);
+            b.cur_block = body_blk;
+        }
+
+        // Bindings live in the body, after the test succeeded.
+        b.bind_pattern_vars(pat, scrut);
+
+        uint v = pear_air::AIR_NO_VALUE;
+        for (usz k = body_at; k < arm.child_count; k++)
+        {
+            if (!b.block_open()) { break; }
+            v = b.lower_stmt(arm.children[k]);
+        }
+        if (b.block_open())
+        {
+            b.m.set_term(b.cur_block, Term.TERM_JUMP, pear_air::AIR_NO_VALUE);
+            b.m.add_edge(b.cur_block, join);
+            if (nres < 64)
+            {
+                res[nres] = v == pear_air::AIR_NO_VALUE
+                          ? b.emit(Op.AIR_CONST_UNIT, &res[0], 0, arm)
+                          : v;
+                from[nres] = b.cur_block;
+                nres = nres + 1;
+            }
+        }
+
+        if (test == pear_air::AIR_NO_VALUE) { break; }   // chain ends here
+        b.cur_block = next_blk;
+    }
+
+    /*
+     The fall-through end of the chain: every pattern failed.
+
+     Pride is untyped and pfront does NOT reject a non-exhaustive match
+     (it warns). So this must produce something rather than being assumed
+     unreachable — asserting unreachable and being wrong is a miscompile.
+     `trap` is the honest lowering: reaching it is a real runtime error.
+    */
+    if (b.block_open())
+    {
+        b.m.set_term(b.cur_block, Term.TERM_TRAP, pear_air::AIR_NO_VALUE);
+    }
+
+    b.mark_sealed(join, true);
+    b.seal_block(join);
+    b.cur_block = join;
+
+    if (nres == 0) { return pear_air::AIR_NO_VALUE; }
+    if (nres == 1) { return res[0]; }
+
+    uint phi = b.m.new_phi(join, &res[0], &from[0], nres,
+                           pear_air::AIR_NO_ORIGIN, owner.line, owner.col);
+    if (phi != pear_air::AIR_NO_VALUE)
+    {
+        b.phis_created = b.phis_created + 1;
+        pear_infer::infer_value(b.m, phi);
+    }
+    return phi;
+}
+
+fn uint Builder.lower_match(Builder* b, Node* n)
+{
+    if (n.child_count < 1) { return pear_air::AIR_NO_VALUE; }
+    uint scrut = b.lower_operand(n.children[0]);
+
+    Node*[64] arms;
+    usz na = 0;
+    for (usz i = 1; i < n.child_count && na < 64; i++)
+    {
+        Node* c = n.children[i];
+        if (c != null && c.kind == Nk.N_MATCH_ARM) { arms[na] = c; na = na + 1; }
+    }
+    return b.lower_match_arms(n, scrut, &arms[0], na);
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -1364,18 +1994,30 @@ fn uint Builder.lower_stmt(Builder* b, Node* n)
              is what keeps scalars in SSA registers instead of forcing a
              mem2reg pass later.
             */
+            /*
+             Accept ANY pattern, not just a bare identifier.
+
+             `let (v0, v1, v2, v3) = sip_round(...)` is routine in this
+             stdlib. Matching only N_PAT_IDENT left the tuple's binders
+             unwritten, so every later use fell into read_var's
+             undefined-variable arm — 104 holes in siphash.pie alone from
+             this one omission.
+
+             bind_pattern_vars already destructures, so reuse it rather
+             than writing a second, subtly different, version.
+            */
             Node* pat = null;
             Node* init = null;
             for (usz i = 0; i < n.child_count; i++)
             {
                 Node* c = n.children[i];
                 if (c == null) { continue; }
-                if (pat == null && c.kind == Nk.N_PAT_IDENT) { pat = c; continue; }
+                if (pat == null && pfront_core::is_pattern(c.kind)) { pat = c; continue; }
                 if (pfront_core::is_expr(c.kind) || c.kind == Nk.N_BLOCK) { init = c; }
             }
             uint v = init != null ? b.lower_expr(init) : pear_air::AIR_NO_VALUE;
             if (v == pear_air::AIR_NO_VALUE) { v = b.emit(Op.AIR_CONST_UNIT, &ops[0], 0, n); }
-            if (pat != null) { b.write_var(pat, b.cur_block, v); }
+            if (pat != null) { b.bind_pattern_vars(pat, v); }
             return v;
         }
 
@@ -1459,9 +2101,25 @@ fn uint Builder.lower_stmt(Builder* b, Node* n)
             Node* lhs = n.children[0];
             uint rv = b.lower_operand(n.children[1]);
 
-            // Assigning to a plain variable is a REBIND, not a store.
+            /*
+             Assigning to a LOCAL is a rebind (SSA rename). Assigning to a
+             module-level binder is a real STORE to memory — rebinding it
+             would make the write invisible to every other function.
+            */
             if (lhs != null && lhs.kind == Nk.N_EXPR_IDENT && lhs.resolved != null)
             {
+                if (is_module_level(lhs.resolved))
+                {
+                    uint a = b.emit(Op.AIR_GLOBAL_ADDR, &ops[0], 0, lhs);
+                    if (a != pear_air::AIR_NO_VALUE)
+                    {
+                        b.m.values[a].p.name = lhs.resolved.name_id != 0
+                                             ? lhs.resolved.name_id : lhs.name_id;
+                        b.m.values[a].facts.nullness = pear_erm::Nullness.NULL_NEVER;
+                        ops[0] = a; ops[1] = rv;
+                        return b.emit(Op.AIR_STORE_PTR, &ops[0], 2, n);
+                    }
+                }
                 b.write_var(lhs.resolved, b.cur_block, rv);
                 return rv;
             }
@@ -1487,6 +2145,25 @@ fn uint Builder.lower_stmt(Builder* b, Node* n)
                 ops[2] = b.lower_operand(lhs.children[1]);
                 return b.emit(Op.AIR_STORE_INDEX, &ops[0], 3, n);
             }
+
+            /*
+             Any other left-hand side. Reached when the LHS is an
+             arbitrary address-valued expression — in this stdlib, from a
+             parenthesised cast chain (`*(((p as i64) + n) as *u8) = b`)
+             that pfront folds into a binary node.
+
+             Lower it as a STORE THROUGH THE COMPUTED ADDRESS rather than
+             giving up. That is the correct semantics for every
+             address-valued LHS, and it keeps the write visible to the
+             memory versioning instead of vanishing into a hole — a
+             dropped store is a miscompile, an imprecise one is not.
+            */
+            if (lhs != null)
+            {
+                ops[0] = b.lower_operand(lhs);
+                ops[1] = rv;
+                return b.emit(Op.AIR_STORE_PTR, &ops[0], 2, n);
+            }
             break;
         }
 
@@ -1496,6 +2173,53 @@ fn uint Builder.lower_stmt(Builder* b, Node* n)
 
         case N_BLOCK:
             return b.lower_block(n);
+
+        case N_DECL_FN:
+        {
+            /*
+             A function declared inside another function's body.
+
+             Pride has no closures over a nested `fn` (the spec has no
+             lambda form and generics are monomorphised), so a nested fn is
+             an ordinary top-level function that merely happens to be
+             written inside another. Lower it as one, restoring the outer
+             function's cursor afterwards.
+
+             Emitting a hole here would have been the easy path and would
+             have silently dropped 18 real functions from the stdlib.
+            */
+            uint saved_f = b.cur_func;
+            uint saved_b = b.cur_block;
+            bool saved_loop = b.in_loop;
+            uint saved_h = b.loop_header;
+            uint saved_e = b.loop_exit;
+
+            b.lower_function(n);
+
+            b.cur_func = saved_f;
+            b.cur_block = saved_b;
+            b.in_loop = saved_loop;
+            b.loop_header = saved_h;
+            b.loop_exit = saved_e;
+            // A declaration has no value; the enclosing block continues.
+            return b.emit(Op.AIR_CONST_UNIT, &ops[0], 0, n);
+        }
+
+        case N_DECL_CONST:
+        case N_DECL_STATIC:
+        case N_DECL_TYPE:
+        case N_DECL_STRUCT:
+        case N_DECL_ENUM:
+        case N_DECL_UNION:
+        case N_DECL_EFFECT:
+        case N_DECL_NEWTYPE:
+            /*
+             A declaration inside a body. It contributes no runtime value
+             and its contents are handled where they are USED (a const is
+             folded at the reference, a type has no code), so this is a
+             no-op rather than a hole.
+            */
+            return b.emit(Op.AIR_CONST_UNIT, &ops[0], 0, n);
 
         default:
             break;
@@ -1658,6 +2382,7 @@ struct BuildStats
     usz sigmas;
     usz pis;
     usz[256] miss_kind;
+    usz      miss_undef_read;
 }
 
 /*
@@ -1684,6 +2409,7 @@ fn void build_module(Air* m, Node* program, pfront_core::Interner* it, BuildStat
     st.sigmas = b.sigmas;
     st.pis = b.pis;
     for (usz i = 0; i < 256; i++) { st.miss_kind[i] = b.miss_kind[i]; }
+    st.miss_undef_read = b.miss_undef_read;
     st.blocks = m.block_count > 0 ? m.block_count - 1 : 0;
     st.values = m.value_count > 0 ? m.value_count - 1 : 0;
     b.destroy();
@@ -1724,6 +2450,10 @@ fn void print_build_stats(BuildStats* s)
 */
 fn void print_miss_histogram(BuildStats* s)
 {
+    if (s.miss_undef_read > 0)
+    {
+        printf("    miss undef-read : %d\n", (int)s.miss_undef_read);
+    }
     for (usz i = 0; i < 256; i++)
     {
         if (s.miss_kind[i] > 0)

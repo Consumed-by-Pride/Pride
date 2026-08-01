@@ -144,7 +144,25 @@ enum AirOp : int (String mnemonic)
      IR_GLOAD / IR_GSTORE on late (marker r56d) because globals had not been
      considered until they were needed.
     */
-    AIR_GLOBAL_ADDR { "global.addr" },   // payload.name
+    AIR_GLOBAL_ADDR { "global.addr" },
+
+    /*
+     A reference to a named top-level declaration that is NOT a local
+     variable: a function used as a value, a `const`, a `static`, or an
+     enum variant.
+
+     These are distinct from GLOBAL_ADDR (a mutable module global, which
+     is M-tracked memory) because they are not memory at all — a function
+     reference is a code address and a const is a compile-time value.
+     Folding them into GLOBAL_ADDR would make every call look like a load.
+
+     Getting this wrong was worth 3,104 of 3,466 unknowns: without these
+     opcodes, every `f(x)` where `f` is a top-level function fell into
+     read_var's undefined-variable path.
+    */
+    AIR_FUNC_REF { "func.ref" },      // payload.name = the function
+    AIR_CONST_REF { "const.ref" },    // payload.name = the const/static
+    AIR_VARIANT_REF { "variant.ref" },// payload.name, payload.index = tag   // payload.name
 
     // ── SSI: the merge and the split ────────────────────────────────────
     /*
@@ -214,6 +232,28 @@ enum AirOp : int (String mnemonic)
      and the gap is visible in the dump and countable in the stats, rather
      than crashing or silently dropping code.
     */
+    /*
+     Inline assembly. Opaque to analysis, but a real construct rather than
+     a lowering gap: operands stay live and it clobbers memory. Kept
+     separate from AIR_UNKNOWN so "opaque" and "unimplemented" never share
+     a number.
+    */
+    AIR_ASM { "asm" },
+
+    /*
+     A value in code that cannot be reached.
+
+     A read of a variable in a block with no predecessors has no reaching
+     definition and never can. Any value is acceptable because control
+     never arrives — which is what `poison` means, and it is materially
+     different from AIR_UNKNOWN ("a1 could not translate this"). Keeping
+     them separate is what stops unreachable code from inflating the
+     lowering-gap metric.
+
+     Pure by construction: unlike AIR_UNKNOWN it is safe for a2 to delete.
+    */
+    AIR_POISON { "poison" },
+
     AIR_UNKNOWN { "unknown" }
 }
 

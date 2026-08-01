@@ -1990,6 +1990,27 @@ fn Node* Parser.parse_primary(Parser* p)
             // Reuse the declaration parser: it already accepts both `↦` and
             // `->`, both braced and indented bodies, and the optional leading
             // bar. The result is an anonymous rule set.
+            //
+            // But `rewrite` is ALSO a module name in this stdlib
+            // (`stdlib/pride/rewrite.pie`), so `rewrite.rule_new(l, r, p)`
+            // is a qualified call, not a rule set. A following `.` or `(`
+            // means it is being used as an ordinary name — the same
+            // soft-keyword disambiguation `tail`, `handle` and `stage`
+            // already do.
+            //
+            // Without this the receiver parsed as a bare `fn` node and
+            // every call through the facade lowered to an unknown callee.
+            Tk nxt = p.peek(1).type;
+            if (nxt == Tk.TOKEN_DOT || nxt == Tk.TOKEN_LPAREN
+                || nxt == Tk.TOKEN_COMMA || nxt == Tk.TOKEN_RPAREN)
+            {
+                Tok id_tok = p.advance();
+                Node* id = p.mk_at(Nk.N_EXPR_IDENT, id_tok);
+                id.name_id = p.intern_tok(id_tok);
+                id.p.sptr = id_tok.start;
+                id.p.slen = id_tok.len;
+                return id;
+            }
             return p.parse_rewrite_decl();
         }
 
@@ -2654,6 +2675,35 @@ fn Node* Parser.parse_for(Parser* p)
     return n;
 }
 
+
+/*
+ Does this token begin a DECLARATION? Used to stop constructs that scan
+ forward (match arms, clause lists) from running past the end of the
+ enclosing item into the next one.
+*/
+fn bool tok_starts_decl(Tk t)
+{
+    switch (t)
+    {
+        case TOKEN_KW_FN:
+        case TOKEN_KW_TYPE:
+        case TOKEN_KW_STRUCT:
+        case TOKEN_KW_UNION:
+        case TOKEN_KW_ENUM:
+        case TOKEN_KW_EFFECT:
+        case TOKEN_KW_INTERFACE:
+        case TOKEN_KW_IMPL:
+        case TOKEN_KW_EXTERN:
+        case TOKEN_KW_CONST:
+        case TOKEN_KW_STATIC:
+        case TOKEN_KW_USE:
+        case TOKEN_KW_MOD:
+            return true;
+        default:
+            return false;
+    }
+}
+
 fn Node* Parser.parse_match(Parser* p)
 {
     Tok t = p.advance();
@@ -2685,12 +2735,38 @@ fn Node* Parser.parse_match(Parser* p)
             while (look < 3)
             {
                 Tk lt = p.peek(look).type;
+                /*
+                 DEDENT is NOT skipped here. It closes the block the match
+                 lives in, so a `|` found past it belongs to something
+                 else — and the scan below would walk out of the match to
+                 reach it.
+
+                 Without this, a top-level `fn g` written after a match
+                 was swallowed INTO the match's last arm: the scan crossed
+                 the DEDENT looking for the next bar, found the `|` of
+                 `g`'s own clause, and kept going. `fn g` then appeared
+                 nested inside `fn f` in the AST, with no diagnostic.
+                 Reproduced with two functions where the first ends in a
+                 match; verified by the AST dump showing `fn 'g'` at depth
+                 8 instead of depth 2.
+                */
                 if (lt == Tk.TOKEN_NEWLINE || lt == Tk.TOKEN_INDENT) { look = look + 1; continue; }
                 if (lt == Tk.TOKEN_PIPE) { found = true; }
                 break;
             }
             if (!found) { break; }
-            while (!p.check(Tk.TOKEN_PIPE) && !p.at_end()) { p.advance(); }
+            /*
+             Advance to that bar, but never across a DEDENT or a
+             declaration keyword: both mean the match has ended and the
+             bar belongs to the next construct.
+            */
+            while (!p.check(Tk.TOKEN_PIPE) && !p.at_end())
+            {
+                if (p.check(Tk.TOKEN_DEDENT)) { break; }
+                if (tok_starts_decl(p.ct())) { break; }
+                p.advance();
+            }
+            if (!p.check(Tk.TOKEN_PIPE)) { break; }
         }
         Tok bar = p.advance();
         Node* arm = p.mk_at(Nk.N_MATCH_ARM, bar);
@@ -2714,7 +2790,19 @@ fn Node* Parser.parse_match(Parser* p)
         }
         p.add(arm, p.parse_arm_body());
         p.add(n, arm);
-        p.skip_layout();
+        /*
+         Skip only NEWLINEs between arms, never a DEDENT.
+
+         skip_layout() here ate the DEDENT that closes the match's own
+         block, so the arm loop carried on into whatever followed. A
+         top-level `fn g` written after a match ended up nested inside the
+         previous function, silently and with no diagnostic — the AST dump
+         showed `fn 'g'` at depth 8 instead of 2.
+
+         The closing DEDENT is consumed below, once, by the `indented`
+         branch that owns it.
+        */
+        p.skip_newlines();
     }
     if (indented) { while (p.accept(Tk.TOKEN_DEDENT)) {} }
     if (braced) { p.skip_layout(); p.expect(Tk.TOKEN_RBRACE, 1062, "expected '}' to close match"); }

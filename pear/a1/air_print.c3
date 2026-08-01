@@ -318,9 +318,17 @@ fn void print_value(Out* o, Air* m, Numbering* nb, uint vid, bool with_origin)
         case AIR_STRUCT:
         case AIR_CALL_DIRECT:
         case AIR_GLOBAL_ADDR:
+        case AIR_FUNC_REF:
+        case AIR_CONST_REF:
+        case AIR_ASM:
         case AIR_PERFORM:
             o.str(" name=");
             print_name(o, m, v.p.name);
+        case AIR_VARIANT_REF:
+            o.str(" name=");
+            print_name(o, m, v.p.name);
+            o.str(" index=");
+            o.unum((ulong)v.p.index);
         case AIR_LOAD_FIELD:
         case AIR_ADDR_FIELD:
         case AIR_STORE_FIELD:
