@@ -78,6 +78,9 @@ module system**: `use` was lexed, parsed and hoisted, but the compiler never
 opened a second file and exited 0 silently. Only **4 of 257** stdlib modules
 were compilable, and all four were empty shells.
 
+See [`status/BUGFIX_ROUND.md`](status/BUGFIX_ROUND.md) for the round that
+closed the last 4 failures.
+
 `pfront` gets **258 / 258** stdlib modules self-clean, and loads all 258 into
 a single compilation unit with **0 errors** in 164 ms.
 
