@@ -1,0 +1,56 @@
+-- Sections 6.3 (attributes), 16 (term rewriting), 18 (quotation) and
+-- 20 (metaprogramming).
+--
+-- Two defects lived here:
+--   * attributes on their OWN LINE -- the spec's primary spelling, used
+--     by every example in 6.3 -- were parsed as an expression, because
+--     only the trailing-on-the-signature-line form was handled
+--   * `~Tree e` lowered to AIR_UNKNOWN. Getting this right means NOT
+--     lowering the quoted expression: `~Tree (x + y)` describes an
+--     addition, it does not perform one, so emitting an `add` would run
+--     code the program never asked for.
+mod meta_attrs
+
+fn hot : i64 -> i64
+  #inline
+  | n -> n * 2i64
+
+fn hotter : i64 -> i64
+  #inline #noinline
+  | n -> n * 3i64
+
+-- The trailing form on the signature line must keep working.
+fn ext_sin : f64 -> f64 #extern("sin") #cc(c)
+
+-- Rewrite rules are first-class values (section 16).
+let arith : Rewrite = rewrite
+  | x + 0i64 ↦ x
+  | x * 1i64 ↦ x
+
+let more : Rewrite = rewrite
+  | x - 0i64 ↦ x
+
+-- Composition with ++.
+let full : Rewrite = arith ++ more
+
+-- Reification. The quoted expression must NOT be evaluated.
+fn quote_tree : (i64, i64) -> i64
+  | (x, y) ->
+    let node = ~Tree (x + y)
+    x
+
+fn quote_data : i64 -> i64
+  | n ->
+    let raw = ~Data n
+    n
+
+fn quote_bytes : i64 -> i64
+  | n ->
+    let bs = ~Bytes n
+    n
+
+-- comptime folds at compile time.
+fn ct : i64 -> i64
+  | n ->
+    let c = comptime 1i64 + 2i64
+    c + n

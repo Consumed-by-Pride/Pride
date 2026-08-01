@@ -121,6 +121,12 @@ const int TK_KW_NOT    = (int)pfront_lex::TokenType.TOKEN_KW_NOT.ordinal;
  to AIR_UNKNOWN -- a silent hole for an operator the spec lists first.
 */
 const int TK_KW_AND    = (int)pfront_lex::TokenType.TOKEN_KW_AND.ordinal;
+// Quotation sigils (spec section 18). These are REIFICATION, not staging:
+// `~Tree e` describes e, it does not evaluate it.
+const int TK_SIGIL_TREE  = (int)pfront_lex::TokenType.TOKEN_SIGIL_TREE.ordinal;
+const int TK_SIGIL_DATA  = (int)pfront_lex::TokenType.TOKEN_SIGIL_DATA.ordinal;
+const int TK_SIGIL_BYTES = (int)pfront_lex::TokenType.TOKEN_SIGIL_BYTES.ordinal;
+const int TK_KW_QUOTE    = (int)pfront_lex::TokenType.TOKEN_KW_QUOTE.ordinal;
 const int TK_KW_OR     = (int)pfront_lex::TokenType.TOKEN_KW_OR.ordinal;
 const int TK_NEGATION  = (int)pfront_lex::TokenType.TOKEN_NEGATION.ordinal;
 const int TK_TILDE     = (int)pfront_lex::TokenType.TOKEN_TILDE.ordinal;
@@ -1703,6 +1709,65 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
                 pear_air::AirValue* ov = b.m.val(v);
                 if (ov != null) { b.m.values[id].facts = ov.facts; }
                 return id;
+            }
+            return id;
+        }
+
+        case N_EXPR_QUOTE:
+        {
+            /*
+             `~Tree e` / `~Data e` / `~Bytes e` — REIFICATION, not
+             staging (spec section 18). The three sigils quote an
+             expression as a different representation of the same AST.
+
+             This lowers to a CONST_STR naming the sigil, with the quoted
+             expression NOT lowered as executable code.
+
+             Not lowering the body is the whole point and is easy to get
+             wrong in both directions. `~Tree (x + y)` does not ADD x and
+             y -- it produces a description of the addition -- so emitting
+             an `add` would execute code the program never asked to run,
+             and any effect in the quoted expression would happen twice.
+             Equally, dropping the node entirely would lose the fact that
+             a reification happened at all.
+
+             The representation is a compile-time constant because that is
+             what the spec says these are ("zero runtime cost", section
+             16, and the comptime example in 18 folds one to the integer
+             6). Materialising the actual tree is a4's job, once layout
+             exists to give an AST node a shape.
+
+             `stage N` shares this node kind and is told apart by having
+             no sigil in p.op -- it is a staging annotation whose body IS
+             ordinary code, so that body is lowered.
+            */
+            bool is_sigil = n.p.op == TK_SIGIL_TREE
+                         || n.p.op == TK_SIGIL_DATA
+                         || n.p.op == TK_SIGIL_BYTES
+                         || n.p.op == TK_KW_QUOTE;
+            if (!is_sigil)
+            {
+                // `stage N` / `comptime`-like wrapper: the body is real code.
+                uint last = pear_air::AIR_NO_VALUE;
+                for (usz i = 0; i < n.child_count; i++)
+                {
+                    if (n.children[i] != null) { last = b.lower_stmt(n.children[i]); }
+                }
+                if (last != pear_air::AIR_NO_VALUE) { return last; }
+                return b.emit(Op.AIR_CONST_UNIT, &ops[0], 0, n);
+            }
+
+            uint id = b.emit(Op.AIR_CONST_STR, &ops[0], 0, n);
+            if (id != pear_air::AIR_NO_VALUE)
+            {
+                char* tag = "~Tree";
+                usz tlen = 5;
+                if (n.p.op == TK_SIGIL_DATA)  { tag = "~Data";  tlen = 5; }
+                if (n.p.op == TK_SIGIL_BYTES) { tag = "~Bytes"; tlen = 6; }
+                if (n.p.op == TK_KW_QUOTE)    { tag = "quote";  tlen = 5; }
+                b.m.values[id].p.name = b.interner.intern(tag, tlen);
+                // A reified value is a real object, so it is never null.
+                b.m.values[id].facts.nullness = pear_erm::Nullness.NULL_NEVER;
             }
             return id;
         }

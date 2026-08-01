@@ -4428,6 +4428,26 @@ fn Node* Parser.parse_fn_decl(Parser* p, bool is_pub)
         p.skip_newlines();
 
         /*
+         ATTRIBUTES ON THEIR OWN LINE, spec section 6.3:
+
+             fn hot : i32 -> i32
+               #inline #vectorize
+               | n -> n * 2
+
+         This is the spec's PRIMARY spelling -- every example in 6.3 puts
+         the attributes on the line after the signature, indented with the
+         clauses -- and only the trailing form on the signature line was
+         handled. skip_trailing_attrs runs before skip_newlines, so an
+         attribute past the layout break was never seen: `#inline` was
+         parsed as an expression and reported as an unresolved name.
+
+         Skipped here, after the INDENT, so both spellings work and
+         neither needs its own rule.
+        */
+        p.skip_trailing_attrs();
+        p.skip_newlines();
+
+        /*
          WHERE CLAUSES, spec §12:
 
              fn zip<A, B, C> : (*A, *B, u64) -> *C

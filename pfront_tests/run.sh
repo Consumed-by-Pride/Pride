@@ -844,6 +844,32 @@ if [ -x ./pearc ]; then
     fail=$((fail+1))
   fi
 
+  # Attributes on their OWN LINE are the spec's primary spelling (6.3) and
+  # only the trailing-on-the-signature form was handled, so `#inline` on
+  # the next line was parsed as an expression and reported unresolved.
+  printf 'mod t\nfn hot : i64 -> i64\n  #inline #noinline\n  | n -> n * 2i64\n' > /tmp/pf_at.pie
+  if [ "$(./pfrontc /tmp/pf_at.pie 2>&1 | grep -c 'error\[')" = "0" ]; then
+    printf '  PASS  %-26s %s\n' "syntax_attrs_own_line" "(attributes on their own line parse)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "syntax_attrs_own_line" "own-line attributes rejected"
+    fail=$((fail+1))
+  fi
+
+  # `~Tree e` is REIFICATION: it describes e, it does not evaluate it.
+  # Assert both halves -- the reification is recorded AND the quoted
+  # addition is absent. Lowering the body would run code the program never
+  # asked for and would duplicate any effect inside it.
+  printf 'mod t\nfn f : (i64,i64) -> i64\n  | (x,y) ->\n    let node = ~Tree (x + y)\n    x\n' > /tmp/pf_q.pie
+  qq=$(./pearc /tmp/pf_q.pie 2>&1)
+  if echo "$qq" | grep -q 'name=~Tree' && ! echo "$qq" | grep -q 'op=add'; then
+    printf '  PASS  %-26s %s\n' "syntax_quote_not_evaluated" "(~Tree reified, body not executed)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "syntax_quote_not_evaluated" "quotation lowered its body as code"
+    fail=$((fail+1))
+  fi
+
   # No construct in the syntax suite may leave a lowering hole.
   sh=0
   for f in pfront_tests/syntax/x*.pie; do
