@@ -231,6 +231,26 @@ enum AirBinOp : int (String mnemonic)
     ABO_EQ { "eq" },    ABO_NE { "ne" },
     ABO_LT { "lt" },    ABO_LE { "le" },    ABO_GT { "gt" },  ABO_GE { "ge" },
     ABO_LAND { "land" },  ABO_LOR { "lor" },
+
+    /*
+     Pride distinguishes three overflow behaviours per arithmetic operator
+     (spec: `+?` checked, `+%` wrapping, `+|` saturating). They are NOT
+     interchangeable and must not collapse onto the plain operator:
+
+       add   overflow is undefined; a2 may assume it does not happen
+       addc  checked; yields a value and an overflow flag (C23 ckd_add)
+       addw  wrapping; defined two's-complement, a2 may NOT assume no
+             overflow, and the range transfer function must go to top
+       adds  saturating; clamps at the type bound, so the result range is
+             bounded by the type even when the inputs are unbounded
+
+     Collapsing them onto `add` would let a2 delete an overflow check the
+     programmer explicitly asked for, which is a miscompile.
+    */
+    ABO_ADDC { "addc" },  ABO_SUBC { "subc" },  ABO_MULC { "mulc" },
+    ABO_ADDW { "addw" },  ABO_SUBW { "subw" },  ABO_MULW { "mulw" },
+    ABO_ADDS { "adds" },  ABO_SUBS { "subs" },  ABO_MULS { "muls" },
+
     ABO_NONE { "?" }
 }
 
@@ -384,6 +404,19 @@ struct AirValue
      round-tripped, so a fact established in a2 is still readable at a5.
     */
     pear_erm::Facts facts;
+
+    /*
+     This slot HELD a φ that was proven trivial and neutralised in place.
+     It is a hole, not an instruction.
+
+     The slot is kept rather than deleted because removing an element from
+     the middle of a block invalidates every position other code holds.
+     But a hole must not count as a "non-φ value" when the next φ looks
+     for its insertion point, or the all-φ-come-first invariant breaks.
+     Pattern-matching on CONST_UNIT instead would wrongly skip a genuine
+     unit the user wrote.
+    */
+    bool     is_phi_hole;
 
     // Source position, carried purely for diagnostics. Never semantic.
     int      line;
@@ -796,6 +829,7 @@ fn uint AirModule.new_value(AirModule* m, uint block, AirOp op,
     // realloc'd storage is raw memory: an uninitialised Facts would make
     // every new value claim whatever ranges happened to be in the heap.
     v.facts = pear_erm::facts_unknown();
+    v.is_phi_hole = false;
     v.origin = origin == AIR_NO_ORIGIN ? id : origin;
     v.line = line;
     v.col = col;
@@ -921,6 +955,19 @@ fn uint AirModule.new_pi(AirModule* m, uint block, uint guarded, uint guard,
     uint id = m.new_value(block, AirOp.AIR_PI, &ops[0], 2, org, line, col);
     if (id == AIR_NO_VALUE) { return id; }
     m.values[id].p.fact = fact;
+
+    /*
+     RE-FETCH. `g` was taken before new_value, which grows the value array
+     and therefore may realloc it — so the earlier pointer now dangles.
+     This is the exact hazard documented on AirModule.val ("the returned
+     pointer is invalidated by the next add_* call"), and I violated it
+     three lines after writing it down.
+
+     It survived every hand-written fixture and crashed on stdlib/io.pie,
+     which is large enough to force a reallocation mid-function. Holding
+     an id across mutation is safe; holding a pointer is not.
+    */
+    g = m.val(guarded);
 
     /*
      Seed R from the fact the π establishes. This is where the `E` feeds

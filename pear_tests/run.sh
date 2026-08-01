@@ -24,12 +24,12 @@ if [ ! -x "$C3" ]; then
   exit 2
 fi
 
-if ! "$C3" compile pear/a1/*.c3 pfront/pfront_core.c3 -o "$BIN" >/tmp/pear_build.log 2>&1; then
+if ! bash pear/build.sh >/tmp/pear_build.log 2>&1; then
   echo "BUILD FAILED"
   tail -20 /tmp/pear_build.log
   exit 2
 fi
-chmod +x "$BIN"   # workspace snapshots drop the exec bit
+PEARC=./pearc
 
 # ── a1 self-test: round-trip, verify, and the negative cases ────────────
 #
@@ -156,6 +156,156 @@ else
   fail=$((fail+1)); note FAIL "sp_classification" "not discriminating: nl=$nl local=$loc"
 fi
 
+# ── a1 BUILD PATH: real Pride source -> AIR ─────────────────────────────
+#
+# Everything above tests AIR in isolation. These test the thing that makes
+# a1 a compiler stage rather than a datatype: pfront's AST, lowered.
+
+# A straight-line function must produce the arithmetic, not AIR_UNKNOWN.
+# `bin op=add` failing here means the operator token table drifted -- which
+# is exactly what happened when the ids were hardcoded by eye
+# (TOKEN_PLUS guessed as 233, actually ordinal 155), silently turning every
+# binary operator into an unknown.
+cat > /tmp/pear_t_straight.pie <<'PIE'
+mod t
+fn add3 : i64 -> i64
+  | n -> n + 3i64
+PIE
+sl=$("$PEARC" /tmp/pear_t_straight.pie 2>&1)
+if echo "$sl" | grep -q 'bin %2 %3 op=add'; then
+  pass=$((pass+1)); note PASS "build_straight" "(arithmetic lowered, not unknown)"
+else
+  fail=$((fail+1)); note FAIL "build_straight" "no 'bin op=add' in output"
+  echo "$sl" | sed 's/^/      /' | head -8
+fi
+
+# A diamond must produce a phi at the join AND sigma on both edges with
+# ranges narrowed in OPPOSITE directions. This is e-SSI working end to end
+# from source text.
+cat > /tmp/pear_t_diamond.pie <<'PIE'
+mod t
+fn classify : i64 -> i64
+  | n ->
+    if n > 0i64
+      1i64
+    else
+      2i64
+PIE
+di=$("$PEARC" /tmp/pear_t_diamond.pie 2>&1)
+has_phi=$(echo "$di" | grep -c 'phi ')
+gt=$(echo "$di" | grep 'fact=gt' | grep -c 'range=1\.\.')
+le=$(echo "$di" | grep 'fact=le' | grep -c 'range=-9223372036854775808\.\.0')
+if [ "$has_phi" -ge 1 ] && [ "$gt" -ge 1 ] && [ "$le" -ge 1 ]; then
+  pass=$((pass+1)); note PASS "build_essi" "(phi at join, sigma narrows both edges)"
+else
+  fail=$((fail+1)); note FAIL "build_essi" "phi=$has_phi gt-sigma=$gt le-sigma=$le"
+fi
+
+# A LOOP is the case Braun et al.'s sealing exists for: the header phi
+# names a value defined later in the body, so it cannot be built in one
+# forward pass without parking an incomplete phi. Assert a real back edge
+# and a header phi that reads from the body block.
+cat > /tmp/pear_t_loop.pie <<'PIE'
+mod t
+fn sum_to : i64 -> i64
+  | n ->
+    let mut acc = 0i64
+    let mut i = 0i64
+    while i < n
+      acc = acc + i
+      i = i + 1i64
+    acc
+PIE
+lp=$("$PEARC" --verify /tmp/pear_t_loop.pie 2>&1)
+lp_err=$(echo "$lp" | grep 'errors / warnings' | grep -oE '[0-9]+ / [0-9]+' | cut -d' ' -f1)
+lp_phi=$(echo "$lp" | grep -c 'phi ')
+if [ "${lp_err:-1}" = "0" ] && [ "$lp_phi" -ge 2 ]; then
+  pass=$((pass+1)); note PASS "build_loop" "($lp_phi loop-carried phis, verifies clean)"
+else
+  fail=$((fail+1)); note FAIL "build_loop" "errors=$lp_err phis=$lp_phi (want 0 / >=2)"
+fi
+
+# Compound assignment must desugar. `x += n` keeps the `+=` TOKEN, not
+# `+`, so a table that only knows binary operators drops the whole
+# statement to AIR_UNKNOWN.
+cat > /tmp/pear_t_cassign.pie <<'PIE'
+mod t
+fn f : i64 -> i64
+  | n ->
+    let mut x = 0i64
+    x += n
+    x
+PIE
+ca=$("$PEARC" /tmp/pear_t_cassign.pie 2>&1)
+if echo "$ca" | grep -q 'op=add' && ! echo "$ca" | grep -q 'unknown'; then
+  pass=$((pass+1)); note PASS "build_compound_assign" "(x += n desugared to add)"
+else
+  fail=$((fail+1)); note FAIL "build_compound_assign" "not desugared"
+fi
+
+# Overflow-qualified arithmetic must NOT collapse onto the plain operator.
+# `+%` wrapping and `+` have different semantics: treating them alike would
+# let a2 delete an overflow check the programmer explicitly asked for.
+cat > /tmp/pear_t_ovf.pie <<'PIE'
+mod t
+fn f : (i64, i64) -> i64
+  | (a, b) ->
+    let c = a +? b
+    let w = a +% b
+    let s = a +| b
+    c + w + s
+PIE
+ov=$("$PEARC" /tmp/pear_t_ovf.pie 2>&1)
+n_ovf=$(echo "$ov" | grep -cE 'op=(addc|addw|adds)')
+if [ "$n_ovf" -ge 3 ]; then
+  pass=$((pass+1)); note PASS "build_overflow_ops" "(checked/wrapping/saturating kept distinct)"
+else
+  fail=$((fail+1)); note FAIL "build_overflow_ops" "only $n_ovf of 3 distinct opcodes"
+fi
+
+# ── THE REAL TEST: the whole standard library ───────────────────────────
+#
+# 258 modules through pfront and into AIR. Asserts three things a small
+# fixture cannot: no crashes, every module's AIR passes the verifier, and
+# coverage does not regress. The crash bar matters -- a stale AirValue*
+# held across a realloc survived every hand-written fixture and only died
+# on stdlib/io.pie, which is large enough to force the array to grow.
+sw_clean=0; sw_crash=0; sw_err=0; sw_vals=0; sw_unsup=0; sw_fns=0
+for f in $(find stdlib -name '*.pie' | sort); do
+  o=$(timeout 20 "$PEARC" --stats -I stdlib "$f" 2>&1)
+  if echo "$o" | grep -q "^ERROR:"; then sw_crash=$((sw_crash+1)); continue; fi
+  e=$(echo "$o" | grep 'errors / warnings' | grep -oE '[0-9]+ / [0-9]+' | cut -d' ' -f1)
+  v=$(echo "$o" | grep 'blocks / values' | grep -oE '[0-9]+$')
+  u=$(echo "$o" | grep 'unsupported      :' | grep -oE '[0-9]+$')
+  fn=$(echo "$o" | grep '  functions' | grep -oE '[0-9]+$')
+  sw_vals=$((sw_vals+${v:-0})); sw_unsup=$((sw_unsup+${u:-0})); sw_fns=$((sw_fns+${fn:-0}))
+  if [ "${e:-1}" = "0" ]; then sw_clean=$((sw_clean+1)); else sw_err=$((sw_err+1)); fi
+done
+
+if [ "$sw_crash" = "0" ]; then
+  pass=$((pass+1)); note PASS "stdlib_no_crash" "(258 modules lowered, 0 crashes)"
+else
+  fail=$((fail+1)); note FAIL "stdlib_no_crash" "$sw_crash modules crashed the lowering"
+fi
+
+if [ "$sw_err" = "0" ] && [ "$sw_clean" -ge 258 ]; then
+  pass=$((pass+1)); note PASS "stdlib_verify" "($sw_clean/258 modules produce verifiable AIR)"
+else
+  fail=$((fail+1)); note FAIL "stdlib_verify" "$sw_err modules produced invalid AIR"
+fi
+
+# Coverage, reported whether flattering or not. 95% is the current number;
+# the gap is dominated by `match`, which is not lowered at all.
+cov=$(( (sw_vals - sw_unsup) * 100 / (sw_vals > 0 ? sw_vals : 1) ))
+# Threshold set just under the measured 95%. Deliberately tight: a
+# regression that reintroduced the hardcoded-token bug still showed 92%,
+# so a loose bar would have let it through as "fine".
+if [ "$sw_fns" -ge 3900 ] && [ "$cov" -ge 94 ]; then
+  pass=$((pass+1)); note PASS "stdlib_coverage" "($sw_fns fns, $cov% real AIR, $sw_unsup unknown)"
+else
+  fail=$((fail+1)); note FAIL "stdlib_coverage" "$sw_fns fns, $cov% coverage (want >=3900 / >=94%)"
+fi
+
 # ── D3 property: the text form is CANONICAL ─────────────────────────────
 #
 # Printed ids are assigned in traversal order, not construction order, so
@@ -189,7 +339,17 @@ fi
 
 # a1 itself is ALLOWED to read PNode — that is its job. But nothing in a1
 # may read Pride SOURCE: there is one grammar and pfront owns it.
+#
+# build.c3 DOES import pfront_lex, deliberately, to read the operator
+# TokenType ordinals as compile-time constants. That is not a second
+# parser: hardcoding those numbers by eye is what silently turned every
+# binary operator into AIR_UNKNOWN (TOKEN_PLUS guessed as 233, actual
+# ordinal 155). So the check is on instantiating a LEXER, which is what
+# "reads source" actually means, not on importing the module.
 srcleak=$(grep -l "pfront_lex::Lexer" pear/a1/*.c3 2>/dev/null || true)
+# And prove the distinction is real: a1 must never call Lexer.init or next.
+lexcall=$(grep -lE "\.init\(buf|lx\.next\(\)" pear/a1/*.c3 2>/dev/null || true)
+srcleak="$srcleak$lexcall"
 if [ -z "$srcleak" ]; then
   pass=$((pass+1)); note PASS "a1_no_lexer" "(a1 reads the AST, never source)"
 else

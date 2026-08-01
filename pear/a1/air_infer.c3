@@ -274,6 +274,45 @@ fn void infer_value(Air* m, uint vid)
                 case ABO_DIV: v.facts.range = range_div(ra, rb);
                 case ABO_MOD: v.facts.range = range_mod(ra, rb);
                 case ABO_AND: v.facts.range = range_and(ra, rb);
+                /*
+                 WRAPPING arithmetic: the result is defined but can be any
+                 value of the type, so the range MUST go to top. Reusing
+                 the plain transfer function here would claim a bound the
+                 programmer explicitly opted out of, and a2 would then
+                 delete a check on the strength of it.
+                */
+                case ABO_ADDW:
+                case ABO_SUBW:
+                case ABO_MULW:
+                    v.facts.range = pear_erm::r_top();
+
+                /*
+                 CHECKED arithmetic traps or reports on overflow, so the
+                 non-trapping result IS within the ordinary bound — the
+                 same transfer function as the plain operator, plus a
+                 may-fault marker for E.
+                */
+                case ABO_ADDC:
+                    v.facts.range = range_add(ra, rb);
+                    v.facts.may_fault = true;
+                case ABO_SUBC:
+                    v.facts.range = range_sub(ra, rb);
+                    v.facts.may_fault = true;
+                case ABO_MULC:
+                    v.facts.range = range_mul(ra, rb);
+                    v.facts.may_fault = true;
+
+                /*
+                 SATURATING arithmetic clamps at the type bound, so the
+                 result is bounded even when the inputs are not. Without a
+                 declared width the clamp point is unknown, so this stays
+                 top rather than guessing 64-bit.
+                */
+                case ABO_ADDS:
+                case ABO_SUBS:
+                case ABO_MULS:
+                    v.facts.range = pear_erm::r_top();
+
                 case ABO_EQ:
                 case ABO_NE:
                 case ABO_LT:

@@ -494,8 +494,22 @@ fn void check_function(Air* m, Fn* f, Report* r)
                     if (!is_pred) { r.err("phi names an incoming block that is not a predecessor", vid); }
                 }
             }
-            else
+            else if (!v.is_phi_hole)
             {
+                /*
+                 A PHI HOLE does not count as a real instruction.
+
+                 remove_trivial_phi neutralises a trivial φ in place rather
+                 than deleting it, because deleting from the middle of a
+                 block invalidates every position other code holds. The
+                 dead slot can therefore sit BETWEEN two live φ, which is
+                 harmless — but counting it as a non-φ made this check
+                 report "phi appears after a non-phi value" on correct IR.
+
+                 Verified on a real loop: `while i < n` with two
+                 loop-carried variables produces exactly this shape, and
+                 the IR was right while the check was too strict.
+                */
                 seen_non_phi = true;
             }
 
