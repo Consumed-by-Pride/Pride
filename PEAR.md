@@ -493,21 +493,57 @@ backend-agnostic so the runtime ABI is a late choice.
 
 Not stage order. This sequence keeps something testable at every point.
 
-1. **`a1/air.c3` + print + parse** — the datatype and its text form. Round-trip
-   tests pass with no compiler attached.
-2. **`a1/verify.c3`** — the four SSI properties, tested against hand-written
-   `.air` files. Verification exists before anything can produce bad IR.
-3. **`a1` build path** — `PNode` → AIR for a small language subset; grow by
-   construct with a regression test each.
-4. **`a2` facts + range** — `R` working, measured, `--verify-facts` reporting.
-5. **`a2` memssa** — `M`.
-6. **`a2` dce/sccp** — with before/after node counts.
+1. ~~**`a1/air.c3` + print + parse**~~ — **DONE.** Round-trips with no
+   compiler attached; 258/258 stdlib modules re-parse and verify.
+2. ~~**`a1/verify.c3`**~~ — **DONE.** Four SSI properties plus structural
+   checks, against hand-written `.air`.
+3. ~~**`a1` build path**~~ — **DONE.** 4,025/4,025 functions, 0 `AIR_UNKNOWN`.
+4. ~~**`a2` facts + range**~~ — **DONE.** `a2_facts.c3`, `a2_range.c3`,
+   `--verify-facts`.
+5. ~~**`a2` memssa**~~ — **DONE.** `a2_memssa.c3`: real MemoryDef/Use/Phi.
+6. ~~**`a2` dce/sccp**~~ — **DONE.** `a2_sccp.c3`, `a2_dce.c3`, with
+   before/after counts.
 7. **`a3` CPS** — datatype, text form, conversion, then dead-continuation DCE.
+   ← **NEXT**
 8. **`a4` PON** — defunctionalisation and layout.
 9. **`a5` λ̄μμ̃** — plus the reachability baseline for honest comparison.
 10. **`a5` emit** — once X is known.
 
-Steps 1–2 are unblocked now and do not depend on X.
+### Where a2 actually landed
+
+Measured over 233 stdlib modules, absolute counts. 233/233 optimise and
+re-verify; 0 crashes.
+
+| | |
+|---|---|
+| `R` ranged | 15,624 → 18,766 |
+| `R` tightened | 3,887 |
+| `R` widened (loop-carried) | 940 |
+| `R` proven ≥ 0 | 17,756 |
+| `M` defs / uses | 1,509 / 8,642 |
+| `M` memory φ placed | 1,427 — a1 places **zero** |
+| `M` a1 versions corrected | 4,082 |
+| SCCP folded | 806 values, 54 branches |
+| DCE values | 56,109 → 51,628 (−4,481) |
+| DCE blocks | 10,456 → 10,367 (−89) |
+
+**Unflattering, and left in deliberately:**
+
+- **19 of 2,892 comparisons decided (0.7%).** Two real precision bugs were
+  found and fixed while chasing this and it did not move. Counting what
+  feeds the undecided ones says why: the largest source of un-ranged
+  comparison operands is `load.field` — struct fields read from memory.
+  A scalar range analysis cannot bound those; it needs field-sensitive
+  memory analysis, which is not in this stage's plan.
+- **`noalias` and dead-store elimination report 0 on the stdlib.** Both are
+  gated on allocation-rooted pointers and the stdlib has 1,509 stores and
+  **zero** `alloc` sites. Rather than ship two untested paths,
+  `pear/a2/tests/ok_alloc_deadstore.air` exercises them.
+- **Alias analysis is shallow**: distinct allocations, and distinct fields
+  of one base. No inter-procedural analysis, no escape analysis, no
+  disambiguation of two indices into one array.
+- **DCE cannot delete dead continuations.** That is a3's job and the reason
+  a3 exists.
 
 ---
 
