@@ -516,6 +516,77 @@ re-verify; 0 crashes.
 
 | | |
 |---|---|
+| `R` ranged | 15,590 → 18,868 |
+| `R` tightened | 3,998 |
+| `R` proven ≥ 0 | 17,849 |
+| `M` memory φ placed | 1,427 — a1 places **zero** |
+| `M` a1 versions corrected | 4,082 |
+| SCCP folded | 828 values, 54 branches |
+| DCE values | 57,393 → 52,890 (−4,503) |
+| DCE blocks | 10,456 → 9,904 (−552, of which 463 folded jumps) |
+| D1 facts contributed | 43,615 |
+| D1 facts still non-trivial | 26,657 |
+| D1 facts reachable | 25,593 |
+| D1 facts orphaned | 1,064 — all from DCE deleting the values |
+
+**Unflattering, and left in deliberately:**
+
+- **19 of 2,892 comparisons decided (0.7%).** Two real precision bugs were
+  found and fixed while chasing this and it did not move. Counting what
+  feeds the undecided ones says why: the largest source of un-ranged
+  comparison operands is `load.field` — struct fields read from memory.
+  A scalar range analysis cannot bound those; it needs field-sensitive
+  memory analysis, which is not in this stage's plan.
+- **`noalias` and dead-store elimination report 0 on the stdlib.** Both are
+  gated on allocation-rooted pointers and the stdlib has 1,509 stores and
+  **zero** `alloc` sites. Rather than ship two untested paths,
+  `pear/a2/tests/ok_alloc_deadstore.air` exercises them.
+- **Alias analysis is shallow**: distinct allocations, and distinct fields
+  of one base. No inter-procedural analysis, no escape analysis, no
+  disambiguation of two indices into one array.
+- **DCE cannot delete dead continuations.** That is a3's job and the reason
+  a3 exists.
+- **Delayed widening was measured NOT to help here.** Sweeping the delay
+  over the whole library moves the ranged count by at most 55 values and
+  scores identically to widening from the first pass. It is kept because
+  it costs nothing, not because it was shown to pay.
+
+### What the syntax suite found
+
+`pfront_tests/syntax/` is written from the **spec's** grammar rather than
+from what the compiler already handled, which is why it found defects the
+258-module stdlib sweep could not: the standard library happens to use the
+other spelling of every one of them.
+
+| Defect | Kind |
+|---|---|
+| `¬` unparseable in expression position | parse |
+| `∈` had no precedence entry | parse |
+| `not x` / `¬x` lowered to **bitwise** complement | miscompile |
+| `and` / `or` keywords lowered to `AIR_UNKNOWN` | hole |
+| `for` lowered to `AIR_UNKNOWN` — the loop did not exist in the IR | hole |
+| `do … while` unparseable; then ran its body once | miscompile |
+| `defer` body lowered nowhere | hole |
+| only the **first clause** of a multi-clause function was lowered | miscompile |
+| guards parsed and then ignored — arms ran unconditionally | miscompile |
+| comma guards rejected in `match` arms | parse |
+| struct patterns matched **everything** (`N_PAT_FIELD` dropped) | miscompile |
+| field names dropped on every round trip | D3 violation |
+| `sizeof`/`alignof`/`offsetof`/`transmute`/`assume`/`freeze`/`poison`/`assert` | 8 holes |
+| every `handle` in the language failed to parse | parse |
+| juxtaposition application (`k v`) implemented nowhere | missing |
+| own-line attributes unparseable | parse |
+| `~Tree e` evaluated its quoted body | miscompile |
+| two diagnostics printed **dangling stack buffers** | memory safety |
+| `assume` was never read by a2, contradicting its own comment | false claim |
+| the D1 breakdown did not sum to its own total | false metric |
+
+Three comments of mine were also found to be false and were corrected
+against measurement rather than deleted: a fabricated SCC cycle cited as
+justification for delayed widening, a "26 of 211" σ count that was really
+8, and a stale "53%" semi-pruned figure that is 83%.
+
+---|---|
 | `R` ranged | 15,624 → 18,766 |
 | `R` tightened | 3,887 |
 | `R` widened (loop-carried) | 940 |
