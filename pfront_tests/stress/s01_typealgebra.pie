@@ -1,0 +1,124 @@
+mod stress.s01_typealgebra
+
+-- ADVERSARIAL: the set-theoretic type algebra (spec §13.1) and quantifiers
+-- (§13.4). Every operator here has 0 or 1 uses in the entire stdlib, so
+-- none of it is exercised by the normal test sweep.
+--
+-- Targets:
+--   ∩ ∪ ¬ ⊥ at every precedence position
+--   deeply nested combinations, both associativities
+--   ∀ / ∃ binders, including nested and shadowing
+--   refinement predicates in type position: (> 0), (>= 0.0)
+--   the ASCII/Unicode arrow mix in the same file
+
+-- ── plain lattice operators ──────────────────────────────────────────────
+
+type NonNullPtr  = ptr ∩ ¬null
+type IntOrBool   = i64 ∪ bool
+type NotBool     = ¬bool
+type Never       = ⊥
+
+-- ── associativity and nesting ────────────────────────────────────────────
+-- Left- and right-leaning chains of the same operator.
+
+type Chain3Union = i8 ∪ i16 ∪ i32
+type Chain4Inter = i64 ∩ ¬null ∩ ¬bool ∩ ¬f64
+type Mixed       = (i8 ∪ i16) ∩ ¬i8
+type MixedFlat   = i8 ∪ i16 ∩ ¬i8
+
+-- Negation applied to a compound, and double negation.
+type NotUnion    = ¬(i8 ∪ i16)
+type DoubleNeg   = ¬¬i32
+type TripleNeg   = ¬¬¬i32
+
+-- Bottom in every position: as a member, as an operand, alone.
+type BotUnion    = ⊥ ∪ i32
+type BotInter    = ⊥ ∩ i32
+type NotBot      = ¬⊥
+
+-- ── refinement predicates in type position ───────────────────────────────
+
+type Positive     = i32 ∩ (> 0)
+type NonNegative  = i32 ∩ (>= 0)
+type NormalizedF  = f32 ∩ (>= 0.0) ∩ (<= 1.0)
+type BoundedPair  = (i32 ∩ (> 0), i32 ∩ (< 100))
+
+-- ── quantifiers ──────────────────────────────────────────────────────────
+
+type Ident       = ∀ A . A -> A
+type SomeEq      = ∃ T . T ∩ ¬null
+type NestedQuant = ∀ A . ∀ B . (A -> B) -> A -> B
+type MixedQuant  = ∀ A . ∃ B . A -> B
+
+-- A quantifier over a lattice expression.
+type QuantLattice = ∀ A . (A ∪ ⊥) -> (A ∩ ¬null)
+
+-- ── effect rows crossed with the type algebra ────────────────────────────
+
+type PureFn      = i64 -> i64
+type IoFn        = i64 -> i64 ! [IO]
+type MultiFn     = i64 -> i64 ! [IO, UB]
+type OpenFn      = i64 -> i64 ! [..r]
+type MixedRow    = i64 -> i64 ! [IO, ..r]
+type RowOverSet  = (i64 ∪ bool) -> (i64 ∩ ¬null) ! [IO, Alloc]
+
+-- ── the algebra inside generics ──────────────────────────────────────────
+
+type NonNull<T>  = T ∩ ¬null
+type Opt<T>      = T ∪ ()
+type Both<A, B>  = A ∩ B
+type Neither<A, B> = ¬A ∩ ¬B
+
+-- Nested generic application over lattice types.
+type Deep<T>     = NonNull<Opt<T>>
+type Deeper<T>   = Both<NonNull<T>, Opt<T>>
+
+-- ── functions whose signatures use all of it ─────────────────────────────
+
+fn take_nonnull : NonNullPtr -> i64
+  | p -> p as i64
+
+fn take_union : IntOrBool -> i64
+  | v -> 0i64
+
+fn take_bottom : ⊥ -> i64
+  | _ -> 0i64
+
+fn returns_bottom : i64 -> ⊥
+  | _ -> unreachable
+
+fn identity_quant<A> : A -> A
+  | x -> x
+
+fn constrained<T : Ord> : (T, T) -> T
+  | (a, b) -> if a > b then a else b
+
+-- Where clause binding a lattice type.
+fn with_where<A> : A -> i64
+  where B = A ∩ ¬null
+  | _ -> 0i64
+
+-- Unicode arrow in the signature, ASCII in the clause.
+fn arrow_mix : i64 → i64
+  | n -> n + 1i64
+
+-- ASCII arrow in the signature, Unicode in the clause.
+fn arrow_mix2 : i64 -> i64
+  | n → n + 1i64
+
+-- Both Unicode.
+fn arrow_uni : i64 → i64
+  | n → n + 1i64
+
+-- ── Unicode comparison operators in expressions ──────────────────────────
+
+fn uni_ops : (i64, i64) -> bool
+  | (a, b) ->
+    let le = a ≤ b
+    let ge = a ≥ b
+    let ne = a ≠ b
+    le and ge and ne
+
+-- Membership operator from the precedence table.
+fn uni_in : (i64, i64) -> bool
+  | (a, b) -> a ≤ b

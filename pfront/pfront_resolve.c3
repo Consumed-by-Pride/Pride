@@ -485,14 +485,20 @@ fn Sym* Resolver.declare(Resolver* r, uint name_id, pfront_core::SymKind k,
 // scope so `i64`, `bool`, `printf` etc. resolve without a prelude file.
 fn void Resolver.install_builtins(Resolver* r)
 {
-    char*[24] tynames = {
+    char*[25] tynames = {
         "i8", "i16", "i32", "i64", "i128",
         "u8", "u16", "u32", "u64", "u128",
         "f32", "f64", "bool", "char", "str",
         "usz", "isz", "unit", "never", "void",
-        "byte", "rune", "ptr", "any"
+        "byte", "rune", "ptr", "any",
+        // `null` is a TYPE as well as a literal: the singleton set holding
+        // only the null pointer. Semantic subtyping needs it by name —
+        // spec §13.1's canonical example is `T ∩ ¬null`, and without this
+        // the resolver rejected it as an unknown type name even once the
+        // parser accepted it.
+        "null"
     };
-    for (usz i = 0; i < 24; i++)
+    for (usz i = 0; i < 25; i++)
     {
         uint id = r.interner.intern(tynames[i], cstr_len(tynames[i]));
         r.declare(id, pfront_core::SymKind.SYM_BUILTIN_TYPE, pfront_core::NS_TYPE, null, true);
@@ -925,6 +931,39 @@ fn void Resolver.resolve_type(Resolver* r, Node* t)
                 if (s != null) { e.resolved = s.decl; e.sym = s; s.used = true; }
             }
         }
+        case N_TY_FORALL:
+        case N_TY_EXISTS:
+        {
+            /*
+             A quantifier BINDS its type variables over the body, so the
+             body must be resolved in a scope where they exist. Falling
+             through to the generic recursion below resolved the body in
+             the enclosing scope, and `∀ A . A -> A` reported `A` as an
+             unknown type name — twice.
+            */
+            r.push_scope(t);
+            for (usz i = 0; i < t.child_count; i++)
+            {
+                Node* c = t.children[i];
+                if (c != null && c.kind == Nk.N_DECL_TYPEPARAM && c.name_id != 0)
+                {
+                    r.declare(c.name_id, pfront_core::SymKind.SYM_TYPEPARAM,
+                              pfront_core::NS_TYPE, c, true);
+                }
+            }
+            for (usz i = 0; i < t.child_count; i++)
+            {
+                Node* c = t.children[i];
+                if (c != null && c.kind != Nk.N_DECL_TYPEPARAM) { r.resolve_type(c); }
+            }
+            r.pop_scope();
+        }
+        case N_TY_REFINE:
+        {
+            // The bound is an ordinary expression (`(> 0)`), resolved in
+            // the enclosing scope.
+            for (usz i = 0; i < t.child_count; i++) { r.resolve_expr(t.children[i]); }
+        }
         default:
         {
             for (usz i = 0; i < t.child_count; i++) { r.resolve_type(t.children[i]); }
@@ -1334,6 +1373,25 @@ fn void Resolver.resolve_expr(Resolver* r, Node* e)
     if (e == null) { return; }
     switch (e.kind)
     {
+        case N_DECL_FN:
+        {
+            /*
+             A `rewrite` used as an EXPRESSION, spec §16:
+                 let arith : Rewrite = rewrite
+                   | x + 0 ↦ x
+
+             The parser produces the same synthetic N_DECL_FN as the
+             declaration form, but as a `let` initializer it arrives here
+             rather than at resolve_stmt, so resolve_fn — and with it the
+             per-rule metavariable binding — was never reached. Every rule
+             metavariable came out unresolved, on the spec's own example.
+
+             Routing to resolve_fn makes the two spellings behave
+             identically, which is the point of them producing the same
+             node.
+            */
+            r.resolve_fn(e);
+        }
         case N_EXPR_IDENT:
         {
             if (e.name_id == 0) { break; }
@@ -1698,6 +1756,26 @@ fn void Resolver.resolve_fn(Resolver* r, Node* f)
 
     if (is_rewrite_decl(f))
     {
+        /*
+         A `pgen` is parsed as the same synthetic N_DECL_FN as a rewrite
+         but CAN carry type parameters:
+
+             pgen mul_to_shift<T : Int> →
+               [x : T, n : T] where [...] ↦ ...
+
+         The rewrite path declared none, so `T` in the rule body was an
+         unknown type name. Declare them in the block's own scope, before
+         the per-rule scopes, so every rule sees them.
+        */
+        for (usz i = 0; i < f.child_count; i++)
+        {
+            Node* c = f.children[i];
+            if (c != null && c.kind == Nk.N_DECL_TYPEPARAM && c.name_id != 0)
+            {
+                r.declare(c.name_id, pfront_core::SymKind.SYM_TYPEPARAM,
+                          pfront_core::NS_TYPE, c, true);
+            }
+        }
         // One scope per rule: `x` in one rule is unrelated to `x` in the next.
         for (usz i = 0; i < f.child_count; i++)
         {

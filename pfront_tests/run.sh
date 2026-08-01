@@ -329,6 +329,140 @@ else
   fail=$((fail+1)); printf '  FAIL  %-26s %s unaccounted identifiers\n' "ident_accounting" "$sweep_unres"
 fi
 
+# ── ADVERSARIAL STRESS FILES ────────────────────────────────────────────
+#
+# pfront_tests/stress/ exercises spec features with little or no stdlib
+# coverage. They were written to BREAK the front end and did: s01 found 7
+# bugs and s02 found 9, none of which the 258-module stdlib sweep could
+# reach because the stdlib never uses those constructs.
+#
+# Both must stay at zero errors. Warnings are allowed (unused bindings in
+# a file whose point is syntax coverage).
+for sf in pfront_tests/stress/*.pie; do
+  [ -e "$sf" ] || continue
+  sname=$(basename "$sf" .pie)
+  serr=$("$BIN" "$sf" -I stdlib -I . --plain --quiet 2>&1 | grep -oE 'errors=[0-9]+' | cut -d= -f2)
+  if [ "${serr:-1}" = "0" ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s (stress: 0 errors)\n' "$sname"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s stress: %s errors\n' "$sname" "$serr"
+    "$BIN" "$sf" -I stdlib -I . --plain 2>&1 | grep 'error \[' | sed 's/^/      /' | head -6
+  fi
+done
+
+# Specific constructs the stress files proved were broken. Asserted
+# individually so a regression names the feature, not just "s01 failed".
+#
+#   ¬null          spec §13.1's canonical `T ∩ ¬null` did not parse: `null`
+#                  lexes as a literal, so the type atom parser rejected it
+#   A<B<C<T>>>     `>>` lexed as a right-shift, the C++ problem
+#   ∀ / ∃          quantified types had no parse rule at all
+#   (> 0)          refinement predicates had no parse rule at all
+#   (A -> B)       a parenthesised function type did not parse
+#   where          function where-clauses had no parse rule at all
+cat > /tmp/pf_ty.pie <<'PIE'
+mod t
+type A<X> = X
+type B<X> = X
+type C<X> = X
+type NonNull<T> = T ∩ ¬null
+type Deep<T>    = A<B<C<T>>>
+type Ident      = ∀ X . X -> X
+type Some       = ∃ X . X ∩ ¬null
+type Pos        = i32 ∩ (> 0)
+type Higher     = (i64 -> i64) -> i64
+fn wf<X> : X -> i64
+  where Y = X ∩ ¬null
+  | _ -> 0i64
+PIE
+tyerr=$("$BIN" /tmp/pf_ty.pie --plain --quiet 2>&1 | grep -oE 'errors=[0-9]+' | cut -d= -f2)
+if [ "${tyerr:-1}" = "0" ]; then
+  pass=$((pass+1)); printf '  PASS  %-26s (lattice, nested generics, quantifiers, refinements, where)\n' "type_algebra"
+else
+  fail=$((fail+1)); printf '  FAIL  %-26s %s errors\n' "type_algebra" "$tyerr"
+  "$BIN" /tmp/pf_ty.pie --plain 2>&1 | grep 'error \[' | sed 's/^/      /'
+fi
+
+#   rewrite as a value, `++` composition, `|>` and `|>` with `*`
+#   ~Tree/~Data/~Bytes must NOT be treated as a staging level
+#   pgen header arrow and `where [conditions]` list
+#   irdl operand types, and irdl must stop at the next declaration
+cat > /tmp/pf_meta.pie <<'PIE'
+mod t
+let r1 : Rewrite = rewrite
+  | x + 0i64 ↦ x
+let r2 : Rewrite = rewrite
+  | x * 1i64 ↦ x
+let both : Rewrite = r1 ++ r2
+pgen pg<T> →
+  [x : T] where [x + 0i64] ↦ x
+dialect D
+  opcode add_i32
+  region entry
+irdl
+  D.add_i32 [a : i32, b : i32] ↦ a
+fn after_irdl : i64 -> i64
+  | x ->
+    let t = ~Tree (x + 1i64)
+    let d = ~Data x
+    let b = ~Bytes x
+    let f = x |> r1*
+    let g = x |> r1 |> r2*
+    x
+PIE
+merr=$("$BIN" /tmp/pf_meta.pie --plain --quiet 2>&1 | grep -oE 'errors=[0-9]+' | cut -d= -f2)
+# `after_irdl` must survive as a TOP-LEVEL function: an un-braced `irdl`
+# block used to run to end of file and swallow everything after it.
+# (`pgen` is also a synthetic fn node, so count the named one.)
+mfns=$("$BIN" /tmp/pf_meta.pie --plain --dump-ast --quiet 2>&1 | grep -cE "^  fn 'after_irdl'")
+if [ "${merr:-1}" = "0" ] && [ "$mfns" = "1" ]; then
+  pass=$((pass+1)); printf '  PASS  %-26s (rewrite values, ++, |>*, sigils, pgen, irdl)\n' "metaprogramming"
+else
+  fail=$((fail+1)); printf '  FAIL  %-26s %s errors, after_irdl present=%s (want 0/1)\n' "metaprogramming" "$merr" "$mfns"
+  "$BIN" /tmp/pf_meta.pie --plain 2>&1 | grep 'error \[' | sed 's/^/      /'
+fi
+
+# A reification sigil must NOT bump the stage level. `~Tree (x + y)` over
+# outer locals is spec §18's own example; treating it as a quotation
+# reported every local as a cross-stage escape, and tripped the CMTT level
+# guard inside `comptime`.
+cat > /tmp/pf_sigil.pie <<'PIE'
+mod t
+let ar : Rewrite = rewrite
+  | x + 0i64 ↦ x
+fn f : (i64, i64) -> i64
+  | (x, y) ->
+    let node = ~Tree (x + y * 3i64)
+    comptime
+      let folded = ~Tree (1i64 + 2i64 + 3i64) |> ar*
+      folded
+    x
+PIE
+sigerr=$("$BIN" /tmp/pf_sigil.pie --plain --quiet 2>&1 | grep -oE 'errors=[0-9]+' | cut -d= -f2)
+if [ "${sigerr:-1}" = "0" ]; then
+  pass=$((pass+1)); printf '  PASS  %-26s (sigils are stage-neutral, comptime accepts them)\n' "sigil_not_stage"
+else
+  fail=$((fail+1)); printf '  FAIL  %-26s %s errors\n' "sigil_not_stage" "$sigerr"
+  "$BIN" /tmp/pf_sigil.pie --plain 2>&1 | grep 'error \[' | sed 's/^/      /'
+fi
+
+# But a REAL staging construct must still be policed: `stage` and `quote`
+# defer evaluation, so an outer local inside one IS an escape. If this
+# stops firing, the sigil fix went too far and disabled the check.
+cat > /tmp/pf_escape.pie <<'PIE'
+mod t
+fn f : i64 -> i64
+  | x ->
+    stage 1
+      x + 1i64
+PIE
+esc=$("$BIN" /tmp/pf_escape.pie --plain 2>&1 | grep -c 'E3202')
+if [ "$esc" -ge 1 ]; then
+  pass=$((pass+1)); printf '  PASS  %-26s (real cross-stage escape still caught)\n' "stage_escape_kept"
+else
+  fail=$((fail+1)); printf '  FAIL  %-26s E3202 no longer fires on a genuine escape\n' "stage_escape_kept"
+fi
+
 # The purity interlock: exactly ONE of two dead stores may be removed. The
 # other has a function call as its initializer and MUST survive. This is the
 # single most important correctness property of the DCE pass.

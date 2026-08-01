@@ -257,6 +257,42 @@ fn void StageChecker.walk(StageChecker* sc, Node* n, int depth)
         case N_EXPR_QUOTE:
         {
             sc.quotes_seen = sc.quotes_seen + 1;
+
+            /*
+             REIFICATION SIGILS ARE NOT A STAGING CONSTRUCT.
+
+             `~Tree e`, `~Data e` and `~Bytes e` share the N_EXPR_QUOTE
+             node kind with `quote`/`stage`, but they mean something
+             different: they reify an expression that is ALREADY in scope
+             as a tree / raw data / bytes. They do not defer evaluation to
+             a later stage.
+
+             Treating them as a stage bump made the spec's own §18 example
+             an error:
+
+                 let node = ~Tree (x + y * z)
+
+             — every outer local inside the sigil was reported as a
+             cross-stage escape (E3202). That is a false positive: `x` has
+             to be NAMEABLE here, not evaluated later, and §20 states the
+             MSP stage is deliberately unrestricted.
+
+             So a sigil walks its body at the CURRENT stage. `quote` and
+             `stage`, which really do defer, still bump.
+            */
+            int sig = n.p.op;
+            bool is_reify = sig == (int)pfront_lex::TokenType.TOKEN_SIGIL_TREE
+                         || sig == (int)pfront_lex::TokenType.TOKEN_SIGIL_DATA
+                         || sig == (int)pfront_lex::TokenType.TOKEN_SIGIL_BYTES;
+            if (is_reify)
+            {
+                for (usz i = 0; i < n.child_count; i++)
+                {
+                    sc.walk(n.children[i], depth + 1);
+                }
+                return;
+            }
+
             int next = sc.lattice.current_stage + 1;
             if (next > MSP_MAX_STAGE)
             {

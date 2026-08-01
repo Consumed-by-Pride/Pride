@@ -92,6 +92,12 @@ struct Parser
     // have introduced the following block. See settle_continuation.
     bool  implicit_block;
 
+    // One-slot pushback buffer, for splitting `>>` at a generic close.
+    // See Parser.push_back: without it the ring silently drops a real
+    // token when a synthesised one is inserted.
+    Tok   pending;
+    bool  has_pending;
+
     // Source line of the most recently consumed token. A layout block always
     // begins on a line AFTER the construct that introduces it, so this is how
     // an inline body (`else 3i64`) is told apart from a lexer-folded block.
@@ -120,6 +126,7 @@ fn void Parser.init(Parser* p, pfront_lex::Lexer* lx, Arena* a,
     p.init_block_level = 0;
     p.implicit_block = false;
     p.prev_line = 0;
+    p.has_pending = false;
     p.fill();
 }
 
@@ -153,7 +160,7 @@ fn Tok Parser.advance(Parser* p)
         p.prev_line = t.line;
     }
     for (usz i = 0; i + 1 < LA_SIZE; i++) { p.ring[i] = p.ring[i + 1]; }
-    p.ring[LA_SIZE - 1] = p.lx.next();
+    p.ring[LA_SIZE - 1] = p.next_raw();
     return t;
 }
 
@@ -188,6 +195,98 @@ fn void Parser.err_at(Parser* p, int code, int line, int col, char* msg)
     if (p.panicking) { return; }
     p.diags.error(pfront_core::Phase.PH_PARSE, code, line, col, msg, p.filename);
     p.panicking = true;
+}
+
+/*
+ Close a generic argument list, splitting a `>>` token when necessary.
+
+ `Foo<Bar<T>>` lexes the trailing `>>` as ONE right-shift token, so the
+ inner list found no `>` and reported "expected '>' to close generic type
+ arguments". Writing `Foo<Bar<T> >` worked, which is the classic C++
+ problem and the same fix C++11 adopted.
+
+ Rather than re-lexing (the parser has a token ring buffer with no
+ position index and cannot rewind), the `>>` is CONSUMED and replaced in
+ place by a single `>`: the inner list takes the first half, and the outer
+ list finds the remaining `>` where it expects it. `>>=` gets the same
+ treatment, leaving `>=`.
+*/
+fn bool Parser.expect_generic_close(Parser* p)
+{
+    if (p.check(Tk.TOKEN_GT)) { p.advance(); return true; }
+
+    if (p.check(Tk.TOKEN_RSHIFT))
+    {
+        Tok sh = p.cur();
+        p.advance();
+        // Put back the second `>`, positioned one column further along so
+        // diagnostics still point at the right character.
+        Tok rest = sh;
+        rest.type = Tk.TOKEN_GT;
+        rest.len = 1;
+        rest.col = sh.col + 1;
+        p.push_back(rest);
+        return true;
+    }
+    if (p.check(Tk.TOKEN_RSHIFTEQ))
+    {
+        Tok sh = p.cur();
+        p.advance();
+        Tok rest = sh;
+        rest.type = Tk.TOKEN_GTEQ;
+        rest.len = 2;
+        rest.col = sh.col + 1;
+        p.push_back(rest);
+        return true;
+    }
+    p.err(1010, "expected '>' to close generic type arguments");
+    return false;
+}
+
+/*
+ Push a synthesised token onto the front of the lookahead ring.
+
+ Used only to split a `>>` into two `>` when closing nested generics.
+
+ The obvious implementation — shift every slot right and drop the last —
+ is WRONG and was the first thing I tried: the ring is full of tokens the
+ lexer has already produced, so the dropped slot loses a real token. It
+ worked for `A<B<T>>` and silently lost the `type` keyword that began the
+ next declaration in `A<B<C<A<T>>>>`, which then parsed as a continuation
+ of the previous one.
+
+ Instead the displaced token goes into a one-slot PENDING buffer that
+ `refill` consults before asking the lexer. Nothing is discarded, and the
+ ring stays exactly as deep as it was.
+*/
+fn void Parser.push_back(Parser* p, Tok t)
+{
+    // The token about to fall off the end is preserved, not dropped.
+    if (p.has_pending)
+    {
+        // Two pending tokens would need a real queue. This never happens:
+        // push_back is only called once per generic close, and each close
+        // consumes a token first. Assert by construction rather than
+        // silently corrupting the stream.
+        p.err(1010, "internal: token pushback overflow");
+        return;
+    }
+    p.pending = p.ring[LA_SIZE - 1];
+    p.has_pending = true;
+    for (usz i = LA_SIZE - 1; i > 0; i--) { p.ring[i] = p.ring[i - 1]; }
+    p.ring[0] = t;
+}
+
+// The next token for the ring: the pending one if there is one, else the
+// lexer's. Keeps push_back lossless.
+fn Tok Parser.next_raw(Parser* p)
+{
+    if (p.has_pending)
+    {
+        p.has_pending = false;
+        return p.pending;
+    }
+    return p.lx.next();
 }
 
 fn bool Parser.expect(Parser* p, Tk t, int code, char* msg)
@@ -568,6 +667,29 @@ fn usz Parser.eat_layout_run(Parser* p)
 // 3. TYPES
 // ════════════════════════════════════════════════════════════════════════════
 
+/*
+ Does this token begin a refinement predicate inside parentheses?
+ Only comparison operators can: `(> 0)`, `(<= 1.0)`, `(!= 0)`.
+*/
+fn bool tok_is_refine_op(Tk t)
+{
+    switch (t)
+    {
+        case TOKEN_LT:
+        case TOKEN_LTEQ:
+        case TOKEN_GT:
+        case TOKEN_GTEQ:
+        case TOKEN_EQEQ:
+        case TOKEN_NEQ:
+        case TOKEN_LEQ_UNI:
+        case TOKEN_GEQ_UNI:
+        case TOKEN_NEQ_UNI:
+            return true;
+        default:
+            return false;
+    }
+}
+
 fn bool tok_starts_type(Tk t)
 {
     switch (t)
@@ -583,6 +705,10 @@ fn bool tok_starts_type(Tk t)
         case TOKEN_KW_SELF:
         case TOKEN_BOTTOM:
         case TOKEN_NEGATION:
+        case TOKEN_LIT_NULL:
+        case TOKEN_KW_NULLPTR:
+        case TOKEN_FORALL:
+        case TOKEN_EXISTS:
         case TOKEN_KW_TYPEOF:
         case TOKEN_KW_TYPEOF_UNQUAL:
         case TOKEN_EMPTYSET:
@@ -590,6 +716,46 @@ fn bool tok_starts_type(Tk t)
         default:
             return false;
     }
+}
+
+/*
+ Parse a type, then absorb any following arrow chain into an N_TY_FN.
+
+ `parse_type` deliberately stops before `->`, because in a `fn` signature
+ the arrow belongs to parse_fn_decl. Three other places need the arrow
+ anyway — a `type` alias, a parenthesised type, and a quantifier body —
+ and each had its own copy of the absorption, which is how they drifted:
+ all three absorbed exactly ONE arrow.
+
+ Arrows are RIGHT-associative (`X -> Y -> Z` is `X -> (Y -> Z)`), so one
+ absorption is not enough. `∀ A . ∀ B . (A -> B) -> A -> B` left the final
+ `B` outside the inner binder and reported it as an unknown type name.
+
+ Recursing on the return type gives the right shape and, being one
+ function, keeps the three call sites from diverging again.
+*/
+fn Node* Parser.parse_type_with_arrow(Parser* p)
+{
+    Node* lhs = p.parse_type();
+    if (!p.check(Tk.TOKEN_ARROW) && !p.check(Tk.TOKEN_ARROW_ASCII)) { return lhs; }
+
+    Tok ar = p.advance();
+    // Right-associative: the return type may itself be an arrow chain.
+    Node* ret = p.parse_type_with_arrow();
+    Node* fnty = p.mk_at(Nk.N_TY_FN, ar);
+    p.add(fnty, lhs);
+    if (ret != null)
+    {
+        Node* rw = p.mk_at(Nk.N_TY_CONSTRAINT, ar);
+        p.add(rw, ret);
+        p.add(fnty, rw);
+    }
+    if (p.check(Tk.TOKEN_BANG))
+    {
+        Node* row = p.parse_effect_row();
+        if (row != null) { p.add(fnty, row); }
+    }
+    return fnty;
 }
 
 fn Node* Parser.parse_type(Parser* p)
@@ -655,6 +821,66 @@ fn Node* Parser.parse_type_prefix(Parser* p)
             Node* inner = p.parse_type_prefix();
             return p.arena.node1(Nk.N_TY_NEGATION, inner, t.line, t.col);
         }
+        case TOKEN_FORALL:
+        case TOKEN_EXISTS:
+        {
+            /*
+             Quantified types, spec §13.4:
+                 ∀ A . A -> A
+                 ∃ T . T ∩ ¬null
+                 ∀ A . ∀ B . (A -> B) -> A -> B
+
+             The binder scopes over EVERYTHING to its right, so the body is
+             parsed with the full type grammar rather than as a prefix
+             operand — `∀ A . A -> A` must bind the whole arrow type, not
+             just `A`.
+
+             Neither quantifier had any parse rule at all; both are in the
+             spec and neither appears in the stdlib, so nothing caught it.
+            */
+            p.advance();
+            Nk qk = t.type == Tk.TOKEN_FORALL ? Nk.N_TY_FORALL : Nk.N_TY_EXISTS;
+            Node* q = p.mk_at(qk, t);
+
+            // One or more bound variables, comma-separated.
+            while (true)
+            {
+                Tok v = p.cur();
+                if (v.type != Tk.TOKEN_TYPEVAR && v.type != Tk.TOKEN_IDENT)
+                {
+                    p.err(1016, "expected a type variable after a quantifier");
+                    break;
+                }
+                p.advance();
+                Node* tv = p.mk_at(Nk.N_DECL_TYPEPARAM, v);
+                tv.name_id = p.intern_tok(v);
+                tv.p.sptr = v.start;
+                tv.p.slen = v.len;
+                p.add(q, tv);
+                if (!p.accept(Tk.TOKEN_COMMA)) { break; }
+            }
+
+            // The separator is `.`; accept `,` too since the spec writes
+            // both spellings in different examples.
+            if (!p.accept(Tk.TOKEN_DOT)) { p.accept(Tk.TOKEN_COMMA); }
+
+            /*
+             The body must absorb a following ARROW.
+
+             `parse_type` deliberately stops before `->`, because in a `fn`
+             signature the arrow is consumed by parse_fn_decl, which builds
+             the N_TY_FN itself. But a quantifier scopes over the WHOLE
+             type, so `∀ A . A -> A` must bind both sides. Without this the
+             body was just the parameter `A`, the arrow was assembled one
+             level up, and the return `A` resolved outside the binder's
+             scope — reported as an unknown type name.
+
+             Build the same N_TY_FN shape parse_fn_decl and the alias path
+             produce, so downstream passes see one representation.
+            */
+            p.add(q, p.parse_type_with_arrow());
+            return q;
+        }
         default:
             return p.parse_type_postfix();
     }
@@ -684,7 +910,7 @@ fn Node* Parser.parse_type_postfix(Parser* p)
                     if (p.check(Tk.TOKEN_GT)) { break; }
                 }
             }
-            p.expect(Tk.TOKEN_GT, 1010, "expected '>' to close generic type arguments");
+            p.expect_generic_close();
             base = g;
         }
         else if (t == Tk.TOKEN_DOT || t == Tk.TOKEN_COLONCOLON)
@@ -737,10 +963,61 @@ fn Node* Parser.parse_type_atom(Parser* p)
         case TOKEN_EMPTYSET:
             p.advance();
             return p.mk_at(Nk.N_TY_BOTTOM, t);
+        case TOKEN_LIT_NULL:
+        {
+            /*
+             `null` as a TYPE — the singleton set containing only the null
+             pointer. The spec's canonical semantic-subtyping example is
+             `type NonNull<T> = T ∩ ¬null` (§13.1), and it did not parse:
+             the lexer classifies `null` as TOKEN_LIT_NULL (a literal), so
+             the type atom parser rejected it as "expected a type".
+
+             It is a named type here, not a literal: `¬null` must denote
+             the complement of that singleton for the disjointness relation
+             to mean anything.
+            */
+            p.advance();
+            Node* n = p.mk_at(Nk.N_TY_NAME, t);
+            n.name_id = p.interner.intern("null", 4);
+            n.p.sptr = t.start;
+            n.p.slen = t.len;
+            return n;
+        }
+        case TOKEN_KW_NULLPTR:
+        {
+            // C23 spelling of the same singleton.
+            p.advance();
+            Node* n = p.mk_at(Nk.N_TY_NAME, t);
+            n.name_id = p.interner.intern("null", 4);
+            n.p.sptr = t.start;
+            n.p.slen = t.len;
+            return n;
+        }
         case TOKEN_LPAREN:
         {
             p.advance();
             if (p.accept(Tk.TOKEN_RPAREN)) { return p.mk_at(Nk.N_TY_UNIT, t); }
+
+            /*
+             A REFINEMENT PREDICATE, spec §13.1:
+                 type Positive    = i32 ∩ (> 0)
+                 type Normalized  = f32 ∩ (>= 0.0) ∩ (<= 1.0)
+
+             A parenthesised type never starts with a comparison operator,
+             so seeing one here is unambiguous. Without this the whole
+             refinement half of semantic subtyping was unparseable — every
+             example in §13.1 failed with "expected a type".
+            */
+            if (tok_is_refine_op(p.ct()))
+            {
+                Tok op = p.advance();
+                Node* rf = p.mk_at(Nk.N_TY_REFINE, op);
+                rf.p.op = (int)op.type;
+                p.add(rf, p.parse_expr());
+                p.expect(Tk.TOKEN_RPAREN, 1014, "expected ')' to close a refinement predicate");
+                return rf;
+            }
+
             Node* first = p.parse_type();
             if (p.check(Tk.TOKEN_COMMA))
             {
@@ -761,6 +1038,39 @@ fn Node* Parser.parse_type_atom(Parser* p)
                 }
                 p.expect(Tk.TOKEN_RPAREN, 1012, "expected ')' to close tuple type");
                 return tup;
+            }
+            /*
+             A PARENTHESISED FUNCTION TYPE: `(A -> B)`.
+
+             parse_type stops before an arrow, because in a `fn` signature
+             the arrow belongs to parse_fn_decl. Inside parentheses there
+             is no such wrapper, so the arrow was left sitting where a `)`
+             was expected — `(i64 -> i64)` did not parse at all, and nor
+             did any higher-order signature written that way.
+
+             Build the same N_TY_FN shape as parse_fn_decl and the alias
+             path, so downstream sees one representation of a function
+             type rather than three.
+            */
+            if (p.check(Tk.TOKEN_ARROW) || p.check(Tk.TOKEN_ARROW_ASCII))
+            {
+                Tok ar = p.advance();
+                Node* ret = p.parse_type_with_arrow();
+                Node* fnty = p.mk_at(Nk.N_TY_FN, ar);
+                p.add(fnty, first);
+                if (ret != null)
+                {
+                    Node* rw = p.mk_at(Nk.N_TY_CONSTRAINT, ar);
+                    p.add(rw, ret);
+                    p.add(fnty, rw);
+                }
+                if (p.check(Tk.TOKEN_BANG))
+                {
+                    Node* row = p.parse_effect_row();
+                    if (row != null) { p.add(fnty, row); }
+                }
+                p.expect(Tk.TOKEN_RPAREN, 1012, "expected ')' after parenthesised function type");
+                return fnty;
             }
             p.expect(Tk.TOKEN_RPAREN, 1012, "expected ')' after parenthesised type");
             return first;
@@ -1220,27 +1530,43 @@ fn int infix_prec(Tk t)
 {
     switch (t)
     {
-        case TOKEN_PIPELINE:      return 1;
+        /*
+         `++` is REWRITE-RULE COMPOSITION (spec §24, precedence level 16 —
+         below pipeline, above assignment). It had no entry here at all, so
+         `let full : Rewrite = arith ++ strength` — the documented way to
+         build a rule set — reported "expected an expression".
+
+         Level 1 here matches the spec's relative ordering: composition
+         binds looser than everything except assignment, so `a ++ b |> c`
+         groups as `a ++ (b |> c)`... no: pipeline is level 14 and compose
+         is 16, i.e. compose binds LOOSER. Giving pipeline 1 and compose 0
+         would put compose below assignment. The table here is inverted
+         relative to the spec's numbering (higher binds tighter), so
+         compose gets the lowest non-zero precedence and pipeline sits
+         just above it.
+        */
+        case TOKEN_PLUSPLUS:      return 1;
+        case TOKEN_PIPELINE:      return 2;
         case TOKEN_KW_OR:
-        case TOKEN_PIPEPIPE:      return 2;
+        case TOKEN_PIPEPIPE:      return 3;
         case TOKEN_KW_AND:
-        case TOKEN_AMPAMP:        return 3;
+        case TOKEN_AMPAMP:        return 4;
         case TOKEN_EQEQ:
         case TOKEN_NEQ:
-        case TOKEN_NEQ_UNI:       return 4;
+        case TOKEN_NEQ_UNI:       return 5;
         case TOKEN_LT:
         case TOKEN_LTEQ:
         case TOKEN_GT:
         case TOKEN_GTEQ:
         case TOKEN_GEQ_UNI:
-        case TOKEN_LEQ_UNI:       return 5;
-        case TOKEN_PIPE:          return 6;
-        case TOKEN_XOR:           return 7;
-        case TOKEN_AMP:           return 8;
+        case TOKEN_LEQ_UNI:       return 6;
+        case TOKEN_PIPE:          return 7;
+        case TOKEN_XOR:           return 8;
+        case TOKEN_AMP:           return 9;
         case TOKEN_LSHIFT:
-        case TOKEN_RSHIFT:        return 9;
+        case TOKEN_RSHIFT:        return 10;
         case TOKEN_DOTDOT:
-        case TOKEN_DOTDOTEQ:      return 10;
+        case TOKEN_DOTDOTEQ:      return 11;
         case TOKEN_PLUS:
         case TOKEN_MINUS:
         case TOKEN_PLUS_QUESTION:
@@ -1248,14 +1574,21 @@ fn int infix_prec(Tk t)
         case TOKEN_PLUS_PERCENT:
         case TOKEN_MINUS_PERCENT:
         case TOKEN_PLUS_PIPE:
-        case TOKEN_MINUS_PIPE:    return 11;
+        case TOKEN_MINUS_PIPE:    return 12;
         case TOKEN_STAR:
         case TOKEN_SLASH:
         case TOKEN_PERCENT:
         case TOKEN_STAR_QUESTION:
         case TOKEN_STAR_PERCENT:
-        case TOKEN_STAR_PIPE:     return 12;
-        case TOKEN_KW_AS:         return 13;
+        case TOKEN_STAR_PIPE:     return 13;
+        case TOKEN_KW_AS:         return 14;
+        /*
+         0 means "not an infix operator" and is load-bearing: callers loop
+         `while (infix_prec(t) > 0)`. A blanket renumber caught this too
+         and returned 1, which made EVERY token look like an operator —
+         31 regression tests failed instantly. Left explicit so the next
+         renumber does not repeat it.
+        */
         default:                  return 0;
     }
 }
@@ -1374,8 +1707,38 @@ fn Node* Parser.parse_expr_prec(Parser* p, int min_prec)
         }
 
         int next_min = is_right_assoc(op.type) ? prec : prec + 1;
-        Node* right = p.parse_expr_prec(next_min);
+
+        /*
+         `expr |> rules*` — apply a rule set to a FIXPOINT (spec §16, §20).
+
+         The trailing `*` is a SUFFIX on the pipeline's right operand, not a
+         multiplication. It has to be handled before the operand is parsed:
+         `parse_expr_prec` would otherwise read `a * <whatever follows>` as
+         a product and consume the next line's first token, reporting
+         "expected an expression" at end of file.
+
+         So the right operand of a pipeline is parsed at UNARY precedence —
+         high enough to take a name or a call, low enough to leave a
+         following `*` alone — and the `*` is then claimed here.
+
+         Recorded in `aux` rather than as a distinct node kind, so both
+         spellings stay one N_EXPR_BINARY that existing consumers handle;
+         aux == 1 means fixpoint.
+        */
+        int pipe_fix = 0;
+        Node* right;
+        if (op.type == Tk.TOKEN_PIPELINE)
+        {
+            right = p.parse_unary();
+            if (p.check(Tk.TOKEN_STAR)) { p.advance(); pipe_fix = 1; }
+        }
+        else
+        {
+            right = p.parse_expr_prec(next_min);
+        }
+
         Node* bin = p.mk_at(Nk.N_EXPR_BINARY, op);
+        bin.p.aux = pipe_fix;
         bin.p.op = (int)op.type;
         p.add(bin, left);
         p.add(bin, right);
@@ -2282,6 +2645,30 @@ fn Node* Parser.parse_primary(Parser* p)
                 if (!p.accept(Tk.TOKEN_COMMA)) { break; }
             }
             p.expect(Tk.TOKEN_RPAREN, 1049, "expected ')' to close atomic operation");
+            return n;
+        }
+
+        case TOKEN_KW_REIFY:
+        case TOKEN_KW_EVAL:
+        {
+            /*
+             `reify e` and `eval e` — MSP operators (spec §20's keyword
+             list) with no parse rule at all. They fell through to the
+             identifier path, so `let r = reify x` bound `r` to a bare name
+             `reify` and left `x` dangling as a separate statement. The
+             error surfaced as "unresolved name" on a keyword, which is
+             about as misleading as a diagnostic gets.
+
+             They are prefix operators over one expression, like `splice`
+             and `unquote` beside them. Both are stage-neutral: `reify`
+             turns a value into its representation, `eval` runs a
+             representation — neither defers to a later stage, so they must
+             NOT be modelled as quotation.
+            */
+            p.advance();
+            Node* n = p.mk_at(t.type == Tk.TOKEN_KW_REIFY
+                              ? Nk.N_EXPR_REIFY : Nk.N_EXPR_EVAL, t);
+            p.add(n, p.parse_unary());
             return n;
         }
 
@@ -3650,6 +4037,69 @@ fn Node* Parser.parse_fn_decl(Parser* p, bool is_pub)
         p.skip_newlines();
         bool indented = p.accept(Tk.TOKEN_INDENT);
         p.skip_newlines();
+
+        /*
+         WHERE CLAUSES, spec §12:
+
+             fn zip<A, B, C> : (*A, *B, u64) -> *C
+               where C = Pair<A, B>
+               | (xs, ys, n) -> ...
+
+         A `where` binds a type equation that applies while checking the
+         body. There was no rule for it at all: the parser reached the
+         `where` keyword expecting a clause bar, reported "expected an
+         expression", and then reported the equation's own identifiers as
+         unresolved names — three cascading errors from one missing
+         construct.
+
+         Several equations may be given, one per line or comma-separated.
+         They attach to the function as N_TY_WHERE children so the type
+         checker can apply them; each is `Name = Type`.
+        */
+        while (p.check(Tk.TOKEN_KW_WHERE))
+        {
+            Tok w = p.advance();
+            while (true)
+            {
+                Tok wnm = p.cur();
+                if (wnm.type != Tk.TOKEN_TYPEVAR && wnm.type != Tk.TOKEN_IDENT)
+                {
+                    p.err(1085, "expected a type name in a where clause");
+                    break;
+                }
+                p.advance();
+                Node* wh = p.mk_at(Nk.N_TY_WHERE, w);
+                wh.name_id = p.intern_tok(wnm);
+                wh.p.sptr = wnm.start;
+                wh.p.slen = wnm.len;
+
+                /*
+                 Two forms are in the spec: an EQUALITY (`where C = Pair<A,B>`)
+                 and a CONSTRAINT (`where T : Ord`). Both bind the name; the
+                 discriminator is recorded in `aux` so the checker can tell
+                 an equation from a bound without re-reading the source.
+                */
+                if (p.accept(Tk.TOKEN_EQ))      { wh.p.aux = 0; }
+                else if (p.accept(Tk.TOKEN_COLON)) { wh.p.aux = 1; }
+                else
+                {
+                    p.err(1086, "expected '=' or ':' in a where clause");
+                    break;
+                }
+                p.add(wh, p.parse_type_with_arrow());
+                p.add(n, wh);
+
+                if (!p.accept(Tk.TOKEN_COMMA)) { break; }
+                p.skip_newlines();
+            }
+            p.skip_newlines();
+            // A `where` on its own line opens a layout level the clause
+            // bars then close; absorb it so the bar loop below still sees
+            // them at the expected depth.
+            if (!indented) { indented = p.accept(Tk.TOKEN_INDENT); }
+            p.skip_newlines();
+        }
+
         while (p.check(Tk.TOKEN_PIPE))
         {
             Tok bar = p.advance();

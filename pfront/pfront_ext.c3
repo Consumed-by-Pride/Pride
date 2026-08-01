@@ -30,6 +30,20 @@ extern fn int printf(char* fmt, ...);
 
 // Does this token begin a top-level declaration? Used to terminate un-braced
 // theory blocks whose closing DEDENT has already been consumed.
+/*
+ Does this token begin a declaration?
+
+ Used by block-scanning constructs (rewrite rules, dialect members) to
+ stop before the next item instead of swallowing it.
+
+ `let` is in the list because rule sets are first-class VALUES (spec §16):
+ `let arith : Rewrite = rewrite ...`, and two in a row is the documented
+ way to build sets for `++` composition. Without it a rewrite block
+ scanned past its closing DEDENT, hit the next `let`, and tried to parse
+ it as a rule left-hand side. It was missing because the stdlib's only
+ rewrite is a declaration at module scope, so nothing exercised the value
+ form.
+*/
 fn bool starts_declaration(Tk t)
 {
     switch (t)
@@ -48,6 +62,7 @@ fn bool starts_declaration(Tk t)
         case TOKEN_KW_MOD:
         case TOKEN_KW_CONST:
         case TOKEN_KW_STATIC:
+        case TOKEN_KW_LET:
         case TOKEN_KW_MACRO:
         case TOKEN_KW_REWRITE:
         case TOKEN_KW_DIALECT:
@@ -328,6 +343,19 @@ fn Node* Parser.parse_pgen_decl(Parser* p)
         n.p.slen = nm.len;
     }
     p.parse_typarams(n);
+
+    /*
+     The spec's PGL header ends in an ARROW before the rule body:
+
+         pgen elim_add_zero<T : Numeric> →
+           [x : T] where [_ + 0 | 0 + _] ↦ x
+
+     Nothing consumed it, so the parser looked for a rule where the `→`
+     was and reported "expected an expression" on the header line. Both
+     spellings are accepted, as everywhere else in the grammar.
+    */
+    if (!p.accept(Tk.TOKEN_ARROW)) { p.accept(Tk.TOKEN_ARROW_ASCII); }
+
     p.skip_newlines();
     bool braced = p.accept(Tk.TOKEN_LBRACE);
     bool indented = false;
@@ -338,12 +366,55 @@ fn Node* Parser.parse_pgen_decl(Parser* p)
         if (braced && p.check(Tk.TOKEN_RBRACE)) { break; }
         if (indented && p.check(Tk.TOKEN_DEDENT)) { break; }
         if (!braced && !indented) { break; }
+        // A declaration keyword ends the block, exactly as in a rewrite:
+        // without this the next `pgen`/`fn` is eaten as a rule.
+        if (starts_declaration(p.ct())) { break; }
         p.accept(Tk.TOKEN_KW_WHERE);
         p.accept(Tk.TOKEN_PIPE);
         Node* pat = p.parse_pattern();
+
         Node* rule = p.mk(Nk.N_CLAUSE, pat == null ? t.line : pat.line,
                                         pat == null ? t.col : pat.col);
         p.add(rule, pat);
+        /*
+         `[bindings] where [conditions] ↦ action` — the condition list is
+         part of the rule, between the binding pattern and the arrow.
+         Skipping it left `where` sitting where the arrow was expected.
+        */
+        if (p.accept(Tk.TOKEN_KW_WHERE))
+        {
+            /*
+             `[bindings] where [conditions] ↦ action`.
+
+             The CONDITIONS are match expressions over the AST, not
+             patterns: `[_ + 0 | 0 + _]`, `[x * n, is_power_of_2(n)]`.
+             Parsing them as a pattern failed on the first operator — an
+             array PATTERN accepts only sub-patterns, so `x + 0` broke at
+             the `+` with "expected ']' to close array pattern".
+
+             Read them as a bracketed list of EXPRESSIONS instead, which
+             also gives `is_power_of_2(n)` — a call, impossible in a
+             pattern — somewhere to live.
+            */
+            if (p.accept(Tk.TOKEN_LBRACK))
+            {
+                Node* conds = p.mk_at(Nk.N_EXPR_ARRAY, t);
+                while (!p.check(Tk.TOKEN_RBRACK) && !p.at_end())
+                {
+                    bool sv_c = p.in_fn_sig;
+                    // `|` separates alternatives here, not a bitwise-or.
+                    p.in_fn_sig = true;
+                    Node* c = p.parse_expr();
+                    p.in_fn_sig = sv_c;
+                    if (c != null) { p.add(conds, c); }
+                    if (p.accept(Tk.TOKEN_PIPE)) { continue; }
+                    if (!p.accept(Tk.TOKEN_COMMA)) { break; }
+                }
+                p.expect(Tk.TOKEN_RBRACK, 1262, "expected ']' after PGL condition list");
+                p.add(rule, conds);
+            }
+        }
+
         if (p.accept(Tk.TOKEN_MAPSTO) || p.accept(Tk.TOKEN_ARROW)
          || p.accept(Tk.TOKEN_ARROW_ASCII) || p.accept(Tk.TOKEN_FATARROW))
         {
@@ -375,7 +446,19 @@ fn Node* Parser.parse_irdl_decl(Parser* p)
         if (braced && p.check(Tk.TOKEN_RBRACE)) { break; }
         if (indented && p.check(Tk.TOKEN_DEDENT)) { break; }
         if (!braced && !indented) { break; }
-        if (!pfront_parse::tok_is_member_name(p.ct())) { break; }
+        /*
+         A declaration keyword ends the block.
+
+         `tok_is_member_name` deliberately accepts keywords, so a `dialect`
+         or `fn` following an un-braced `irdl` looked like the head of
+         another lowering rule and the block ran on to end of file. Every
+         later declaration in the module vanished — the file reported one
+         parse error and ZERO functions.
+
+         The same guard is already in parse_rewrite_decl and (now)
+         parse_pgen_decl; irdl was the one block-scanner without it.
+        */
+        if (starts_declaration(p.ct())) { break; }
         Node* head = p.parse_module_path();
         Node* rule = p.mk(Nk.N_CLAUSE, head == null ? t.line : head.line,
                                         head == null ? t.col : head.col);
@@ -393,6 +476,18 @@ fn Node* Parser.parse_irdl_decl(Parser* p)
                 bn.name_id = p.interner.intern(b.start, b.len);
                 bn.p.sptr = b.start;
                 bn.p.slen = b.len;
+                /*
+                 An IRDL operand may carry a TYPE, which is how the spec
+                 writes every example:
+
+                     MyDialect.add_i32 [a : i32, b : i32] ↦ emit_asm(...)
+
+                 Only the bare name was read, so the `:` sat where a `,`
+                 or `]` was expected and the whole lowering rule failed.
+                 The type is what makes the operand list checkable at all,
+                 so it is attached rather than skipped.
+                */
+                if (p.accept(Tk.TOKEN_COLON)) { bn.type_ann = p.parse_type(); }
                 p.add(binds, bn);
                 if (!p.accept(Tk.TOKEN_COMMA)) { break; }
             }

@@ -15,7 +15,14 @@ BIN=./pfrontc
 # Files whose whole point is to trigger a diagnostic.
 declare -A EXPECT_ERRORS=(
   [test_scoped_effects]=1   # E3220: bracket resumed twice (linearity)
-  [test_msp_cmtt]=9         # E3202: cross-stage escape x9 (hygiene)
+  # Was 9. Those 9 were E3202 on `~Tree (x + 1)` over outer locals — which
+  # spec §18 documents as the NORMAL use of the sigil ("let node = ~Tree
+  # (x + y * z)"). The reification sigils share the N_EXPR_QUOTE node kind
+  # with `quote`/`stage` but do not defer evaluation, so treating them as a
+  # stage bump was a false positive. Fixed in theory_msp.c3 and
+  # theory_cmtt.c3; genuine escapes through `stage`/`quote` still fire, and
+  # pfront_tests asserts that separately (stage_escape_kept).
+  [test_msp_cmtt]=0
   [test_irdl_trs]=0
 )
 

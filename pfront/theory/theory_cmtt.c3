@@ -397,6 +397,39 @@ fn ModalType JudgmentChecker.check_box_intro(JudgmentChecker* jc, Node* quote,
     jc.box_intros = jc.box_intros + 1;
     jc.judgments = jc.judgments + 1;
 
+    /*
+     A REIFICATION SIGIL introduces no modal level.
+
+     `~Tree e` / `~Data e` / `~Bytes e` share the N_EXPR_QUOTE node kind
+     with `quote` and `stage`, but they reify an expression already in
+     scope rather than deferring it to a future stage (spec §18). Treating
+     them as a box introduction pushed a level per sigil and, because
+     `p.aux` is only meaningful for a real `stage N`, produced a garbage
+     level that tripped the CMTT_MAX_LEVEL guard:
+
+         let folded = ~Tree (1 + 2 + 3) |> arith*
+
+     — the spec's own §18 example, reported as "stage level exceeds the
+     maximum nesting depth".
+
+     theory_msp.c3 makes the same distinction for the same reason; both
+     passes have to agree or one of them re-introduces the error.
+    */
+    int qsig = quote.p.op;
+    if (qsig == (int)pfront_lex::TokenType.TOKEN_SIGIL_TREE
+     || qsig == (int)pfront_lex::TokenType.TOKEN_SIGIL_DATA
+     || qsig == (int)pfront_lex::TokenType.TOKEN_SIGIL_BYTES)
+    {
+        Node* rb = null;
+        for (usz i = 0; i < quote.child_count; i++)
+        {
+            Node* c = quote.children[i];
+            if (c != null && pfront_core::is_expr(c.kind)) { rb = c; break; }
+        }
+        if (rb != null) { return jc.check(rb, depth + 1); }
+        return modal_plain(null);
+    }
+
     Level inner_level = level_const(quote.p.aux);
     if (quote.p.aux == 0) { inner_level = level_shift(jc.current_level, 1); }
 

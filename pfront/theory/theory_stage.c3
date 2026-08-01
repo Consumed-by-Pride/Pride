@@ -84,6 +84,18 @@ enum ValKind : int
     V_STRING,
     V_TUPLE,
     V_CODE,        // a residual fragment: dynamic, but structurally known
+    /*
+     A QUOTED AST, `~Tree e` / `~Data e` / `~Bytes e`, or an MSP operator
+     over one. Structurally this is a code fragment like V_CODE, but it is
+     STATIC: the tree exists at compile time and is exactly what the
+     programmer asked `comptime` to produce.
+
+     V_CODE means "could not be computed"; V_QUOTED means "computed, and
+     the answer is a tree". Collapsing the two made every `comptime`
+     containing a quotation or a rewrite fail as non-computable — spec §18
+     and §16's central examples.
+    */
+    V_QUOTED,
     V_ERROR
 }
 
@@ -109,6 +121,20 @@ fn Value v_error() { Value v = v_unit(); v.kind = ValKind.V_ERROR; return v; }
 fn bool v_is_static(Value* v)
 {
     return v.kind != ValKind.V_CODE && v.kind != ValKind.V_ERROR;
+}
+
+/*
+ A quoted tree: static, and its value is the node itself.
+
+ Distinct from v_code, which signals "this could not be reduced". See the
+ V_QUOTED comment on ValKind for why conflating them broke `comptime`.
+*/
+fn Value v_quoted(Node* n)
+{
+    Value v = v_unit();
+    v.kind = ValKind.V_QUOTED;
+    v.code = n;
+    return v;
 }
 
 // ── Environment ─────────────────────────────────────────────────────────────
@@ -366,8 +392,46 @@ fn Value PartialEvaluator.eval(PartialEvaluator* pe, Node* e, int depth)
             return v_code(e);
         }
 
+        case N_EXPR_QUOTE:
+        {
+            /*
+             A QUOTATION IS ALREADY A COMPILE-TIME VALUE.
+
+             `~Tree e` reifies the AST of `e`; it does not evaluate `e`, so
+             it is static regardless of what `e` mentions. The evaluator
+             had no case for it and fell through to "dynamic", which made
+             the spec's §18 example
+
+                 comptime
+                   let folded = ~Tree (1 + 2 + 3) |> arith*
+
+             fail with "not computable at compile time" — the one place
+             quotation is *supposed* to be used.
+
+             Residualised as a quoted tree: static, value is the node.
+            */
+            return v_quoted(e);
+        }
+
+        case N_EXPR_REIFY:
+        case N_EXPR_EVAL:
+            // Same reasoning: MSP operators over a representation are
+            // compile-time constructs, not runtime dependencies.
+            return v_quoted(e);
+
         case N_EXPR_BINARY:
         {
+            Tk bop = (Tk)e.p.op;
+            /*
+             `expr |> rules` and `expr |> rules*` are REWRITING, which by
+             definition happens at compile time (spec §16: "They fire at
+             compile time over the AST, in the MSP stage. Zero runtime
+             cost."). Treating the pipeline as an ordinary binary operator
+             asked the evaluator to compute a rule set as a value, which it
+             cannot, so every rewrite inside a `comptime` was rejected.
+            */
+            if (bop == Tk.TOKEN_PIPELINE) { return v_quoted(e); }
+
             Value l = pe.eval(e.child(0), depth + 1);
             if (!v_is_static(&l)) { return v_code(e); }
             Tk op = (Tk)e.p.op;

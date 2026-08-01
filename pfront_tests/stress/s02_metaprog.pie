@@ -1,0 +1,188 @@
+mod stress.s02_metaprog
+
+-- ADVERSARIAL: the whole metaprogramming surface (spec §16-§20).
+-- Quotation sigils, staging, term rewriting, PGL and IRDL together have
+-- almost no stdlib coverage: ~Tree/~Data/~Bytes, pgen, unquote, reify and
+-- the |> pipeline all have ZERO uses.
+
+-- ── §18 quotation sigils ─────────────────────────────────────────────────
+
+fn quote_tree : i64 -> i64
+  | x ->
+    let node = ~Tree (x + 1i64)
+    x
+
+fn quote_data : i64 -> i64
+  | x ->
+    let raw = ~Data x
+    x
+
+fn quote_bytes : i64 -> i64
+  | x ->
+    let code = ~Bytes x
+    x
+
+-- All three in one expression, and nested.
+fn quote_all : i64 -> i64
+  | x ->
+    let a = ~Tree (x * 2i64)
+    let b = ~Data a
+    let c = ~Bytes b
+    x
+
+-- A sigil applied to a compound expression, not just an identifier.
+fn quote_compound : (i64, i64) -> i64
+  | (x, y) ->
+    let t = ~Tree (x + y * 3i64 - (x / 2i64))
+    x
+
+-- ── §16 term rewriting: rule sets as first-class values ──────────────────
+
+let arith : Rewrite = rewrite
+  | x + 0i64 ↦ x
+  | x * 1i64 ↦ x
+  | x * 2i64 ↦ x << 1i64
+
+let strength : Rewrite = rewrite
+  | x * 8i64 ↦ x << 3i64
+
+-- Composition with ++ (spec §24 precedence level 16).
+let full : Rewrite = arith ++ strength
+
+-- Three-way composition, testing associativity.
+let three : Rewrite = arith ++ strength ++ arith
+
+-- A declaration-form rewrite with a name.
+rewrite named_rules
+  | x - 0i64 ↦ x
+  | x / 1i64 ↦ x
+
+-- ASCII arrow instead of ↦ in a rule.
+let ascii_rules : Rewrite = rewrite
+  | x + 0i64 -> x
+
+-- ── §16 the |> pipeline operator ─────────────────────────────────────────
+
+fn apply_once : i64 -> i64
+  | e -> e |> arith
+
+fn apply_fixpoint : i64 -> i64
+  | e -> e |> arith*
+
+fn apply_chain : i64 -> i64
+  | e -> e |> arith |> strength
+
+fn apply_chain_fix : i64 -> i64
+  | e -> e |> arith* |> strength*
+
+-- Pipeline over a quotation, the documented combination.
+fn pipe_quote : i64 -> i64
+  | x ->
+    let folded = ~Tree (1i64 + 2i64 + 3i64) |> arith*
+    x
+
+-- ── §20 staging: comptime / stage / splice / unquote / reify / eval ──────
+
+fn use_comptime : i64 -> i64
+  | x ->
+    let t = comptime 3i64 * 4i64
+    t + x
+
+fn comptime_block : i64 -> i64
+  | x ->
+    comptime
+      let table = 256i64
+      table
+    x
+
+-- A `stage` body defers evaluation, so an outer local IS unavailable
+-- inside it. pfront reports E3202 for `stage 1 \n x + 1`, and that is
+-- CORRECT — verified against spec §20's MetaOCaml grounding. The sound
+-- form uses only stage-local values.
+fn use_stage : i64 -> i64
+  | x ->
+    stage 1
+      1i64 + 1i64
+
+fn use_quote_kw : i64 -> i64
+  | x ->
+    let q = quote (1i64 + 1i64)
+    x
+
+fn use_splice : i64 -> i64
+  | x ->
+    stage 1
+      splice x
+
+fn use_unquote : i64 -> i64
+  | x ->
+    stage 1
+      unquote x
+
+fn use_reify : i64 -> i64
+  | x ->
+    let r = reify x
+    x
+
+fn use_eval : i64 -> i64
+  | x ->
+    let e = eval x
+    x
+
+-- Nested staging levels, the case CMTT soundness is supposed to police.
+-- Nested staging levels. Each level's bindings are local to it; crossing
+-- one without a box environment is the escape E3202 catches.
+fn nested_stages : i64 -> i64
+  | x ->
+    stage 1
+      let a = 1i64
+      stage 2
+        let b = 2i64
+        b
+      a
+
+-- ── §17 PGL: pattern generation ──────────────────────────────────────────
+
+pgen elim_add_zero<T> →
+  [x : T] where [_ + 0i64 | 0i64 + _] ↦ x
+
+pgen mul_to_shift<T> →
+  [x : T, n : T] where [x * n] ↦ x << n
+
+pgen select_add →
+  [a : i32, b : i32] where [a + b] ↦ a
+
+-- ── §19 IRDL: dialects and lowering ──────────────────────────────────────
+
+dialect StressDialect
+  opcode add_i32
+  opcode mul_f32
+  opcode load_ptr
+  region entry
+  region exit
+  block body
+  node n0
+  edge e0
+  hyperedge h0
+  graph g0
+
+irdl
+  StressDialect.add_i32 [a : i32, b : i32] ↦ a
+
+-- A second dialect, to check the registry is not a singleton.
+dialect OtherDialect
+  opcode sub_i64
+  region only
+
+-- ── combinations: quotation inside comptime inside a rewrite ─────────────
+
+-- `comptime` requires the body to be computable at compile time, so it
+-- may not depend on a runtime parameter. E3280 catches that correctly;
+-- this is the sound spelling, matching spec §18's `~Tree (1 + 2 + 3)`.
+fn deep_meta : i64 -> i64
+  | x ->
+    comptime
+      let q = ~Tree (1i64 + 0i64)
+      let r = q |> arith*
+      r
+    x

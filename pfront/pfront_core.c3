@@ -160,6 +160,11 @@ enum NodeKind : int
     N_EXPR_COMPTIME,
     N_EXPR_QUOTE,
     N_EXPR_SPLICE,
+    // MSP operators (spec §20). Stage-NEUTRAL: `reify` turns a value into
+    // its representation and `eval` runs one, so neither defers to a later
+    // stage and neither may be modelled as quotation.
+    N_EXPR_REIFY,
+    N_EXPR_EVAL,
     N_EXPR_PERFORM,     // perform E.op(args)
     N_EXPR_HANDLE,      // handle comp | arms
     N_EXPR_RESUME,
@@ -208,6 +213,22 @@ enum NodeKind : int
     N_TY_WHERE,
     N_TY_CONSTRAINT,
 
+    /*
+     Quantified types, spec §13.4: `∀ A . A -> A`, `∃ T . T ∩ Eq<T>`.
+     children[0] is the bound type variable, children[1] the body.
+    */
+    N_TY_FORALL,
+    N_TY_EXISTS,
+
+    /*
+     A refinement predicate in type position, spec §13.1:
+       `i32 ∩ (> 0)`, `f32 ∩ (>= 0.0) ∩ (<= 1.0)`
+     `p.op` holds the comparison token, children[0] the bound expression.
+     It is a TYPE node rather than an expression because it only ever
+     appears as an operand of the set algebra.
+    */
+    N_TY_REFINE,
+
     N_KIND_COUNT
 }
 
@@ -219,7 +240,7 @@ const NodeKind N_EXPR_LAST  = NodeKind.N_EXPR_VOLATILE;
 const NodeKind N_PAT_FIRST  = NodeKind.N_PAT_WILDCARD;
 const NodeKind N_PAT_LAST   = NodeKind.N_PAT_REST;
 const NodeKind N_TY_FIRST   = NodeKind.N_TY_NAME;
-const NodeKind N_TY_LAST    = NodeKind.N_TY_CONSTRAINT;
+const NodeKind N_TY_LAST    = NodeKind.N_TY_REFINE;
 
 fn bool is_decl(NodeKind k)    { return (int)k >= (int)N_DECL_FIRST && (int)k <= (int)N_DECL_LAST; }
 fn bool is_expr(NodeKind k)    { return (int)k >= (int)N_EXPR_FIRST && (int)k <= (int)N_EXPR_LAST; }
@@ -965,6 +986,8 @@ fn char* kind_name(NodeKind k)
         case N_EXPR_COMPTIME:  return "comptime";
         case N_EXPR_QUOTE:     return "quote";
         case N_EXPR_SPLICE:    return "splice";
+        case N_EXPR_REIFY:     return "reify";
+        case N_EXPR_EVAL:      return "eval";
         case N_EXPR_PERFORM:   return "perform";
         case N_EXPR_HANDLE:    return "handle";
         case N_EXPR_RESUME:    return "resume";
@@ -1008,6 +1031,9 @@ fn char* kind_name(NodeKind k)
         case N_TY_EFFECT_ELEM: return "ty-effect-elem";
         case N_TY_WHERE:       return "ty-where";
         case N_TY_CONSTRAINT:  return "ty-constraint";
+        case N_TY_FORALL:      return "ty-forall";
+        case N_TY_EXISTS:      return "ty-exists";
+        case N_TY_REFINE:      return "ty-refine";
         case N_KIND_COUNT:     return "?";
     }
 }
