@@ -254,6 +254,42 @@ enum AirOp : int (String mnemonic)
     */
     AIR_POISON { "poison" },
 
+    /*
+     Low-level constructs from spec sections 14 (UB) and 15 (memory).
+
+     Each is a distinct opcode rather than a call or a flag because each
+     means something different to a2 and to emission:
+
+       assume    a PROMISE to the optimiser. Carries no runtime cost and
+                 must never be deleted while its operand is live, because
+                 a2 reads it as a range refinement. Becomes llvm.assume.
+       freeze    stops a poison/undef value propagating: the result is an
+                 arbitrary but FIXED bit pattern. Deleting it is a
+                 miscompile, so it is not pure. Becomes LLVM `freeze`.
+       sizeof    a compile-time constant a1 cannot fold, because the
+                 layout is decided in a4. Naming the type keeps it
+                 resolvable there instead of guessing a width now.
+       alignof   same, for alignment.
+       offsetof  same, for a named field of a named type.
+       transmute a reinterpreting cast. Distinct from AIR_CAST because
+                 cast may convert (sign-extend, truncate) and transmute
+                 must not: it is a bit-level reinterpretation and a2 must
+                 not apply integer reasoning across it.
+
+     `assert` deliberately gets NO opcode. It is a conditional trap, which
+     AIR can already express as `branch cond ok fail` with `trap` in the
+     fail block -- so a1 lowers it that way and a2's existing branch
+     folding removes it when the range analysis proves the condition. An
+     AIR_ASSERT would have needed its own DCE, verifier and emission rule
+     to do what three existing constructs already do.
+    */
+    AIR_ASSUME { "assume" },       // operands[0] = the condition held true
+    AIR_FREEZE { "freeze" },       // operands[0] = the value being frozen
+    AIR_SIZEOF { "sizeof" },       // payload.name = the type
+    AIR_ALIGNOF { "alignof" },      // payload.name = the type
+    AIR_OFFSETOF { "offsetof" },     // payload.name = type, payload.index = field
+    AIR_TRANSMUTE { "transmute" },    // operands[0] = value; payload.name = target type
+
     AIR_UNKNOWN { "unknown" }
 }
 
@@ -1367,6 +1403,8 @@ fn bool op_has_effect(AirOp op)
         case AIR_HANDLE_ARM:
         case AIR_RESUME:
         case AIR_UNKNOWN:
+        case AIR_ASSUME:      // a fact a2 reads; deleting it loses information
+        case AIR_FREEZE:      // changes the value's meaning; deleting miscompiles
             return true;
         default:
             return false;
@@ -1382,6 +1420,7 @@ fn bool op_yields_value(AirOp op)
         case AIR_STORE_FIELD:
         case AIR_STORE_INDEX:
         case AIR_FREE:
+        case AIR_ASSUME:      // a promise, not a value
             return false;
         default:
             return true;

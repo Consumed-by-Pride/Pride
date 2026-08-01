@@ -326,9 +326,13 @@ fn void print_value(Out* o, Air* m, Numbering* nb, uint vid, bool with_origin)
         case AIR_CONST_REF:
         case AIR_ASM:
         case AIR_PERFORM:
+        case AIR_SIZEOF:      // names a TYPE, which a4 needs for layout
+        case AIR_ALIGNOF:
+        case AIR_TRANSMUTE:
             o.str(" name=");
             print_name(o, m, v.p.name);
         case AIR_VARIANT_REF:
+        case AIR_OFFSETOF:      // type name plus the field slot
             o.str(" name=");
             print_name(o, m, v.p.name);
             o.str(" index=");
@@ -338,6 +342,27 @@ fn void print_value(Out* o, Air* m, Numbering* nb, uint vid, bool with_origin)
         case AIR_STORE_FIELD:
             o.str(" index=");
             o.unum((ulong)v.p.index);
+            /*
+             The field NAME as well as its slot.
+
+             build.c3 has always set p.name on a field access, and this
+             printed only p.index -- so `p.x` and `p.y` were
+             indistinguishable in serialised AIR, and the name was
+             silently dropped on every round trip. That is a D3 violation:
+             the text has to carry everything the in-memory form does, or
+             a stage reading the file sees less than the stage that wrote
+             it.
+
+             It matters concretely at a4, where a struct pattern's fields
+             are resolved by NAME -- `{ y, x }` is legal and its written
+             order is not the declaration order, so the slot index alone
+             cannot recover which field was meant.
+            */
+            if (v.p.name != 0)
+            {
+                o.str(" field=");
+                print_name(o, m, v.p.name);
+            }
         case AIR_BIN:
             o.str(" op=");
             o.str(pear_air::binop_name(v.p.op));

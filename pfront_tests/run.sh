@@ -769,6 +769,46 @@ if [ -x ./pearc ]; then
     fail=$((fail+1))
   fi
 
+  # `assert` must become a real conditional trap, not an opaque node.
+  # Lowering it as branch+trap is what lets a2's branch folding delete it
+  # once the range analysis proves the condition -- with no assert-specific
+  # code in a2 at all.
+  printf 'mod t\nfn f : i64 -> i64\n  | n ->\n    assert n > 0i64\n    n\n' > /tmp/pf_as.pie
+  asrt=$(./pearc /tmp/pf_as.pie 2>&1)
+  if echo "$asrt" | grep -q 'branch ' && echo "$asrt" | grep -q 'trap'; then
+    printf '  PASS  %-26s %s\n' "syntax_assert_is_branch_trap" "(assert lowers to branch + trap)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "syntax_assert_is_branch_trap" "assert did not become a conditional trap"
+    fail=$((fail+1))
+  fi
+
+  # A struct pattern's fields go through N_PAT_FIELD. a1 treated that
+  # wrapper as a pattern, hit the default arm and dropped the test, so
+  # `| { x: 0, y }` matched every P. Assert the field comparison exists.
+  printf 'mod t\nstruct P\n  x : i64\n  y : i64\nfn f : P -> i64\n  | p ->\n    match p\n      | { x: 0i64, y } -> y\n      | { x, y } -> x + y\n' > /tmp/pf_sp.pie
+  sp=$(./pearc /tmp/pf_sp.pie 2>&1)
+  if echo "$sp" | grep -q 'op=eq' && echo "$sp" | grep -q 'field=x'; then
+    printf '  PASS  %-26s %s\n' "syntax_struct_pattern_tests" "(field pattern tests x, name serialised)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "syntax_struct_pattern_tests" "struct pattern field test was dropped"
+    fail=$((fail+1))
+  fi
+
+  # freeze and assume share a node kind and MUST NOT collapse: assume
+  # yields no value, freeze does. Emitting one for the other leaves a
+  # consumer with a null operand or an unused promise.
+  printf 'mod t\nfn f : i64 -> i64\n  | n -> freeze n\nfn g : i64 -> i64\n  | n ->\n    assume n > 0i64\n    n\n' > /tmp/pf_fz.pie
+  fz=$(./pearc /tmp/pf_fz.pie 2>&1)
+  if echo "$fz" | grep -q '= freeze ' && echo "$fz" | grep -q '= assume '; then
+    printf '  PASS  %-26s %s\n' "syntax_freeze_vs_assume" "(distinct opcodes, not collapsed)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "syntax_freeze_vs_assume" "freeze and assume collapsed"
+    fail=$((fail+1))
+  fi
+
   # No construct in the syntax suite may leave a lowering hole.
   sh=0
   for f in pfront_tests/syntax/x*.pie; do

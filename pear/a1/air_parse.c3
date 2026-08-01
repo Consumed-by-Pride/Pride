@@ -627,6 +627,14 @@ fn void Parse.parse_attrs(Parse* p, uint vid)
             if (p.sc.unsigned_int(&ix)) { p.m.val(vid).p.index = (uint)ix; }
             else { p.err("bad index"); }
         }
+        else if (pear_air::str_eq_n(k, kn, "field"))
+        {
+            // The field NAME on a load/store/addr of a struct field. See
+            // the note in air_print.c3: printing only the slot index lost
+            // it on every round trip.
+            char* w; usz n = p.sc.word(&w);
+            p.m.val(vid).p.name = p.intern(w, n);
+        }
         else if (pear_air::str_eq_n(k, kn, "op"))
         {
             char* w; usz n = p.sc.word(&w);
@@ -1019,6 +1027,16 @@ fn bool air_eq(Air* a, Air* b, char** why)
                 if (va.inc_count != vb.inc_count) { *why = "phi incoming count"; return false; }
                 if (va.p.ival != vb.p.ival)     { *why = "ival"; return false; }
                 if (va.p.index != vb.p.index)   { *why = "index"; return false; }
+                /*
+                 Compare the field name by PRESENCE, not by id: the two
+                 modules have separate interners, so the same text has
+                 different ids in each. A name that vanished on the round
+                 trip shows up as one side being 0.
+                */
+                if ((va.p.name == 0) != (vb.p.name == 0))
+                {
+                    *why = "field name presence"; return false;
+                }
                 if (va.p.op != vb.p.op)         { *why = "binop"; return false; }
                 if (va.p.uop != vb.p.uop)       { *why = "unop"; return false; }
                 if (va.p.fact != vb.p.fact)     { *why = "fact"; return false; }

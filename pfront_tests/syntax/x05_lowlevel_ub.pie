@@ -1,0 +1,68 @@
+-- Sections 9 (structs/unions), 14 (explicit UB) and 15 (memory).
+--
+-- Every construct here lowered to AIR_UNKNOWN before this file existed --
+-- eight of them, none reachable from the standard library, so the a1
+-- coverage counter read 0 holes the whole time.
+mod lowlevel_ub
+
+struct P
+  x : i64
+  y : i64
+
+union U
+  a : i64
+  b : i64
+
+fn field_read : P -> i64
+  | p -> p.x + p.y
+
+fn struct_lit : i64 -> P
+  | n -> P { x: n, y: n }
+
+fn struct_update : P -> P
+  | p -> p { x: 99i64 }
+
+-- A struct PATTERN's fields go through N_PAT_FIELD, which a1 treated as
+-- a pattern and dropped, so `| { x: 0, y }` matched any P at all.
+fn struct_pattern : P -> i64
+  | p ->
+    match p
+      | { x: 0i64, y } -> y
+      | { x, y } -> x + y
+
+fn union_read : U -> i64
+  | u -> u.a
+
+fn size_of : i64 -> i64
+  | n -> sizeof(P)
+
+fn align_of : i64 -> i64
+  | n -> alignof(P)
+
+-- A conditional trap. Lowered as branch + trap rather than given its own
+-- opcode, so a2's existing branch folding removes it once the range
+-- analysis proves the condition.
+fn with_assert : i64 -> i64
+  | n ->
+    assert n > 0i64
+    n
+
+-- A promise to the optimiser, which a2 reads as a fact.
+fn with_assume : i64 -> i64
+  | n ->
+    assume n > 0i64
+    n
+
+-- freeze pins a poison value to an arbitrary but FIXED bit pattern.
+-- Shares N_EXPR_ASSUME with `assume` and is told apart by p.aux == 1.
+fn with_freeze : i64 -> i64
+  | n -> freeze n
+
+fn with_poison : i64 -> i64
+  | n -> poison
+
+fn heap : i64 -> i64
+  | n ->
+    let p = alloc(n)
+    free(p)
+    n

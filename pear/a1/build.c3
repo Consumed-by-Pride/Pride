@@ -1612,6 +1612,138 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
             if (n.child_count > 0) { return b.lower_expr(n.children[0]); }
             return pear_air::AIR_NO_VALUE;
 
+        case N_EXPR_SIZEOF:
+        case N_EXPR_ALIGNOF:
+        {
+            /*
+             `sizeof(T)` / `alignof(T)` — a compile-time constant a1
+             cannot fold, because layout is decided in a4. The TYPE is
+             named so a4 can resolve it; folding a guessed width here
+             would bake in a wrong answer that nothing downstream could
+             detect.
+            */
+            uint id = b.emit(n.kind == Nk.N_EXPR_SIZEOF ? Op.AIR_SIZEOF
+                                                        : Op.AIR_ALIGNOF,
+                             &ops[0], 0, n);
+            if (id != pear_air::AIR_NO_VALUE)
+            {
+                uint tn = n.type_ann != null ? n.type_ann.name_id : n.name_id;
+                b.m.values[id].p.name = tn;
+                // A size or alignment is positive; that is a real fact and
+                // it is what lets a2 fold `sizeof(T) > 0`.
+                b.m.values[id].facts.range =
+                    pear_erm::r_range(1, (long)0x7FFFFFFFFFFFFFFF);
+            }
+            return id;
+        }
+
+        case N_EXPR_OFFSETOF:
+        {
+            uint id = b.emit(Op.AIR_OFFSETOF, &ops[0], 0, n);
+            if (id != pear_air::AIR_NO_VALUE)
+            {
+                uint tn = n.type_ann != null ? n.type_ann.name_id : n.name_id;
+                b.m.values[id].p.name = tn;
+                b.m.values[id].p.index = (uint)n.p.ival;
+                // An offset is non-negative.
+                b.m.values[id].facts.range =
+                    pear_erm::r_range(0, (long)0x7FFFFFFFFFFFFFFF);
+            }
+            return id;
+        }
+
+        case N_EXPR_TRANSMUTE:
+        {
+            /*
+             A REINTERPRETING cast, distinct from AIR_CAST. `cast` may
+             convert -- sign-extend, truncate -- and transmute must not:
+             it reinterprets the bits. Lowering it as a cast would let a2
+             carry integer range facts across a bit-level reinterpretation,
+             which is unsound.
+            */
+            if (n.child_count < 1) { break; }
+            ops[0] = b.lower_operand(n.children[n.child_count - 1]);
+            uint id = b.emit(Op.AIR_TRANSMUTE, &ops[0], 1, n);
+            if (id != pear_air::AIR_NO_VALUE && n.type_ann != null)
+            {
+                b.m.values[id].p.name = n.type_ann.name_id;
+            }
+            return id;
+        }
+
+        case N_EXPR_ASSUME:
+        {
+            /*
+             `assume cond` and `freeze v` share a node kind in the AST.
+             They are told apart by what they hold: `assume` takes a
+             CONDITION and produces nothing; `freeze` takes a VALUE and
+             produces one. The parser gives both N_EXPR_ASSUME, so the
+             distinction has to be made here.
+
+             Getting it wrong is not cosmetic -- an `assume` that yields a
+             value would have its result used, and a `freeze` that yields
+             none would leave its consumers with a null operand.
+
+             The discriminator is `p.aux == 1`, set by the parser at the
+             TOKEN_KW_FREEZE case ("1 = freeze, distinct from a bare
+             assume"). pfront's dumper prints both as `assume`, which is
+             why reading the dump alone cannot tell them apart.
+            */
+            if (n.child_count < 1) { break; }
+            uint v = b.lower_operand(n.children[0]);
+            bool is_freeze = n.p.aux == 1;
+            ops[0] = v;
+            uint id = b.emit(is_freeze ? Op.AIR_FREEZE : Op.AIR_ASSUME,
+                             &ops[0], 1, n);
+            if (id == pear_air::AIR_NO_VALUE) { return id; }
+            if (is_freeze)
+            {
+                // A frozen value has whatever facts its operand had --
+                // freezing does not change the value, only pins it.
+                pear_air::AirValue* ov = b.m.val(v);
+                if (ov != null) { b.m.values[id].facts = ov.facts; }
+                return id;
+            }
+            return id;
+        }
+
+        case N_EXPR_POISON:
+            /*
+             `poison` is a value the program promises never to observe.
+             AIR_POISON already exists and read_var produces it for a
+             genuinely unreachable read; this is the SOURCE-LEVEL spelling
+             (spec section 14), which does not require `unsafe`.
+            */
+            return b.emit(Op.AIR_POISON, &ops[0], 0, n);
+
+        case N_EXPR_ASSERT:
+        {
+            /*
+             `assert cond` is a CONDITIONAL TRAP, and AIR can already say
+             that: branch on the condition, trap on the failing edge.
+
+             Deliberately not given its own opcode. An AIR_ASSERT would
+             need its own DCE rule, verifier case and emission path to do
+             what `branch` + `trap` already do -- and lowering it this way
+             means a2's existing branch folding deletes the check the
+             moment the range analysis proves the condition, with no
+             assert-specific code anywhere.
+            */
+            if (n.child_count < 1) { break; }
+            uint cond = b.lower_operand(n.children[0]);
+            uint ok   = b.m.new_block(b.cur_func, 0);
+            uint bad  = b.m.new_block(b.cur_func, 0);
+            b.mark_sealed(ok, true);
+            b.mark_sealed(bad, true);
+            b.m.set_term(b.cur_block, Term.TERM_BRANCH, cond);
+            b.m.add_edge(b.cur_block, ok);
+            b.m.add_edge(b.cur_block, bad);
+            b.cur_block = bad;
+            b.m.set_term(bad, Term.TERM_TRAP, pear_air::AIR_NO_VALUE);
+            b.cur_block = ok;
+            return b.emit(Op.AIR_CONST_UNIT, &ops[0], 0, n);
+        }
+
         case N_EXPR_UNREACHABLE:
             b.m.set_term(b.cur_block, Term.TERM_UNREACHABLE, pear_air::AIR_NO_VALUE);
             return pear_air::AIR_NO_VALUE;
@@ -2342,6 +2474,21 @@ fn uint Builder.pattern_test(Builder* b, Node* pat, uint scrut)
             return acc;
         }
 
+        case N_PAT_FIELD:
+            /*
+             `{ x: 0, y }` — a struct pattern's children are N_PAT_FIELD
+             wrappers, each naming a field and holding the sub-pattern
+             matched against it. The wrapper is syntax, not a pattern, so
+             it is transparent: test the sub-pattern.
+
+             Both this and the bind site used to recurse into the wrapper
+             as if it WERE a pattern, hit the `default` arm, and count it
+             as unsupported -- so a struct pattern's field tests were
+             silently dropped and `| { x: 0, y }` matched any P at all.
+            */
+            if (pat.child_count > 0) { return b.pattern_test(pat.children[0], scrut); }
+            return pear_air::AIR_NO_VALUE;
+
         case N_PAT_TUPLE:
         case N_PAT_STRUCT:
         case N_PAT_ARRAY:
@@ -2360,7 +2507,21 @@ fn uint Builder.pattern_test(Builder* b, Node* pat, uint scrut)
                 if (sub == null) { continue; }
                 ops[0] = scrut;
                 uint fld = b.emit(Op.AIR_LOAD_FIELD, &ops[0], 1, sub);
-                if (fld != pear_air::AIR_NO_VALUE) { b.m.values[fld].p.index = (uint)i; }
+                if (fld != pear_air::AIR_NO_VALUE)
+                {
+                    b.m.values[fld].p.index = (uint)i;
+                    /*
+                     A struct field is named, and the name is on the
+                     N_PAT_FIELD wrapper. Carrying it makes the load
+                     readable and lets a4 resolve the slot by name rather
+                     than by the pattern's WRITTEN order, which need not
+                     match the declaration order -- `{ y, x }` is legal.
+                    */
+                    if (sub.kind == Nk.N_PAT_FIELD)
+                    {
+                        b.m.values[fld].p.name = sub.name_id;
+                    }
+                }
                 uint t = b.pattern_test(sub, fld);
                 if (t == pear_air::AIR_NO_VALUE) { continue; }
                 if (acc == pear_air::AIR_NO_VALUE) { acc = t; continue; }
@@ -2423,6 +2584,10 @@ fn void Builder.bind_pattern_vars(Builder* b, Node* pat, uint scrut)
             }
         }
 
+        case N_PAT_FIELD:
+            // Transparent wrapper; see the note in pattern_test.
+            if (pat.child_count > 0) { b.bind_pattern_vars(pat.children[0], scrut); }
+
         case N_PAT_TUPLE:
         case N_PAT_STRUCT:
         case N_PAT_ARRAY:
@@ -2433,7 +2598,14 @@ fn void Builder.bind_pattern_vars(Builder* b, Node* pat, uint scrut)
                 if (sub == null) { continue; }
                 ops[0] = scrut;
                 uint fld = b.emit(Op.AIR_LOAD_FIELD, &ops[0], 1, sub);
-                if (fld != pear_air::AIR_NO_VALUE) { b.m.values[fld].p.index = (uint)i; }
+                if (fld != pear_air::AIR_NO_VALUE)
+                {
+                    b.m.values[fld].p.index = (uint)i;
+                    if (sub.kind == Nk.N_PAT_FIELD)
+                    {
+                        b.m.values[fld].p.name = sub.name_id;
+                    }
+                }
                 b.bind_pattern_vars(sub, fld);
             }
         }
