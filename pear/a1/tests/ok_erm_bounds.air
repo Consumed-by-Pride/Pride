@@ -1,0 +1,35 @@
+; THE POINT OF SP-ERM-e-SSI, in one function.
+;
+; A bounds-checked array access whose check is REDUNDANT, and where the
+; redundancy is visible as a property of NAMES rather than of program
+; points. .ll cannot state any of the three facts below in its text form.
+;
+;   E  the pi node names "the index, on the path where the check passed"
+;   R  every version carries its range, so `i < 16` after `i in [0,7]`
+;      is decidably true without re-running an analysis
+;   M  the load names the store version it reads, so a later pass knows
+;      exactly what it observes without rebuilding MemorySSA
+;
+; The array has 16 elements. `i` is masked to 4 bits, so it is provably
+; in [0,15] before the check ever runs.
+module bounds
+func get pub entry=entry
+  block entry
+    %1 = param name=arr             [null=nonnull]
+    %2 = param name=i
+    %3 = const.int ival=15
+    %4 = bin %2 %3 op=and           ; i & 15  ->  provably [0,15]
+    %5 = const.int ival=16
+    %6 = bin %4 %5 op=lt            ; ALWAYS true; R can prove it
+    branch %6 ok fail
+  end
+  block ok
+    ; pi: the index on the non-faulting path. Carries inbounds.
+    %7 = pi %4 %6 fact=inbounds
+    %8 = load.index %1 %7
+    ret %8
+  end
+  block fail
+    trap
+  end
+endfunc

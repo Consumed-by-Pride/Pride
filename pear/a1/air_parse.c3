@@ -29,6 +29,7 @@
 module pear_air_parse;
 
 import pear_air;
+import pear_erm;
 import pfront_core;
 
 alias Air  = pear_air::AirModule;
@@ -450,6 +451,138 @@ fn void Parse.pass1(Parse* p)
 
 // ── pass 2: values, terminators, edges ──────────────────────────────────
 
+/*
+ Read the `[range=.. w=.. kb=../.. null=.. mem=..:n<-m ...]` bracket the
+ printer emits. Without this the ERM facts would print but not survive a
+ round trip, which would make them decorative in exactly the way D1 warns
+ about.
+*/
+fn void Parse.parse_facts(Parse* p, uint vid)
+{
+    if (!p.sc.eat_char('[')) { return; }
+    pear_air::AirValue* v = p.m.val(vid);
+    if (v == null) { return; }
+
+    while (!p.sc.at_eol())
+    {
+        if (p.sc.eat_char(']')) { return; }
+
+        usz save = p.sc.pos;
+        char* k; usz kn = p.sc.word(&k);
+        if (kn == 0) { p.sc.pos = save; break; }
+
+        if (pear_air::str_eq_n(k, kn, "nonlocal"))
+        {
+            p.m.val(vid).facts.crosses_block = true;
+            continue;
+        }
+        if (pear_air::str_eq_n(k, kn, "mayfault"))
+        {
+            p.m.val(vid).facts.may_fault = true;
+            continue;
+        }
+        if (pear_air::str_eq_n(k, kn, "noalias"))
+        {
+            p.m.val(vid).facts.mem.no_alias = true;
+            continue;
+        }
+        if (pear_air::str_eq_n(k, kn, "volatile"))
+        {
+            p.m.val(vid).facts.mem.volatile_ = true;
+            continue;
+        }
+
+        if (!p.sc.eat_char('=')) { p.sc.pos = save; break; }
+
+        if (pear_air::str_eq_n(k, kn, "range"))
+        {
+            if (p.sc.peek_word_is("bottom"))
+            {
+                char* w; p.sc.word(&w);
+                p.m.val(vid).facts.range = pear_erm::r_bottom();
+            }
+            else
+            {
+                long lo; long hi;
+                if (!p.sc.signed_int(&lo)) { p.err("bad range lo"); break; }
+                if (!p.sc.eat_char('.') || !p.sc.eat_char('.'))
+                {
+                    p.err("expected '..' in range"); break;
+                }
+                if (!p.sc.signed_int(&hi)) { p.err("bad range hi"); break; }
+                p.m.val(vid).facts.range = pear_erm::r_range(lo, hi);
+            }
+        }
+        else if (pear_air::str_eq_n(k, kn, "w"))
+        {
+            long w;
+            if (p.sc.signed_int(&w)) { p.m.val(vid).facts.width = (int)w; }
+            else { p.err("bad width"); }
+        }
+        else if (pear_air::str_eq_n(k, kn, "kb"))
+        {
+            ulong z; ulong on;
+            if (!p.sc.unsigned_int(&z)) { p.err("bad known-bits zeros"); break; }
+            if (!p.sc.eat_char('/')) { p.err("expected '/' in kb"); break; }
+            if (!p.sc.unsigned_int(&on)) { p.err("bad known-bits ones"); break; }
+            p.m.val(vid).facts.bits.zeros = z;
+            p.m.val(vid).facts.bits.ones = on;
+        }
+        else if (pear_air::str_eq_n(k, kn, "null"))
+        {
+            char* w; usz n = p.sc.word(&w);
+            bool got = false;
+            foreach (nn : pear_erm::Nullness::values)
+            {
+                if (pear_air::str_eq_n(w, n, nn.mnemonic))
+                {
+                    p.m.val(vid).facts.nullness = nn;
+                    got = true;
+                    break;
+                }
+            }
+            if (!got) { p.err("unknown nullness"); }
+        }
+        else if (pear_air::str_eq_n(k, kn, "mem"))
+        {
+            char* w; usz n = p.sc.word(&w);
+            bool got = false;
+            foreach (mk : pear_erm::MemKind::values)
+            {
+                if (pear_air::str_eq_n(w, n, mk.mnemonic))
+                {
+                    p.m.val(vid).facts.mem.kind = mk;
+                    got = true;
+                    break;
+                }
+            }
+            if (!got) { p.err("unknown memory kind"); }
+            if (p.sc.eat_char(':'))
+            {
+                ulong ver;
+                if (p.sc.unsigned_int(&ver)) { p.m.val(vid).facts.mem.version = (uint)ver; }
+                if (p.sc.eat_char('<') && p.sc.eat_char('-'))
+                {
+                    ulong re;
+                    if (p.sc.unsigned_int(&re)) { p.m.val(vid).facts.mem.reaching = (uint)re; }
+                }
+            }
+        }
+        else if (pear_air::str_eq_n(k, kn, "scope"))
+        {
+            ulong sc;
+            if (p.sc.unsigned_int(&sc)) { p.m.val(vid).facts.mem.scope = (uint)sc; }
+            else { p.err("bad alias scope"); }
+        }
+        else
+        {
+            p.err("unknown fact");
+            char* w; p.sc.word(&w);
+        }
+    }
+    p.sc.eat_char(']');
+}
+
 fn void Parse.parse_attrs(Parse* p, uint vid)
 {
     pear_air::AirValue* v = p.m.val(vid);
@@ -621,6 +754,8 @@ fn void Parse.parse_value_line(Parse* p, uint block)
     }
 
     p.parse_attrs(vid);
+    p.parse_facts(vid);
+    p.parse_attrs(vid);   // `origin=` may follow the fact bracket
     p.sc.next_line();
 }
 
@@ -918,6 +1053,40 @@ fn bool air_eq(Air* a, Air* b, char** why)
                 bool self_a = va.origin == va.id;
                 bool self_b = vb.origin == vb.id;
                 if (self_a != self_b) { *why = "origin self-reference"; return false; }
+
+                /*
+                 ERM must survive the round trip too. Without comparing
+                 these, a printer that emitted facts and a parser that
+                 ignored them would still "round-trip successfully" — the
+                 exact failure mode D1 exists to prevent.
+                */
+                if (!pear_erm::r_eq(va.facts.range, vb.facts.range))
+                {
+                    *why = "range"; return false;
+                }
+                if (va.facts.bits.zeros != vb.facts.bits.zeros
+                 || va.facts.bits.ones  != vb.facts.bits.ones)
+                {
+                    *why = "known bits"; return false;
+                }
+                if (va.facts.nullness != vb.facts.nullness) { *why = "nullness"; return false; }
+                if (va.facts.width != vb.facts.width)       { *why = "width"; return false; }
+                if (va.facts.mem.kind != vb.facts.mem.kind) { *why = "memory kind"; return false; }
+                if (va.facts.mem.version != vb.facts.mem.version)
+                {
+                    *why = "memory version"; return false;
+                }
+                if (va.facts.mem.reaching != vb.facts.mem.reaching)
+                {
+                    *why = "reaching memory version"; return false;
+                }
+                if (va.facts.mem.scope != vb.facts.mem.scope) { *why = "alias scope"; return false; }
+                if (va.facts.mem.no_alias != vb.facts.mem.no_alias) { *why = "noalias"; return false; }
+                if (va.facts.crosses_block != vb.facts.crosses_block)
+                {
+                    *why = "SP classification"; return false;
+                }
+                if (va.facts.may_fault != vb.facts.may_fault) { *why = "may-fault"; return false; }
             }
         }
     }

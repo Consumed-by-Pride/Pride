@@ -39,6 +39,7 @@
 module pear_air;
 
 import pfront_core;
+import pear_erm;
 
 alias Arena = pfront_core::Arena;
 
@@ -163,6 +164,36 @@ enum AirOp : int (String mnemonic)
      payload.fact names the refinement.
     */
     AIR_SIGMA { "sigma" },
+
+    /*
+     π, the `E` of SP-ERM-e-SSI (Choi/Cytron/Ferrante). A σ splits on a
+     CONDITIONAL; a π splits across a POTENTIALLY-DIVERGING OPERATION.
+
+     `%p2 = pi %p1` after a dereference names "the pointer, on the path
+     where the dereference did not fault", carrying nonnull. After a
+     checked index it carries inbounds; after a division, nonzero.
+
+     LLVM has no equivalent. A faulting operation there is an ordinary
+     instruction, so "this was already checked" is a property of a program
+     POINT that every consumer must re-derive, rather than a property of a
+     NAME that travels with the value. That is the main reason a redundant
+     bounds check survives in .ll and can be renamed away here.
+
+     operands[0] is the guarded value, operands[1] the operation that
+     guarded it, so DCE cannot float the π above its own justification.
+    */
+    AIR_PI { "pi" },
+
+    /*
+     M. Memory as an explicitly versioned resource, in the IR rather than
+     in a side analysis. See pear_erm for why this differs from LLVM's
+     MemorySSA, which is rebuilt on demand and never serialised.
+
+     MEM_ENTRY defines version 0; MEM_PHI joins versions at a control-flow
+     join exactly as a scalar φ does, with a parallel incoming-block list.
+    */
+    AIR_MEM_ENTRY { "mem.entry" },
+    AIR_MEM_PHI { "mem.phi" },
 
     // ── effects (backend-agnostic, as in ssi_ir.c3 — that part was right) ─
     AIR_PERFORM { "perform" },       // payload.name = Effect.op; operands = args
@@ -340,6 +371,19 @@ struct AirValue
      this field forward; it never invents one.
     */
     uint     origin;
+
+    /*
+     ERM. The R (range, known bits, nullness, width), the M (memory
+     version and alias scope) and the SP classification, carried on EVERY
+     version rather than as optional metadata.
+
+     This is the substance of "denser than .ll". LLVM carries `!range` on
+     a few instruction kinds, recomputes known-bits from scratch in
+     ValueTracking every time it is asked, and cannot serialise MemorySSA
+     at all. Here all three are part of the value, printed in the text and
+     round-tripped, so a fact established in a2 is still readable at a5.
+    */
+    pear_erm::Facts facts;
 
     // Source position, carried purely for diagnostics. Never semantic.
     int      line;
@@ -749,6 +793,9 @@ fn uint AirModule.new_value(AirModule* m, uint block, AirOp op,
     v.inc_off = 0;
     v.inc_count = 0;
     v.p.clear();
+    // realloc'd storage is raw memory: an uninitialised Facts would make
+    // every new value claim whatever ranges happened to be in the heap.
+    v.facts = pear_erm::facts_unknown();
     v.origin = origin == AIR_NO_ORIGIN ? id : origin;
     v.line = line;
     v.col = col;
@@ -789,6 +836,22 @@ fn uint AirModule.new_phi(AirModule* m, uint block, uint* ops, uint* incoming,
 }
 
 // A σ split: one name per outgoing edge, carrying the fact that edge implies.
+/*
+ Seed R for a constant. Every other range in the function is derived from
+ these by the transfer functions, so getting the base case right is what
+ makes the whole lattice non-trivial.
+*/
+fn void AirModule.set_const_int(AirModule* m, uint vid, long v, int width, bool is_signed)
+{
+    AirValue* av = m.val(vid);
+    if (av == null) { return; }
+    av.p.ival = v;
+    av.facts.range = pear_erm::r_const(v);
+    av.facts.bits = pear_erm::kb_const(v);
+    av.facts.width = width;
+    av.facts.is_signed = is_signed;
+}
+
 fn uint AirModule.new_sigma(AirModule* m, uint block, uint src, AirFact fact,
                             int line, int col)
 {
@@ -803,7 +866,194 @@ fn uint AirModule.new_sigma(AirModule* m, uint block, uint src, AirFact fact,
     uint id = m.new_value(block, AirOp.AIR_SIGMA, &ops[0], 1, org, line, col);
     if (id == AIR_NO_VALUE) { return id; }
     m.values[id].p.fact = fact;
+    // Inherit the source's facts; the caller narrows them with
+    // refine_sigma once the comparison bound is known.
+    AirValue* sv2 = m.val(src);
+    if (sv2 != null) { m.values[id].facts = sv2.facts; }
     return id;
+}
+
+/*
+ Narrow a σ's range using the bound it was split on.
+
+ Split from new_sigma because the bound is not always a literal: `if x < n`
+ gives a symbolic bound that only a2 can resolve, and a σ created now may
+ be refined later. Keeping the two apart means neither has to guess.
+*/
+fn void AirModule.refine_sigma(AirModule* m, uint vid, long bound)
+{
+    AirValue* v = m.val(vid);
+    if (v == null || v.op != AirOp.AIR_SIGMA) { return; }
+    switch (v.p.fact)
+    {
+        case FACT_LT: v.facts.range = pear_erm::r_refine_lt(v.facts.range, bound);
+        case FACT_LE: v.facts.range = pear_erm::r_refine_le(v.facts.range, bound);
+        case FACT_GT: v.facts.range = pear_erm::r_refine_gt(v.facts.range, bound);
+        case FACT_GE: v.facts.range = pear_erm::r_refine_ge(v.facts.range, bound);
+        case FACT_EQ: v.facts.range = pear_erm::r_refine_eq(v.facts.range, bound);
+        case FACT_NE: v.facts.range = pear_erm::r_refine_ne(v.facts.range, bound);
+        case FACT_NONNULL: v.facts.nullness = pear_erm::Nullness.NULL_NEVER;
+        case FACT_NULL:    v.facts.nullness = pear_erm::Nullness.NULL_ALWAYS;
+        default: break;
+    }
+}
+
+/*
+ A π: the value on the NON-FAULTING path of a diverging operation.
+
+ `guard` is the operation that can fault (the load, the index, the
+ division). Naming it as operand 1 makes the dependence explicit, so no
+ pass can hoist the π above the check that justifies its fact.
+
+ D1: like σ, a π is a RENAME, so it inherits the guarded value's origin.
+ A π that started a fresh lineage would strand every range fact learned
+ about the original the moment the first bounds check was crossed.
+*/
+fn uint AirModule.new_pi(AirModule* m, uint block, uint guarded, uint guard,
+                         AirFact fact, int line, int col)
+{
+    uint[2] ops;
+    ops[0] = guarded;
+    ops[1] = guard;
+    uint org = AIR_NO_ORIGIN;
+    AirValue* g = m.val(guarded);
+    if (g != null) { org = g.origin; }
+    uint id = m.new_value(block, AirOp.AIR_PI, &ops[0], 2, org, line, col);
+    if (id == AIR_NO_VALUE) { return id; }
+    m.values[id].p.fact = fact;
+
+    /*
+     Seed R from the fact the π establishes. This is where the `E` feeds
+     the `R`: surviving a dereference PROVES nonnull, surviving a division
+     proves the divisor nonzero, surviving a checked index proves inbounds.
+     Recording it here rather than leaving it for a2 means the fact exists
+     from the moment the π does.
+    */
+    AirValue* v = &m.values[id];
+    if (g != null) { v.facts = g.facts; }
+    switch (fact)
+    {
+        case FACT_NONNULL:
+            v.facts.nullness = pear_erm::Nullness.NULL_NEVER;
+        case FACT_NONZERO:
+            v.facts.range = pear_erm::r_refine_ne(v.facts.range, 0);
+        case FACT_INBOUNDS:
+            // Lower bound only: the upper bound needs the length, which
+            // a2 supplies once it knows the allocation. Claiming a bogus
+            // upper bound here would be worse than claiming nothing.
+            v.facts.range = pear_erm::r_refine_ge(v.facts.range, 0);
+        default:
+            break;
+    }
+    return id;
+}
+
+/*
+ The memory-entry token: version 0, the state of memory on entry to a
+ function. Every load that no store dominates reads this.
+*/
+fn uint AirModule.new_mem_entry(AirModule* m, uint block, int line, int col)
+{
+    uint[1] ops;
+    uint id = m.new_value(block, AirOp.AIR_MEM_ENTRY, &ops[0], 0, AIR_NO_ORIGIN, line, col);
+    if (id == AIR_NO_VALUE) { return id; }
+    AirValue* v = &m.values[id];
+    v.facts.mem.kind = pear_erm::MemKind.MEM_LIVE_ON_ENTRY;
+    v.facts.mem.version = 0;
+    return id;
+}
+
+/*
+ A memory φ. Memory joins at a control-flow join exactly as a scalar does,
+ and giving it a real node — rather than recomputing reaching definitions
+ on demand — is what lets the answer survive serialisation.
+*/
+fn uint AirModule.new_mem_phi(AirModule* m, uint block, uint* ops, uint* incoming,
+                              usz n, uint version, int line, int col)
+{
+    uint id = m.new_value(block, AirOp.AIR_MEM_PHI, ops, n, AIR_NO_ORIGIN, line, col);
+    if (id == AIR_NO_VALUE) { return id; }
+    usz off = m.push_phi_blocks(incoming, n);
+    AirValue* v = &m.values[id];
+    v.inc_off = off;
+    v.inc_count = n;
+    v.facts.mem.kind = pear_erm::MemKind.MEM_PHI;
+    v.facts.mem.version = version;
+    return id;
+}
+
+// Record that this value reads memory version `reaching`.
+fn void AirModule.set_mem_use(AirModule* m, uint vid, uint reaching,
+                              pear_erm::AliasScope scope)
+{
+    AirValue* v = m.val(vid);
+    if (v == null) { return; }
+    v.facts.mem.kind = pear_erm::MemKind.MEM_USE;
+    v.facts.mem.reaching = reaching;
+    v.facts.mem.scope = scope;
+}
+
+// Record that this value writes memory, producing `version` from `reaching`.
+fn void AirModule.set_mem_def(AirModule* m, uint vid, uint version, uint reaching,
+                              pear_erm::AliasScope scope)
+{
+    AirValue* v = m.val(vid);
+    if (v == null) { return; }
+    v.facts.mem.kind = pear_erm::MemKind.MEM_DEF;
+    v.facts.mem.version = version;
+    v.facts.mem.reaching = reaching;
+    v.facts.mem.scope = scope;
+}
+
+// ── ERM queries, the reason the facts are carried at all ────────────────
+
+/*
+ Can this value be proven to fit in `bits`? A true answer is what lets a2
+ narrow a 64-bit operation, delete an overflow check, or drop a bounds
+ test. In LLVM the same question costs a fresh ValueTracking walk at every
+ call site.
+*/
+fn bool AirModule.value_fits(AirModule* m, uint vid, int bits, bool is_signed)
+{
+    AirValue* v = m.val(vid);
+    if (v == null) { return false; }
+    return pear_erm::r_fits(&v.facts.range, bits, is_signed);
+}
+
+fn bool AirModule.value_nonnull(AirModule* m, uint vid)
+{
+    AirValue* v = m.val(vid);
+    if (v == null) { return false; }
+    return v.facts.nullness == pear_erm::Nullness.NULL_NEVER;
+}
+
+/*
+ Alignment implied by the known trailing zeros. This is what becomes an
+ `align` attribute at emission; LLVM would rediscover it from scratch.
+*/
+fn int AirModule.value_alignment(AirModule* m, uint vid)
+{
+    AirValue* v = m.val(vid);
+    if (v == null) { return 1; }
+    int tz = pear_erm::kb_trailing_zeros(&v.facts.bits);
+    if (tz >= 31) { return 1 << 30; }
+    return 1 << tz;
+}
+
+/*
+ Do two memory accesses provably not alias? Distinct non-zero scopes, or
+ either side flagged no_alias, is enough. Unknown scope answers false,
+ which is the conservative direction.
+*/
+fn bool AirModule.no_alias(AirModule* m, uint a, uint b)
+{
+    AirValue* va = m.val(a);
+    AirValue* vb = m.val(b);
+    if (va == null || vb == null) { return false; }
+    if (va.facts.mem.no_alias || vb.facts.mem.no_alias) { return true; }
+    if (va.facts.mem.scope == pear_erm::ALIAS_UNKNOWN) { return false; }
+    if (vb.facts.mem.scope == pear_erm::ALIAS_UNKNOWN) { return false; }
+    return va.facts.mem.scope != vb.facts.mem.scope;
 }
 
 // ── edges ───────────────────────────────────────────────────────────────

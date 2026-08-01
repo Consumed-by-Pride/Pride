@@ -30,6 +30,7 @@
 module pear_air_print;
 
 import pear_air;
+import pear_erm;
 import pfront_core;
 
 alias Air   = pear_air::AirModule;
@@ -120,7 +121,23 @@ fn void Out.num(Out* o, long v)
     while (n > 0) { n = n - 1; o.ch(tmp[n]); }
 }
 
-fn void Out.unum(Out* o, ulong v) { o.num((long)v); }
+/*
+ UNSIGNED printing, not a cast through `long`.
+
+ The cast was wrong for any value above INT64_MAX, which is routine here:
+ known-bits `zeros` is the complement of the value, so the constant 2 has
+ zeros = 0xFFFFFFFFFFFFFFFD and printed as `-3`. The reader then failed on
+ it, which is how the round-trip test caught this — the printer alone
+ looked fine. Float bit patterns have the same exposure.
+*/
+fn void Out.unum(Out* o, ulong v)
+{
+    if (v == 0) { o.ch('0'); return; }
+    char[24] tmp;
+    usz n = 0;
+    while (v > 0 && n < 24) { tmp[n] = (char)('0' + (char)(v % 10)); v = v / 10; n = n + 1; }
+    while (n > 0) { n = n - 1; o.ch(tmp[n]); }
+}
 
 // ════════════════════════════════════════════════════════════════════════
 // CANONICAL NUMBERING
@@ -316,10 +333,98 @@ fn void print_value(Out* o, Air* m, Numbering* nb, uint vid, bool with_origin)
             o.str(" op=");
             o.str(pear_air::unop_name(v.p.uop));
         case AIR_SIGMA:
+        case AIR_PI:
+            // Both carry a refinement; a π that lost its fact on a round
+            // trip would silently degrade to an opaque copy.
             o.str(" fact=");
             o.str(pear_air::fact_name(v.p.fact));
         default:
             break;
+    }
+
+    /*
+     ERM, printed inline in brackets.
+
+     This is what makes .air denser than .ll as a FILE, not just as an
+     in-memory structure. LLVM's equivalent facts are either absent from
+     the text (known-bits, MemorySSA) or attached as optional metadata a
+     pass may drop (`!range`). Here they are part of the value's syntax and
+     survive a round trip, so a fact established in a2 is readable at a5.
+
+     Only non-trivial facts print; a wall of `[range=top]` on every line
+     would destroy the diff property D3 exists for.
+    */
+    if (pear_erm::facts_known(&v.facts))
+    {
+        o.str("  [");
+        bool first = true;
+
+        if (!v.facts.range.is_top)
+        {
+            if (v.facts.range.is_bottom) { o.str("range=bottom"); }
+            else
+            {
+                o.str("range=");
+                o.num(v.facts.range.lo);
+                o.str("..");
+                o.num(v.facts.range.hi);
+            }
+            first = false;
+        }
+        if (v.facts.width != 0)
+        {
+            if (!first) { o.ch(' '); }
+            o.str("w=");
+            o.num((long)v.facts.width);
+            first = false;
+        }
+        if (!pear_erm::kb_is_unknown(&v.facts.bits))
+        {
+            if (!first) { o.ch(' '); }
+            o.str("kb=");
+            o.unum(v.facts.bits.zeros);
+            o.ch('/');
+            o.unum(v.facts.bits.ones);
+            first = false;
+        }
+        if (v.facts.nullness != pear_erm::Nullness.NULL_UNKNOWN)
+        {
+            if (!first) { o.ch(' '); }
+            o.str("null=");
+            o.str(v.facts.nullness.mnemonic);
+            first = false;
+        }
+        if (v.facts.mem.kind != pear_erm::MemKind.MEM_NONE)
+        {
+            if (!first) { o.ch(' '); }
+            o.str("mem=");
+            o.str(v.facts.mem.kind.mnemonic);
+            o.ch(':');
+            o.unum((ulong)v.facts.mem.version);
+            o.str("<-");
+            o.unum((ulong)v.facts.mem.reaching);
+            if (v.facts.mem.scope != pear_erm::ALIAS_UNKNOWN)
+            {
+                o.str(" scope=");
+                o.unum((ulong)v.facts.mem.scope);
+            }
+            if (v.facts.mem.no_alias) { o.str(" noalias"); }
+            if (v.facts.mem.volatile_) { o.str(" volatile"); }
+            first = false;
+        }
+        if (v.facts.crosses_block)
+        {
+            if (!first) { o.ch(' '); }
+            o.str("nonlocal");
+            first = false;
+        }
+        if (v.facts.may_fault)
+        {
+            if (!first) { o.ch(' '); }
+            o.str("mayfault");
+            first = false;
+        }
+        o.ch(']');
     }
 
     /*

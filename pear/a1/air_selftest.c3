@@ -20,6 +20,8 @@ import pear_air;
 import pear_air_print;
 import pear_air_parse;
 import pear_verify;
+import pear_infer;
+import pear_erm;
 import pfront_core;
 
 alias Air  = pear_air::AirModule;
@@ -593,6 +595,10 @@ fn void run_case(char* name, Builder build, bool expect_verify_clean)
     Air* m = &c.mod;
 
     build(m, &c.interner);
+    // Run ERM inference BEFORE the round trip: the facts must be in the
+    // printed text, or the round trip proves nothing about them.
+    pear_infer::ErmStats est;
+    pear_infer::run(m, &est);
     roundtrip(m, name);
 
     pear_verify::Report rep;
@@ -638,9 +644,17 @@ fn int main(String[] args)
             printf("=== %s: parse %s (%d errors) ===\n",
                    (char*)args[ai].ptr, okp ? "ok" : "FAILED", (int)errs);
 
+            // Seed ERM before verifying and printing, so a hand-written
+            // file shows the facts a1 derives rather than only the ones
+            // the author typed.
+            pear_infer::ErmStats est;
+            pear_infer::run(m, &est);
+
             pear_verify::Report rep;
             pear_verify::verify(m, &rep);
             pear_verify::print_report(&rep);
+            printf("  --- ERM ---\n");
+            pear_infer::print_stats(&est);
             pear_air_print::dump(m, true);
 
             if (!okp || rep.errors > 0) { rc = 1; }

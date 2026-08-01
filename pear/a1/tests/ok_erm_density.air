@@ -1,0 +1,25 @@
+; DENSITY COMPARISON, same program as /tmp/ck/cov.ll.
+;
+; LLVM -O2 on the equivalent .ll annotates 0 of the internal SSA values
+; with a range (verified with llvm-22 opt). It infers nuw/nsw and then
+; discards the bounds that justified them. Every downstream consumer, and
+; anything reading the serialised file, must re-derive them.
+;
+; a1 records a range on every derived value, in the text, round-tripped.
+module density
+func f pub entry=b1
+  block b1
+    %1 = param name=p
+    %2 = param name=i
+    %3 = const.int ival=15
+    %4 = bin %2 %3 op=and          ; [0,15]
+    %5 = const.int ival=8
+    %6 = bin %4 %5 op=mul          ; [0,120]
+    %7 = bin %6 %5 op=add          ; [8,128]
+    %8 = addr.index %1 %7
+    %9 = store.ptr %8 %4
+    %10 = load.ptr %8
+    %11 = bin %10 %7 op=add
+    ret %11
+  end
+endfunc

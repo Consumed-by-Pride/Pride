@@ -85,6 +85,77 @@ for f in pear/a1/tests/bad_*.air; do
   fi
 done
 
+# ── ERM: the facts that make .air denser than .ll ───────────────────────
+#
+# The claim is measurable, so measure it. ok_erm_density.air is the same
+# program as /tmp/ck/cov.ll; LLVM 22 -O2 annotates 0 of its internal SSA
+# values with a range (it infers nuw/nsw and discards the bounds that
+# justified them). a1 must record one on every derived value.
+den=$("$BIN" pear/a1/tests/ok_erm_density.air 2>&1)
+ranged=$(echo "$den" | grep -oE 'R: ranged        : [0-9]+' | grep -oE '[0-9]+$')
+if [ "${ranged:-0}" -ge 5 ]; then
+  pass=$((pass+1)); note PASS "erm_R_density" "($ranged ranged values; llvm .ll carries 0)"
+else
+  fail=$((fail+1)); note FAIL "erm_R_density" "only $ranged ranged values, want >=5"
+fi
+
+# M: memory versioning must appear IN THE TEXT. LLVM's MemorySSA is an
+# analysis that cannot be serialised to .ll at all, so there is no
+# equivalent line to compare against — this is a capability gap, not just
+# a density one.
+memdef=$(echo "$den" | grep -c 'mem=def:')
+memuse=$(echo "$den" | grep -c 'mem=use:')
+if [ "$memdef" -ge 1 ] && [ "$memuse" -ge 1 ]; then
+  pass=$((pass+1)); note PASS "erm_M_serialised" "($memdef mem defs, $memuse mem uses in the text)"
+else
+  fail=$((fail+1)); note FAIL "erm_M_serialised" "defs=$memdef uses=$memuse, want >=1 each"
+fi
+
+# E: a pi node must carry its refinement and narrow the range. This is the
+# construct .ll has no equivalent for — a faulting op there is an ordinary
+# instruction, so "already checked" is a property of a program POINT that
+# every consumer re-derives, not of a NAME that travels with the value.
+bnd=$("$BIN" pear/a1/tests/ok_erm_bounds.air 2>&1)
+if echo "$bnd" | grep -q 'pi %4 %6 fact=inbounds  \[range=0\.\.15\]'; then
+  pass=$((pass+1)); note PASS "erm_E_pi" "(pi carries inbounds and narrows to 0..15)"
+else
+  fail=$((fail+1)); note FAIL "erm_E_pi" "pi lost its refinement"
+  echo "$bnd" | grep 'pi ' | sed 's/^/      /'
+fi
+
+# The payoff: R must PROVE the bounds check redundant. `%6` is `(i & 15) <
+# 16`, always true, so the trap block is dead. If this stops firing, R has
+# regressed to decoration.
+dec=$(echo "$bnd" | grep -oE 'decided cmps  : [0-9]+' | grep -oE '[0-9]+$')
+if [ "${dec:-0}" -ge 1 ]; then
+  pass=$((pass+1)); note PASS "erm_R_decides" "($dec comparison(s) settled by range alone)"
+else
+  fail=$((fail+1)); note FAIL "erm_R_decides" "R settled no comparisons"
+fi
+
+# e-SSI: a sigma must narrow DIFFERENTLY on each edge. Both sigmas over the
+# same value carrying the same range would mean the split distinguishes
+# nothing, which is the failure mode that makes e-SSI pointless.
+dia=$("$BIN" pear/a1/tests/ok_diamond.air 2>&1)
+gt=$(echo "$dia" | grep 'fact=gt' | grep -c 'range=1\.\.')
+le=$(echo "$dia" | grep 'fact=le' | grep -c 'range=-9223372036854775808\.\.0')
+if [ "$gt" -ge 1 ] && [ "$le" -ge 1 ]; then
+  pass=$((pass+1)); note PASS "essi_sigma_narrows" "(true edge x>=1, false edge x<=0)"
+else
+  fail=$((fail+1)); note FAIL "essi_sigma_narrows" "sigmas did not narrow per-edge (gt=$gt le=$le)"
+fi
+
+# SP: the semi-pruned classification must actually discriminate. A pass
+# that marked everything non-local would "work" while placing a phi for
+# every value, which is the cost semi-pruned exists to avoid.
+nl=$(echo "$dia" | grep -oE 'SP: non-local    : [0-9]+' | grep -oE '[0-9]+$')
+loc=$(echo "$dia" | grep -oE 'block-local: [0-9]+' | grep -oE '[0-9]+$')
+if [ "${nl:-0}" -ge 1 ] && [ "${loc:-0}" -ge 1 ]; then
+  pass=$((pass+1)); note PASS "sp_classification" "($nl non-local, $loc block-local)"
+else
+  fail=$((fail+1)); note FAIL "sp_classification" "not discriminating: nl=$nl local=$loc"
+fi
+
 # ── D3 property: the text form is CANONICAL ─────────────────────────────
 #
 # Printed ids are assigned in traversal order, not construction order, so
