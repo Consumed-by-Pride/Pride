@@ -1,0 +1,76 @@
+mod t71
+
+-- REGRESSION: `let x = <if / else if / else>` as a layout initializer.
+--
+-- The `else` body `3i64` sits INLINE on the `else` line but at a column
+-- deeper than the owning statement, so parse_block_or_expr mistook it for a
+-- lexer-folded virtual block. parse_virtual_block then consumed the DEDENT
+-- that closes the INITIALIZER block, so the initializer never saw its own
+-- close and swallowed the statement after it. `a` ended up nested inside
+-- `a`'s own initializer and reported as an unresolved name.
+--
+-- Fixed by requiring a virtual block to START ON A LATER LINE than the
+-- construct that introduces it (Parser.prev_line).
+
+fn chain3 : i64 -> i64
+  | n ->
+      let a =
+        if n > 0i64
+          1i64
+        else if n < 0i64
+          2i64
+        else 3i64
+      a
+
+-- Longer chain: four links, each opening its own layout level.
+fn chain4 : i64 -> i64
+  | n ->
+      let b =
+        if n > 10i64
+          1i64
+        else if n > 5i64
+          2i64
+        else if n > 0i64
+          3i64
+        else 4i64
+      b + 1i64
+
+-- The `else` body indented on its OWN line must still read as a block.
+fn block_else : i64 -> i64
+  | n ->
+      let c =
+        if n > 0i64
+          1i64
+        else if n < 0i64
+          2i64
+        else
+          3i64
+      c
+
+-- Two chained initializers in a row: the second must not nest in the first.
+fn two_inits : i64 -> i64
+  | n ->
+      let d =
+        if n > 0i64
+          1i64
+        else if n < 0i64
+          2i64
+        else 3i64
+      let e =
+        if d > 1i64
+          10i64
+        else 20i64
+      d + e
+
+-- A chain whose branches are themselves multi-statement blocks.
+fn multi_stmt : i64 -> i64
+  | n ->
+      let f =
+        if n > 0i64
+          let t = n * 2i64
+          t + 1i64
+        else if n < 0i64
+          let u = n * 3i64
+          u - 1i64
+        else 0i64
+      f

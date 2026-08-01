@@ -1,0 +1,4 @@
+mod lib.math
+
+fn square : i64 -> i64
+  | x -> x * x

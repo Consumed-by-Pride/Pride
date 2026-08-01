@@ -1,0 +1,17 @@
+fn is_even : i64 -> bool
+  | 0i64 -> true
+  | n -> is_odd(n - 1i64)
+
+fn is_odd : i64 -> bool
+  | 0i64 -> false
+  | n -> is_even(n - 1i64)
+
+fn fact : i64 -> i64
+  | 0i64 -> 1i64
+  | n -> n * fact(n - 1i64)
+
+fn never_called : i64 -> i64
+  | x -> x
+
+fn main : () -> i64
+  | () -> fact(5i64)

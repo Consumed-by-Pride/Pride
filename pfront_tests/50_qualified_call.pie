@@ -1,0 +1,8 @@
+mod pfront_tests.qc
+
+use os.linux
+
+fn f : i64 -> i64
+  | n ->
+    let p = os.linux.malloc(n as u64)
+    0i64

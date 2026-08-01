@@ -2,6 +2,7 @@ mod opt.inline
 
 use ir.module
 use ir.func
+use vec.vec
 
 -- stdlib/opt/inline.pie — SSA Function Inlining Pass
 -- Substitutes small or inline-marked function calls with cloned basic blocks.

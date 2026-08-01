@@ -1,0 +1,8 @@
+struct SipState
+  v0 : u64; v1 : u64; v2 : u64; v3 : u64
+  buf : u64; buf_len : i64; total : i64
+
+fn K : u64 = 0x7FF8000000000000u64
+
+fn f : () -> u64
+  | () -> K

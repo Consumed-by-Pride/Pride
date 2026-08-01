@@ -3,6 +3,7 @@ mod opt.const_fold
 use ir.func
 use ir.block
 use ir.instr
+use vec.vec
 
 -- stdlib/opt/const_fold.pie — SSA Constant Folding Pass
 -- Evaluates constant arithmetic expressions at compile time.

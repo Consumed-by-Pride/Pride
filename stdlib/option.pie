@@ -2,5 +2,53 @@ mod option
 
 use opt.option
 
--- stdlib/option.pie — Re-exports opt.option (Option + Result types)
--- Use `use option` for Option<T> and Result<T,E>.
+-- stdlib/option.pie — Option<T> and Result<T, E>
+--
+-- The definitions live in `opt.option`. This module is the front door: a
+-- program writes `use option` and gets the constructors, predicates and
+-- extractors without having to know the internal layout.
+--
+-- Previously this file was a comment claiming to re-export and nothing else,
+-- so `use option` brought in no names at all and every call through it
+-- failed to resolve. Re-exports in Pride are explicit — see `alloc.pie`,
+-- `cli.pie` and `diag.pie` for the same pattern.
+
+-- ── Option ──────────────────────────────────────────────────────────────────
+-- `Some(v)` carries a value, `None` does not.
+
+fn some : i64 -> opt.option.Option
+  | x -> opt.option.option_some(x)
+
+fn none : () -> opt.option.Option
+  | () -> opt.option.option_none()
+
+fn is_some : opt.option.Option -> bool
+  | o -> opt.option.option_is_some(o)
+
+fn is_none : opt.option.Option -> bool
+  | o -> opt.option.option_is_none(o)
+
+-- Extract the value. `unwrap` on a `None` is undefined behaviour, which is
+-- why `unwrap_or` exists and should be preferred at any boundary where the
+-- absence is expected rather than exceptional.
+fn unwrap : opt.option.Option -> i64
+  | o -> opt.option.option_unwrap(o)
+
+fn unwrap_or : (opt.option.Option, i64) -> i64
+  | (o, d) -> opt.option.option_unwrap_or(o, d)
+
+-- ── Result ──────────────────────────────────────────────────────────────────
+-- `Ok(v)` on success, `Err(e)` on failure. Pride has no exceptions; a
+-- fallible operation returns a Result and the caller decides.
+
+fn ok : i64 -> opt.option.Result
+  | v -> opt.option.result_ok(v)
+
+fn err : i64 -> opt.option.Result
+  | e -> opt.option.result_err(e)
+
+fn is_ok : opt.option.Result -> bool
+  | r -> opt.option.result_is_ok(r)
+
+fn is_err : opt.option.Result -> bool
+  | r -> opt.option.result_is_err(r)

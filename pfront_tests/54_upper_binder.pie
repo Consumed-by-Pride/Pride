@@ -1,0 +1,14 @@
+enum Color
+  Red,
+  Green,
+
+fn matmul : (i64, i64, i64, i64, i64, i64) -> i64
+  | (a, b, c, M, N, K) -> a + b + c + M + N + K
+
+fn pick : Color -> i64
+  | Red -> 1i64
+  | Green -> 2i64
+
+fn qual : Color -> i64
+  | Color.Red -> 1i64
+  | Color.Green -> 2i64

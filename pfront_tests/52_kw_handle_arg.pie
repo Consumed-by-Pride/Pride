@@ -1,0 +1,5 @@
+fn g : (i64, i64, i64) -> i64
+  | (a, b, c) -> a
+
+fn f : (i64, i64, i64) -> i64
+  | (handle, guid, interface) -> g(handle, guid, interface)

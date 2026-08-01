@@ -1,0 +1,4 @@
+fn bad : () -> i64
+  | () ->
+      let x = ub! "unreachable by construction"
+      0i64

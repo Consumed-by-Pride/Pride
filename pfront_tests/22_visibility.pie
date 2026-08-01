@@ -1,0 +1,4 @@
+use vis.lib
+
+fn main : () -> i64
+  | () -> public_fn(1i64)

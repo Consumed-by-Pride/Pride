@@ -1,0 +1,6 @@
+use mod1.thing
+
+fn f : () -> i64
+  | () ->
+    let r = thing.Thing { region: 1i64 }
+    r.region

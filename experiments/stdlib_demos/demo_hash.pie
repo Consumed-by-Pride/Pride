@@ -1,0 +1,21 @@
+mod experiments.stdlib_demos.demo_hash
+
+use hash.fnv
+
+-- Hashing over raw bytes. Exercises a leaf stdlib module that has no
+-- dependencies of its own, so a failure here is unambiguous.
+
+fn hash_bytes : (ptr, i64) -> u64
+  | (data, len) -> fnv.fnv64_hash(data, len)
+
+fn hash_twice_same : (ptr, i64) -> bool
+  | (data, len) ->
+    let a = fnv.fnv64_hash(data, len)
+    let b = fnv.fnv64_hash(data, len)
+    a == b
+
+fn main_demo : ptr -> i64
+  | p ->
+    let h = hash_bytes(p, 8i64)
+    let stable = hash_twice_same(p, 8i64)
+    if stable then 1i64 else 0i64

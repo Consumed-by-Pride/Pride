@@ -1,0 +1,113 @@
+mod experiments.test_msp_cmtt
+
+-- ============================================================================
+-- EXPERIMENT 3 — Stage crossing and binder hygiene
+-- ----------------------------------------------------------------------------
+-- GOAL: trigger variable-capture bugs in the multi-stage engine.
+--
+-- The classic failure: a quoted expression mentions `x`; the quote is spliced
+-- into a context that ALSO binds `x`; the outer `x` captures the inner one.
+-- Under CMTT the quote carries its own context Γ', and splicing must respect
+-- it rather than letting the splice site's scope win.
+--
+-- What is being checked here:
+--   * a quote's free variables belong to the QUOTE's context, not the splice
+--     site's
+--   * stage discipline: a stage-0 variable may not be used inside a stage-1
+--     quote without crossing explicitly
+--   * splice at stage 0 (no enclosing quote) is a level error
+--   * `comptime` folds at stage 0 and must not leak a stage-1 binder out
+-- ============================================================================
+
+-- ── 1. Baseline quote, no capture risk ──────────────────────────────────────
+
+fn quote_simple : i64 -> i64
+  | n ->
+    let q = ~Tree (1i64 + 2i64)
+    n
+
+-- ── 2. The capture scenario ─────────────────────────────────────────────────
+-- The quote mentions `x`. The enclosing function ALSO binds `x`. Under
+-- hygienic staging these are different variables: the quote's `x` is free in
+-- its own context and must not silently bind to the outer one.
+
+fn capture_risk : i64 -> i64
+  | outer ->
+    let x = 100i64
+    let q = ~Tree (x + 1i64)
+    x
+
+-- ── 3. Shadowing across a splice boundary ───────────────────────────────────
+-- Two nested bindings of the same name with a quote in between. If the engine
+-- resolves the quote's `x` at splice time rather than at quote time, this
+-- returns the wrong one.
+
+fn shadow_across_splice : i64 -> i64
+  | n ->
+    let x = 1i64
+    let q = ~Tree (x * 2i64)
+    let inner = n
+    x + inner
+
+-- ── 4. Cross-stage escape ───────────────────────────────────────────────────
+-- A stage-0 local used inside a stage-1 quotation. This is the canonical
+-- cross-stage persistence question: the value exists now, the code runs later.
+
+fn cross_stage : i64 -> i64
+  | n ->
+    let runtime_val = n + 1i64
+    let q = ~Tree (runtime_val + 2i64)
+    runtime_val
+
+-- ── 5. comptime folding at stage 0 ──────────────────────────────────────────
+-- Fully static: must fold to a constant, and the binder must not escape.
+
+fn comptime_fold : () -> i64
+  | () ->
+    let folded = comptime 3i64 * 4i64
+    folded
+
+-- ── 6. Nested quotation ─────────────────────────────────────────────────────
+-- A quote inside a quote is stage 2. The level tracker must not collapse the
+-- two, or a stage-2 binder becomes visible at stage 1.
+
+fn nested_quote : i64 -> i64
+  | n ->
+    let inner = ~Tree (n + 1i64)
+    let outer = ~Tree (2i64 + 3i64)
+    n
+
+-- ── 7. Same name at two stages ──────────────────────────────────────────────
+-- `v` is bound at stage 0 and mentioned inside a quote. Two distinct binders
+-- share one spelling; a name-keyed (rather than binder-keyed) environment
+-- merges them.
+
+fn same_name_two_stages : i64 -> i64
+  | n ->
+    let v = 10i64
+    let q1 = ~Tree (v + 1i64)
+    let q2 = ~Tree (v + 2i64)
+    v
+
+-- ── 8. Quote used as data ───────────────────────────────────────────────────
+-- ~Data and ~Bytes are the other two quotation sigils. They quote the same
+-- AST at a different representation, and should agree on scoping.
+
+fn quote_representations : i64 -> i64
+  | n ->
+    let as_tree  = ~Tree  (n + 1i64)
+    let as_data  = ~Data  (n + 1i64)
+    let as_bytes = ~Bytes (n + 1i64)
+    n
+
+fn drive : i64 -> i64
+  | n ->
+    let a = quote_simple(n)
+    let b = capture_risk(n)
+    let c = shadow_across_splice(n)
+    let d = cross_stage(n)
+    let e = comptime_fold()
+    let f = nested_quote(n)
+    let g = same_name_two_stages(n)
+    let h = quote_representations(n)
+    a + b + c + d + e + f + g + h

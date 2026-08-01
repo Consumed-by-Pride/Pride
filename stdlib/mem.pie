@@ -975,3 +975,30 @@ fn log2_ceil_i64 : i64 -> i64
   | n ->
     if n <= 1i64 then 0i64
     else log2_floor_i64(n - 1i64) + 1i64
+
+-- ── Wide multiply ───────────────────────────────────────────────────────────
+-- The high 64 bits of a 64x64 -> 128 bit product.
+--
+-- Pride has no u128, so the product is formed from four 32-bit halves and the
+-- carries are propagated by hand. This is the primitive every 64-bit hash
+-- (wyhash, xxhash, CityHash) and every Lemire-style fast-range reduction
+-- needs, and doing it in f64 would silently lose the low bits.
+fn mul64_hi : (u64, u64) -> u64
+  | (a, b) ->
+    let a_lo = a & 0xFFFFFFFFu64
+    let a_hi = a >> 32u64
+    let b_lo = b & 0xFFFFFFFFu64
+    let b_hi = b >> 32u64
+
+    let p_ll = a_lo * b_lo
+    let p_lh = a_lo * b_hi
+    let p_hl = a_hi * b_lo
+    let p_hh = a_hi * b_hi
+
+    -- carry out of the low 64 bits
+    let mid = (p_ll >> 32u64) + (p_lh & 0xFFFFFFFFu64) + (p_hl & 0xFFFFFFFFu64)
+    p_hh + (p_lh >> 32u64) + (p_hl >> 32u64) + (mid >> 32u64)
+
+-- The low 64 bits of the same product. Wraps, by definition.
+fn mul64_lo : (u64, u64) -> u64
+  | (a, b) -> a *% b

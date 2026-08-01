@@ -1,0 +1,13 @@
+struct CmttBox
+  stage : i64
+  code  : i64
+
+fn mk : (i64, i64) -> i64
+  | (stage, code) ->
+    let b = CmttBox { stage: stage, code: code }
+    0i64
+
+fn q : () -> i64
+  | () ->
+    stage 1
+      2i64

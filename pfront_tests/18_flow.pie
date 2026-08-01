@@ -1,0 +1,14 @@
+fn loopy : i64 -> i64
+  | n ->
+      let mut i : i64 = 0i64
+      let mut acc : i64 = 0i64
+      while i < n
+        let mut j : i64 = 0i64
+        while j < n
+          acc = acc + 1i64
+          j = j + 1i64
+        i = i + 1i64
+      acc
+
+fn main : () -> i64
+  | () -> loopy(3i64)

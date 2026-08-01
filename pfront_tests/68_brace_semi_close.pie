@@ -1,0 +1,8 @@
+fn f : i64 -> i64
+  | n ->
+      let mut a = n
+      if n > 0i64 then {
+          a = 1i64;
+          if a == 0i64 then a = 2i64 else ();
+      } else { () }
+      a

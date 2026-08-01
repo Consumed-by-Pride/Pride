@@ -1,0 +1,6 @@
+fn h : i64 -> i64
+  | n ->
+      let unused = n + 7i64
+      return n
+      let after = n * 2i64
+      after

@@ -781,15 +781,32 @@ fn void handle_bol(Lexer* self) @private
     {
         while (self.indent_idx > 0 && indent < self.indents[self.indent_idx])
         {
-            q_push(self, make_token(TokenType.TOKEN_DEDENT, self.source + self.pos, 0, self.line, self.col));
+            // Carry the indent level being CLOSED in the token's `len` field.
+            // Every DEDENT in a run otherwise shares the target column, so a
+            // parser cannot tell which nesting level each one ends. The parser
+            // uses this to close exactly its own blocks.
+            Token dd = make_token(TokenType.TOKEN_DEDENT, self.source + self.pos, 0, self.line, self.col);
+            dd.len = (usz)self.indents[self.indent_idx];
+            q_push(self, dd);
             self.indent_idx--;
         }
 
         if (indent != self.indents[self.indent_idx])
         {
-            push_invalid_at(self, "inconsistent dedent", self.source + self.pos, 0, self.line, self.col);
-            self.bol = false;
-            return;
+            // Hanging indent. Real Pride uses continuation lines aligned to a
+            // column that was never pushed as a block level:
+            //
+            //     let t = if flag then
+            //               1
+            //             else            <-- lands between two levels
+            //               2
+            //
+            // Rejecting this outright made every such file unparseable. The
+            // dedent loop above has already popped to the nearest enclosing
+            // level, so the structure is unambiguous; realign the top of the
+            // stack to the observed column and continue. Emitting a hard error
+            // here would be a false positive on well-formed source.
+            self.indents[self.indent_idx] = indent;
         }
 
         q_push(self, make_token(TokenType.TOKEN_NEWLINE, self.source + self.pos, 0, self.line, self.col));

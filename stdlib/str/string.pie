@@ -84,6 +84,11 @@ fn string_from_slice : (ptr, i64) -> String
     string_push_slice(&s, data, count)
     s
 
+-- Convenience alias. A NUL-terminated literal is the common source, and
+-- `from_str("...")` reads better at a call site than `string_from_cstr`.
+fn from_str : ptr -> String
+  | c -> string_from_cstr(c)
+
 fn string_from_cstr : ptr -> String
   | cstr ->
     let count = os.linux.strlen(cstr) as i64
@@ -159,3 +164,36 @@ fn string_ends_with_cstr : (*String, ptr) -> bool
     else
       let start = (raw.rawvec_ptr(&s.buf) as i64 + s.len - clen) as ptr
       os.linux.memcmp(start, cstr, clen as u64) == 0i32
+
+-- ── `str_*` aliases ─────────────────────────────────────────────────────────
+-- A second naming convention is in use across the tree (`str_new` rather than
+-- `string_new`). Both spellings now exist so neither caller has to change:
+-- io.bufio was written against these and failed to resolve every one.
+
+fn str_new : () -> String
+  | () -> string_new()
+
+fn str_with_cap : i64 -> String
+  | c -> string_with_cap(c)
+
+fn str_free : *String -> ()
+  | s -> string_destroy(s)
+
+fn str_clear : *String -> ()
+  | s -> string_clear(s)
+
+fn str_len : *String -> i64
+  | s -> string_len(s)
+
+fn str_push_byte : (*String, u8) -> ()
+  | (s, b) -> string_push_byte(s, b)
+
+-- Append raw bytes. `_raw` marks that the source is a pointer/length pair
+-- rather than another String, so no ownership is transferred.
+fn str_concat_raw : (*String, ptr, i64) -> ()
+  | (s, data, n) -> string_push_slice(s, data, n)
+
+-- The backing byte pointer. Callers that reach for `s.ptr` want this: the
+-- String's storage lives in a RawVec, so the field is `buf`, not `ptr`.
+fn str_ptr : *String -> ptr
+  | s -> string_as_slice(s)

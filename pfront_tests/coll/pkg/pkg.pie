@@ -1,0 +1,3 @@
+mod coll.pkg.pkg
+pub fn inner : () -> i64
+  | () -> 2i64

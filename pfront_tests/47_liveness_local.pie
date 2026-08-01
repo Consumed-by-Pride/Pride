@@ -1,0 +1,6 @@
+fn f : i64 -> i64
+  | n ->
+      let a = n + 1i64
+      let b = a + 2i64
+      let c = b + 3i64
+      c

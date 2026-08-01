@@ -1,0 +1,17 @@
+fn unify : (i64, i64) -> bool
+  | (u, p) ->
+      if u == 0i64 then {
+          false
+      } else if p < 0i64 then {
+          -- Negative tags indicate variable placeholders
+          u == p
+      } else {
+          -- fall through
+          false
+      }
+
+fn nested : i64 -> i64
+  | n -> {
+      -- comment as the very first line
+      n
+  }

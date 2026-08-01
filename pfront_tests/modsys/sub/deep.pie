@@ -1,0 +1,4 @@
+mod modsys.sub.deep
+
+pub fn triple : i64 -> i64
+  | x -> x * 3i64

@@ -1,0 +1,11 @@
+fn g : i64 -> i64
+  | x -> x
+
+fn f : (i64, i64) -> i64
+  | (a, b) ->
+    let tail = (a + b) & (a - 1i64)
+    let src = (a + tail * b)
+    src
+
+fn h : i64 -> i64
+  | n -> tail g(n)

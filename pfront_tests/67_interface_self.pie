@@ -1,0 +1,6 @@
+interface Add   fn add : (Self, Self) -> Self
+interface Sub   fn sub : (Self, Self) -> Self
+
+interface Ord
+  fn cmp : (Self, Self) -> i64
+  fn lt  : (Self, Self) -> bool

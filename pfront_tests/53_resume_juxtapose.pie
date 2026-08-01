@@ -1,0 +1,8 @@
+effect E
+  op : i64 -> i64
+
+fn f : () -> i64
+  | () ->
+    handle
+      perform E.op(1i64)
+    | E.op x k -> resume 2i64

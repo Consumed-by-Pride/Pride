@@ -1,0 +1,149 @@
+mod experiments.test_explicit_ub
+
+-- ============================================================================
+-- EXPERIMENT 4 — UB as an optimization barrier
+-- ----------------------------------------------------------------------------
+-- GOAL: make sure the optimizer treats explicit UB as an ABSOLUTE boundary and
+-- does not propagate it BACKWARD to delete or corrupt valid logic that runs
+-- before the branch.
+--
+-- This is the direction that matters. Forward propagation is fine and
+-- desirable: everything after `ub!` on the same path is unreachable and
+-- should go. Backward propagation is a miscompile: the code before the branch
+-- ran, its effects happened, and deleting it changes observable behaviour.
+--
+-- Each function pairs a UB path with optimization-heavy work around it, so a
+-- pass that over-reaches has something visible to destroy.
+-- ============================================================================
+
+-- ── 1. Baseline: UB on one arm only ─────────────────────────────────────────
+-- The `ub!` arm is unreachable for b != 0. The other arm must survive intact.
+
+fn divide : (i64, i64) -> i64
+  | (a, 0i64) -> unsafe
+      ub! "division by zero"
+  | (a, b)    -> a / b
+
+-- ── 2. Work BEFORE the UB branch ────────────────────────────────────────────
+-- `acc` is computed, then a branch may hit UB. The accumulation happens on
+-- every path that reaches the branch and must not be deleted.
+
+fn work_then_ub : i64 -> i64
+  | n ->
+    let mut acc = 0i64
+    acc = acc + 1i64
+    acc = acc + 2i64
+    acc = acc + 3i64
+    if n == 0i64
+      unsafe
+        ub! "n must not be zero"
+    else
+      acc
+
+-- ── 3. Constant folding across a UB branch ──────────────────────────────────
+-- The folding opportunity is BEFORE the branch. Folding it is correct;
+-- deleting it because a sibling path traps is not.
+
+fn fold_before_ub : i64 -> i64
+  | n ->
+    let folded = 2i64 * 3i64 + 4i64
+    if n < 0i64
+      unsafe
+        ub! "negative input"
+    else
+      folded
+
+-- ── 4. Algebraic identities around a trap ───────────────────────────────────
+-- x*1, x+0 and x-x are all removable. The trap must not make the optimizer
+-- either skip them or remove the trap's guard.
+
+fn identities_near_trap : i64 -> i64
+  | n ->
+    let a = n * 1i64
+    let b = a + 0i64
+    let c = b - b
+    if n == 99i64
+      trap
+    else
+      a + b + c
+
+-- ── 5. Loop with a UB exit ──────────────────────────────────────────────────
+-- The loop body is real work. One iteration may trap. Unrolling or deleting
+-- the loop because a trap exists inside it would be wrong.
+
+fn loop_with_ub_exit : i64 -> i64
+  | limit ->
+    let mut i = 0i64
+    let mut sum = 0i64
+    while i < limit
+      if i == 13i64
+        unsafe
+          ub! "unlucky"
+      sum = sum + i
+      i = i + 1i64
+    sum
+
+-- ── 6. Unreachable AFTER ub! — this SHOULD be deleted ───────────────────────
+-- The forward direction. Everything after `ub!` on the same path is dead and
+-- the optimizer is expected to remove it.
+
+fn dead_after_ub : i64 -> i64
+  | n ->
+    if n == 0i64
+      unsafe
+        ub! "zero"
+        let never = n + 1i64
+        never
+    else
+      n
+
+-- ── 7. assume: an optimizer hint, not a check ───────────────────────────────
+-- `assume` licenses the optimizer to believe a fact. A wrong assumption is
+-- the programmer's problem, per v.md 14 — but it must not retroactively
+-- invalidate work already done.
+
+fn with_assume : i64 -> i64
+  | n ->
+    let pre = n + 1i64
+    assume n > 0i64
+    let post = n * 2i64
+    pre + post
+
+-- ── 8. unreachable as a pure marker ─────────────────────────────────────────
+-- Marking a path dead should let the branch fold, without touching the live
+-- arm's computation.
+
+fn unreachable_arm : i64 -> i64
+  | n ->
+    let live = n * 4i64
+    if n == 0i64
+      unreachable
+    else
+      live
+
+-- ── 9. Effectful work before UB ─────────────────────────────────────────────
+-- A call is not pure. Even though the other arm traps, the call must survive:
+-- deleting the user's I/O is the one unforgivable optimizer bug.
+
+fn sink : i64 -> i64
+  | x -> x
+
+fn effect_then_ub : i64 -> i64
+  | n ->
+    let observed = sink(n)
+    if n == 0i64
+      unsafe
+        ub! "zero after effect"
+    else
+      observed
+
+fn drive : i64 -> i64
+  | n ->
+    let a = work_then_ub(n)
+    let b = fold_before_ub(n)
+    let c = identities_near_trap(n)
+    let d = dead_after_ub(n)
+    let e = with_assume(n)
+    let f = unreachable_arm(n)
+    let g = effect_then_ub(n)
+    a + b + c + d + e + f + g

@@ -9,3 +9,7 @@
 redteam/
 __pycache__/
 /tmp/
+
+# pfront build output
+/pfrontc
+/obj/

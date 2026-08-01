@@ -1,0 +1,10 @@
+fn pick : i64 -> i64
+  | ty ->
+    let n =
+      if ty == 102i64
+        1i64
+      else if ty == 101i64
+        2i64
+      else
+        3i64
+    n

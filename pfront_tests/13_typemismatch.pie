@@ -1,0 +1,5 @@
+fn takes_bool : bool -> i64
+  | b -> 1i64
+
+fn bad : () -> i64
+  | () -> takes_bool(42i64)

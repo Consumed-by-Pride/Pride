@@ -1,0 +1,10 @@
+mod main63
+
+use modsys.lib
+use modsys.sub.deep
+
+fn f : () -> i64
+  | () ->
+    let a = modsys.lib.add(1i64, 2i64)
+    let b = modsys.sub.deep.triple(a)
+    b

@@ -1,0 +1,60 @@
+mod t72
+
+-- REGRESSION: a stale `implicit_block` flag turned an INLINE body into a
+-- virtual block, which then ate the DEDENT closing the enclosing
+-- initializer and swallowed the next statement.
+--
+-- `implicit_block` is a one-shot hint left at a distance by a line
+-- continuation (settle_continuation / the debt-drop in the binary-operator
+-- parser). It was never invalidated, so it survived from the continuation
+-- inside one else-if branch to the INLINE `else` body of the same chain.
+--
+-- Distilled from stdlib/hash/wyhash.pie:151-166, where `a` and `b` bound by
+-- `let (a, b) = ...` were reported unresolved 15 lines later.
+--
+-- Fixed by requiring the body to START ON A LATER LINE than the construct.
+
+fn wy : i64 -> i64
+  | tlen ->
+    if tlen <= 16i64
+      let ilen = tlen
+      let (a, b) =
+        if ilen >= 4i64
+          let end_ = ilen - 4i64
+          (end_, end_)
+        else if ilen > 0i64
+          let av = ilen |
+                   ilen |
+                   ilen
+          (av, 0i64)
+        else (0i64, 0i64)
+      let s = ilen
+      a + b + s
+    else
+      0i64
+
+-- The continuation is in the FIRST branch instead of the second.
+fn wy2 : i64 -> i64
+  | n ->
+    let (p, q) =
+      if n > 4i64
+        let z = n |
+                n
+        (z, z)
+      else if n > 0i64
+        (n, n)
+      else (0i64, 0i64)
+    let r = n
+    p + q + r
+
+-- A continuation directly before an inline `else`, no tuple pattern.
+fn wy3 : i64 -> i64
+  | n ->
+    let v =
+      if n > 0i64
+        let w = n +
+                n
+        w
+      else 0i64
+    let after = n
+    v + after

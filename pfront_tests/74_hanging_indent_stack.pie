@@ -1,0 +1,79 @@
+mod t74
+
+-- REGRESSION (LEXER): the hanging-indent realign destroyed enclosing levels.
+--
+-- When a line lands on a column that was never pushed as a block level, the
+-- lexer pops to the nearest enclosing level and then reconciles. It used to
+-- do that by OVERWRITING indents[indent_idx]. That is only safe when the
+-- observed column is not deeper than the level being written over; when it
+-- IS deeper, a live block is destroyed and its closing DEDENT is never
+-- emitted.
+--
+-- Each wrapped `else if` condition consumed one stack slot this way. Two of
+-- them walked the stack down to index 0 and clobbered the FILE level, after
+-- which no DEDENT could be emitted at all (the pop loop is guarded on
+-- `indent_idx > 0`). The function AFTER the chain was then silently parsed
+-- INSIDE the previous one -- with ZERO diagnostics.
+--
+-- Measured on the real indent stack before the fix:
+--   L8  REALIGN idx=2  4 -> 6
+--   L9  REALIGN idx=1  2 -> 4
+--   L12 REALIGN idx=0  0 -> 4   <- file level destroyed
+--   L14 REALIGN idx=0  4 -> 0   <- no DEDENT, block never closes
+--
+-- From stdlib/fmt/parse_float/convert_fast.pie, where 3 of 4 functions
+-- (fast_f32, mantissa_fits_f64, mantissa_fits_f32) vanished from the module,
+-- so every caller got "this module does not export that name".
+
+fn two_wrapped : (i64, i64) -> i64
+  | (m, e) ->
+    if m == 0i64
+      1i64
+    else if e >= 0i64 &&
+            m <= 9i64
+      2i64
+    else if e >= 1i64 &&
+            m <= 8i64
+      3i64
+    else 0i64
+
+-- MUST still be a top-level sibling, not nested in two_wrapped.
+fn after_two : i64 -> i64
+  | x -> x + 1i64
+
+-- Three wrapped links, to make sure the stack does not drift further.
+fn three_wrapped : (i64, i64) -> i64
+  | (m, e) ->
+    if m == 0i64
+      1i64
+    else if e >= 0i64 &&
+            m <= 9i64
+      2i64
+    else if e >= 1i64 &&
+            m <= 8i64
+      3i64
+    else if e >= 2i64 &&
+            m <= 7i64
+      4i64
+    else 0i64
+
+fn after_three : i64 -> i64
+  | x -> x + 2i64
+
+-- A wrapped condition whose body then nests further, the convert_fast shape.
+fn nested_after_wrap : (i64, i64) -> i64
+  | (m, e) ->
+    if m == 0i64
+      1i64
+    else if e >= 0i64 &&
+            m <= 9i64
+      let shift = e - 1i64
+      let nm = m / shift
+      if nm <= 9i64
+        let scaled = nm * 2i64
+        scaled
+      else 0i64
+    else 0i64
+
+fn after_nested : i64 -> i64
+  | x -> x + 3i64

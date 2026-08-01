@@ -1,0 +1,6 @@
+fn f : i64 -> i64
+  | n ->
+      if 1i64 > 0i64
+        return n
+      let after = n * 2i64
+      after

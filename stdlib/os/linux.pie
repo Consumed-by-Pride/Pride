@@ -1954,8 +1954,21 @@ fn setgroups : (i64, ptr) -> i64 | (size, list) -> syscall2(syscalls.NR_SETGROUP
 fn prctl    : (i64, i64, i64, i64, i64) -> i64
   | (op, a2, a3, a4, a5) -> syscall5(syscalls.NR_PRCTL, op, a2, a3, a4, a5)
 
+-- arch_prctl subfunction codes (x86-64). These are ABI constants from
+-- <asm/prctl.h>; the kernel matches on the exact value.
+const ARCH_SET_GS : i64 = 4097i64   -- 0x1001
+const ARCH_SET_FS : i64 = 4098i64   -- 0x1002
+const ARCH_GET_FS : i64 = 4099i64   -- 0x1003
+const ARCH_GET_GS : i64 = 4100i64   -- 0x1004
+
 fn arch_prctl : (i64, i64) -> i64
   | (code, addr) -> syscall2(syscalls.NR_ARCH_PRCTL, code, addr)
+
+-- Send a signal to the CURRENT process. `raise(SIGABRT)` is how a panic
+-- terminates: it produces a core dump and the correct wait status, which
+-- exit(134) does not.
+fn raise : i32 -> i64
+  | sig -> syscall2(syscalls.NR_KILL, getpid(), sig as i64)
 
 fn ptrace   : (i64, i64, ptr, ptr) -> i64
   | (req, pid, addr, data) -> syscall4(syscalls.NR_PTRACE, req, pid, addr as i64, data as i64)

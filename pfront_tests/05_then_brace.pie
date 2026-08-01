@@ -1,0 +1,5 @@
+fn upd : i64 -> i64
+  | x ->
+      if x > 0i64 then {
+          x + 1i64;
+      } else { x }

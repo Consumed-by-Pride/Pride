@@ -1,0 +1,21 @@
+fn loop_break : i64 -> i64
+  | n ->
+    let mut i = 0i64
+    while i < n
+      if i > 5i64 then break
+      i = i + 1i64
+    i
+
+fn loop_continue : i64 -> i64
+  | n ->
+    let mut i = 0i64
+    let mut acc = 0i64
+    while i < n
+      i = i + 1i64
+      if i == 3i64 then continue
+      acc = acc + i
+    acc
+
+fn early_return : i64 -> i64
+  | 0i64 -> return 1i64
+  | n -> n

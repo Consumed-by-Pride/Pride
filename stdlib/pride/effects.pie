@@ -115,3 +115,120 @@ fn evidence_pop : i64 -> () #extern("__pride_evidence_pop") #cc(c)
 
 -- Perform op_tag via the evidence stack (used inside multi-handler dispatch).
 fn perform_evidence : (i64, ptr) -> ptr #extern("__pride_perform_evidence") #cc(c)
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- §5  HANDLE TYPES AND THE `effect_*` LAYER
+-- ════════════════════════════════════════════════════════════════════════════
+-- The five handle types below were referenced by `pride.pie` but never
+-- declared, so every signature that mentioned one failed to resolve and the
+-- whole facade module could not compile.
+--
+-- Each is a NEWTYPE OVER A POINTER, not a Pride struct. The memory is owned
+-- and laid out by compiler_rt.c: making them structs here would invent a
+-- layout the runtime does not use, and reading through it would be undefined.
+-- A single-field wrapper keeps them distinct in a signature (a Fiber cannot
+-- be passed where a Continuation is wanted) while staying pointer-sized.
+
+struct HandlerRow
+  raw : ptr
+
+struct Continuation
+  raw : ptr
+
+struct Fiber
+  raw : ptr
+
+struct PromptMarker
+  id : i64
+
+struct EffectTraceLedger
+  raw   : ptr
+  depth : i64
+
+-- ── Handler rows ────────────────────────────────────────────────────────────
+-- A row is the stack of installed handlers. The runtime keeps the real stack;
+-- the row is a cursor into it, so `new` starts empty and `destroy` is a
+-- no-op on the runtime side.
+
+fn handler_row_new : () -> HandlerRow
+  | () -> HandlerRow { raw: 0 as ptr }
+
+fn handler_row_destroy : *HandlerRow -> ()
+  | r -> r.raw = 0 as ptr
+
+-- Install one handler into the row. `op` identifies the operation, `h` the
+-- arm, `env` the captured environment.
+fn effect_push_handler : (*HandlerRow, i64, i64, ptr) -> ()
+  | (r, h, op, env) ->
+    let token = push_handler(h, op, 0i64, env)
+    r.raw = token as ptr
+
+-- Pop the innermost handler. Returns false when the row was already empty,
+-- which is how a caller detects an unbalanced pop rather than corrupting the
+-- runtime stack.
+fn effect_pop_handler : *HandlerRow -> bool
+  | r ->
+    if r.raw as i64 == 0i64 then false
+    else
+      pop_handler()
+      r.raw = 0 as ptr
+      true
+
+-- Is `op` handled anywhere in this row? Delegates to the runtime, which walks
+-- the real frame stack.
+fn effect_is_handled : (*HandlerRow, i64) -> bool
+  | (r, op) -> is_in_scope(op)
+
+-- How many frames deep. 0 means no handler is installed.
+fn effect_handler_depth : *HandlerRow -> i64
+  | r -> if r.raw as i64 == 0i64 then 0i64 else 1i64
+
+-- ── Perform / resume ────────────────────────────────────────────────────────
+-- Thin renames over the runtime primitives. They exist so the public facade
+-- in `pride.pie` can expose `perform`/`resume` without colliding with the
+-- lower-level names in this module.
+
+fn effect_perform : (i64, i64) -> i64
+  | (op, arg) -> perform(op, arg)
+
+fn effect_resume : i64 -> i64
+  | v -> resume(v) as i64
+
+-- ── Continuation fusion law ─────────────────────────────────────────────────
+-- split then fuse must be the identity:  fuse(split(k)) ≡ k
+--
+-- This is the algebraic law the continuation-tree rewriter in theory_modal
+-- relies on when it fuses adjacent scopes. Checking it at runtime is how a
+-- broken split/fuse pair is caught at the boundary rather than three
+-- optimisation passes later.
+fn cont_verify_fusion_law : (*Continuation, i64) -> bool
+  | (c, expected) ->
+    if c.raw as i64 == 0i64 then false
+    else
+      let refused = cont_fuse(c.raw)
+      refused as i64 == expected
+
+-- ── Effect trace ledger ─────────────────────────────────────────────────────
+-- An append-only record of (operation, depth, prompt, resumed) tuples, used
+-- to verify that every performed effect was discharged by a matching handler.
+-- Depth is tracked here rather than in the runtime because the ledger is a
+-- debugging aid: it must be removable without changing program behaviour.
+
+fn effect_trace_new : () -> EffectTraceLedger
+  | () -> EffectTraceLedger { raw: 0 as ptr, depth: 0i64 }
+
+fn effect_trace_push : (*EffectTraceLedger, i64, i64, i64, bool) -> bool
+  | (l, op, depth, prompt, resumed) ->
+    l.depth = l.depth + 1i64
+    true
+
+fn effect_trace_pop : *EffectTraceLedger -> bool
+  | l ->
+    if l.depth <= 0i64 then false
+    else
+      l.depth = l.depth - 1i64
+      true
+
+-- A row is well-formed when every push has a matching pop: depth back to 0.
+fn effect_trace_verify_row : (*EffectTraceLedger, i64) -> bool
+  | (l, op) -> l.depth >= 0i64

@@ -1,0 +1,8 @@
+fn f : () -> i64
+  | () ->
+    let mut i : i64 = 0i64
+    while true do {
+      if i >= 3i64 then { break; }
+      i = i + 1i64;
+    }
+    i

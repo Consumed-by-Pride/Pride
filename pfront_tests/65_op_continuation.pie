@@ -1,0 +1,27 @@
+fn assign_cont : (u64, u64) -> u64
+  | (a, b) ->
+    let mut h = a
+    h = (a << 1u64) +
+        (b << 7u64)
+    h
+
+fn let_cont : (u64, u64) -> u64
+  | (a, b) ->
+    let h = (a << 1u64) +
+            (b << 7u64)
+    h
+
+fn chain_cont : (u64, u64) -> u64
+  | (a, b) ->
+    let mut h = a
+    h = a +
+        b +
+        a
+    h
+
+fn wrapping_cont : (u64, u64) -> u64
+  | (a, b) ->
+    let mut h = a
+    h = a +%
+        b
+    h

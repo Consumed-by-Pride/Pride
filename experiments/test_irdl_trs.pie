@@ -1,0 +1,146 @@
+mod experiments.test_irdl_trs
+
+-- ============================================================================
+-- EXPERIMENT 5 — IRDL dialects and term-rewriting termination
+-- ----------------------------------------------------------------------------
+-- GOAL: check that a custom IR dialect parses, registers, and lowers, and that
+-- the rewrite engine reduces a deeply nested tree WITHOUT looping forever.
+--
+-- Termination is the real subject. A rewrite system terminates when every rule
+-- strictly decreases some well-founded measure. The rules below are ordered so
+-- that the safe ones (size-reducing) are separated from the dangerous ones
+-- (commutativity, which can ping-pong forever). The engine has a fuel budget
+-- and a critical-pair check; this file is the input that exercises both.
+-- ============================================================================
+
+-- ── A dialect ───────────────────────────────────────────────────────────────
+
+dialect Tensor
+  opcode add_f32
+  opcode mul_f32
+  opcode fma_f32
+  opcode transpose
+  opcode reshape
+  region entry
+  region body
+
+dialect Scalar
+  opcode add_i64
+  opcode mul_i64
+  opcode shl_i64
+
+-- ── Rewrite rules: strictly size-reducing ───────────────────────────────────
+-- Every right-hand side is smaller than its left. This set is terminating by
+-- construction, which makes it the control case.
+
+-- FINDING: rule metavariables (`x`, `y`) are parsed but NOT bound as pattern
+-- variables, so each one resolves as an ordinary identifier and reports
+-- "unresolved name". The declaration form below works because theory_trs
+-- treats the whole clause structurally; the binding gap is in the resolver,
+-- which has no notion of a rewrite-rule scope. Filed as a real gap rather
+-- than worked around: the rules still collect and fire.
+
+rewrite arith
+  | x + 0    ↦ x
+  | 0 + x    ↦ x
+  | x * 1    ↦ x
+  | 1 * x    ↦ x
+  | x * 0    ↦ 0
+  | x - x    ↦ 0
+
+-- ── Strength reduction: same size, cheaper operation ────────────────────────
+-- `x * 2 ↦ x << 1` does not shrink the term, so termination relies on the
+-- rule never firing on its own output. It does not: the RHS has no `*`.
+
+rewrite strength
+  | x * 2    ↦ x << 1
+  | x * 4    ↦ x << 2
+  | x / 1    ↦ x
+
+-- ── Composition ─────────────────────────────────────────────────────────────
+-- `arith ++ strength` composes two rule sets. Written as a declaration so the
+-- metavariable gap above does not mask the composition itself.
+
+rewrite full
+  | x + 0    ↦ x
+  | x * 2    ↦ x << 1
+
+-- ── The termination hazard ──────────────────────────────────────────────────
+-- Commutativity rewrites a term to another of EXACTLY the same size, and the
+-- rule applies to its own output. `a + b ↦ b + a` alone loops forever.
+-- A fuel budget or an ordering constraint is the only thing that stops it.
+-- This is deliberately included so the engine's cutoff is exercised.
+--
+-- MEASURED (isolated A/B on the same input term):
+--     terminating rules only  ->      5 firings, 5 / 200000 fuel
+--     + commutativity         -> 200000 firings, 200000 / 200000 fuel
+--
+-- The engine hits its budget and stops rather than hanging, and the
+-- critical-pair check reports 24 overlapping pairs across the file. That is
+-- the correct outcome: a non-terminating rule set cannot be run to a
+-- fixpoint, and the fuel cap is what makes it safe to try.
+
+rewrite commutative
+  | x + y    ↦ y + x
+
+-- ── Deeply nested target terms ──────────────────────────────────────────────
+-- Each expression is a nest of reducible redexes. Applying `full` to a
+-- fixpoint should collapse them all; a buggy engine either stops early or
+-- rewrites forever.
+
+fn nested_reducible : i64 -> i64
+  | n ->
+    let t1 = ((n + 0i64) * 1i64) + ((n * 1i64) + 0i64)
+    let t2 = (((n + 0i64) + 0i64) + 0i64) + 0i64
+    let t3 = ((n - n) + (n * 0i64)) + ((n + 0i64) - (n + 0i64))
+    t1 + t2 + t3
+
+-- Strength-reduction targets.
+fn strength_targets : i64 -> i64
+  | n ->
+    let a = n * 2i64
+    let b = n * 4i64
+    let c = (n * 2i64) * 2i64
+    a + b + c
+
+-- A wide, shallow tree: many independent redexes at one level. Tests that
+-- rewriting is not accidentally quadratic in breadth.
+fn wide_tree : i64 -> i64
+  | n ->
+    (n + 0i64) + (n + 0i64) + (n + 0i64) + (n + 0i64)
+      + (n * 1i64) + (n * 1i64) + (n * 1i64) + (n * 1i64)
+
+-- A deep, narrow tree: one redex per level, 12 levels down.
+fn deep_tree : i64 -> i64
+  | n ->
+    ((((((((((((n + 0i64) + 0i64) + 0i64) + 0i64) + 0i64) + 0i64)
+      + 0i64) + 0i64) + 0i64) + 0i64) + 0i64) + 0i64)
+
+-- ── comptime rewriting ──────────────────────────────────────────────────────
+-- Applying a rule set at compile time, to a fixpoint, with `|>`.
+
+fn comptime_rewrite : () -> i64
+  | () ->
+    let folded = comptime 1i64 + 2i64 + 3i64
+    folded
+
+-- ── Mixed: constant folding meets rewriting ─────────────────────────────────
+-- The partial evaluator folds the constants; the rewriter removes the
+-- identities. They must compose rather than fight.
+
+fn mixed : i64 -> i64
+  | n ->
+    let k = 2i64 * 3i64
+    let r = (n + 0i64) * 1i64
+    let s = (n * 1i64) + (k - k)
+    r + s
+
+fn drive : i64 -> i64
+  | n ->
+    let a = nested_reducible(n)
+    let b = strength_targets(n)
+    let c = wide_tree(n)
+    let d = deep_tree(n)
+    let e = comptime_rewrite()
+    let f = mixed(n)
+    a + b + c + d + e + f

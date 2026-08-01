@@ -208,7 +208,7 @@ fn io_uring_deinit : *IoUring -> ()
 -- §7  SQ ACCESSORS
 
 fn sq_head : *IoUring -> u32
-  | r -> (r.sq_ring as i64 + r.sq_head_off) as *u32 |> (p -> p[0u32])
+  | r -> ((r.sq_ring as i64 + r.sq_head_off) as *u32)[0u32]
   -- Note: uses acquire load in real code; we approximate
 
 fn sq_tail : *IoUring -> *u32

@@ -1,0 +1,67 @@
+mod experiments.stdlib_demos.demo_ast
+
+use ast
+
+-- Demonstrates the AST arena rewritten earlier this session.
+-- The previous version declared 32-byte elements for a 40-byte node, so every
+-- push silently dropped `right_id`, and reads used a different stride than
+-- writes. It also had no traversal at all.
+
+-- Build `1 + 2` and measure it.
+fn build_add : () -> i64
+  | () ->
+    let mut ar = ast.ast_arena_new()
+    let lhs = ast.ast_leaf(&ar, ast.AST_LITERAL, 0i64, 1i64)
+    let rhs = ast.ast_leaf(&ar, ast.AST_LITERAL, 4i64, 1i64)
+    let add = ast.ast_binary(&ar, ast.AST_BINARY, 0i64, 5i64, lhs, rhs)
+    let kids = ast.ast_child_count(&ar, add)
+    ast.ast_arena_destroy(&ar)
+    kids
+
+-- Arbitrary arity via the left-child / right-sibling chain.
+fn build_call : i64 -> i64
+  | argc ->
+    let mut ar = ast.ast_arena_new()
+    let callee = ast.ast_leaf(&ar, ast.AST_IDENT, 0i64, 3i64)
+    let call = ast.ast_unary(&ar, ast.AST_CALL, 0i64, 10i64, callee)
+    let mut i = 0i64
+    while i < argc
+      let a = ast.ast_leaf(&ar, ast.AST_LITERAL, i, 1i64)
+      ast.ast_append_child(&ar, call, a)
+      i = i + 1i64
+    let n = ast.ast_child_count(&ar, call)
+    ast.ast_arena_destroy(&ar)
+    n
+
+-- Depth and size on a nested tree, both fuel-bounded.
+fn measure_nested : () -> i64
+  | () ->
+    let mut ar = ast.ast_arena_new()
+    let a = ast.ast_leaf(&ar, ast.AST_LITERAL, 0i64, 1i64)
+    let b = ast.ast_leaf(&ar, ast.AST_LITERAL, 2i64, 1i64)
+    let inner = ast.ast_binary(&ar, ast.AST_BINARY, 0i64, 3i64, a, b)
+    let c = ast.ast_leaf(&ar, ast.AST_LITERAL, 6i64, 1i64)
+    let outer = ast.ast_binary(&ar, ast.AST_BINARY, 0i64, 7i64, inner, c)
+    let d = ast.ast_depth(&ar, outer, 64i64)
+    let sz = ast.ast_subtree_size(&ar, outer, 64i64)
+    let has = ast.ast_contains(&ar, outer, b, 64i64)
+    ast.ast_fix_span(&ar, outer, 64i64)
+    ast.ast_arena_destroy(&ar)
+    d + sz
+
+-- Null-id discipline: an out-of-range id must return null, not garbage.
+fn bounds_safety : () -> i64
+  | () ->
+    let mut ar = ast.ast_arena_new()
+    let n = ast.ast_get(&ar, 9999i64)
+    let k = ast.ast_kind(&ar, 9999i64)
+    ast.ast_arena_destroy(&ar)
+    k
+
+fn main_demo : () -> i64
+  | () ->
+    let a = build_add()
+    let b = build_call(4i64)
+    let c = measure_nested()
+    let d = bounds_safety()
+    a + b + c + d

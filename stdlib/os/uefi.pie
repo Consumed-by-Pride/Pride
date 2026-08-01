@@ -1,0 +1,165 @@
+mod os.uefi
+
+use os.uefi.status
+
+-- stdlib/os/uefi.pie — UEFI core types and constants
+--
+-- The root of the `os.uefi` tree. Every submodule (status, tables,
+-- device_path, tables.boot_services, tables.runtime_services) writes
+-- `use os.uefi` and refers to the shared vocabulary defined here.
+--
+-- This file did not exist: the directory was populated but the module that
+-- names it was never written, so all four submodules failed to load with
+-- "cannot find module for this import" and nothing under os.uefi compiled.
+--
+-- Layout is fixed by the UEFI specification, not by us. Field order and
+-- integer widths are part of the ABI: the firmware writes these structures
+-- and we read them, so nothing here may be reordered or widened.
+
+-- ============================================================================
+-- §1  GUID
+-- ============================================================================
+-- The UEFI GUID is the Microsoft mixed-endian form: the first three fields
+-- are little-endian integers, the last eight bytes are a big-endian sequence.
+-- Callers construct them from the literal spelling in the spec, so `data4` is
+-- carried as one u64 rather than as [u8; 8] to keep those literals readable.
+
+struct Guid
+  data1 : u32
+  data2 : u16
+  data3 : u16
+  data4 : u64
+
+-- Structural equality. GUIDs are compared constantly during protocol lookup,
+-- so this is a plain field-wise test rather than a memcmp over padding —
+-- comparing padding bytes would make two equal GUIDs compare unequal.
+fn guid_eq : (Guid, Guid) -> bool
+  | (a, b) ->
+    a.data1 == b.data1 &&
+    a.data2 == b.data2 &&
+    a.data3 == b.data3 &&
+    a.data4 == b.data4
+
+fn guid_is_zero : Guid -> bool
+  | g ->
+    g.data1 == 0u32 && g.data2 == 0u16 &&
+    g.data3 == 0u16 && g.data4 == 0u64
+
+-- ============================================================================
+-- §2  TABLE HEADER
+-- ============================================================================
+-- Every UEFI system table begins with this header. `signature` identifies
+-- which table it is; `crc32` covers `header_size` bytes starting at the
+-- header itself, with the crc32 field treated as zero during computation.
+
+struct EfiTableHeader
+  signature   : u64
+  revision    : u32
+  header_size : u32
+  crc32       : u32
+  reserved    : u32
+
+-- Revisions are packed as (major << 16) | minor.
+fn revision_major : u32 -> u32
+  | r -> r >> 16u32
+
+fn revision_minor : u32 -> u32
+  | r -> r & 0xFFFFu32
+
+fn make_revision : (u32, u32) -> u32
+  | (major, minor) -> (major << 16u32) | minor
+
+-- ============================================================================
+-- §3  MEMORY TYPES
+-- ============================================================================
+-- The EFI_MEMORY_TYPE enumeration. These values are ABI: the firmware fills
+-- a memory map with them and a loader must interpret them exactly.
+--
+-- The distinction that matters to a bootloader: BOOT_SERVICES_CODE and
+-- BOOT_SERVICES_DATA become free memory once ExitBootServices is called,
+-- RUNTIME_SERVICES_* never do, and RESERVED / ACPI_NVS must never be touched.
+
+const EFI_RESERVED_MEMORY_TYPE  : u32 = 0u32
+const EFI_LOADER_CODE           : u32 = 1u32
+const EFI_LOADER_DATA           : u32 = 2u32
+const EFI_BOOT_SERVICES_CODE    : u32 = 3u32
+const EFI_BOOT_SERVICES_DATA    : u32 = 4u32
+const EFI_RUNTIME_SERVICES_CODE : u32 = 5u32
+const EFI_RUNTIME_SERVICES_DATA : u32 = 6u32
+const EFI_CONVENTIONAL_MEMORY   : u32 = 7u32
+const EFI_UNUSABLE_MEMORY       : u32 = 8u32
+const EFI_ACPI_RECLAIM_MEMORY   : u32 = 9u32
+const EFI_ACPI_MEMORY_NVS       : u32 = 10u32
+const EFI_MEMORY_MAPPED_IO      : u32 = 11u32
+const EFI_PERSISTENT_MEMORY     : u32 = 14u32
+
+-- Is this region usable by the OS after ExitBootServices?
+fn memory_is_free_after_exit : u32 -> bool
+  | t ->
+    t == EFI_CONVENTIONAL_MEMORY ||
+    t == EFI_BOOT_SERVICES_CODE ||
+    t == EFI_BOOT_SERVICES_DATA ||
+    t == EFI_LOADER_CODE ||
+    t == EFI_LOADER_DATA
+
+-- Must this region be preserved for the lifetime of the machine?
+fn memory_is_reserved : u32 -> bool
+  | t ->
+    t == EFI_RESERVED_MEMORY_TYPE ||
+    t == EFI_ACPI_MEMORY_NVS ||
+    t == EFI_UNUSABLE_MEMORY ||
+    t == EFI_MEMORY_MAPPED_IO
+
+-- ============================================================================
+-- §4  MEMORY DESCRIPTOR
+-- ============================================================================
+-- One entry of the memory map returned by GetMemoryMap.
+--
+-- IMPORTANT: the map is an array of descriptors whose STRIDE is reported
+-- separately by the firmware and may exceed this structure's size. Iterating
+-- with `sizeof(EfiMemoryDescriptor)` instead of the reported stride is a
+-- classic bootloader bug — walk with the firmware's value.
+
+const EFI_PAGE_SIZE : u64 = 4096u64
+
+struct EfiMemoryDescriptor
+  memory_type    : u32
+  pad            : u32
+  physical_start : u64
+  virtual_start  : u64
+  number_of_pages: u64
+  attribute      : u64
+
+fn descriptor_bytes : EfiMemoryDescriptor -> u64
+  | d -> d.number_of_pages * EFI_PAGE_SIZE
+
+fn descriptor_end : EfiMemoryDescriptor -> u64
+  | d -> d.physical_start + d.number_of_pages * EFI_PAGE_SIZE
+
+-- ============================================================================
+-- §5  NETWORK ADDRESSES
+-- ============================================================================
+-- Fixed-width address forms used by the networking device paths. Held as
+-- byte arrays because that is the wire order the firmware uses; interpreting
+-- them as integers would introduce an endianness question that does not
+-- exist on the wire.
+
+struct MacAddress
+  addr : [u8; 32]
+
+struct Ipv4Address
+  addr : [u8; 4]
+
+struct Ipv6Address
+  addr : [u8; 16]
+
+fn ipv4_octet : (Ipv4Address, i64) -> u8
+  | (a, i) -> if i < 0i64 || i >= 4i64 then 0u8 else a.addr[i]
+
+fn ipv6_octet : (Ipv6Address, i64) -> u8
+  | (a, i) -> if i < 0i64 || i >= 16i64 then 0u8 else a.addr[i]
+
+-- A MAC address is 6 bytes in practice; the field is 32 for the largest
+-- link type UEFI supports, so the tail is padding.
+fn mac_octet : (MacAddress, i64) -> u8
+  | (a, i) -> if i < 0i64 || i >= 32i64 then 0u8 else a.addr[i]

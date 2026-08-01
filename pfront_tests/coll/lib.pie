@@ -1,0 +1,4 @@
+mod coll.lib
+use coll.pkg.pkg
+pub fn f : () -> i64
+  | () -> pkg.inner()

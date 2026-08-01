@@ -1,0 +1,47 @@
+mod experiments.stdlib_demos.demo_vec
+
+use vec.vec
+
+-- Core dynamic array. `vec_new` takes the ELEMENT SIZE in bytes -- getting
+-- that wrong is what corrupted stdlib/ast.pie, so the demo is explicit
+-- about it.
+
+fn push_many : i64 -> i64
+  | count ->
+    let mut v = vec.vec_new(8i64)
+    let mut i = 0i64
+    while i < count
+      vec.vec_push(&v, &i as ptr)
+      i = i + 1i64
+    let n = vec.vec_len(&v)
+    vec.vec_destroy(&v)
+    n
+
+fn preallocated : i64 -> i64
+  | cap ->
+    let mut v = vec.vec_with_cap(cap, 8i64)
+    let mut i = 0i64
+    while i < cap
+      vec.vec_push(&v, &i as ptr)
+      i = i + 1i64
+    let n = vec.vec_len(&v)
+    vec.vec_destroy(&v)
+    n
+
+fn clear_and_reuse : () -> i64
+  | () ->
+    let mut v = vec.vec_new(8i64)
+    let mut x = 42i64
+    vec.vec_push(&v, &x as ptr)
+    let before = vec.vec_len(&v)
+    vec.vec_clear(&v)
+    let after = vec.vec_len(&v)
+    vec.vec_destroy(&v)
+    before - after
+
+fn main_demo : () -> i64
+  | () ->
+    let a = push_many(16i64)
+    let b = preallocated(8i64)
+    let c = clear_and_reuse()
+    a + b + c

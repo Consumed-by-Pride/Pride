@@ -1,0 +1,7 @@
+mod main69
+
+use coll.pkg
+use coll.lib
+
+fn g : () -> i64
+  | () -> coll.lib.f() + coll.pkg.outer()

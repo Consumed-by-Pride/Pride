@@ -1,0 +1,118 @@
+mod experiments.test_semantic_subtyping
+
+-- ============================================================================
+-- EXPERIMENT 1 — Semantic subtyping boundary
+-- ----------------------------------------------------------------------------
+-- GOAL: force the compiler to decide subtyping by SET INCLUSION rather than by
+-- name matching. Every type below is built from ∩ / ∪ / ¬, so a name-based
+-- checker has nothing to compare and must either reduce to a normal form or
+-- give up.
+--
+-- Pride is untyped: none of this may FAIL a build. The question is whether the
+-- semantic subtyper (theory_subtype.c3) computes the right relations and
+-- reports them, and whether match refinement can prove an arm unreachable.
+-- ============================================================================
+
+-- ── Base sets ───────────────────────────────────────────────────────────────
+
+type Small    = i32
+type Big      = i64
+type Flag     = bool
+
+-- ── Unions: a value in either set ───────────────────────────────────────────
+
+type IntOrBool  = i32 ∪ bool
+type Widened    = i32 ∪ i64
+type Tri        = i32 ∪ i64 ∪ bool
+
+-- ── Negations: everything OUTSIDE a set ─────────────────────────────────────
+-- `i32 <: ¬bool` should hold (they share no values).
+-- `bool <: ¬bool` must NOT hold (a set is never disjoint from itself).
+
+type NotBool  = ¬bool
+type NotI32   = ¬i32
+
+-- ── Intersections, including the empty one ──────────────────────────────────
+-- `i32 ∩ bool` is uninhabited: no value is both. A subtyper that reduces to a
+-- DNF and tests emptiness will see ⊥ here; a name-matching one will not.
+
+type Impossible = i32 ∩ bool
+type Refined    = i32 ∩ ¬bool          -- equals i32
+type DoubleNeg  = ¬(¬i32)              -- also equals i32
+
+-- ── The requested shape: a property intersected with a NEGATIVE condition ───
+-- "Even and not Zero". Pride has no dependent refinements, so the property is
+-- modelled as a distinct nominal set; the point of the test is the ∩ / ¬
+-- interaction, not the arithmetic.
+
+type Even     = i64
+type Zero     = i64
+type NonZero  = ¬Zero
+type EvenNZ   = Even ∩ ¬Zero
+
+-- Nested: an intersection inside a union inside a negation.
+type Gnarly   = ¬((i32 ∩ ¬bool) ∪ (i64 ∩ ¬bool))
+
+-- ── Function types: contravariant argument, covariant result ────────────────
+-- (i32 ∪ i64) → i32   accepts MORE and returns the same, so it is a SUBTYPE of
+-- i32 → (i32 ∪ i64). Getting the variance backwards is the classic error.
+
+type WideIn   = (i32 ∪ i64) -> i32
+type NarrowIn = i32 -> (i32 ∪ i64)
+
+-- ── Passing a dynamic value across the boundary ─────────────────────────────
+-- An untyped pointer is the widest thing in the language. Casting it into a
+-- refined type is exactly the "dynamic structure through a type boundary"
+-- case: nothing about the layout is checked, and Pride permits it.
+
+fn cross_boundary : ptr -> i64
+  | raw ->
+    let as_even = raw as i64
+    as_even
+
+-- Same value read at two incompatible refinements. Untyped: allowed.
+fn reinterpret : ptr -> i64
+  | raw ->
+    let a = raw as i64
+    let b = raw as i32
+    a + (b as i64)
+
+-- ── Match refinement ────────────────────────────────────────────────────────
+-- After `n == 0` is true on one arm, the other arm knows n ≠ 0. The refiner
+-- should mark the second test as already-decided rather than re-checking it.
+
+fn classify : i64 -> i64
+  | n ->
+    if n == 0i64
+      0i64
+    else
+      if n == 0i64        -- contradicts the enclosing else: unreachable
+        99i64
+      else
+        1i64
+
+-- A guard that is always true given what is already known.
+fn redundant_guard : i64 -> i64
+  | n ->
+    if n > 10i64
+      if n > 5i64         -- implied by n > 10: always true
+        1i64
+      else
+        2i64
+    else
+      3i64
+
+-- ── Bottom ──────────────────────────────────────────────────────────────────
+-- ⊥ is the empty set and a subtype of everything. A function returning it
+-- never returns.
+
+fn diverge : () -> i64
+  | () -> unreachable
+
+fn use_all : i64 -> i64
+  | n ->
+    let a = cross_boundary(0 as ptr)
+    let b = reinterpret(0 as ptr)
+    let c = classify(n)
+    let d = redundant_guard(n)
+    a + b + c + d

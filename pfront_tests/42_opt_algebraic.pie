@@ -1,0 +1,7 @@
+fn g : i64 -> i64
+  | n ->
+      let a = n * 1i64
+      let b = a + 0i64
+      let c = b - b
+      let d = n * 0i64
+      c + d

@@ -1,0 +1,31 @@
+mod experiments.stdlib_demos.demo_option
+
+use option
+
+-- Demonstrates the Option/Result façade fixed earlier in this session.
+-- Before the fix `use option` imported nothing and every call here failed.
+
+fn safe_div : (i64, i64) -> opt.option.Option
+  | (a, 0i64) -> option.none()
+  | (a, b)    -> option.some(a / b)
+
+fn div_or : (i64, i64, i64) -> i64
+  | (a, b, fallback) ->
+    let r = safe_div(a, b)
+    option.unwrap_or(r, fallback)
+
+fn classify : (i64, i64) -> i64
+  | (a, b) ->
+    let r = safe_div(a, b)
+    if option.is_some(r) then 1i64 else 0i64
+
+fn as_result : (i64, i64) -> opt.option.Result
+  | (a, 0i64) -> option.err(1i64)
+  | (a, b)    -> option.ok(a / b)
+
+fn main_demo : () -> i64
+  | () ->
+    let good = div_or(10i64, 2i64, -1i64)
+    let bad  = div_or(10i64, 0i64, -1i64)
+    let n    = classify(10i64, 2i64)
+    good + bad + n

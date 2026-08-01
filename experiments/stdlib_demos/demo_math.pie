@@ -1,0 +1,157 @@
+mod experiments.stdlib_demos.demo_math
+
+use math
+
+-- ============================================================================
+-- STDLIB DEMO — Numerics
+-- ----------------------------------------------------------------------------
+-- `stdlib/math.pie` fans out to abs / pow / trig / exp submodules. 97 exports.
+--
+-- Two things this demo is careful about:
+--
+--   1. INTEGER vs FLOAT are separate families. There is no implicit promotion
+--      in Pride (v.md 4), so `min_i64` and `min_f64` are distinct functions
+--      and mixing them is a deliberate cast, not an accident.
+--
+--   2. FLOATING-POINT COMPARISON. Nothing below asserts `a == b` on floats.
+--      Every check is an epsilon band, because `sqrt(2)^2 == 2` is false in
+--      IEEE 754 and a demo that pretended otherwise would be teaching a bug.
+-- ============================================================================
+
+-- ── 1. Absolute value, sign, clamping ───────────────────────────────────────
+
+fn abs_and_sign : i64 -> i64
+  | n ->
+    let a = math.abs_i64(n)
+    let s = math.signum_i64(n)
+    a + s
+
+-- Clamp is the safe way to bound an index. Note the argument order:
+-- (value, lo, hi).
+fn clamp_index : (i64, i64) -> i64
+  | (raw, limit) ->
+    math.clamp_i64(raw, 0i64, limit - 1i64)
+
+-- min/max over a buffer, done with the stdlib rather than by hand.
+fn range_of : (ptr, i64) -> i64
+  | (data, len) ->
+    if len <= 0i64 then 0i64
+    else
+      let first = (data as i64) as *i64
+      let mut lo = first[0i64]
+      let mut hi = first[0i64]
+      let mut i = 1i64
+      while i < len
+        let p = (data as i64 + i * 8i64) as *i64
+        lo = math.min_i64(lo, p[0i64])
+        hi = math.max_i64(hi, p[0i64])
+        i = i + 1i64
+      hi - lo
+
+-- ── 2. Integer powers and roots ─────────────────────────────────────────────
+-- `pow_mod_u64` is modular exponentiation by squaring — the primitive behind
+-- RSA and Diffie-Hellman. Doing it as `pow(b,e) % m` would overflow.
+
+fn power_of : (i64, i64) -> i64
+  | (base, exp) -> math.pow_i64(base, exp)
+
+fn modular_exp : (u64, u64, u64) -> u64
+  | (base, exp, modulus) -> math.pow_mod_u64(base, exp, modulus)
+
+-- Integer square root: the largest k with k*k <= x. Exact, no float round-trip.
+fn isqrt : u64 -> u64
+  | x -> math.sqrt_u64(x)
+
+-- Verify the isqrt contract holds for a value.
+fn isqrt_is_exact : u64 -> bool
+  | x ->
+    let r = math.sqrt_u64(x)
+    let lo = r * r
+    let hi = (r + 1u64) * (r + 1u64)
+    lo <= x && x < hi
+
+-- ── 3. Floating point ───────────────────────────────────────────────────────
+
+fn hypotenuse : (f64, f64) -> f64
+  | (x, y) -> math.hypot_f64(x, y)
+
+-- The 3-4-5 triangle. Checked with an epsilon, not with ==.
+fn hypot_is_right : () -> bool
+  | () ->
+    let h = math.hypot_f64(3.0f64, 4.0f64)
+    let d = math.abs_f64(h - 5.0f64)
+    d < 0.000001f64
+
+-- sin²x + cos²x = 1 for every x. The classic identity check, and a good
+-- smoke test for the trig implementation.
+fn pythagorean_identity : f64 -> bool
+  | x ->
+    let s = math.sin_f64(x)
+    let c = math.cos_f64(x)
+    let sum = s * s + c * c
+    let d = math.abs_f64(sum - 1.0f64)
+    d < 0.000001f64
+
+-- atan2 handles all four quadrants, unlike atan. This is why it takes two
+-- arguments in (y, x) order.
+fn angle_of : (f64, f64) -> f64
+  | (y, x) -> math.atan2_f64(y, x)
+
+-- exp and ln are inverses: ln(exp(x)) == x within tolerance.
+fn log_roundtrip : f64 -> bool
+  | x ->
+    let e = math.exp_f64(x)
+    let back = math.ln_f64(e)
+    let d = math.abs_f64(back - x)
+    d < 0.00001f64
+
+-- log2 of a power of two is exact even in floating point.
+fn log2_of_power : i64 -> f64
+  | k ->
+    let v = math.pow_i64(2i64, k)
+    math.log2_f64(v as f64)
+
+-- ── 4. Composite: a numeric routine built from the pieces ───────────────────
+-- Normalise a 2-D vector to unit length, guarding the zero case. Returns the
+-- magnitude so the caller can tell degenerate input apart.
+
+fn magnitude : (f64, f64) -> f64
+  | (x, y) -> math.sqrt_f64(x * x + y * y)
+
+fn is_unit : (f64, f64) -> bool
+  | (x, y) ->
+    let m = magnitude(x, y)
+    if m < 0.000001f64 then false
+    else
+      let d = math.abs_f64(m - 1.0f64)
+      d < 0.000001f64
+
+-- Linear interpolation, clamped so t outside [0,1] cannot extrapolate.
+fn lerp_clamped : (f64, f64, f64) -> f64
+  | (a, b, t) ->
+    let tc = math.clamp_f64(t, 0.0f64, 1.0f64)
+    a + (b - a) * tc
+
+-- Sum of squares over a buffer — the shape of a dot product or L2 norm.
+fn sum_squares : (ptr, i64) -> i64
+  | (data, len) ->
+    let mut i = 0i64
+    let mut acc = 0i64
+    while i < len
+      let p = (data as i64 + i * 8i64) as *i64
+      let v = p[0i64]
+      acc = acc + v * v
+      i = i + 1i64
+    acc
+
+fn main_demo : i64 -> i64
+  | n ->
+    let a = abs_and_sign(0i64 - n)
+    let b = clamp_index(n * 100i64, 16i64)
+    let c = power_of(2i64, 10i64)
+    let d = isqrt(144u64) as i64
+    let e = if isqrt_is_exact(1000u64) then 1i64 else 0i64
+    let f = if hypot_is_right() then 1i64 else 0i64
+    let g = if pythagorean_identity(0.7f64) then 1i64 else 0i64
+    let h = if log_roundtrip(2.5f64) then 1i64 else 0i64
+    a + b + c + d + e + f + g + h

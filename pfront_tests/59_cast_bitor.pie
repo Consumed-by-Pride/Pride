@@ -1,0 +1,5 @@
+fn f : ptr -> i64
+  | p ->
+    p[0u32] as i64 | ((p[1u32] as i64) << 32i64)
+
+type IntOrBool = i64 ∪ bool

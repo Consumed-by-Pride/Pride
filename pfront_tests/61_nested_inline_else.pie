@@ -1,0 +1,20 @@
+fn f : i64 -> i64
+  | p ->
+    if p > 1i64
+      if p > 2i64
+        1i64
+      else 2i64
+    else 3i64
+
+fn g : i64 -> (f64, bool)
+  | p ->
+    let mut sp = p
+    if p > 0i64
+      if p > 1i64
+        if p > 2i64
+          (1.0f64, true)
+        else sp=0i64; (0.0f64, false)
+      else sp=0i64; (0.0f64, false)
+    else (0.0f64, false)
+
+fn K : u64 = 7u64

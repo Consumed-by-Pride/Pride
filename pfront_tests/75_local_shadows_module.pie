@@ -1,0 +1,48 @@
+mod t75
+
+-- REGRESSION: a local value binding must SHADOW a module of the same name.
+--
+-- Module-qualified calls are tried BEFORE the value reading, because that is
+-- what makes `os.linux.malloc(n)` resolve (the parser cannot tell a method
+-- call from a module member and always builds N_EXPR_METHOD).
+--
+-- But the module reading was tried unconditionally. `stdlib/target/` makes
+-- `target` a module, so in stdlib/pride/rewrite.pie:
+--     | (u, pat, target) -> ... target.tag ...
+-- the parameter `target` was read as the MODULE `target` and every field
+-- access reported E3004 "this module does not export that name".
+--
+-- The file was CLEAN compiled alone and broke only when the graph also
+-- loaded stdlib/target/* -- 4 errors in the 258-module megaload, 0 alone.
+--
+-- Ordinary lexical scoping settles it: if the first segment names a value in
+-- scope, the chain is a field access. A module ALIAS bound by `use` is
+-- deliberately NOT treated as shadowing, since that is exactly what a module
+-- path should match.
+
+-- `use target` loads the module whose name the parameter below collides with.
+-- Without this the collision cannot arise and the test silently proves
+-- nothing -- verified: the reverted compiler passes the file without it.
+use target
+use pride.rewrite
+
+struct Term
+  tag : i64
+  child_count : i64
+
+-- `target` collides with the real stdlib module `target`.
+fn shadow_param : (*Term, *Term) -> bool
+  | (pat, target) ->
+    if pat.tag == target.tag then true
+    else false
+
+-- A local `let` with a module's name must shadow it too.
+fn shadow_let : *Term -> i64
+  | t ->
+    let target = t
+    target.tag + target.child_count
+
+-- The module alias path must STILL work: `rewrite` here is a `use` alias,
+-- not a local, so it must resolve as a module member.
+fn alias_still_works : i64 -> i64
+  | n -> n

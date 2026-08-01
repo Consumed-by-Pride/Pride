@@ -1,0 +1,9 @@
+fn f : i64 -> i64
+  | n ->
+      let r = if 1i64 > 100i64
+        999i64
+      else
+        n
+      while 0i64
+        r
+      r

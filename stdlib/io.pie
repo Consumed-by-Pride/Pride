@@ -3,6 +3,7 @@ mod io
 use os.linux
 use mem
 use io.bufio
+use fs.file
 
 -- §1  CORE CONSTANTS
 const DEFAULT_BUF_SIZE : i64 = 8192i64
@@ -785,3 +786,60 @@ fn writer_write      : (*Writer, ptr, i64) -> i64 | (w, src, n) -> (w.vtable.wri
 fn writer_write_byte : (*Writer, u8) -> i64        | (w, b) -> (w.vtable.write_byte as fn(*Writer, u8) -> i64)(w, b)
 fn writer_flush      : *Writer -> i64              | w -> (w.vtable.flush as fn(*Writer) -> i64)(w)
 fn writer_close      : *Writer -> ()               | w -> (w.vtable.close as fn(*Writer) -> ())(w)
+
+-- ── File façade ─────────────────────────────────────────────────────────────
+-- `io.File` and friends re-export `fs.file`, so a caller that already writes
+-- `use io` for readers and writers does not have to reach into `fs` for the
+-- handle type as well.
+--
+-- These were referenced by `io.bufio` but never defined: `io.File`,
+-- `io.file_open`, `io.file_read`, `io.file_write`, `io.file_close` and
+-- `io.file_is_open` all resolved to nothing, so the whole buffered-I/O layer
+-- failed to compile.
+
+type File = fs.file.File
+
+-- Open with an fopen-style mode string: "r", "w", "a", "r+", "w+".
+-- fs.file.file_open takes raw flags; translating here keeps the common cases
+-- readable at the call site and leaves the flag form available for the rest.
+fn file_open : (ptr, ptr) -> fs.file.File
+  | (path, mode) ->
+    let m = mode as *u8
+    let c0 = m[0i64]
+    let c1 = m[1i64]
+    let plus = c1 == 43u8            -- '+'
+    if c0 == 114u8                   -- 'r'
+      if plus then fs.file.file_open(path, fs.file.O_RDWR, 420i64)
+      else fs.file.file_open_read(path)
+    else
+      if c0 == 119u8                 -- 'w'
+        if plus
+          fs.file.file_open(path,
+            fs.file.O_RDWR | fs.file.O_CREAT | fs.file.O_TRUNC, 420i64)
+        else fs.file.file_open_write(path)
+      else
+        if c0 == 97u8                -- 'a'
+          fs.file.file_open_append(path)
+        else fs.file.file_open_read(path)
+
+-- A negative descriptor is the failure signal from the open syscalls.
+fn file_is_open : fs.file.File -> bool
+  | f -> f.fd >= 0i64
+
+fn file_read : (*fs.file.File, ptr, i64) -> i64
+  | (f, buf, n) -> fs.file.file_read(f, buf, n)
+
+fn file_write : (*fs.file.File, ptr, i64) -> i64
+  | (f, buf, n) -> fs.file.file_write(f, buf, n)
+
+fn file_write_all : (*fs.file.File, ptr, i64) -> i64
+  | (f, buf, n) -> fs.file.file_write_all(f, buf, n)
+
+fn file_close : *fs.file.File -> ()
+  | f -> fs.file.file_close(f)
+
+fn file_seek : (*fs.file.File, i64, i64) -> i64
+  | (f, off, whence) -> fs.file.file_seek(f, off, whence)
+
+fn file_tell : *fs.file.File -> i64
+  | f -> fs.file.file_tell(f)

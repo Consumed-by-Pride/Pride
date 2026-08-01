@@ -1,0 +1,15 @@
+fn f : i64 -> i64
+  | e2 ->
+    let q : i64 =
+      if e2 >= 0i64 then
+        1i64
+      else
+        2i64
+
+    let vr : i64 =
+      if e2 >= 0i64
+        let idx = 3i64
+        idx
+      else
+        4i64
+    vr

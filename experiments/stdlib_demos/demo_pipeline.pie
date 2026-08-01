@@ -1,0 +1,245 @@
+mod experiments.stdlib_demos.demo_pipeline
+
+use vec.vec
+use str
+use math
+use crypto
+use encoding
+use hash.fnv
+use time
+use option
+
+-- ============================================================================
+-- STDLIB DEMO — A composed pipeline across nine modules
+-- ----------------------------------------------------------------------------
+-- The other demos each exercise one module. This one is the integration test:
+-- a realistic record-processing pipeline that touches collections, strings,
+-- numerics, hashing, crypto, encoding, timing and Option in a single flow.
+--
+-- Shape:
+--
+--     ingest  -> validate -> index -> digest -> encode -> report
+--
+-- Every stage is a separate function so a failure localises, and every
+-- allocation is released on the path that made it.
+--
+-- This is also the file most likely to catch a CROSS-MODULE regression: it
+-- loads the deepest dependency graph of any demo, so a break in a shared leaf
+-- module (str.raw, vec.raw, os.linux) surfaces here first.
+-- ============================================================================
+
+-- ── Stage 1: ingest ─────────────────────────────────────────────────────────
+-- Read fixed-width records into a Vec. `vec_new` takes the ELEMENT SIZE in
+-- bytes — passing the wrong value is what silently corrupted stdlib/ast.pie
+-- before it was fixed, so it is spelled out here.
+
+const REC_SIZE : i64 = 8i64
+
+fn ingest : (ptr, i64) -> vec.Vec
+  | (src, count) ->
+    let mut v = vec.vec_with_cap(count, REC_SIZE)
+    let mut i = 0i64
+    while i < count
+      let p = (src as i64 + i * REC_SIZE) as ptr
+      vec.vec_push(&v, p)
+      i = i + 1i64
+    v
+
+-- ── Stage 2: validate ───────────────────────────────────────────────────────
+-- Reject out-of-range records. Returns how many survived, so the caller can
+-- decide whether the batch is worth processing at all.
+
+fn count_valid : (*vec.Vec, i64, i64) -> i64
+  | (v, lo, hi) ->
+    let n = vec.vec_len(v)
+    let base = vec.vec_as_slice(v)
+    let mut i = 0i64
+    let mut ok = 0i64
+    while i < n
+      let p = (base as i64 + i * REC_SIZE) as *i64
+      let val = p[0i64]
+      if val >= lo && val <= hi then ok = ok + 1i64
+      i = i + 1i64
+    ok
+
+-- Find the first record satisfying a bound, as an Option. This is the
+-- idiomatic alternative to a sentinel like -1.
+fn find_first_above : (*vec.Vec, i64) -> opt.option.Option
+  | (v, threshold) ->
+    let n = vec.vec_len(v)
+    let base = vec.vec_as_slice(v)
+    let mut i = 0i64
+    let mut found = option.none()
+    while i < n
+      let p = (base as i64 + i * REC_SIZE) as *i64
+      if p[0i64] > threshold && option.is_none(found)
+        found = option.some(i)
+      i = i + 1i64
+    found
+
+-- ── Stage 3: index ──────────────────────────────────────────────────────────
+-- Bucket each record by a fast non-cryptographic hash. FNV-1a is the right
+-- tool here: cheap, decent distribution, and NOT used for anything security
+-- sensitive — that is what SHA-256 below is for.
+
+fn bucket_of : (ptr, i64, i64) -> i64
+  | (rec, len, nbuckets) ->
+    let h = fnv.fnv64_hash(rec, len)
+    let m = math.abs_i64(h as i64)
+    m % nbuckets
+
+fn spread_across_buckets : (*vec.Vec, i64) -> i64
+  | (v, nbuckets) ->
+    let n = vec.vec_len(v)
+    let base = vec.vec_as_slice(v)
+    let mut i = 0i64
+    let mut distinct = 0i64
+    while i < n
+      let p = (base as i64 + i * REC_SIZE) as ptr
+      let b = bucket_of(p, REC_SIZE, nbuckets)
+      if b == 0i64 then distinct = distinct + 1i64
+      i = i + 1i64
+    distinct
+
+-- ── Stage 4: statistics ─────────────────────────────────────────────────────
+-- Min, max, sum and mean over the batch, using the stdlib rather than
+-- hand-rolled comparisons.
+
+fn batch_min_max : (*vec.Vec) -> i64
+  | v ->
+    let n = vec.vec_len(v)
+    if n == 0i64 then 0i64
+    else
+      let base = vec.vec_as_slice(v)
+      let first = (base as i64) as *i64
+      let mut lo = first[0i64]
+      let mut hi = first[0i64]
+      let mut i = 1i64
+      while i < n
+        let p = (base as i64 + i * REC_SIZE) as *i64
+        lo = math.min_i64(lo, p[0i64])
+        hi = math.max_i64(hi, p[0i64])
+        i = i + 1i64
+      hi - lo
+
+fn batch_sum : (*vec.Vec) -> i64
+  | v ->
+    let n = vec.vec_len(v)
+    let base = vec.vec_as_slice(v)
+    let mut i = 0i64
+    let mut acc = 0i64
+    while i < n
+      let p = (base as i64 + i * REC_SIZE) as *i64
+      acc = acc + p[0i64]
+      i = i + 1i64
+    acc
+
+-- Integer mean, guarding the empty case rather than dividing by zero.
+fn batch_mean : (*vec.Vec) -> opt.option.Option
+  | v ->
+    let n = vec.vec_len(v)
+    if n == 0i64 then option.none()
+    else option.some(batch_sum(v) / n)
+
+-- ── Stage 5: digest ─────────────────────────────────────────────────────────
+-- A cryptographic checksum over the whole batch, for integrity in transit.
+-- Distinct from the FNV bucketing above in both purpose and cost.
+
+fn batch_digest : (*vec.Vec) -> ptr
+  | v ->
+    let n = vec.vec_len(v)
+    let base = vec.vec_as_slice(v)
+    crypto.sha256_hash(base, n * REC_SIZE)
+
+-- Two identical batches must produce identical digests, compared in constant
+-- time as a matter of habit.
+fn digests_match : (*vec.Vec, *vec.Vec) -> bool
+  | (a, b) ->
+    let da = batch_digest(a)
+    let db = batch_digest(b)
+    crypto.ct_eq_slice(da, db, 32i64)
+
+-- ── Stage 6: encode ─────────────────────────────────────────────────────────
+-- Render for transport. base64 for the payload, hex for the digest — the
+-- conventional split, since a digest is usually displayed and a payload is
+-- usually just moved.
+
+fn encode_payload : (*vec.Vec) -> i64
+  | v ->
+    let n = vec.vec_len(v)
+    let base = vec.vec_as_slice(v)
+    let mut s = encoding.base64_encode(base, n * REC_SIZE, true)
+    let len = str.len(&s)
+    str.destroy(&s)
+    len
+
+fn encode_digest : (*vec.Vec) -> i64
+  | v ->
+    let d = batch_digest(v)
+    let mut s = crypto.hex_encode(d, 32i64, false)
+    let len = str.len(&s)
+    str.destroy(&s)
+    len
+
+-- ── Stage 7: report ─────────────────────────────────────────────────────────
+-- Build a human-readable summary line. Every push appends to one owned
+-- buffer, destroyed once at the end.
+
+fn build_report : (*vec.Vec) -> i64
+  | v ->
+    let mut s = str.with_cap(128i64)
+    str.push_byte(&s, 82u8)      -- 'R'
+    str.push_byte(&s, 58u8)      -- ':'
+    let n = vec.vec_len(v)
+    let mut i = 0i64
+    while i < n && i < 8i64
+      str.push_byte(&s, 46u8)    -- '.' one per record, capped
+      i = i + 1i64
+    let len = str.len(&s)
+    str.destroy(&s)
+    len
+
+-- ── The whole pipeline, timed ───────────────────────────────────────────────
+-- Monotonic clock around the batch, so a wall-clock step cannot make the
+-- measured duration negative.
+
+fn run_pipeline : (ptr, i64) -> i64
+  | (src, count) ->
+    let start = time.now()
+
+    let mut batch = ingest(src, count)
+
+    let valid   = count_valid(&batch, 0i64 - 1000000i64, 1000000i64)
+    let spread  = spread_across_buckets(&batch, 16i64)
+    let range   = batch_min_max(&batch)
+    let payload = encode_payload(&batch)
+    let digest  = encode_digest(&batch)
+    let report  = build_report(&batch)
+
+    let mean = batch_mean(&batch)
+    let mean_val = option.unwrap_or(mean, 0i64)
+
+    let hit = find_first_above(&batch, 0i64)
+    let hit_idx = option.unwrap_or(hit, 0i64 - 1i64)
+
+    vec.vec_destroy(&batch)
+
+    let took = time.elapsed(start)
+    valid + spread + range + payload + digest + report + mean_val + hit_idx
+
+-- Round-trip check: ingest the same source twice and confirm the digests
+-- agree. Exercises the whole chain and asserts determinism.
+fn determinism_check : (ptr, i64) -> bool
+  | (src, count) ->
+    let mut a = ingest(src, count)
+    let mut b = ingest(src, count)
+    let same = digests_match(&a, &b)
+    vec.vec_destroy(&b)
+    vec.vec_destroy(&a)
+    same
+
+fn main_demo : ptr -> i64
+  | src ->
+    let r = run_pipeline(src, 32i64)
+    let d = if determinism_check(src, 32i64) then 1i64 else 0i64
+    r + d

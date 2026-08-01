@@ -2,6 +2,7 @@ mod fmt.parse_float.convert_eisel_lemire
 
 use fmt.parse_float.common
 use fmt.parse_float.float_info
+use os.linux
 
 -- Eisel-Lemire fast float parse algorithm.
 -- Daniel Lemire, 'Number Parsing at a Gigabyte per Second' (2021)

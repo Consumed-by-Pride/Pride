@@ -1,0 +1,185 @@
+mod experiments.test_scoped_effects
+
+-- ============================================================================
+-- EXPERIMENT 2 — Scope and continuation leaks in higher-order effects
+-- ----------------------------------------------------------------------------
+-- GOAL: check whether a handler that WRAPS an inner computation leaks
+-- variables or execution frames — i.e. whether delimited control restores the
+-- exact lexical environment when control jumps out to a handler and back in
+-- through `resume`.
+--
+-- The interesting cases are all about NESTING:
+--   * a handler installed inside another handler's arm
+--   * an inner computation performing an effect handled further out
+--   * a handler arm closing over a variable from its enclosing function
+--   * `resume` crossing a scope boundary
+--
+-- Pride's `handle` is a delimited-continuation construct: `handle` is the
+-- prompt (reset), `perform` captures up to it (shift), `resume` invokes the
+-- captured slice. So this file is really testing prompt/capture hygiene.
+-- ============================================================================
+
+-- ── Effect declarations ─────────────────────────────────────────────────────
+
+effect State
+  get : () -> i64
+  put : i64 -> ()
+
+effect Log
+  emit : i64 -> ()
+
+effect Txn
+  begin  : () -> i64
+  commit : i64 -> ()
+  abort  : i64 -> ()
+
+-- ── 1. Baseline: one handler, one effect ────────────────────────────────────
+-- If this leaks, nothing below is meaningful.
+
+fn simple_state : i64 -> i64
+  | seed ->
+    let mut cell = seed
+    handle
+      perform State.get()
+    | State.get () k -> resume cell
+    | State.put v  k -> resume 0i64
+
+-- ── 2. Arm closes over an enclosing local ───────────────────────────────────
+-- `base` lives in the FUNCTION frame, not the handler frame. When the arm
+-- runs, the handler frame is active — if the environment was not restored
+-- correctly, `base` reads garbage.
+
+fn arm_captures_outer : i64 -> i64
+  | base ->
+    let bump = base + 100i64
+    handle
+      perform State.get()
+    | State.get () k -> resume bump
+    | State.put v  k -> resume base
+
+-- ── 3. Nested handlers, inner effect escapes to the OUTER one ───────────────
+-- The inner `handle` handles Log only. A `State.get` performed inside it must
+-- travel PAST the inner prompt to the outer handler, then resume back into the
+-- inner computation. This is the classic frame-restoration test.
+
+fn nested_escape : i64 -> i64
+  | seed ->
+    let mut cell = seed
+    handle
+      handle
+        perform State.get()
+      | Log.emit n k -> resume 0i64
+    | State.get () k -> resume cell
+    | State.put v  k -> resume 0i64
+
+-- ── 4. Handler installed INSIDE an arm ──────────────────────────────────────
+-- An arm body that itself installs a prompt. The arm is already running with
+-- the outer frame captured; installing a second prompt on top must not
+-- clobber it.
+
+fn handler_in_arm : i64 -> i64
+  | seed ->
+    let mut cell = seed
+    handle
+      perform State.get()
+    | State.get () k ->
+        let inner = handle
+          perform Log.emit(1i64)
+        | Log.emit n k2 -> resume n
+        resume (cell + inner)
+    | State.put v k -> resume 0i64
+
+-- ── 5. Higher-order: a transaction wrapping an inner function ───────────────
+-- The requested shape — a handler that wraps an inner execution, where the
+-- inner body performs a DIFFERENT effect handled elsewhere, and the wrapper
+-- decides whether to commit or abort.
+
+fn inner_work : i64 -> i64 ! [State]
+  | n ->
+    let a = perform State.get()
+    a + n
+
+fn transaction : i64 -> i64
+  | n ->
+    let mut committed = 0i64
+    let mut cell = n
+    handle
+      handle
+        inner_work(n)
+      | Txn.begin  ()  k -> resume 1i64
+      | Txn.commit v   k -> resume v
+      | Txn.abort  v   k -> resume 0i64
+    | State.get () k -> resume cell
+    | State.put v  k -> resume 0i64
+
+-- ── 6. Resume used twice in one arm ─────────────────────────────────────────
+-- A one-shot continuation invoked more than once is a linearity violation.
+--
+-- FINDING: linearity is only enforced for operations whose control shape is
+-- known to be linear. theory_modal::classify_by_name recognises `bracket`,
+-- `with_timeout`, `catch` and `nursery` by name, because their semantics come
+-- from the runtime rather than from the signature. A user-declared `State.get`
+-- carries no such promise, so resuming it twice is multi-shot and legal.
+--
+-- Both cases are below: the first is accepted, the second is rejected with
+-- E3220.
+
+fn double_resume_multishot : i64 -> i64
+  | seed ->
+    handle
+      perform State.get()
+    | State.get () k ->
+        let a = resume seed
+        let b = resume seed
+        a + b
+    | State.put v k -> resume 0i64
+
+effect Res
+  bracket : i64 -> i64
+
+-- `bracket` IS linear: acquire/release must happen exactly once. Resuming
+-- twice here is a real violation and is reported.
+fn double_resume_linear : i64 -> i64
+  | seed ->
+    handle
+      perform Res.bracket(seed)
+    | Res.bracket n k ->
+        let a = resume n
+        let b = resume n
+        a + b
+
+-- ── 7. Arm that never resumes ───────────────────────────────────────────────
+-- Abandoning the continuation is legal (that is how early exit works) but the
+-- frames it held must still be reclaimed.
+
+fn abandon : i64 -> i64
+  | seed ->
+    handle
+      perform State.get()
+    | State.get () k -> 42i64
+    | State.put v  k -> resume 0i64
+
+-- ── 8. Deep nesting: three prompts ──────────────────────────────────────────
+
+fn three_deep : i64 -> i64
+  | seed ->
+    let mut cell = seed
+    handle
+      handle
+        handle
+          perform State.get()
+        | Txn.begin () k -> resume 0i64
+      | Log.emit n k -> resume 0i64
+    | State.get () k -> resume cell
+    | State.put v  k -> resume 0i64
+
+fn drive : i64 -> i64
+  | n ->
+    let a = simple_state(n)
+    let b = arm_captures_outer(n)
+    let c = nested_escape(n)
+    let d = handler_in_arm(n)
+    let e = transaction(n)
+    let f = abandon(n)
+    let g = three_deep(n)
+    a + b + c + d + e + f + g

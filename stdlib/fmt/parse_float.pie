@@ -85,7 +85,7 @@ fn try_parse_special_f64 : (*float_stream.FloatStream, bool) -> (f64, bool)
     if float_stream.stream_match_char_ci(s, 110u8)   -- 'n'
       if float_stream.stream_match_char_ci(s, 97u8)  -- 'a'
         if float_stream.stream_match_char_ci(s, 110u8)  -- 'n'
-          (os.linux.F64_NAN_BITS as f64, true)
+          (float_info.F64_NAN_BITS as f64, true)
         else s.pos=saved_pos; (0.0f64, false)
       else s.pos=saved_pos; (0.0f64, false)
     else if float_stream.stream_match_char_ci(s, 105u8)   -- 'i'
@@ -100,8 +100,6 @@ fn try_parse_special_f64 : (*float_stream.FloatStream, bool) -> (f64, bool)
       else s.pos=saved_pos; (0.0f64, false)
     else (0.0f64, false)
 
-fn F64_NAN_BITS : u64  = 0x7FF8000000000000u64
-fn F64_INF_BITS : u64  = 0x7FF0000000000000u64
 
 -- §4  MAIN PARSER — f64
 
@@ -150,8 +148,10 @@ fn parse_f64_n : (ptr, i64) -> f64
     if el_ok
       common.assemble_f64(neg, el_exp, el_mant)
     else
-      -- Slow path
-      convert_slow.slow_f64_from_number(mantissa, exp, neg, false)
+      -- Slow path. convert_slow re-parses the ORIGINAL text with arbitrary
+      -- precision, so it takes (ptr, len, neg) -- not the already-truncated
+      -- 19-digit mantissa. `slow_f64_from_number` never existed.
+      convert_slow.slow_path_f64(s, n, neg)
 
 -- §5  MAIN PARSER — f32
 
@@ -193,7 +193,8 @@ fn parse_f32_n : (ptr, i64) -> f32
     if el_ok
       common.assemble_f32(neg, el_exp, el_mant)
     else
-      convert_slow.slow_f32_from_number(mantissa, exp, neg, false)
+      -- See the f64 path above: the slow converter re-reads the source text.
+      convert_slow.slow_path_f32(s, n, neg)
 
 -- §6  CONVENIENCE WRAPPERS
 

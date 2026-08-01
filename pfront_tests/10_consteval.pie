@@ -1,0 +1,5 @@
+const BASE : i64 = 8i64
+const SIZE : i64 = BASE * 4i64
+
+fn f : () -> i64
+  | () -> SIZE

@@ -1,0 +1,11 @@
+effect State
+  get : () -> i64
+  put : i64 -> ()
+
+fn use_eff : i64 -> i64
+  | n ->
+      let v = perform State.get()
+      v + n
+
+fn main : () -> i64
+  | () -> use_eff(1i64)

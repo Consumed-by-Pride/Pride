@@ -1,0 +1,12 @@
+fn identity<T> : T -> T
+  | x -> x
+
+fn pair<A, B> : (A, B) -> A
+  | (a, b) -> a
+
+fn f : () -> i64
+  | () ->
+    let a = identity(5i64)
+    let b = identity(true)
+    let c = pair(1i64, 2i64)
+    a

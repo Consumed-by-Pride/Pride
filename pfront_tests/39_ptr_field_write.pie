@@ -1,0 +1,8 @@
+struct Chunk
+  buf : i64
+
+fn make : i64 -> i64
+  | cap ->
+    let c : *Chunk = 0 as *Chunk
+    c.buf = cap
+    0i64

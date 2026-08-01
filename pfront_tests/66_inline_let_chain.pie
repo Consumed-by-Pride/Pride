@@ -1,0 +1,14 @@
+fn sink : i64 -> i64
+  | x -> x
+
+fn one_let : i64 -> i64
+  | s -> let n = s + 1i64; sink(n)
+
+fn two_lets : i64 -> i64
+  | s -> let a = s; let b = a + 1i64; b
+
+fn let_then_exprs : i64 -> i64
+  | s -> let n = s + 1i64; sink(n); n
+
+fn exprs_only : i64 -> i64
+  | s -> sink(s); sink(s)

@@ -1,0 +1,4 @@
+mod mod1.thing
+
+struct Thing
+  region : i64

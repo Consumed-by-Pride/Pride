@@ -1,0 +1,10 @@
+struct JitMemory
+  region : i64
+  is_exec : bool
+
+fn f : i64 -> JitMemory
+  | err ->
+    if err < 0i64
+      JitMemory { region: err, is_exec: false }
+    else
+      JitMemory { region: err, is_exec: true }

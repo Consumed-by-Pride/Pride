@@ -1,6 +1,7 @@
 mod vec.collections
 
 use os.linux
+use vec.vec
 
 -- stdlib/vec/collections.pie — VecDeque (ring-buffer deque) and BinaryHeap (max-heap)
 -- Migrated from compiler/stdlib/collections.pie; given a real module name.

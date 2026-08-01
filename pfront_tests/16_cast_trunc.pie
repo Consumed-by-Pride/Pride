@@ -1,0 +1,5 @@
+const WIDE : i64 = 300i64
+const NARROW : i64 = WIDE as u8
+
+fn f : () -> i64
+  | () -> NARROW

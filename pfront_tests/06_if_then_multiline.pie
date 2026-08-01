@@ -1,0 +1,7 @@
+fn tbl : bool -> i64
+  | url_safe ->
+    let t = if url_safe then
+              1i64
+            else
+              2i64
+    t

@@ -1,0 +1,6 @@
+enum Opt
+  Some(i64),
+  None,
+
+fn f : Opt -> bool
+  | o -> match o | Some(_) -> true | None -> false

@@ -1,0 +1,7 @@
+fn f : i64 -> i64
+  | x ->
+    let mut n = 0i64
+    while n < x then n = n + 1i64
+    let mut m = 0i64
+    while m < x do m = m + 1i64
+    if n > 0i64 then n else m

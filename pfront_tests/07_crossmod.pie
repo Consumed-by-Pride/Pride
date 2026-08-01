@@ -1,0 +1,4 @@
+use lib.math
+
+fn main : () -> i64
+  | () -> square(4)

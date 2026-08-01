@@ -3,6 +3,7 @@ mod target.regalloc
 use ir.func
 use ir.block
 use ir.instr
+use vec.vec
 
 -- stdlib/target/regalloc.pie — Linear Scan Register Allocator
 -- Maps virtual SSA values to physical architecture registers and stack spill slots.

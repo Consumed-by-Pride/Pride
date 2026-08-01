@@ -1,0 +1,2 @@
+fn f : ptr -> (meta.Metadata, i64)
+  | p -> p

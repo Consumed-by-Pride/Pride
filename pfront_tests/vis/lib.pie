@@ -1,0 +1,7 @@
+mod vis.lib
+
+pub fn public_fn : i64 -> i64
+  | x -> x
+
+fn private_fn : i64 -> i64
+  | x -> x

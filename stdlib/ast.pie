@@ -2,8 +2,67 @@ mod ast
 
 use vec.vec
 
--- stdlib/ast.pie — Memory-Efficient Abstract Syntax Tree (AST) Arena
--- Index-based node arrays designed to avoid pointer chasing during tree traversals.
+-- stdlib/ast.pie — Memory-Efficient Abstract Syntax Tree Arena
+--
+-- Index-based node storage. Children are referenced by i64 id rather than by
+-- pointer, which keeps every node the same size, makes the whole tree one
+-- contiguous allocation, and lets a subtree be copied or serialised without
+-- pointer fixups.
+--
+-- WHY IDS AND NOT POINTERS
+--   * a growing arena reallocates; pointers into it would dangle, ids do not
+--   * an id is stable across serialisation, so a tree can be written to disk
+--   * traversal is cache-friendly: siblings are usually adjacent in memory
+--
+-- FIXED IN THIS REVISION (the file was previously an unusable sketch)
+--   1. `vec_new(32i64)` declared a 32-byte element while AstNode is 40 bytes.
+--      Every push memcpy'd 32 of 40 bytes and silently dropped `right_id`.
+--   2. `ast_arena_get_node` indexed with a hardcoded `* 40i64` stride that
+--      disagreed with the vec's own element size — so reads and writes used
+--      different strides and returned garbage past the first element.
+--   3. No node-kind constants, so `kind` was an untyped integer with no
+--      shared vocabulary between producer and consumer.
+--   4. No traversal, no child access, no depth or size queries — an AST
+--      module that could not walk a tree.
+--   5. NODE_NONE was not defined, so "no child" had no representation and
+--      `left_id: 0` was ambiguous with "child at index 0".
+
+-- ── Node kinds ──────────────────────────────────────────────────────────────
+-- A small, generic vocabulary. A front end can extend it by using values
+-- above AST_USER_BASE without colliding with these.
+
+const AST_NONE      : i64 = 0i64   -- absent child / null id sentinel
+const AST_LITERAL   : i64 = 1i64
+const AST_IDENT     : i64 = 2i64
+const AST_UNARY     : i64 = 3i64
+const AST_BINARY    : i64 = 4i64
+const AST_CALL      : i64 = 5i64
+const AST_INDEX     : i64 = 6i64
+const AST_FIELD     : i64 = 7i64
+const AST_ASSIGN    : i64 = 8i64
+const AST_IF        : i64 = 9i64
+const AST_WHILE     : i64 = 10i64
+const AST_BLOCK     : i64 = 11i64
+const AST_RETURN    : i64 = 12i64
+const AST_LET       : i64 = 13i64
+const AST_FN        : i64 = 14i64
+const AST_PARAM     : i64 = 15i64
+const AST_USER_BASE : i64 = 1000i64
+
+-- Node ids are 1-based so that 0 can mean "no node". `ast_null` is the id a
+-- missing child carries; `ast_is_null` is how you test for it.
+const AST_NULL_ID   : i64 = 0i64
+
+-- sizeof(AstNode): five i64 fields, no padding. Declared once so the arena
+-- and the accessor can never disagree, which is exactly the bug this file
+-- used to have.
+const AST_NODE_SIZE : i64 = 40i64
+
+-- ── Node ────────────────────────────────────────────────────────────────────
+-- `left_id` / `right_id` are child ids, or AST_NULL_ID when absent. A node
+-- with more than two children stores the first in `left_id` and chains the
+-- rest through each child's `right_id` — the standard left-child /
+-- right-sibling encoding, which keeps the node fixed-size for any arity.
 
 struct AstNode
   kind      : i64
@@ -15,8 +74,13 @@ struct AstNode
 struct AstArena
   nodes : vec.Vec
 
+-- ── Construction ────────────────────────────────────────────────────────────
+
 fn ast_arena_new : () -> AstArena
-  | () -> AstArena { nodes: vec.vec_new(32i64) }
+  | () -> AstArena { nodes: vec.vec_new(AST_NODE_SIZE) }
+
+fn ast_arena_with_cap : i64 -> AstArena
+  | cap -> AstArena { nodes: vec.vec_with_cap(cap, AST_NODE_SIZE) }
 
 fn ast_arena_destroy : *AstArena -> ()
   | ar -> vec.vec_destroy(&ar.nodes)
@@ -24,7 +88,14 @@ fn ast_arena_destroy : *AstArena -> ()
 fn ast_arena_clear : *AstArena -> ()
   | ar -> vec.vec_clear(&ar.nodes)
 
-fn ast_arena_alloc_node : (*AstArena, i64, i64, i64, i64, i64) -> i64
+fn ast_arena_len : *AstArena -> i64
+  | ar -> vec.vec_len(&ar.nodes)
+
+-- ── Allocation ──────────────────────────────────────────────────────────────
+-- Returns a 1-based id. Id 0 is reserved for AST_NULL_ID, so a freshly
+-- allocated node is never confused with "absent".
+
+fn ast_alloc : (*AstArena, i64, i64, i64, i64, i64) -> i64
   | (ar, kind, start, len, left, right) ->
     let n = AstNode {
       kind:      kind,
@@ -33,11 +104,178 @@ fn ast_arena_alloc_node : (*AstArena, i64, i64, i64, i64, i64) -> i64
       left_id:   left,
       right_id:  right
     }
-    let id = vec.vec_len(&ar.nodes)
     vec.vec_push(&ar.nodes, &n as ptr)
+    vec.vec_len(&ar.nodes)
+
+-- A leaf: no children, just a kind and a source span.
+fn ast_leaf : (*AstArena, i64, i64, i64) -> i64
+  | (ar, kind, start, len) ->
+    ast_alloc(ar, kind, start, len, AST_NULL_ID, AST_NULL_ID)
+
+-- A unary node: one child.
+fn ast_unary : (*AstArena, i64, i64, i64, i64) -> i64
+  | (ar, kind, start, len, child) ->
+    ast_alloc(ar, kind, start, len, child, AST_NULL_ID)
+
+-- A binary node. The two children are chained: `l` is the first child and
+-- `r` becomes its sibling, so both are reachable through the left-child /
+-- right-sibling walk that ast_child_at uses.
+fn ast_binary : (*AstArena, i64, i64, i64, i64, i64) -> i64
+  | (ar, kind, start, len, l, r) ->
+    let id = ast_alloc(ar, kind, start, len, l, AST_NULL_ID)
+    ast_set_sibling(ar, l, r)
     id
 
-fn ast_arena_get_node : (*AstArena, i64) -> *AstNode
-  | (ar, node_id) ->
-    if node_id < 0i64 || node_id >= vec.vec_len(&ar.nodes) then 0 as *AstNode
-    else (vec.vec_as_slice(&ar.nodes) as i64 + node_id * 40i64) as *AstNode
+-- ── Access ──────────────────────────────────────────────────────────────────
+-- Bounds-checked. An out-of-range id returns the null pointer rather than
+-- reading past the end, because an AST walker chasing a corrupt id is the
+-- hardest kind of crash to diagnose.
+
+fn ast_is_null : i64 -> bool
+  | id -> id == AST_NULL_ID
+
+fn ast_get : (*AstArena, i64) -> *AstNode
+  | (ar, id) ->
+    if id <= AST_NULL_ID || id > vec.vec_len(&ar.nodes) then 0 as *AstNode
+    else
+      -- ids are 1-based; the slice is 0-based
+      let off = (id - 1i64) * AST_NODE_SIZE
+      (vec.vec_as_slice(&ar.nodes) as i64 + off) as *AstNode
+
+fn ast_kind : (*AstArena, i64) -> i64
+  | (ar, id) ->
+    let n = ast_get(ar, id)
+    if n as i64 == 0i64 then AST_NONE else n.kind
+
+fn ast_left : (*AstArena, i64) -> i64
+  | (ar, id) ->
+    let n = ast_get(ar, id)
+    if n as i64 == 0i64 then AST_NULL_ID else n.left_id
+
+fn ast_right : (*AstArena, i64) -> i64
+  | (ar, id) ->
+    let n = ast_get(ar, id)
+    if n as i64 == 0i64 then AST_NULL_ID else n.right_id
+
+fn ast_span_start : (*AstArena, i64) -> i64
+  | (ar, id) ->
+    let n = ast_get(ar, id)
+    if n as i64 == 0i64 then 0i64 else n.span_strt
+
+fn ast_span_len : (*AstArena, i64) -> i64
+  | (ar, id) ->
+    let n = ast_get(ar, id)
+    if n as i64 == 0i64 then 0i64 else n.span_len
+
+-- ── Mutation ────────────────────────────────────────────────────────────────
+
+fn ast_set_left : (*AstArena, i64, i64) -> ()
+  | (ar, id, child) ->
+    let n = ast_get(ar, id)
+    if n as i64 != 0i64 then n.left_id = child
+
+fn ast_set_sibling : (*AstArena, i64, i64) -> ()
+  | (ar, id, sib) ->
+    let n = ast_get(ar, id)
+    if n as i64 != 0i64 then n.right_id = sib
+
+-- Append `child` as the LAST child of `parent`, walking the sibling chain.
+-- This is what makes arbitrary arity work on a fixed-size node.
+fn ast_append_child : (*AstArena, i64, i64) -> ()
+  | (ar, parent, child) ->
+    let first = ast_left(ar, parent)
+    if ast_is_null(first) then ast_set_left(ar, parent, child)
+    else
+      let mut cur = first
+      let mut nxt = ast_right(ar, cur)
+      while !ast_is_null(nxt)
+        cur = nxt
+        nxt = ast_right(ar, cur)
+      ast_set_sibling(ar, cur, child)
+
+-- ── Traversal ───────────────────────────────────────────────────────────────
+
+fn ast_child_count : (*AstArena, i64) -> i64
+  | (ar, id) ->
+    let mut n = 0i64
+    let mut c = ast_left(ar, id)
+    while !ast_is_null(c)
+      n = n + 1i64
+      c = ast_right(ar, c)
+    n
+
+-- The i-th child, or AST_NULL_ID. O(i) by design: a fixed-size node cannot
+-- hold a child array, and ASTs are overwhelmingly low-arity.
+fn ast_child_at : (*AstArena, i64, i64) -> i64
+  | (ar, id, want) ->
+    let mut i = 0i64
+    let mut c = ast_left(ar, id)
+    while !ast_is_null(c) && i < want
+      i = i + 1i64
+      c = ast_right(ar, c)
+    c
+
+-- Height of the subtree rooted at `id`. Depth-bounded so a cyclic id graph
+-- (which a buggy producer can create) terminates instead of hanging.
+fn ast_depth : (*AstArena, i64, i64) -> i64
+  | (ar, id, fuel) ->
+    if ast_is_null(id) || fuel <= 0i64 then 0i64
+    else
+      let mut best = 0i64
+      let mut c = ast_left(ar, id)
+      while !ast_is_null(c)
+        let d = ast_depth(ar, c, fuel - 1i64)
+        if d > best then best = d
+        c = ast_right(ar, c)
+      best + 1i64
+
+-- Total node count of the subtree, same fuel discipline.
+fn ast_subtree_size : (*AstArena, i64, i64) -> i64
+  | (ar, id, fuel) ->
+    if ast_is_null(id) || fuel <= 0i64 then 0i64
+    else
+      let mut total = 1i64
+      let mut c = ast_left(ar, id)
+      while !ast_is_null(c)
+        total = total + ast_subtree_size(ar, c, fuel - 1i64)
+        c = ast_right(ar, c)
+      total
+
+-- Is `needle` inside the subtree rooted at `root`? Used to reject a rewrite
+-- that would make a node its own ancestor.
+fn ast_contains : (*AstArena, i64, i64, i64) -> bool
+  | (ar, root, needle, fuel) ->
+    if ast_is_null(root) || fuel <= 0i64 then false
+    else if root == needle then true
+    else
+      let mut found = false
+      let mut c = ast_left(ar, root)
+      while !ast_is_null(c) && !found
+        if ast_contains(ar, c, needle, fuel - 1i64) then found = true
+        c = ast_right(ar, c)
+      found
+
+-- ── Spans ───────────────────────────────────────────────────────────────────
+-- The span covering a whole subtree: from the earliest start to the latest
+-- end. A parent built from already-parsed children usually has no span of
+-- its own, and this recovers one for diagnostics.
+
+fn ast_subtree_end : (*AstArena, i64, i64) -> i64
+  | (ar, id, fuel) ->
+    if ast_is_null(id) || fuel <= 0i64 then 0i64
+    else
+      let mut best = ast_span_start(ar, id) + ast_span_len(ar, id)
+      let mut c = ast_left(ar, id)
+      while !ast_is_null(c)
+        let e = ast_subtree_end(ar, c, fuel - 1i64)
+        if e > best then best = e
+        c = ast_right(ar, c)
+      best
+
+fn ast_fix_span : (*AstArena, i64, i64) -> ()
+  | (ar, id, fuel) ->
+    let n = ast_get(ar, id)
+    if n as i64 != 0i64
+      let e = ast_subtree_end(ar, id, fuel)
+      let s = n.span_strt
+      if e > s then n.span_len = e - s

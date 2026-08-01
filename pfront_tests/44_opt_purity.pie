@@ -1,0 +1,8 @@
+fn sink : i64 -> i64
+  | x -> x
+
+fn keep : i64 -> i64
+  | n ->
+      let dead_but_impure = sink(n)
+      let dead_and_pure = n + 1i64
+      42i64

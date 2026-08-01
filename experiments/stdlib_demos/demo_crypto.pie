@@ -1,0 +1,171 @@
+mod experiments.stdlib_demos.demo_crypto
+
+use crypto
+use encoding
+use str
+
+-- ============================================================================
+-- STDLIB DEMO — Cryptography and encoding
+-- ----------------------------------------------------------------------------
+-- These are the APIs where misuse is a security bug rather than a crash, so
+-- this demo is as much about the CONTRACT as the call syntax.
+--
+-- Three rules the code below follows:
+--
+--   1. CONSTANT TIME for anything comparing secrets. `ct_eq_slice` takes the
+--      same time whether the first byte differs or the last one does. Using
+--      a normal memcmp on a MAC leaks the correct prefix length one byte at
+--      a time, which is enough to forge a tag.
+--
+--   2. VERIFY BEFORE DECRYPT. An HMAC is checked before the ciphertext is
+--      touched. Decrypting first and validating after is the padding-oracle
+--      shape.
+--
+--   3. NONCE DISCIPLINE. ChaCha20 is a stream cipher: reusing a (key, nonce)
+--      pair XORs two plaintexts together and destroys both. Every encryption
+--      below takes its nonce as a parameter so reuse is visible at the call
+--      site.
+-- ============================================================================
+
+-- ── 1. Constant-time comparison ─────────────────────────────────────────────
+
+fn secrets_equal : (ptr, ptr, i64) -> bool
+  | (a, b, len) -> crypto.ct_eq_slice(a, b, len)
+
+fn tokens_equal : (u64, u64) -> bool
+  | (a, b) -> crypto.ct_eq_u64(a, b)
+
+-- Branchless select: returns `on_true` or `on_false` without a jump, so the
+-- taken path is not observable through timing or branch prediction.
+fn pick : (bool, u64, u64) -> u64
+  | (cond, t, f) -> crypto.ct_select_u64(cond, t, f)
+
+-- ── 2. Hashing ──────────────────────────────────────────────────────────────
+-- SHA-256 over a byte range. The digest is 32 bytes; `sha256_str` renders it
+-- as lowercase hex for logging.
+
+fn digest_of : (ptr, i64) -> ptr
+  | (data, len) -> crypto.sha256_hash(data, len)
+
+fn digest_hex : ptr -> i64
+  | cstr ->
+    let mut s = crypto.sha256_str(cstr)
+    let n = str.len(&s)
+    str.destroy(&s)
+    n
+
+-- A digest is deterministic: the same input must always give the same bytes.
+fn digest_is_stable : (ptr, i64) -> bool
+  | (data, len) ->
+    let a = crypto.sha256_hash(data, len)
+    let b = crypto.sha256_hash(data, len)
+    crypto.ct_eq_slice(a, b, 32i64)
+
+-- ── 3. HMAC ─────────────────────────────────────────────────────────────────
+-- Keyed authentication. The tag proves both integrity AND origin, which a
+-- bare hash does not: anyone can recompute SHA-256, only the key holder can
+-- produce a valid HMAC.
+
+fn authenticate : (ptr, i64, ptr, i64) -> ptr
+  | (key, key_len, msg, msg_len) ->
+    let mut h = crypto.hmac_new(key, key_len)
+    let tag = crypto.hmac_compute(&h, msg, msg_len)
+    crypto.hmac_destroy(&h)
+    tag
+
+-- Verification, done correctly: recompute the tag, then compare in constant
+-- time. The `ct_eq_slice` is the whole point — `==` here would be a
+-- timing oracle.
+fn verify_tag : (ptr, i64, ptr, i64, ptr) -> bool
+  | (key, key_len, msg, msg_len, expected) ->
+    let mut h = crypto.hmac_new(key, key_len)
+    let actual = crypto.hmac_compute(&h, msg, msg_len)
+    let ok = crypto.ct_eq_slice(actual, expected, 32i64)
+    crypto.hmac_destroy(&h)
+    ok
+
+-- ── 4. Stream cipher ────────────────────────────────────────────────────────
+-- ChaCha20 XORs a keystream over the plaintext, so encrypt and decrypt are
+-- the same operation. That symmetry is convenient and dangerous: run it twice
+-- with the same nonce on different data and both are recoverable.
+
+fn encrypt : (ptr, ptr, ptr, i64) -> ptr
+  | (key, nonce, data, len) ->
+    let mut c = crypto.chacha20_new(key, nonce)
+    crypto.chacha20_encrypt(&c, data, len)
+
+-- Encrypt-then-MAC: the tag covers the CIPHERTEXT, so a forgery is rejected
+-- before the cipher ever runs on attacker-controlled bytes.
+fn seal : (ptr, ptr, ptr, i64, ptr, i64) -> ptr
+  | (key, nonce, data, len, mac_key, mac_len) ->
+    let ct = encrypt(key, nonce, data, len)
+    authenticate(mac_key, mac_len, ct, len)
+
+-- ── 5. Encoding ─────────────────────────────────────────────────────────────
+-- Encodings are NOT security primitives. base64 is not encryption; hex is not
+-- a hash. They are here because they are what you wrap a ciphertext in for
+-- transport.
+
+fn to_base64 : (ptr, i64) -> i64
+  | (data, len) ->
+    let mut s = encoding.base64_encode(data, len, true)
+    let n = str.len(&s)
+    str.destroy(&s)
+    n
+
+fn to_hex : (ptr, i64) -> i64
+  | (data, len) ->
+    let mut s = crypto.hex_encode(data, len, false)
+    let n = str.len(&s)
+    str.destroy(&s)
+    n
+
+-- A hex dump for debugging: offset, bytes, ASCII gutter.
+fn dump : (ptr, i64) -> i64
+  | (data, len) ->
+    let mut s = encoding.hex_dump(data, len)
+    let n = str.len(&s)
+    str.destroy(&s)
+    n
+
+-- URL encoding for query parameters.
+fn url_escape : (ptr, i64) -> i64
+  | (data, len) ->
+    let mut s = encoding.url_encode(data, len)
+    let n = str.len(&s)
+    str.destroy(&s)
+    n
+
+-- ── 6. Varints ──────────────────────────────────────────────────────────────
+-- Variable-length integers: small values take one byte. The zigzag (`_i64`)
+-- form maps signed values so that -1 encodes as compactly as +1, instead of
+-- as ten bytes of sign extension.
+
+fn pack_u64 : (u64, ptr, i64) -> i64
+  | (v, buf, cap) -> encoding.varint_encode_u64(v, buf, cap)
+
+fn pack_i64 : (i64, ptr, i64) -> i64
+  | (v, buf, cap) -> encoding.varint_encode_i64(v, buf, cap)
+
+-- Small unsigned values should occupy a single byte.
+fn varint_is_compact : ptr -> bool
+  | buf ->
+    let n = encoding.varint_encode_u64(1u64, buf, 16i64)
+    n == 1i64
+
+-- Negative values are why zigzag exists: without it, -1 is the maximum-width
+-- encoding.
+fn zigzag_is_compact : ptr -> bool
+  | buf ->
+    let n = encoding.varint_encode_i64(0i64 - 1i64, buf, 16i64)
+    n <= 2i64
+
+fn main_demo : (ptr, ptr) -> i64
+  | (data, buf) ->
+    let stable = if digest_is_stable(data, 16i64) then 1i64 else 0i64
+    let hexlen = to_hex(data, 16i64)
+    let b64len = to_base64(data, 16i64)
+    let dumped = dump(data, 16i64)
+    let compact = if varint_is_compact(buf) then 1i64 else 0i64
+    let zz = if zigzag_is_compact(buf) then 1i64 else 0i64
+    stable + hexlen + b64len + dumped + compact + zz

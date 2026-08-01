@@ -1,5 +1,6 @@
 mod os.linux.structs
 
+use os.linux
 -- Linux kernel data structures — ABI-stable types for x86-64.
 -- Linux kernel ABI struct definitions for x86-64.
 -- These are the types passed to/from the kernel via syscall pointers.
@@ -729,3 +730,22 @@ struct RseqCs
   start_ip : u64
   post_commit_offset : u64
   abort_ip : u64
+
+-- ── Alignment ───────────────────────────────────────────────────────────────
+-- Round `v` up to the next multiple of `align`, which must be a power of two.
+-- The TLS block layout in os.linux.tls needs this for every segment boundary,
+-- and referenced it before it existed.
+fn align_up_i64 : (i64, i64) -> i64
+  | (v, align) ->
+    if align <= 1i64 then v
+    else (v + align - 1i64) & (0i64 - align)
+
+fn align_down_i64 : (i64, i64) -> i64
+  | (v, align) ->
+    if align <= 1i64 then v
+    else v & (0i64 - align)
+
+fn is_aligned_i64 : (i64, i64) -> bool
+  | (v, align) ->
+    if align <= 1i64 then true
+    else (v & (align - 1i64)) == 0i64

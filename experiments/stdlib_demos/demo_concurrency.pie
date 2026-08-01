@@ -1,0 +1,162 @@
+mod experiments.stdlib_demos.demo_concurrency
+
+use sync
+use time
+
+-- ============================================================================
+-- STDLIB DEMO — Synchronisation and time
+-- ----------------------------------------------------------------------------
+-- Pride has no RAII and no `defer`-by-default, so every lock taken here is
+-- released on EVERY path out — including the early returns. That is the whole
+-- discipline: a lock leaked on an error path deadlocks the next acquirer, and
+-- the compiler will not remind you.
+--
+-- On the time side, the distinction that matters is MONOTONIC vs REALTIME:
+--
+--   monotonic  — never goes backwards, unaffected by NTP or a clock change.
+--                The only correct choice for measuring a duration.
+--   realtime   — wall-clock. Can jump backwards. Correct for timestamps,
+--                wrong for timing.
+--
+-- Using realtime to measure an interval is a real bug that shows up once a
+-- year when the clock steps; the code below uses monotonic throughout.
+-- ============================================================================
+
+-- ── 1. Mutex: the acquire/release contract ──────────────────────────────────
+
+fn guarded_increment : (*sync.mutex.Mutex, *i64) -> i64
+  | (m, counter) ->
+    sync.mutex_lock(m)
+    counter[0i64] = counter[0i64] + 1i64
+    let v = counter[0i64]
+    sync.mutex_unlock(m)
+    v
+
+-- `trylock` for the case where blocking is worse than skipping. Note the
+-- asymmetry: unlock ONLY on the path that actually acquired.
+fn try_increment : (*sync.mutex.Mutex, *i64) -> bool
+  | (m, counter) ->
+    if sync.mutex_trylock(m)
+      counter[0i64] = counter[0i64] + 1i64
+      sync.mutex_unlock(m)
+      true
+    else
+      false
+
+-- Early exit under a lock. This is where leaks happen: the guard returns
+-- before the unlock unless you are deliberate about it.
+fn guarded_lookup : (*sync.mutex.Mutex, *i64, i64) -> i64
+  | (m, table, key) ->
+    sync.mutex_lock(m)
+    let mut result = 0i64
+    if key < 0i64
+      result = 0i64 - 1i64
+    else
+      let p = (table as i64 + key * 8i64) as *i64
+      result = p[0i64]
+    sync.mutex_unlock(m)
+    result
+
+-- ── 2. Reader/writer lock ───────────────────────────────────────────────────
+-- Many concurrent readers, one exclusive writer. Worth it when reads vastly
+-- outnumber writes; a plain mutex is faster when they do not.
+
+fn shared_read : (*sync.rwlock.RwLock, *i64) -> i64
+  | (rw, data) ->
+    sync.rwlock_rdlock(rw)
+    let v = data[0i64]
+    sync.rwlock_unlock(rw)
+    v
+
+fn exclusive_write : (*sync.rwlock.RwLock, *i64, i64) -> ()
+  | (rw, data, v) ->
+    sync.rwlock_wrlock(rw)
+    data[0i64] = v
+    sync.rwlock_unlock(rw)
+
+-- ── 3. Condition variable ───────────────────────────────────────────────────
+-- The wait must be in a LOOP, not an `if`. Spurious wakeups are permitted by
+-- every pthread implementation, and a predicate re-check is the only correct
+-- response. `cond_wait` atomically releases the mutex and reacquires it
+-- before returning.
+
+fn wait_until_ready : (*sync.cond.CondVar, *sync.mutex.Mutex, *i64) -> i64
+  | (cv, m, flag) ->
+    sync.mutex_lock(m)
+    while flag[0i64] == 0i64
+      sync.cond_wait(cv, m)
+    let v = flag[0i64]
+    sync.mutex_unlock(m)
+    v
+
+fn signal_ready : (*sync.cond.CondVar, *sync.mutex.Mutex, *i64) -> ()
+  | (cv, m, flag) ->
+    sync.mutex_lock(m)
+    flag[0i64] = 1i64
+    sync.cond_signal(cv)
+    sync.mutex_unlock(m)
+
+-- Broadcast wakes every waiter; signal wakes one. Broadcasting when only one
+-- can proceed is a thundering herd.
+fn release_all : (*sync.cond.CondVar, *sync.mutex.Mutex, *i64) -> ()
+  | (cv, m, flag) ->
+    sync.mutex_lock(m)
+    flag[0i64] = 1i64
+    sync.cond_broadcast(cv)
+    sync.mutex_unlock(m)
+
+-- ── 4. Durations ────────────────────────────────────────────────────────────
+-- Constructed from a unit, then combined. Keeping them as Duration rather
+-- than bare integers is what stops a milliseconds value being added to a
+-- nanoseconds one.
+
+fn total_timeout : () -> time.duration.Duration
+  | () ->
+    let connect = time.dur_millis(500i64)
+    let handshake = time.dur_millis(250i64)
+    let request = time.dur_secs(2i64)
+    let a = time.dur_add(connect, handshake)
+    time.dur_add(a, request)
+
+fn remaining : (time.duration.Duration, time.duration.Duration) -> time.duration.Duration
+  | (budget, spent) -> time.dur_sub(budget, spent)
+
+-- ── 5. Measuring an interval ────────────────────────────────────────────────
+-- `now()` then `elapsed()` — monotonic, so a wall-clock adjustment mid-measure
+-- cannot produce a negative duration.
+
+fn time_a_loop : i64 -> time.duration.Duration
+  | iterations ->
+    let start = time.now()
+    let mut i = 0i64
+    let mut acc = 0i64
+    while i < iterations
+      acc = acc + i
+      i = i + 1i64
+    time.elapsed(start)
+
+-- Two instants, difference between them. Same monotonic guarantee.
+fn between : (time.instant.Instant, time.instant.Instant) -> time.duration.Duration
+  | (a, b) -> time.dur_since(b, a)
+
+-- ── 6. Composite: a lock with a deadline ────────────────────────────────────
+-- Spin on trylock until the budget is spent. Not a good production pattern
+-- (a real timed lock belongs in the runtime) but it shows the two APIs
+-- composing, and it cannot deadlock.
+
+fn lock_with_budget : (*sync.mutex.Mutex, i64) -> bool
+  | (m, max_spins) ->
+    let mut spins = 0i64
+    let mut got = false
+    while spins < max_spins && !got
+      if sync.mutex_trylock(m) then got = true
+      spins = spins + 1i64
+    got
+
+fn main_demo : (*sync.mutex.Mutex, *i64) -> i64
+  | (m, counter) ->
+    let a = guarded_increment(m, counter)
+    let b = if try_increment(m, counter) then 1i64 else 0i64
+    let c = if lock_with_budget(m, 8i64) then 1i64 else 0i64
+    if c then sync.mutex_unlock(m)
+    a + b

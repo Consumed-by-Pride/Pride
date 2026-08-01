@@ -112,7 +112,7 @@ fn read_file_to_string : ptr -> string.String
           let mut br = bufreader_new(f);
           let mut line = string.str_new();
           while bufreader_read_line(&br, &line) do {
-              string.str_concat_raw(&s, line.ptr, line.len);
+              string.str_concat_raw(&s, string.str_ptr(&line), line.len);
               string.str_push_byte(&s, 10u8);
               string.str_clear(&line);
           };

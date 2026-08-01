@@ -1,0 +1,50 @@
+mod t73
+
+-- REGRESSION: `then` is a CONTEXTUAL SOFT KEYWORD (spec §25) delivered by the
+-- lexer as an ordinary TOKEN_IDENT so it stays usable as a variable name.
+--
+-- Three other soft keywords disambiguate themselves by asking "does an
+-- identifier follow?": `tail` (tail-call annotation vs. variable), `handle`
+-- (effect handler vs. variable), `stage` (staging block vs. variable). All of
+-- them saw IDENT(`then`) and concluded their construct had begun, consuming
+-- the `then` that actually terminated the enclosing `if` condition.
+--
+-- From stdlib/os/linux/io_uring.pie:300 -- `if head == tail then 0 as *T`
+-- parsed `tail then` as a tail call, the `if` lost its body, and the error
+-- surfaced as "unresolved name 'then'".
+
+fn tail_then : i64 -> i64
+  | n ->
+    let head = n
+    let tail = n
+    if head == tail then 0i64
+    else 1i64
+
+-- `tail` as a genuine tail-call annotation must still work.
+fn helper : i64 -> i64
+  | x -> x + 1i64
+
+fn tail_call : i64 -> i64
+  | n -> tail helper(n)
+
+-- `handle` as a plain variable immediately before `then`.
+fn handle_then : i64 -> i64
+  | n ->
+    let handle = n
+    if handle == n then 1i64
+    else 0i64
+
+-- `stage` as a plain variable immediately before `then`.
+fn stage_then : i64 -> i64
+  | n ->
+    let stage = n
+    if stage > 0i64 then stage
+    else 0i64
+
+-- `tail` used as a variable in the ordinary ring-buffer way (no `then`).
+fn ring_use : i64 -> i64
+  | cap ->
+    let mut tail = 0i64
+    tail = tail + 1i64
+    if tail >= cap then 0i64
+    else tail

@@ -1,0 +1,216 @@
+mod experiments.stdlib_demos.demo_strings
+
+use str
+use str.string
+
+-- ============================================================================
+-- STDLIB DEMO — Strings, ASCII classification, and UTF-8
+-- ----------------------------------------------------------------------------
+-- `stdlib/str.pie` is a façade over three layers:
+--
+--   str.ascii   — byte classification and case folding (ASCII only)
+--   str.raw     — UTF-8 decoding/encoding on raw pointers, no allocation
+--   str.string  — a growable, owned String with capacity management
+--
+-- The split matters. `ascii_to_upper` on a UTF-8 continuation byte would be
+-- wrong, so the classification layer is deliberately byte-oriented and the
+-- codepoint layer is separate. This demo uses each at the level it is meant
+-- for.
+--
+-- OWNERSHIP: every `string.String` returned by `new`, `with_cap`, `clone`,
+-- `concat` or `from_*` owns a heap buffer and must be destroyed. Pride has no
+-- RAII, so every function below that creates one also destroys it.
+-- ============================================================================
+
+-- ── 1. Byte classification ──────────────────────────────────────────────────
+-- The classic scanner predicates. All operate on a single byte, so they are
+-- safe to call in a tight loop without bounds concerns.
+
+fn count_digits : (ptr, i64) -> i64
+  | (data, len) ->
+    let mut i = 0i64
+    let mut n = 0i64
+    while i < len
+      let b = (data as i64 + i) as *u8
+      if str.is_digit(b[0i64]) then n = n + 1i64
+      i = i + 1i64
+    n
+
+fn count_alpha : (ptr, i64) -> i64
+  | (data, len) ->
+    let mut i = 0i64
+    let mut n = 0i64
+    while i < len
+      let b = (data as i64 + i) as *u8
+      if str.is_alpha(b[0i64]) then n = n + 1i64
+      i = i + 1i64
+    n
+
+-- Classify a whole buffer in one pass: digits, letters, spaces, other.
+-- Returns them packed so the demo stays single-valued.
+fn classify_buffer : (ptr, i64) -> i64
+  | (data, len) ->
+    let mut i = 0i64
+    let mut digits = 0i64
+    let mut alpha  = 0i64
+    let mut spaces = 0i64
+    while i < len
+      let p = (data as i64 + i) as *u8
+      let c = p[0i64]
+      if str.is_digit(c) then digits = digits + 1i64
+      else
+        if str.is_alpha(c) then alpha = alpha + 1i64
+        else
+          if str.is_space(c) then spaces = spaces + 1i64
+      i = i + 1i64
+    digits * 1000000i64 + alpha * 1000i64 + spaces
+
+-- ── 2. Case folding ─────────────────────────────────────────────────────────
+-- ASCII-only by design. A non-ASCII byte passes through unchanged, which is
+-- the correct behaviour for a byte-level fold.
+
+fn upper_in_place : (ptr, i64) -> i64
+  | (data, len) ->
+    let mut i = 0i64
+    let mut changed = 0i64
+    while i < len
+      let p = (data as i64 + i) as *u8
+      let before = p[0i64]
+      let after = str.ascii_to_upper(before)
+      if before != after
+        p[0i64] = after
+        changed = changed + 1i64
+      i = i + 1i64
+    changed
+
+-- ── 3. UTF-8 ────────────────────────────────────────────────────────────────
+-- `utf8_char_len` reads the LEAD byte and returns how many bytes the whole
+-- codepoint occupies. Walking by that length rather than by 1 is what makes
+-- a scanner codepoint-correct instead of byte-correct.
+
+fn count_codepoints : (ptr, i64) -> i64
+  | (data, len) ->
+    let mut i = 0i64
+    let mut n = 0i64
+    while i < len
+      let p = (data as i64 + i) as *u8
+      let w = str.utf8_char_len(p[0i64])
+      let step = if w < 1i64 then 1i64 else w
+      i = i + step
+      n = n + 1i64
+    n
+
+-- Decode each codepoint and sum them. `decode_char` writes the consumed
+-- width through the out-parameter, so the loop cannot desynchronise.
+fn sum_codepoints : (ptr, i64) -> i64
+  | (data, len) ->
+    let mut i = 0i64
+    let mut total = 0i64
+    while i < len
+      let mut consumed = 0i64
+      let at = (data as i64 + i) as ptr
+      let cp = str.decode_char(at, len - i, &consumed)
+      if consumed <= 0i64
+        i = len
+      else
+        total = total + cp
+        i = i + consumed
+    total
+
+fn validate : (ptr, i64) -> bool
+  | (data, len) -> str.is_valid_utf8(data, len)
+
+-- ── 4. Owned strings ────────────────────────────────────────────────────────
+-- Build, measure, destroy. `with_cap` pre-allocates so a known-size build
+-- does not repeatedly grow.
+
+fn build_repeated : (u8, i64) -> i64
+  | (byte, count) ->
+    let mut s = str.with_cap(count)
+    let mut i = 0i64
+    while i < count
+      str.push_byte(&s, byte)
+      i = i + 1i64
+    let n = str.len(&s)
+    str.destroy(&s)
+    n
+
+-- Capacity grows geometrically; length tracks exactly. Returns the ratio so a
+-- regression in the growth policy is visible.
+fn growth_behaviour : i64 -> i64
+  | count ->
+    let mut s = str.new()
+    let mut i = 0i64
+    while i < count
+      str.push_byte(&s, 65u8)
+      i = i + 1i64
+    let n = str.len(&s)
+    let c = str.cap(&s)
+    str.destroy(&s)
+    if c >= n then 1i64 else 0i64
+
+-- Concatenation allocates a THIRD string; all three need destroying.
+fn concat_demo : (ptr, ptr) -> i64
+  | (a_cstr, b_cstr) ->
+    let mut a = str.from_cstr(a_cstr)
+    let mut b = str.from_cstr(b_cstr)
+    let mut c = str.concat(&a, &b)
+    let total = str.len(&c)
+    str.destroy(&c)
+    str.destroy(&b)
+    str.destroy(&a)
+    total
+
+-- Clone produces an independent buffer: mutating the copy must not touch the
+-- original. Returns 1 when they stayed independent.
+fn clone_independence : ptr -> i64
+  | src ->
+    let mut a = str.from_cstr(src)
+    let before = str.len(&a)
+    let mut b = str.clone(&a)
+    str.push_byte(&b, 33u8)
+    let a_after = str.len(&a)
+    let b_after = str.len(&b)
+    str.destroy(&b)
+    str.destroy(&a)
+    if a_after == before && b_after == before + 1i64 then 1i64 else 0i64
+
+-- Clear resets length but keeps capacity, so a reused buffer does not
+-- reallocate.
+fn clear_keeps_capacity : () -> i64
+  | () ->
+    let mut s = str.with_cap(64i64)
+    str.push_byte(&s, 65u8)
+    str.push_byte(&s, 66u8)
+    let cap_before = str.cap(&s)
+    str.clear(&s)
+    let len_after = str.len(&s)
+    let cap_after = str.cap(&s)
+    str.destroy(&s)
+    if len_after == 0i64 && cap_after == cap_before then 1i64 else 0i64
+
+-- ── 5. Codepoint append ─────────────────────────────────────────────────────
+-- `push_char` encodes a codepoint as UTF-8 and appends the bytes, so the
+-- resulting length grows by the ENCODED width, not by one.
+
+fn push_multibyte : () -> i64
+  | () ->
+    let mut s = str.new()
+    let a = str.push_char(&s, 65i64)      -- 'A'    -> 1 byte
+    let b = str.push_char(&s, 233i64)     -- 'é'    -> 2 bytes
+    let c = str.push_char(&s, 8364i64)    -- '€'    -> 3 bytes
+    let n = str.len(&s)
+    str.destroy(&s)
+    n
+
+fn main_demo : ptr -> i64
+  | text ->
+    let d = count_digits(text, 16i64)
+    let a = count_alpha(text, 16i64)
+    let cp = count_codepoints(text, 16i64)
+    let ok = if validate(text, 16i64) then 1i64 else 0i64
+    let built = build_repeated(65u8, 32i64)
+    let grew = growth_behaviour(100i64)
+    let cleared = clear_keeps_capacity()
+    let multi = push_multibyte()
+    d + a + cp + ok + built + grew + cleared + multi

@@ -1,0 +1,4 @@
+fn f : () -> i64
+  | () ->
+      let x = comptime 3i64 * 4i64
+      x

@@ -4,6 +4,7 @@ use os.linux
 use fs.file
 use str.string
 use db.memtable
+use vec.vec
 
 -- stdlib/db/sstable.pie — Immutable Sorted String Table (SSTable)
 -- Disk-backed sorted data block and index footer for LSM database queries.

@@ -1,0 +1,4 @@
+mod modsys.lib
+
+pub fn add : (i64, i64) -> i64
+  | (a, b) -> a + b

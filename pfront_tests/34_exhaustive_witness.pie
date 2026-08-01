@@ -1,0 +1,7 @@
+enum Color
+  Red,
+  Green,
+  Blue,
+
+fn name : Color -> i64
+  | c -> match c | Red -> 0i64 | Green -> 1i64

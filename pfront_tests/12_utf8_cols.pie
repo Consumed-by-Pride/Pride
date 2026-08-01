@@ -1,0 +1,6 @@
+fn f : i64 -> i64
+  | x -> undefined_thing(x)
+
+-- σ φ → ∪ unicode comment ahead
+fn g : i64 -> i64
+  | y -> another_missing(y)
