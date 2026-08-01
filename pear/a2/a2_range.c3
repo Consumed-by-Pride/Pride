@@ -802,9 +802,19 @@ fn bool Solver.sigma_bound(Solver* s, uint sid, long* out, bool allow_symbolic)
 
  `x == n` with n in [a,b] gives x in [a,b] — an intersection, not a
  comparison against one endpoint, so it does not fit the bound-based path
- above and was previously dropped on the floor. Measured on stdlib/io.pie:
- 26 of 211 σ evaluations had a perfectly usable interval bound and
- returned nothing because the fact was EQ.
+ above and was dropped on the floor entirely.
+
+ Measured on stdlib/io.pie by counting the fact on every σ that reached
+ this path: 73 lt, 39 ge, 13 gt, 1 le — all handled by sigma_bound — and
+ 8 eq plus 9 ne, which were not. So this recovers 8 refinements in that
+ module, not the 26 an earlier version of this comment claimed: 26 was
+ the count of σ evaluations rejected with a usable interval in hand, and
+ most of those were rejected for the correct reason (a moving symbolic
+ bound during widening), not for being EQ.
+
+ Across the whole 233-module sweep the aggregate ranged-value count does
+ not move at all. The fixture pear/a2/tests/ok_sigma_eq_symbolic.air is
+ what proves the path works, because the standard library barely uses it.
 
  NE is included and deliberately does almost nothing: an interval domain
  cannot represent a hole, so `x != n` only narrows when n is a single
@@ -909,24 +919,34 @@ fn void Solver.solve_comp(Solver* s, int* members, usz count)
      transfer functions are contracting reaches its fixed point in two or
      three steps.
 
-     Measured on stdlib/io.pie: the cycle
-
-         %258 = phi(%251, %273)     %251 has range [0,0]
-         %263 = sigma %258 (> 0)
-         %273 = %263 >> 4
-
-     converges to [0,0] under plain iteration in two passes. With widening
-     applied immediately it goes to top on the first pass and stays there:
-     narrowing cannot recover it, because the σ bound `> 0` only pins the
-     LOWER end, while the upper end of `%273` is derived from `%258`'s own
-     upper bound — exactly what widening discarded. Seventeen of the
-     un-ranged comparison operands in that one module were this shape.
-
      WIDEN_AFTER is the number of plain passes granted first. Termination
      is unaffected: after the delay the operator is applied on every
      subsequent pass exactly as before, so the ascending chain is still
      finite. The delay only changes which fixed point is reached, never
      whether one is.
+
+     ── What this is worth, measured rather than argued ─────────────────
+
+     Almost nothing on this standard library, and the honest number is
+     here so nobody re-derives it. Total ranged values across 233 modules:
+
+         WIDEN_AFTER = 0   18,766      (widen from the first pass)
+         WIDEN_AFTER = 1   18,724
+         WIDEN_AFTER = 3   18,766      (the setting in use)
+         WIDEN_AFTER = 8   18,779
+
+     A 55-value spread over the whole library, and 0 above always-on
+     widening. The reason is visible in the SCC distribution: on
+     stdlib/io.pie the constraint graph has 2,159 components of which 27
+     hold more than one value, and the largest holds 9. Delayed widening
+     can only matter inside a multi-value component, and there are almost
+     none — Pride's loops mostly carry their induction variable through a
+     σ whose bound is already a literal, which the ordinary path handles.
+
+     The delay is KEPT because it costs nothing (the same fixed point is
+     reached, just occasionally more precisely) and because a language
+     with more cyclic dataflow would benefit. It is not kept because it
+     was measured to help here. It was not.
     */
     const usz WIDEN_AFTER = 3;
 

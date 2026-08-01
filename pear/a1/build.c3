@@ -333,9 +333,10 @@ fn void Builder.add_incomplete(Builder* b, Node* binder, uint block, uint phi)
                     time, once every predecessor exists. This is what makes
                     a loop-carried variable work in one pass.
    one predecessor  no φ can be needed; recurse into it. This is the case
-                    that keeps straight-line code φ-free, and it is most of
-                    real code — theory_live measured 53% of stdlib
-                    variables never crossing a block boundary.
+                    that keeps straight-line code φ-free, and it is most
+                    of real code — 83% of AIR values across the standard
+                    library are block-local (49,490 of 59,251, measured by
+                    air_infer's SP classification).
    many predecessors  create the φ, RECORD IT FIRST, then fill operands.
                     Recording before filling is what terminates the
                     recursion on a cycle.

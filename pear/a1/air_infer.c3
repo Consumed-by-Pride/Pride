@@ -48,8 +48,15 @@ extern fn void  free(void* p);
 
  Briggs/Cooper/Harvey/Simpson's semi-pruned form: cheaper than pruned
  (which needs full liveness) and far cheaper than minimal-with-dead-φ.
- theory_live.c3 measured 53% of stdlib variables never crossing a block
- boundary, so this filter roughly halves the φ count before any φ is placed.
+
+ Measured by this pass over the 233-module standard library: 49,490 of
+ 59,251 values are block-local and 9,761 are non-local, so 83% need no φ
+ considered at all.
+
+ An earlier version of this comment said 53%, carried over from a
+ theory_live.c3 measurement of a different quantity (source-level
+ variables, not AIR values) taken before a1 existed. The number here is
+ the one this file actually produces, recomputed from `--stats` output.
 
  Recording it per value rather than in a side set makes the placement
  decision auditable: the .air text says which values were considered
