@@ -140,8 +140,22 @@ fn void Facts2.learn(Facts2* f, uint origin, pear_erm::Facts fact, FactSource sr
     if (!pear_erm::facts_known(&fact)) { return; }
     if (!f.ensure_source((usz)origin)) { return; }
 
-    // Attribute to the FIRST analysis that learned anything here; a later
-    // refinement of the same lineage is not a new fact.
+    /*
+     Attribute the LINEAGE to the first analysis that learned anything
+     about it. A later refinement of the same origin is not a new fact.
+
+     The per-source counters and `established` therefore count the same
+     thing -- ORIGINS, not values -- and must agree. They did not: the
+     counters were incremented once per learn() call while `established`
+     counted distinct origins, so on stdlib/io.pie the breakdown read
+     "established: 984 (a1 1671, range 29, memssa 75)". 1,775 parts of a
+     984 whole, because sigma and pi INHERIT their source's origin (D1),
+     so many values legitimately share one lineage and each of them
+     called learn().
+
+     The guard below already existed for `source`; the counter increment
+     just sat outside it.
+    */
     if (f.source[origin] == FactSource.FS_NONE)
     {
         f.source[origin] = src;
@@ -242,9 +256,28 @@ fn void writeback(Air* m, Facts2* f)
  so counting entries would report 100% survival on a pass that deleted
  every value in the program.
 */
+/*
+ Three DIFFERENT quantities, which an earlier version of this report
+ conflated into one line:
+
+   contributed  origins an analysis ever put a fact into. This is what
+                the per-source counters add up to.
+   established  origins whose fact is STILL non-trivial when the report
+                runs. Strictly smaller: a2 rewrites values, and a fact
+                that was interesting about `%7` before constant folding
+                may be `range=3..3` on a literal afterwards, which
+                facts_known correctly calls trivial.
+   reached      established origins still named by a live value.
+
+ The report used to print `established` next to the per-source breakdown,
+ so stdlib/io.pie read "established: 984 (a1 1671, range 29, memssa 75)"
+ -- 1,775 parts of a 984 whole. Both numbers were right; putting them on
+ one line implied they measured the same thing.
+*/
 struct Survival
 {
-    usz established;     // origins that ever got a non-trivial fact
+    usz contributed;     // origins any analysis put a fact into
+    usz established;     // ...whose fact is still non-trivial now
     usz reached;         // ...still named by a live value
     usz orphaned;        // ...named by nothing: the fact is unusable
     usz values;          // live values
@@ -254,7 +287,7 @@ struct Survival
 
 fn void measure(Air* m, Facts2* f, Survival* s)
 {
-    s.established = 0; s.reached = 0; s.orphaned = 0;
+    s.contributed = 0; s.established = 0; s.reached = 0; s.orphaned = 0;
     s.values = 0; s.values_with = 0; s.values_without = 0;
 
     usz n = f.t.cap;
@@ -278,6 +311,7 @@ fn void measure(Air* m, Facts2* f, Survival* s)
     for (usz i = 0; i < n; i++)
     {
         if (!f.t.present[i]) { continue; }
+        s.contributed = s.contributed + 1;
         pear_erm::Facts ff = f.t.by_origin[i];
         if (!pear_erm::facts_known(&ff)) { continue; }
         s.established = s.established + 1;
@@ -289,9 +323,11 @@ fn void measure(Air* m, Facts2* f, Survival* s)
 
 fn void print_survival(Facts2* f, Survival* s)
 {
-    printf("  facts established: %d   (a1 %d, range %d, memssa %d, sccp %d)\n",
-           (int)s.established, (int)f.from_a1, (int)f.from_range,
+    printf("  facts contributed: %d   (a1 %d, range %d, memssa %d, sccp %d)\n",
+           (int)s.contributed, (int)f.from_a1, (int)f.from_range,
            (int)f.from_memssa, (int)f.from_sccp);
+    printf("  facts non-trivial: %d   (still say something after a2 rewrote)\n",
+           (int)s.established);
     printf("  facts reachable  : %d\n", (int)s.reached);
     printf("  facts orphaned   : %d   (lineage no live value descends from)\n",
            (int)s.orphaned);

@@ -822,17 +822,69 @@ else
   fail=$((fail+1)); note FAIL "a2_jump_threading" "only $jt folded (want >=300)"
 fi
 
+# The .air READER must not crash on malformed input.
+#
+# a2 reads files, which is the point of D3 -- a stage testable against IR
+# no compiler produced -- but it also means the reader is the one part of
+# PEAR that consumes untrusted bytes. The corpus holds dangling operand
+# references, a phi naming a block that does not exist, a value using
+# itself as its own operand, a range whose bounds are reversed and
+# 20-digit, a negative field index, an unterminated block, an unknown
+# fact key, and random byte-flips of a valid file.
+af_bad=0
+for f in pear/a2/tests/fuzz/*.air; do
+  [ -e "$f" ] || continue
+  for tool in "$BIN" "$A2"; do
+    "$tool" "$f" >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" -gt 2 ]; then
+      af_bad=$((af_bad+1))
+      note FAIL "fuzz_air_reader" "$(basename "$f") crashed $tool with rc=$rc"
+    fi
+  done
+done
+af_n=$(ls pear/a2/tests/fuzz/*.air 2>/dev/null | wc -l)
+if [ "$af_bad" = "0" ] && [ "$af_n" -ge 20 ]; then
+  pass=$((pass+1)); note PASS "fuzz_air_reader" "($af_n malformed .air files, 0 crashes)"
+else
+  fail=$((fail+1)); note FAIL "fuzz_air_reader" "$af_bad crashes over $af_n files"
+fi
+
 # D1: facts must SURVIVE. The honest measure is reachability -- an entry
 # still named by a live value -- because nothing ever removes table
 # entries, so counting entries would report 100% survival even on a pass
 # that deleted the whole program.
 sv=$("$A2" --verify-facts pear/a2/tests/ok_loop_range.air 2>&1)
-est=$(echo "$sv" | grep -oE 'facts established: [0-9]+' | grep -oE '[0-9]+$')
+est=$(echo "$sv" | grep -oE 'facts non-trivial: [0-9]+' | grep -oE '[0-9]+$')
+con=$(echo "$sv" | grep -oE 'facts contributed: [0-9]+' | grep -oE '[0-9]+$')
 rch=$(echo "$sv" | grep -oE 'facts reachable  : [0-9]+' | grep -oE '[0-9]+$')
 if [ "${est:-0}" -ge 5 ] && [ "${rch:-0}" -ge 5 ] && [ "${rch:-0}" -le "${est:-0}" ]; then
   pass=$((pass+1)); note PASS "a2_D1_survival" "($rch of $est facts still reachable)"
 else
-  fail=$((fail+1)); note FAIL "a2_D1_survival" "established=$est reachable=$rch"
+  fail=$((fail+1)); note FAIL "a2_D1_survival" "non-trivial=$est reachable=$rch"
+fi
+
+# The per-source breakdown must ADD UP to the total it is printed beside.
+#
+# It did not: the report put `established` (origins whose fact is still
+# non-trivial) on the same line as the per-source counters (origins any
+# analysis contributed to), so stdlib/io.pie read
+# "established: 984 (a1 1671, range 29, memssa 75)" -- 1,775 parts of a
+# 984 whole. Both numbers were correct; the line implied they measured
+# the same thing. They are now separate lines, and this asserts the one
+# that is a breakdown really is one.
+big=/tmp/pear_a2_sweep/stdlib_io.pie.air
+if [ -e "$big" ]; then
+  bs=$("$A2" --verify-facts "$big" 2>/dev/null)
+  bc=$(echo "$bs" | grep -oE 'facts contributed: [0-9]+' | grep -oE '[0-9]+$')
+  # `a1` in the label contains a digit, so strip the KEYS before summing.
+  parts=$(echo "$bs" | sed -n 's/.*(a1 \([0-9]*\), range \([0-9]*\), memssa \([0-9]*\), sccp \([0-9]*\)).*/\1 \2 \3 \4/p' \
+          | awk '{print $1+$2+$3+$4}')
+  if [ -n "$bc" ] && [ "$bc" = "$parts" ]; then
+    pass=$((pass+1)); note PASS "a2_D1_breakdown_sums" "($bc = sum of its parts)"
+  else
+    fail=$((fail+1)); note FAIL "a2_D1_breakdown_sums" "contributed=$bc but parts sum to $parts"
+  fi
 fi
 
 # Nothing in a2 may be DEFINED AND NEVER CALLED.
