@@ -1,0 +1,17 @@
+; NEGATIVE fixture: %2 is defined only on the `l` arm but used on `r`,
+; which it does not dominate.
+module hand
+func broken entry=e
+  block e
+    %1 = const.bool ival=1
+    branch %1 l r
+  end
+  block l
+    %2 = const.int ival=5
+    ret %2
+  end
+  block r
+    %3 = bin %2 %2 op=add
+    ret %3
+  end
+endfunc

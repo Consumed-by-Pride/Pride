@@ -1,0 +1,12 @@
+; A hand-written AIR file. The point of D3's reader is that this exists at
+; all: a3/a4/a5 can be built and tested against files like this long before
+; a1's PNode -> AIR path is finished.
+module hand
+func add42 pub entry=b1
+  block b1
+    %1 = param name=n
+    %2 = const.int ival=42
+    %3 = bin %1 %2 op=add
+    ret %3
+  end
+endfunc

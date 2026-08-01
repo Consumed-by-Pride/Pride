@@ -13,3 +13,6 @@ __pycache__/
 # pfront build output
 /pfrontc
 /obj/
+
+# pear build output
+/pear_a1_test

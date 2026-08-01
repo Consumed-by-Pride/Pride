@@ -1,0 +1,19 @@
+; Variable-arity terminator plus the divergent ones. `trap` and
+; `unreachable` legitimately have no successors.
+module hand
+func dispatch entry=head
+  block head
+    %1 = param name=tag
+    switch %1 case 1->one case 7->seven default->other
+  end
+  block one
+    %2 = const.int ival=100
+    ret %2
+  end
+  block seven
+    trap
+  end
+  block other
+    unreachable
+  end
+endfunc

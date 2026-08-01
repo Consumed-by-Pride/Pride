@@ -1,0 +1,8 @@
+; NEGATIVE fixture: the entry block never terminates.
+; Expected: verify reports at least one error.
+module hand
+func broken entry=b1
+  block b1
+    %1 = const.int ival=1
+  end
+endfunc
