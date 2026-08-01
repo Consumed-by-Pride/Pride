@@ -1,0 +1,1201 @@
+mod prec_matrix
+
+fn p1 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b * c
+
+fn p2 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b / c
+
+fn p3 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b % c
+
+fn p4 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b + c
+
+fn p5 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b - c
+
+fn p6 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b << c
+
+fn p7 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b >> c
+
+fn p8 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b & c
+
+fn p9 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b ^ c
+
+fn p10 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b | c
+
+fn p11 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b < c
+
+fn p12 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b > c
+
+fn p13 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b <= c
+
+fn p14 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b >= c
+
+fn p15 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b == c
+
+fn p16 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b != c
+
+fn p17 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b and c
+
+fn p18 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b && c
+
+fn p19 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b or c
+
+fn p20 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a * b || c
+
+fn p21 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b * c
+
+fn p22 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b / c
+
+fn p23 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b % c
+
+fn p24 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b + c
+
+fn p25 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b - c
+
+fn p26 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b << c
+
+fn p27 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b >> c
+
+fn p28 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b & c
+
+fn p29 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b ^ c
+
+fn p30 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b | c
+
+fn p31 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b < c
+
+fn p32 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b > c
+
+fn p33 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b <= c
+
+fn p34 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b >= c
+
+fn p35 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b == c
+
+fn p36 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b != c
+
+fn p37 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b and c
+
+fn p38 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b && c
+
+fn p39 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b or c
+
+fn p40 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a / b || c
+
+fn p41 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b * c
+
+fn p42 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b / c
+
+fn p43 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b % c
+
+fn p44 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b + c
+
+fn p45 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b - c
+
+fn p46 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b << c
+
+fn p47 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b >> c
+
+fn p48 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b & c
+
+fn p49 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b ^ c
+
+fn p50 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b | c
+
+fn p51 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b < c
+
+fn p52 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b > c
+
+fn p53 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b <= c
+
+fn p54 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b >= c
+
+fn p55 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b == c
+
+fn p56 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b != c
+
+fn p57 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b and c
+
+fn p58 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b && c
+
+fn p59 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b or c
+
+fn p60 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a % b || c
+
+fn p61 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b * c
+
+fn p62 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b / c
+
+fn p63 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b % c
+
+fn p64 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b + c
+
+fn p65 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b - c
+
+fn p66 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b << c
+
+fn p67 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b >> c
+
+fn p68 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b & c
+
+fn p69 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b ^ c
+
+fn p70 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b | c
+
+fn p71 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b < c
+
+fn p72 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b > c
+
+fn p73 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b <= c
+
+fn p74 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b >= c
+
+fn p75 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b == c
+
+fn p76 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b != c
+
+fn p77 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b and c
+
+fn p78 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b && c
+
+fn p79 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b or c
+
+fn p80 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a + b || c
+
+fn p81 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b * c
+
+fn p82 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b / c
+
+fn p83 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b % c
+
+fn p84 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b + c
+
+fn p85 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b - c
+
+fn p86 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b << c
+
+fn p87 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b >> c
+
+fn p88 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b & c
+
+fn p89 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b ^ c
+
+fn p90 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b | c
+
+fn p91 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b < c
+
+fn p92 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b > c
+
+fn p93 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b <= c
+
+fn p94 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b >= c
+
+fn p95 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b == c
+
+fn p96 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b != c
+
+fn p97 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b and c
+
+fn p98 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b && c
+
+fn p99 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b or c
+
+fn p100 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a - b || c
+
+fn p101 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b * c
+
+fn p102 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b / c
+
+fn p103 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b % c
+
+fn p104 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b + c
+
+fn p105 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b - c
+
+fn p106 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b << c
+
+fn p107 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b >> c
+
+fn p108 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b & c
+
+fn p109 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b ^ c
+
+fn p110 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b | c
+
+fn p111 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b < c
+
+fn p112 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b > c
+
+fn p113 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b <= c
+
+fn p114 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b >= c
+
+fn p115 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b == c
+
+fn p116 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b != c
+
+fn p117 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b and c
+
+fn p118 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b && c
+
+fn p119 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b or c
+
+fn p120 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a << b || c
+
+fn p121 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b * c
+
+fn p122 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b / c
+
+fn p123 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b % c
+
+fn p124 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b + c
+
+fn p125 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b - c
+
+fn p126 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b << c
+
+fn p127 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b >> c
+
+fn p128 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b & c
+
+fn p129 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b ^ c
+
+fn p130 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b | c
+
+fn p131 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b < c
+
+fn p132 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b > c
+
+fn p133 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b <= c
+
+fn p134 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b >= c
+
+fn p135 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b == c
+
+fn p136 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b != c
+
+fn p137 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b and c
+
+fn p138 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b && c
+
+fn p139 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b or c
+
+fn p140 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >> b || c
+
+fn p141 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b * c
+
+fn p142 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b / c
+
+fn p143 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b % c
+
+fn p144 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b + c
+
+fn p145 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b - c
+
+fn p146 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b << c
+
+fn p147 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b >> c
+
+fn p148 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b & c
+
+fn p149 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b ^ c
+
+fn p150 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b | c
+
+fn p151 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b < c
+
+fn p152 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b > c
+
+fn p153 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b <= c
+
+fn p154 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b >= c
+
+fn p155 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b == c
+
+fn p156 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b != c
+
+fn p157 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b and c
+
+fn p158 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b && c
+
+fn p159 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b or c
+
+fn p160 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a & b || c
+
+fn p161 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b * c
+
+fn p162 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b / c
+
+fn p163 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b % c
+
+fn p164 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b + c
+
+fn p165 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b - c
+
+fn p166 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b << c
+
+fn p167 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b >> c
+
+fn p168 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b & c
+
+fn p169 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b ^ c
+
+fn p170 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b | c
+
+fn p171 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b < c
+
+fn p172 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b > c
+
+fn p173 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b <= c
+
+fn p174 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b >= c
+
+fn p175 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b == c
+
+fn p176 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b != c
+
+fn p177 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b and c
+
+fn p178 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b && c
+
+fn p179 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b or c
+
+fn p180 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a ^ b || c
+
+fn p181 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b * c
+
+fn p182 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b / c
+
+fn p183 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b % c
+
+fn p184 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b + c
+
+fn p185 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b - c
+
+fn p186 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b << c
+
+fn p187 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b >> c
+
+fn p188 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b & c
+
+fn p189 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b ^ c
+
+fn p190 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b | c
+
+fn p191 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b < c
+
+fn p192 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b > c
+
+fn p193 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b <= c
+
+fn p194 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b >= c
+
+fn p195 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b == c
+
+fn p196 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b != c
+
+fn p197 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b and c
+
+fn p198 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b && c
+
+fn p199 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b or c
+
+fn p200 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a | b || c
+
+fn p201 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b * c
+
+fn p202 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b / c
+
+fn p203 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b % c
+
+fn p204 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b + c
+
+fn p205 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b - c
+
+fn p206 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b << c
+
+fn p207 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b >> c
+
+fn p208 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b & c
+
+fn p209 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b ^ c
+
+fn p210 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b | c
+
+fn p211 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b < c
+
+fn p212 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b > c
+
+fn p213 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b <= c
+
+fn p214 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b >= c
+
+fn p215 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b == c
+
+fn p216 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b != c
+
+fn p217 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b and c
+
+fn p218 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b && c
+
+fn p219 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b or c
+
+fn p220 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a < b || c
+
+fn p221 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b * c
+
+fn p222 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b / c
+
+fn p223 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b % c
+
+fn p224 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b + c
+
+fn p225 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b - c
+
+fn p226 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b << c
+
+fn p227 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b >> c
+
+fn p228 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b & c
+
+fn p229 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b ^ c
+
+fn p230 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b | c
+
+fn p231 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b < c
+
+fn p232 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b > c
+
+fn p233 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b <= c
+
+fn p234 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b >= c
+
+fn p235 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b == c
+
+fn p236 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b != c
+
+fn p237 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b and c
+
+fn p238 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b && c
+
+fn p239 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b or c
+
+fn p240 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a > b || c
+
+fn p241 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b * c
+
+fn p242 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b / c
+
+fn p243 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b % c
+
+fn p244 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b + c
+
+fn p245 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b - c
+
+fn p246 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b << c
+
+fn p247 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b >> c
+
+fn p248 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b & c
+
+fn p249 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b ^ c
+
+fn p250 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b | c
+
+fn p251 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b < c
+
+fn p252 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b > c
+
+fn p253 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b <= c
+
+fn p254 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b >= c
+
+fn p255 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b == c
+
+fn p256 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b != c
+
+fn p257 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b and c
+
+fn p258 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b && c
+
+fn p259 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b or c
+
+fn p260 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a <= b || c
+
+fn p261 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b * c
+
+fn p262 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b / c
+
+fn p263 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b % c
+
+fn p264 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b + c
+
+fn p265 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b - c
+
+fn p266 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b << c
+
+fn p267 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b >> c
+
+fn p268 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b & c
+
+fn p269 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b ^ c
+
+fn p270 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b | c
+
+fn p271 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b < c
+
+fn p272 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b > c
+
+fn p273 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b <= c
+
+fn p274 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b >= c
+
+fn p275 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b == c
+
+fn p276 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b != c
+
+fn p277 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b and c
+
+fn p278 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b && c
+
+fn p279 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b or c
+
+fn p280 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a >= b || c
+
+fn p281 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b * c
+
+fn p282 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b / c
+
+fn p283 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b % c
+
+fn p284 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b + c
+
+fn p285 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b - c
+
+fn p286 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b << c
+
+fn p287 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b >> c
+
+fn p288 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b & c
+
+fn p289 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b ^ c
+
+fn p290 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b | c
+
+fn p291 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b < c
+
+fn p292 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b > c
+
+fn p293 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b <= c
+
+fn p294 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b >= c
+
+fn p295 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b == c
+
+fn p296 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b != c
+
+fn p297 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b and c
+
+fn p298 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b && c
+
+fn p299 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b or c
+
+fn p300 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a == b || c
+
+fn p301 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b * c
+
+fn p302 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b / c
+
+fn p303 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b % c
+
+fn p304 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b + c
+
+fn p305 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b - c
+
+fn p306 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b << c
+
+fn p307 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b >> c
+
+fn p308 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b & c
+
+fn p309 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b ^ c
+
+fn p310 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b | c
+
+fn p311 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b < c
+
+fn p312 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b > c
+
+fn p313 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b <= c
+
+fn p314 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b >= c
+
+fn p315 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b == c
+
+fn p316 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b != c
+
+fn p317 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b and c
+
+fn p318 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b && c
+
+fn p319 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b or c
+
+fn p320 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a != b || c
+
+fn p321 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b * c
+
+fn p322 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b / c
+
+fn p323 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b % c
+
+fn p324 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b + c
+
+fn p325 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b - c
+
+fn p326 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b << c
+
+fn p327 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b >> c
+
+fn p328 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b & c
+
+fn p329 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b ^ c
+
+fn p330 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b | c
+
+fn p331 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b < c
+
+fn p332 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b > c
+
+fn p333 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b <= c
+
+fn p334 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b >= c
+
+fn p335 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b == c
+
+fn p336 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b != c
+
+fn p337 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b and c
+
+fn p338 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b && c
+
+fn p339 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b or c
+
+fn p340 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a and b || c
+
+fn p341 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b * c
+
+fn p342 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b / c
+
+fn p343 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b % c
+
+fn p344 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b + c
+
+fn p345 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b - c
+
+fn p346 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b << c
+
+fn p347 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b >> c
+
+fn p348 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b & c
+
+fn p349 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b ^ c
+
+fn p350 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b | c
+
+fn p351 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b < c
+
+fn p352 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b > c
+
+fn p353 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b <= c
+
+fn p354 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b >= c
+
+fn p355 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b == c
+
+fn p356 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b != c
+
+fn p357 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b and c
+
+fn p358 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b && c
+
+fn p359 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b or c
+
+fn p360 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a && b || c
+
+fn p361 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b * c
+
+fn p362 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b / c
+
+fn p363 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b % c
+
+fn p364 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b + c
+
+fn p365 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b - c
+
+fn p366 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b << c
+
+fn p367 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b >> c
+
+fn p368 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b & c
+
+fn p369 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b ^ c
+
+fn p370 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b | c
+
+fn p371 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b < c
+
+fn p372 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b > c
+
+fn p373 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b <= c
+
+fn p374 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b >= c
+
+fn p375 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b == c
+
+fn p376 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b != c
+
+fn p377 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b and c
+
+fn p378 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b && c
+
+fn p379 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b or c
+
+fn p380 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a or b || c
+
+fn p381 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b * c
+
+fn p382 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b / c
+
+fn p383 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b % c
+
+fn p384 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b + c
+
+fn p385 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b - c
+
+fn p386 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b << c
+
+fn p387 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b >> c
+
+fn p388 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b & c
+
+fn p389 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b ^ c
+
+fn p390 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b | c
+
+fn p391 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b < c
+
+fn p392 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b > c
+
+fn p393 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b <= c
+
+fn p394 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b >= c
+
+fn p395 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b == c
+
+fn p396 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b != c
+
+fn p397 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b and c
+
+fn p398 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b && c
+
+fn p399 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b or c
+
+fn p400 : (i64, i64, i64) -> i64
+  | (a, b, c) -> a || b || c

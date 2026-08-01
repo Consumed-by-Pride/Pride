@@ -1,0 +1,33 @@
+mod unicode_ops
+-- Section 3.5 + 24: unicode spellings are DISTINCT TOKENS that must mean
+-- exactly what their ASCII twins mean. Every one is exercised in both
+-- spellings so a divergence shows up as a parse or resolve difference.
+
+fn cmp_le_ascii : (i64, i64) -> bool
+  | (a, b) -> a <= b
+fn cmp_le_uni : (i64, i64) -> bool
+  | (a, b) -> a ≤ b
+
+fn cmp_ge_ascii : (i64, i64) -> bool
+  | (a, b) -> a >= b
+fn cmp_ge_uni : (i64, i64) -> bool
+  | (a, b) -> a ≥ b
+
+fn cmp_ne_ascii : (i64, i64) -> bool
+  | (a, b) -> a != b
+fn cmp_ne_uni : (i64, i64) -> bool
+  | (a, b) -> a ≠ b
+
+-- ¬ as prefix (precedence level 2)
+fn negate_uni : bool -> bool
+  | b -> ¬ b
+fn negate_ascii : bool -> bool
+  | b -> not b
+
+-- ∈ sits at compare level (11)
+fn member : (i64, i64) -> bool
+  | (x, s) -> x ∈ s
+
+-- Unicode ops must still respect precedence: ¬ binds tighter than ≤
+fn mixed : (bool, bool) -> bool
+  | (p, q) -> ¬ p and ¬ q

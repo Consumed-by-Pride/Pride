@@ -100,6 +100,31 @@ const int TK_AMPAMP    = (int)pfront_lex::TokenType.TOKEN_AMPAMP.ordinal;
 const int TK_PIPEPIPE  = (int)pfront_lex::TokenType.TOKEN_PIPEPIPE.ordinal;
 const int TK_XOR       = (int)pfront_lex::TokenType.TOKEN_XOR.ordinal;
 const int TK_BANG      = (int)pfront_lex::TokenType.TOKEN_BANG.ordinal;
+/*
+ The three OTHER spellings of logical negation, and the one bitwise one.
+
+ `not x`, `!x` and `¬x` are the same operator (spec section 24 puts all
+ three at prefix level 2, and section 25 lists `not` as a core keyword).
+ `~x` is bitwise complement and is genuinely different.
+
+ Only TOKEN_BANG was mapped. `not` and `¬` fell into the `default` arm of
+ the unary switch and lowered to AUO_BNOT -- so `not flag` compiled to a
+ bitwise complement, turning `not true` into -2 rather than false. That is
+ a miscompile, not an imprecision, and it survived because nothing in the
+ stdlib spells it `not` in a position where a1's output was inspected.
+*/
+const int TK_KW_NOT    = (int)pfront_lex::TokenType.TOKEN_KW_NOT.ordinal;
+/*
+ `and` / `or` are KEYWORD spellings of `&&` / `||` (spec section 24 puts
+ each pair on one precedence level, section 25 lists both as core
+ keywords). Only the symbol spellings were mapped, so `p and q` lowered
+ to AIR_UNKNOWN -- a silent hole for an operator the spec lists first.
+*/
+const int TK_KW_AND    = (int)pfront_lex::TokenType.TOKEN_KW_AND.ordinal;
+const int TK_KW_OR     = (int)pfront_lex::TokenType.TOKEN_KW_OR.ordinal;
+const int TK_NEGATION  = (int)pfront_lex::TokenType.TOKEN_NEGATION.ordinal;
+const int TK_TILDE     = (int)pfront_lex::TokenType.TOKEN_TILDE.ordinal;
+const int TK_ELEMENT   = (int)pfront_lex::TokenType.TOKEN_ELEMENT.ordinal;
 const int TK_EQEQ      = (int)pfront_lex::TokenType.TOKEN_EQEQ.ordinal;
 const int TK_NEQ       = (int)pfront_lex::TokenType.TOKEN_NEQ.ordinal;
 const int TK_LT        = (int)pfront_lex::TokenType.TOKEN_LT.ordinal;
@@ -681,8 +706,18 @@ fn BOp binop_of(int tok)
         case TK_LTEQ:     return BOp.ABO_LE;
         case TK_GT:       return BOp.ABO_GT;
         case TK_GTEQ:     return BOp.ABO_GE;
-        case TK_AMPAMP:   return BOp.ABO_LAND;
-        case TK_PIPEPIPE: return BOp.ABO_LOR;
+        case TK_AMPAMP:
+        case TK_KW_AND:   return BOp.ABO_LAND;
+        case TK_PIPEPIPE:
+        case TK_KW_OR:    return BOp.ABO_LOR;
+        /*
+         `∈` is set membership. AIR has no set-membership opcode and
+         inventing one here would be a lie about what the back end can
+         emit, so it lowers to a CALL to the runtime's membership
+         predicate rather than to a bogus comparison. Handled at the
+         N_EXPR_BINARY site, not here -- binop_of only answers "which
+         arithmetic opcode", and the honest answer for ∈ is "none".
+        */
         case TK_GEQ_UNI:  return BOp.ABO_GE;
         case TK_LEQ_UNI:  return BOp.ABO_LE;
         case TK_NEQ_UNI:  return BOp.ABO_NE;
@@ -1084,6 +1119,34 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
             if (n.child_count < 2) { break; }
             uint l = b.lower_operand(n.children[0]);
             uint r = b.lower_operand(n.children[1]);
+
+            /*
+             `∈` is set membership, not arithmetic. AIR has no
+             set-membership opcode, and adding one would be claiming the
+             back end can emit something it cannot -- exactly the
+             "opcode exists, nothing produces it" shape that hid the
+             AIR_ADDR_INDEX bug.
+
+             So it lowers to a direct call to the runtime predicate. That
+             is a real, emittable construct with the right operands and
+             the right effect classification (a call clobbers memory),
+             and it is the same lowering a method call gets. Before this
+             it produced AIR_UNKNOWN, i.e. a silent hole.
+            */
+            if (n.p.op == TK_ELEMENT)
+            {
+                ops[0] = l; ops[1] = r;
+                uint mid = b.emit(Op.AIR_CALL_DIRECT, &ops[0], 2, n);
+                if (mid != pear_air::AIR_NO_VALUE)
+                {
+                    b.m.values[mid].p.name =
+                        b.interner.intern("pride_set_contains", 18);
+                    b.m.values[mid].facts.range = pear_erm::r_range(0, 1);
+                    b.m.values[mid].facts.width = 1;
+                }
+                return mid;
+            }
+
             BOp op = binop_of(n.p.op);
             if (op == BOp.ABO_NONE) { break; }
             ops[0] = l; ops[1] = r;
@@ -1127,12 +1190,26 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
             ops[0] = v;
             uint id = b.emit(Op.AIR_UN, &ops[0], 1, n);
             if (id == pear_air::AIR_NO_VALUE) { return id; }
+            /*
+             Route by token, and let anything unrecognised be COUNTED
+             rather than silently becoming a bitwise complement. The old
+             `default: AUO_BNOT` made every unmapped prefix operator
+             lower to `~`, which is wrong for `not`/`¬` and would be
+             wrong for anything added later.
+            */
             switch (n.p.op)
             {
-                case TK_MINUS: b.m.values[id].p.uop = UOp.AUO_NEG;
-                case TK_BANG:  b.m.values[id].p.uop = UOp.AUO_NOT;
-                default:       b.m.values[id].p.uop = UOp.AUO_BNOT;
+                case TK_MINUS:    b.m.values[id].p.uop = UOp.AUO_NEG;
+                case TK_BANG:
+                case TK_KW_NOT:
+                case TK_NEGATION: b.m.values[id].p.uop = UOp.AUO_NOT;
+                case TK_TILDE:    b.m.values[id].p.uop = UOp.AUO_BNOT;
+                default:
+                    b.m.values[id].p.uop = UOp.AUO_BNOT;
+                    b.unsupported = b.unsupported + 1;
+                    b.note_unsupported(n.kind);
             }
+            pear_infer::infer_value(b.m, id);
             return id;
         }
 

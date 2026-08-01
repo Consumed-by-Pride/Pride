@@ -1637,7 +1637,8 @@ fn int infix_prec(Tk t)
         case TOKEN_GT:
         case TOKEN_GTEQ:
         case TOKEN_GEQ_UNI:
-        case TOKEN_LEQ_UNI:       return 6;
+        case TOKEN_LEQ_UNI:
+        case TOKEN_ELEMENT:       return 6;   // ∈ — relational (spec §24)
         case TOKEN_PIPE:          return 7;
         case TOKEN_XOR:           return 8;
         case TOKEN_AMP:           return 9;
@@ -1993,6 +1994,17 @@ fn bool tok_starts_expr(Tk t)
     }
 }
 
+/*
+ Prefix operators (spec section 24, level 2).
+
+ `¬` is the unicode spelling of `not`. The lexer has produced
+ TOKEN_NEGATION since it was written, but the parser accepted it only in
+ TYPE position (set-theoretic negation, `¬null`). In expression position
+ it fell through to parse_postfix and reported "expected an expression",
+ so `¬ p` was a parse error while `not p` worked. The spec lists both
+ spellings of every unicode operator as equal; ≤ ≥ ≠ were wired up and
+ this one was missed.
+*/
 fn Node* Parser.parse_unary(Parser* p)
 {
     Tok t = p.cur();
@@ -2001,6 +2013,7 @@ fn Node* Parser.parse_unary(Parser* p)
         case TOKEN_MINUS:
         case TOKEN_BANG:
         case TOKEN_KW_NOT:
+        case TOKEN_NEGATION:   // ¬ — the unicode spelling of `not`
         case TOKEN_TILDE:      // bitwise complement: ~(al - 1)
         {
             p.advance();
