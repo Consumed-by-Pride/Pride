@@ -756,6 +756,49 @@ else
   fail=$((fail+1)); note FAIL "a2_stdlib_verify" "$a2_bad of $((a2_ok+a2_bad)) modules broke"
 fi
 
+# `assume` must be READ as a range refinement, not merely tolerated.
+#
+# air.c3's comment on AIR_ASSUME claimed "a2 reads it as a range
+# refinement" from the day the opcode was added, and nothing in a2
+# mentioned the opcode at all -- `assume n > 100` left n at top. The
+# comment was a claim about code that did not exist.
+cat > /tmp/pear_t_assume.pie <<'PIE'
+mod t
+fn f : i64 -> i64
+  | n ->
+    assume n > 100i64
+    n + 1i64
+PIE
+"$PEARC" /tmp/pear_t_assume.pie > /tmp/pear_t_assume.air 2>/dev/null
+if "$A2" /tmp/pear_t_assume.air 2>/dev/null | grep -qE 'param name=n.*\[range=101\.\.'; then
+  pass=$((pass+1)); note PASS "a2_assume_refines" "(assume n > 100 proves n in [101,MAX])"
+else
+  fail=$((fail+1)); note FAIL "a2_assume_refines" "assume was not read as a refinement"
+fi
+
+# `transmute` must NOT carry a range across. It reinterprets bits, so an
+# integer range established before it says nothing after it. This is the
+# entire reason it is a separate opcode from `cast`; collapsing them
+# would be unsound, and the assertion is what stops that happening later.
+# The transmuted value must stay LIVE, or DCE deletes it and the
+# assertion passes on an empty line -- which is how the first version of
+# this test "passed" while proving nothing.
+cat > /tmp/pear_t_tm.pie <<'PIE'
+mod t
+fn f : i64 -> i64
+  | n ->
+    let m = n & 15i64
+    let t = transmute(m) as i64
+    t + m
+PIE
+"$PEARC" /tmp/pear_t_tm.pie > /tmp/pear_t_tm.air 2>/dev/null
+tmline=$("$A2" /tmp/pear_t_tm.air 2>/dev/null | grep '= transmute')
+if [ -n "$tmline" ] && ! echo "$tmline" | grep -q 'range='; then
+  pass=$((pass+1)); note PASS "a2_transmute_opaque" "(no range carried across a reinterpret)"
+else
+  fail=$((fail+1)); note FAIL "a2_transmute_opaque" "transmute leaked a range: $tmline"
+fi
+
 # D1: facts must SURVIVE. The honest measure is reachability -- an entry
 # still named by a live value -- because nothing ever removes table
 # entries, so counting entries would report 100% survival even on a pass

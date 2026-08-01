@@ -332,6 +332,7 @@ struct Solver
     int     ncomp;
 
     usz     widened;      // how many values needed widening: loop count proxy
+    usz     assumes_applied;
     bool    ok;
 }
 
@@ -339,7 +340,7 @@ fn bool Solver.init(Solver* s, Air* m)
 {
     s.m = m;
     s.n = m.value_count;
-    s.widened = 0;
+    s.widened = 0; s.assumes_applied = 0;
     s.ok = false;
     usz n = s.n == 0 ? 1 : s.n;
     s.r        = (Range*)malloc(n * Range::size);
@@ -400,6 +401,7 @@ fn usz Solver.dep_count(Solver* s, uint v)
         case AIR_BIN:
         case AIR_UN:
         case AIR_CAST:
+        case AIR_FREEZE:
             return vv.op_count;
         default:
             return 0;
@@ -680,6 +682,30 @@ fn Range Solver.transfer(Solver* s, uint vid, bool use_sigma_bound)
                 uint a = s.m.operands[v.op_off];
                 if ((usz)a < s.n) { return s.r[a]; }
             }
+            return pear_erm::r_top();
+
+        case AIR_FREEZE:
+            /*
+             `freeze v` pins a possibly-poison value to an arbitrary but
+             FIXED bit pattern. It does not change a well-defined value,
+             so a range known about the operand still holds.
+            */
+            if (v.op_count >= 1)
+            {
+                uint a = s.m.operands[v.op_off];
+                if ((usz)a < s.n) { return s.r[a]; }
+            }
+            return pear_erm::r_top();
+
+        case AIR_TRANSMUTE:
+            /*
+             A REINTERPRETING cast. Deliberately returns top and does NOT
+             read its operand: the bits are reinterpreted, so an integer
+             range established before the transmute says nothing about the
+             value after it. This is the reason transmute is a separate
+             opcode from cast -- collapsing them would let the range flow
+             across and that would be unsound.
+            */
             return pear_erm::r_top();
 
         default:
@@ -1041,9 +1067,103 @@ fn bool is_computed(Op op)
         case AIR_BIN:
         case AIR_UN:
         case AIR_CAST:
+        case AIR_FREEZE:
             return true;
         default:
             return false;
+    }
+}
+
+/*
+ Apply every `assume` in the module as a range refinement.
+
+ `assume cond` is a PROMISE: the program guarantees cond holds from that
+ point on, and a2 is entitled to reason from it. When the condition is a
+ comparison against a constant -- `assume n > 100` -- that is exactly the
+ same refinement a σ carries, so it narrows the compared value's range.
+
+ This existed only as a claim. air.c3's comment on AIR_ASSUME said "a2
+ reads it as a range refinement", and nothing in a2 mentioned the opcode
+ at all: `assume n > 100` left n at top. The comment was written when the
+ opcode was added and was never true.
+
+ ── Why this is applied to the ORIGIN, not to a new value ───────────────
+
+ An `assume` does not produce a value, so there is no name to attach the
+ refined range to. The refinement therefore lands on the compared value
+ itself, which is sound only because an assume is a promise about the
+ whole remaining execution rather than about one edge -- unlike a σ,
+ which is edge-local and gets its own name precisely because it is not
+ globally true.
+
+ Being conservative about WHERE it applies matters: only a comparison
+ whose other side is a literal is used, and only in the same function.
+ An assume over a symbolic bound would need the σ machinery's dominance
+ reasoning to place safely.
+*/
+fn void Solver.apply_assumes(Solver* s)
+{
+    for (usz i = 1; i < s.n; i++)
+    {
+        Val* a = &s.m.values[i];
+        if (a.block == pear_air::AIR_NO_BLOCK || a.is_phi_hole) { continue; }
+        if (a.op != Op.AIR_ASSUME || a.op_count < 1) { continue; }
+
+        uint cid = s.m.operands[a.op_off];
+        Val* c = s.m.val(cid);
+        if (c == null || c.op != Op.AIR_BIN || c.op_count < 2) { continue; }
+
+        uint lhs = s.m.operands[c.op_off];
+        uint rhs = s.m.operands[c.op_off + 1];
+        if ((usz)lhs >= s.n || (usz)rhs >= s.n) { continue; }
+
+        // Which side is the constant? Refine the other one.
+        uint target;
+        long bound;
+        BOp op = c.p.op;
+        if (pear_erm::r_is_const(&s.r[rhs]))
+        {
+            target = lhs;
+            bound = s.r[rhs].lo;
+        }
+        else if (pear_erm::r_is_const(&s.r[lhs]))
+        {
+            // `assume 100 < n` is `n > 100`: the comparison must be
+            // mirrored, not just have its operands swapped.
+            target = rhs;
+            bound = s.r[lhs].lo;
+            switch (op)
+            {
+                case ABO_LT: op = BOp.ABO_GT;
+                case ABO_LE: op = BOp.ABO_GE;
+                case ABO_GT: op = BOp.ABO_LT;
+                case ABO_GE: op = BOp.ABO_LE;
+                default: break;
+            }
+        }
+        else { continue; }
+
+        Range before = s.r[target];
+        Range after = before;
+        switch (op)
+        {
+            case ABO_LT: after = pear_erm::r_refine_lt(before, bound);
+            case ABO_LE: after = pear_erm::r_refine_le(before, bound);
+            case ABO_GT: after = pear_erm::r_refine_gt(before, bound);
+            case ABO_GE: after = pear_erm::r_refine_ge(before, bound);
+            case ABO_EQ: after = pear_erm::r_refine_eq(before, bound);
+            case ABO_NE: after = pear_erm::r_refine_ne(before, bound);
+            default: break;
+        }
+        /*
+         A contradictory assume -- `assume x > 10` on a value already
+         proven <= 5 -- means the program promised something false. That
+         is UB, and the honest response is to keep the range we could
+         prove rather than mark the value unreachable on the strength of
+         a promise we know is broken.
+        */
+        if (!after.is_bottom) { s.r[target] = after; }
+        s.assumes_applied = s.assumes_applied + 1;
     }
 }
 
@@ -1097,6 +1217,31 @@ fn void Solver.solve(Solver* s)
     for (usz c = 0; c < (usz)s.ncomp; c++)
     {
         s.solve_comp(&order[start[c]], fill[c]);
+    }
+
+    /*
+     Assumes are applied AFTER the components are solved, then the
+     components are re-solved so the refinement propagates.
+
+     The order matters in both directions. Before the solve, an assume's
+     constant operand may not yet have a range, so the bound cannot be
+     read. After the solve but without a re-run, the refinement lands on
+     the assumed value and nothing derived from it ever sees it -- which
+     would make the whole thing decorative.
+
+     One extra pass, not a fixpoint: an assume cannot create a new assume,
+     so a second application would find nothing the first did not.
+    */
+    s.apply_assumes();
+    if (s.assumes_applied > 0)
+    {
+        for (usz c = 0; c < (usz)s.ncomp; c++)
+        {
+            s.solve_comp(&order[start[c]], fill[c]);
+        }
+        // Re-apply: solving a component recomputes the assumed value from
+        // its own operands, which discards the promise.
+        s.apply_assumes();
     }
 
     free((void*)order); free((void*)start); free((void*)fill);
