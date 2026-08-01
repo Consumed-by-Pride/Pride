@@ -865,9 +865,28 @@ fn void Resolver.bind_pattern(Resolver* r, Node* pat)
         }
         case N_PAT_STRUCT:
         {
+            /*
+             Two spellings, and the field list does not start at the same
+             index in both:
+
+                 Point { x, y }   child 0 is the PATH, fields from 1
+                 { x, y }         no path, fields from 0
+
+             The anonymous form is what spec §8 uses for every example
+             (the type is already known from the scrutinee). Assuming a
+             path meant the first field was skipped as if it were one, so
+             its binder was never declared and every use in the arm body
+             came out unresolved.
+            */
+            usz first = 0;
             Node* path = pat.child(0);
-            if (path != null) { r.resolve_path_type(path, pat); }
-            for (usz i = 1; i < pat.child_count; i++)
+            if (path != null && path.kind != Nk.N_PAT_FIELD
+                && path.kind != Nk.N_PAT_REST)
+            {
+                r.resolve_path_type(path, pat);
+                first = 1;
+            }
+            for (usz i = first; i < pat.child_count; i++)
             {
                 Node* f = pat.children[i];
                 if (f == null) { continue; }
@@ -1480,6 +1499,36 @@ fn void Resolver.resolve_expr(Resolver* r, Node* e)
                 }
                 else
                 {
+                    /*
+                     STRUCT UPDATE, spec §9: `let v2 = v { x: 99.0 }`.
+
+                     The head is a VALUE, not a type — the new struct copies
+                     `v` and overrides the listed fields. Looking only in the
+                     TYPE namespace reported "unknown struct type in literal"
+                     for the documented update syntax.
+
+                     Fall back to the value namespace before erroring; the
+                     node keeps its N_EXPR_STRUCT_LIT kind either way, and
+                     what the head resolves to is what distinguishes a
+                     literal from an update.
+                    */
+                    Sym* vs = r.scopes == null ? null
+                            : r.scopes.lookup(nm.name_id, pfront_core::NS_VALUE);
+                    if (vs != null)
+                    {
+                        e.resolved = vs.decl;
+                        nm.resolved = vs.decl;
+                        nm.sym = vs;
+                        nm.flags = nm.flags | pfront_core::NF_RESOLVED;
+                        vs.used = true;
+                        r.resolved_count = r.resolved_count + 1;
+                        // Field initialisers still need resolving.
+                        for (usz fi = 1; fi < e.child_count; fi++)
+                        {
+                            r.resolve_expr(e.children[fi]);
+                        }
+                        break;
+                    }
                     r.unresolved_count = r.unresolved_count + 1;
                     r.diags.error(pfront_core::Phase.PH_RESOLVE, 3006, e.line, e.col,
                                   "unknown struct type in literal", r.cur_file);

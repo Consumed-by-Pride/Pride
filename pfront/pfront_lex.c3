@@ -1436,6 +1436,10 @@ fn TokenType keyword_type(char* p, usz len) @private
             if (span_eq(p, len, "comptime", 8)) return TokenType.TOKEN_KW_COMPTIME;
             if (span_eq(p, len, "fixpoint", 8)) return TokenType.TOKEN_KW_FIXPOINT;
             if (span_eq(p, len, "generate", 8)) return TokenType.TOKEN_KW_GENERATE;
+            // The spec (§14) writes `offsetof`; only `offset_of` was
+            // recognised, so the spec spelling lexed as an identifier and
+            // `offsetof(V, y)` parsed as a call to an undefined function.
+            if (span_eq(p, len, "offsetof", 8)) return TokenType.TOKEN_KW_OFFSETOF;
             break;
 
         case 9:

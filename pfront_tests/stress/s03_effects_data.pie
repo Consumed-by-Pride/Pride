@@ -1,0 +1,234 @@
+mod stress.s03_effects_data
+
+-- ADVERSARIAL: algebraic effects (§10), unions and tagged sums (§9),
+-- interfaces/impl (§0 uses: `impl ... for` appears NOWHERE in the stdlib),
+-- and the UB/memory keywords with zero coverage: defer, transmute,
+-- offsetof, typeof, unchecked, poison, freeze, invariant, newtype.
+
+-- ── §9 structs, attributes, self-reference ───────────────────────────────
+
+type Vec3f = struct
+  x : f32
+  y : f32
+  z : f32
+
+type CacheLine = struct #align(64)
+  data : [u8; 64]
+
+type PackedHdr = struct #packed
+  magic   : u32
+  version : u8
+  flags   : u8
+  length  : u16
+
+type SelfRef = struct
+  val  : i32
+  next : *SelfRef
+
+-- ── §9 unions: untagged C-union and tagged sum ───────────────────────────
+
+type FloatBits = union
+  f : f32
+  i : u32
+
+type Maybe<T> = union
+  some : T
+  none : ()
+
+type Either<E, T> = union
+  err : E
+  ok  : T
+
+-- ── §9 newtype ───────────────────────────────────────────────────────────
+
+newtype Meters = i64
+newtype Seconds = i64
+
+-- ── §9 struct literals, update syntax, chained field access ──────────────
+
+fn make_vec : f32 -> Vec3f
+  | s -> Vec3f { x: s, y: s, z: s }
+
+fn update_vec : Vec3f -> Vec3f
+  | v -> v { x: 99.0f32 }
+
+fn chained : *SelfRef -> i32
+  | n -> n.next.next.val
+
+-- Union construction: exactly one field.
+fn make_bits : u32 -> FloatBits
+  | b -> FloatBits { i: b }
+
+-- ── §8 pattern matching over a tagged sum ────────────────────────────────
+
+fn unwrap_or : (Maybe<i64>, i64) -> i64
+  | ({ some: v }, _) -> v
+  | ({ none: _ }, d) -> d
+
+-- Struct patterns with shorthand and literal fields.
+fn classify_point : Vec3f -> i64
+  | { x: 0.0f32, y: 0.0f32, z: 0.0f32 } -> 0i64
+  | { x, y, z } -> 1i64
+
+-- OR patterns, range patterns, guards.
+fn vowel : i64 -> bool
+  | 97i64 | 101i64 | 105i64 | 111i64 | 117i64 -> true
+  | _ -> false
+
+fn bucket : i64 -> i64
+  | n, n < 0i64 -> 0i64
+  | 0i64        -> 1i64
+  | _           -> 2i64
+
+-- Nested tuple patterns.
+fn nested_tuple : ((i64, i64), (i64, i64)) -> i64
+  | ((a, b), (c, d)) -> a + b + c + d
+
+-- ── §10 algebraic effects ────────────────────────────────────────────────
+
+effect State
+  get : () -> i64
+  put : i64 -> ()
+
+effect Logger
+  log : i64 -> ()
+
+fn stateful : i64 -> i64 ! [State]
+  | seed -> perform State.get()
+
+fn two_effects : i64 -> i64 ! [State, Logger]
+  | x ->
+    perform Logger.log(x)
+    perform State.get()
+
+-- A handler with both operations, resuming by juxtaposition.
+fn run_state : i64 -> i64
+  | seed ->
+    let mut cell = seed
+    handle
+      perform State.get()
+    | State.get () k -> resume cell
+    | State.put v  k -> resume 0i64
+
+-- Nested handlers: the inner computation performs an effect the OUTER one
+-- handles.
+fn nested_handlers : i64 -> i64
+  | seed ->
+    handle
+      handle
+        perform State.get()
+      | Logger.log v k -> resume 0i64
+    | State.get () k -> resume seed
+    | State.put v  k -> resume 0i64
+
+-- `resume` with a parenthesised argument, the other documented spelling.
+fn resume_paren : i64 -> i64
+  | seed ->
+    handle
+      perform State.get()
+    | State.get () k -> resume(seed)
+    | State.put v  k -> resume(0i64)
+
+-- ── §12 interfaces and impl (ZERO stdlib uses) ───────────────────────────
+
+interface Show
+  fn show : Self -> i64
+
+interface Add
+  fn add : (Self, Self) -> Self
+
+-- Multi-method interface.
+interface Container
+  fn len   : Self -> i64
+  fn empty : Self -> bool
+
+impl Show for Vec3f
+  fn show : Self -> i64
+    | _ -> 3i64
+
+impl Add for Meters
+  fn add : (Self, Self) -> Self
+    | (a, b) -> a
+
+-- ── §14/§15 UB and memory keywords with no coverage ──────────────────────
+
+fn free_it : i64 -> ()
+  | _ -> ()
+
+fn use_defer : i64 -> i64
+  | n ->
+    defer free_it(n)
+    n + 1i64
+
+fn use_transmute : f32 -> u32
+  | f -> transmute(f)
+
+fn use_sizeof : i64 -> i64
+  | _ -> sizeof(Vec3f)
+
+fn use_alignof : i64 -> i64
+  | _ -> alignof(Vec3f)
+
+fn use_offsetof : i64 -> i64
+  | _ -> offsetof(Vec3f, y)
+
+fn use_typeof : i64 -> i64
+  | n ->
+    let t : typeof(n) = n
+    t
+
+fn use_unchecked : (*i64, i64) -> i64
+  | (p, i) -> unchecked p[i]
+
+fn use_assume : i64 -> i64
+  | n ->
+    assume n > 0i64
+    n
+
+fn use_invariant : i64 -> i64
+  | n ->
+    invariant n > 0i64
+    n
+
+fn use_poison : i64 -> i64
+  | _ -> poison
+
+fn use_freeze : i64 -> i64
+  | n -> freeze n
+
+fn use_trap : i64 -> i64
+  | _ -> trap
+
+fn use_unreachable : i64 -> i64
+  | _ -> unreachable
+
+fn use_ub : i64 -> i64
+  | n ->
+    unsafe
+      ub! "explicit"
+
+-- ── §15 allocation and pointer arithmetic ────────────────────────────────
+
+fn use_alloc : i64 -> *i64 ! [Alloc]
+  | _ ->
+    let p : *i64 = alloc i64
+    p
+
+fn use_alloc_array : i64 -> *f32 ! [Alloc]
+  | n ->
+    let arr : *f32 = alloc [f32; 256]
+    arr
+
+fn use_free : *i64 -> () ! [Alloc]
+  | p -> free p
+
+fn ptr_arith : (*i64, i64) -> i64
+  | (p, n) ->
+    let q = p + 1i64
+    let v = p[n]
+    v
+
+fn addr_of : i64 -> i64
+  | n ->
+    let a = &n
+    *a

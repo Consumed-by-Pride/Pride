@@ -463,6 +463,63 @@ else
   fail=$((fail+1)); printf '  FAIL  %-26s E3202 no longer fires on a genuine escape\n' "stage_escape_kept"
 fi
 
+# Constructs s03 proved were broken. `impl ... for` in particular has ZERO
+# stdlib uses, so nothing else can catch a regression in it.
+#
+#   type X = struct   spec §9's primary spelling; the stdlib only writes
+#                     the bare `struct X` form, so this never parsed
+#   #align/#packed    struct attributes were never consumed
+#   { x, y }          anonymous struct patterns (§8 uses them everywhere)
+#   v { x: 1 }        struct UPDATE syntax — only the uppercase literal
+#                     form checked for a following brace
+#   | a | b ->        or-patterns in a function clause
+#   | n, guard ->     comma guards (only the `if` spelling worked)
+#   impl I for T      `for` is a keyword, not a 3-char identifier
+#   poison/freeze/invariant/offsetof
+cat > /tmp/pf_data.pie <<'PIE'
+mod t
+type V = struct #align(16)
+  x : i64
+  y : i64
+interface S
+  fn show : Self -> i64
+impl S for V
+  fn show : Self -> i64
+    | _ -> 1i64
+fn after_impl : i64 -> i64
+  | _ -> 0i64
+fn upd : V -> V
+  | v -> v { x: 1i64 }
+fn pat : V -> i64
+  | { x, y } -> x + y
+fn orpat : i64 -> bool
+  | 1i64 | 2i64 | 3i64 -> true
+  | _ -> false
+fn guard : i64 -> i64
+  | n, n < 0i64 -> 0i64
+  | _ -> 1i64
+fn ubops : i64 -> i64
+  | n ->
+    invariant n > 0i64
+    let f = freeze n
+    let o = offsetof(V, y)
+    f + o
+fn deref_line : i64 -> i64
+  | n ->
+    let a = &n
+    *a
+PIE
+derr=$("$BIN" /tmp/pf_data.pie --plain --quiet 2>&1 | grep -oE 'errors=[0-9]+' | cut -d= -f2)
+# `after_impl` must be TOP-LEVEL: the impl block used to run to end of file
+# and nest every later declaration inside itself.
+dfn=$("$BIN" /tmp/pf_data.pie --plain --dump-ast --quiet 2>&1 | grep -cE "^  fn 'after_impl'")
+if [ "${derr:-1}" = "0" ] && [ "$dfn" = "1" ]; then
+  pass=$((pass+1)); printf '  PASS  %-26s (type=struct, attrs, impl-for, patterns, update, UB ops)\n' "structs_impl"
+else
+  fail=$((fail+1)); printf '  FAIL  %-26s %s errors, after_impl top-level=%s\n' "structs_impl" "$derr" "$dfn"
+  "$BIN" /tmp/pf_data.pie --plain 2>&1 | grep 'error \[' | sed 's/^/      /' | head -6
+fi
+
 # The purity interlock: exactly ONE of two dead stores may be removed. The
 # other has a function call as its initializer and MUST survive. This is the
 # single most important correctness property of the DCE pass.

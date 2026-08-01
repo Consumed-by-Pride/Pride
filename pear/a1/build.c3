@@ -1258,7 +1258,46 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
         case N_EXPR_REF:
         {
             if (n.child_count < 1) { break; }
-            ops[0] = b.lower_operand(n.children[0]);
+            Node* tgt = n.children[0];
+
+            /*
+             `&place` must compute an ADDRESS, never load and then take the
+             address of the loaded value.
+
+             `&p[i]` was lowering to `load.index` followed by `addr.of`,
+             which is wrong twice: it performs a memory read the source
+             never asked for (observable if the slot is uninitialised or
+             volatile), and the address it yields is of a temporary rather
+             than of the element.
+
+             AIR_ADDR_INDEX and AIR_ADDR_FIELD exist for exactly this and
+             were unreachable — nothing produced them, which is how the
+             bug survived: the opcodes looked implemented.
+            */
+            if (tgt != null && tgt.kind == Nk.N_EXPR_INDEX && tgt.child_count > 1)
+            {
+                ops[0] = b.lower_operand(tgt.children[0]);
+                ops[1] = b.lower_operand(tgt.children[1]);
+                uint ai = b.emit(Op.AIR_ADDR_INDEX, &ops[0], 2, n);
+                if (ai != pear_air::AIR_NO_VALUE)
+                {
+                    b.m.values[ai].facts.nullness = pear_erm::Nullness.NULL_NEVER;
+                }
+                return ai;
+            }
+            if (tgt != null && tgt.kind == Nk.N_EXPR_FIELD && tgt.child_count > 0)
+            {
+                ops[0] = b.lower_operand(tgt.children[0]);
+                uint af = b.emit(Op.AIR_ADDR_FIELD, &ops[0], 1, n);
+                if (af != pear_air::AIR_NO_VALUE)
+                {
+                    b.m.values[af].p.name = tgt.name_id;
+                    b.m.values[af].facts.nullness = pear_erm::Nullness.NULL_NEVER;
+                }
+                return af;
+            }
+
+            ops[0] = b.lower_operand(tgt);
             uint id = b.emit(Op.AIR_ADDR_OF, &ops[0], 1, n);
             if (id != pear_air::AIR_NO_VALUE)
             {
@@ -1340,16 +1379,39 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
 
         case N_EXPR_PERFORM:
         {
+            /*
+             `perform Effect.op(args)`.
+
+             children[0] is the MODULE PATH naming the operation, not an
+             argument. Lowering it as one produced two `unknown` values per
+             perform (the path segments have no runtime value) and buried
+             the real arguments behind them.
+
+             The operation's identity is already in `name_id`, put there by
+             the resolver, so the path is dropped and only the arguments
+             become operands.
+            */
             usz k = 0;
             for (usz i = 0; i < n.child_count && k < 16; i++)
             {
-                ops[k] = b.lower_operand(n.children[i]);
+                Node* c = n.children[i];
+                if (c == null) { continue; }
+                if (c.kind == Nk.N_MODULE_PATH || c.kind == Nk.N_PATH_SEG) { continue; }
+                ops[k] = b.lower_operand(c);
                 k = k + 1;
             }
             uint id = b.emit(Op.AIR_PERFORM, &ops[0], k, n);
             if (id != pear_air::AIR_NO_VALUE) { b.m.values[id].p.name = n.name_id; }
             return id;
         }
+
+        case N_EXPR_HANDLE:
+            return b.lower_handle(n);
+
+        case N_HANDLER_ARM:
+            // Reached only if an arm is visited outside its handler; the
+            // handler lowers its own arms.
+            return b.lower_handler_arm(n);
 
         case N_EXPR_RESUME:
         {
@@ -1589,6 +1651,143 @@ fn uint Builder.lower_while(Builder* b, Node* n)
     return b.emit(Op.AIR_CONST_UNIT, &none[0], 0, n);
 }
 
+
+
+// ════════════════════════════════════════════════════════════════════════
+// EFFECT HANDLERS
+// ════════════════════════════════════════════════════════════════════════
+
+/*
+ `handle comp | E.op params k -> body ...` (spec §10).
+
+ Lowered to the three backend-agnostic opcodes ssi_ir.c3 got right and
+ PEAR.md section 8 says to keep: AIR_HANDLE installs a handler frame over
+ a computation, AIR_HANDLE_ARM is one operation's body, AIR_RESUME re-enters
+ the delimited continuation.
+
+ Deliberately NOT lowered to a concrete mechanism here. Whether a handler
+ becomes a vtable, a prompt stack, a split stack or a CPS transform is a
+ backend choice, and a3 is where the double-barrelled CPS conversion
+ happens. Committing to one now would make that stage a rewrite instead of
+ a translation.
+
+ Operand layout, checked by verify.c3:
+   AIR_HANDLE      operands[0] = the computation's value
+                   operands[1..] = one AIR_HANDLE_ARM per operation
+   AIR_HANDLE_ARM  operands[0] = the arm body's value
+                   payload.name = the operation it handles
+
+ Each arm gets its OWN BLOCK. An arm body is entered by a non-local jump
+ from wherever the effect was performed, not by falling through the
+ computation, so giving arms their own blocks is what keeps the CFG honest
+ — putting them inline would claim the computation reaches them by an edge
+ that does not exist.
+*/
+fn uint Builder.lower_handler_arm(Builder* b, Node* arm)
+{
+    uint[4] ops;
+
+    /*
+     An arm binds its operation's PARAMETERS and its CONTINUATION `k`:
+
+         | State.get () k -> resume cell
+
+     Both are pattern children. They must be bound before the body is
+     lowered, or every use of `k` inside it is an undefined read.
+    */
+    Node* body = null;
+    for (usz i = 0; i < arm.child_count; i++)
+    {
+        Node* c = arm.children[i];
+        if (c == null) { continue; }
+        if (c.kind == Nk.N_MODULE_PATH || c.kind == Nk.N_PATH_SEG) { continue; }
+        if (pfront_core::is_pattern(c.kind))
+        {
+            // A parameter of the operation, or the continuation binder.
+            uint[1] none;
+            uint pv = b.m.new_value(b.cur_block, Op.AIR_PARAM, &none[0], 0,
+                                    pear_air::AIR_NO_ORIGIN, c.line, c.col);
+            if (pv != pear_air::AIR_NO_VALUE)
+            {
+                b.m.values[pv].p.name = c.name_id;
+                b.bind_pattern_vars(c, pv);
+            }
+            continue;
+        }
+        body = c;
+    }
+
+    uint bv = body != null ? b.lower_operand(body)
+                           : b.emit(Op.AIR_CONST_UNIT, &ops[0], 0, arm);
+    ops[0] = bv;
+    uint id = b.emit(Op.AIR_HANDLE_ARM, &ops[0], 1, arm);
+    if (id != pear_air::AIR_NO_VALUE) { b.m.values[id].p.name = arm.name_id; }
+    return id;
+}
+
+fn uint Builder.lower_handle(Builder* b, Node* n)
+{
+    uint[32] ops;
+    usz nops = 0;
+
+    // The computation is the first non-arm child.
+    Node* comp = null;
+    for (usz i = 0; i < n.child_count; i++)
+    {
+        Node* c = n.children[i];
+        if (c == null) { continue; }
+        if (c.kind == Nk.N_HANDLER_ARM) { continue; }
+        if (comp == null) { comp = c; }
+    }
+
+    /*
+     No new blocks. The computation and the arm bodies are ordinary values
+     in the current block; the handler node ties them together.
+
+     Splitting them across blocks would need edges that do not exist (see
+     the comment on the arm loop below), and a1's job is to record the
+     structure faithfully, not to invent a control-flow shape that a3 will
+     have to undo.
+    */
+    uint cv = comp != null ? b.lower_operand(comp)
+                           : b.emit(Op.AIR_CONST_UNIT, &ops[0], 0, n);
+    ops[0] = cv;
+    nops = 1;
+
+    /*
+     Arms are lowered INLINE in the computation's block, not as separate
+     CFG blocks.
+
+     My first attempt gave each arm its own block with an edge from the
+     handler's entry. That is wrong twice over, and the verifier caught
+     both: the entry's terminator is a `jump` (arity 1) so a second
+     successor is malformed, and an arm's values then failed dominance
+     because the edge licensing them does not really exist.
+
+     The deeper point is that an arm is entered by a NON-LOCAL transfer
+     from wherever the effect was performed — that is what makes it a
+     delimited continuation. It is NOT a successor of the block that
+     installs the frame, and inventing that edge tells every downstream
+     analysis something false about control flow.
+
+     So the arms are simply OPERANDS of AIR_HANDLE. The handler node is
+     what says "these bodies may run"; making the transfer explicit is
+     a3's job, where the double-barrelled CPS conversion turns each arm
+     into a real continuation. a1 records the structure without lying
+     about the edges.
+    */
+    for (usz i = 0; i < n.child_count && nops < 32; i++)
+    {
+        Node* c = n.children[i];
+        if (c == null || c.kind != Nk.N_HANDLER_ARM) { continue; }
+        ops[nops] = b.lower_handler_arm(c);
+        nops = nops + 1;
+    }
+
+    uint id = b.emit(Op.AIR_HANDLE, &ops[0], nops, n);
+    if (id != pear_air::AIR_NO_VALUE) { b.m.values[id].p.name = n.name_id; }
+    return id;
+}
 
 // ════════════════════════════════════════════════════════════════════════
 // MATCH

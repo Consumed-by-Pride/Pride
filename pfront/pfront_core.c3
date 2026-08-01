@@ -171,6 +171,13 @@ enum NodeKind : int
     N_EXPR_ASSERT,
     N_EXPR_ASSUME,
     N_EXPR_UB,
+    /*
+     `poison` — a value that propagates UB IF USED (spec §14). Distinct
+     from `ub!`, which is an immediate ⊥-typed statement requiring an
+     enclosing `unsafe`. Reusing N_EXPR_UB made every `poison` demand an
+     `unsafe` block the spec does not ask for.
+    */
+    N_EXPR_POISON,
     N_EXPR_UNREACHABLE,
     N_EXPR_TRAP,
     N_EXPR_ATOMIC,
@@ -994,6 +1001,7 @@ fn char* kind_name(NodeKind k)
         case N_EXPR_ASSERT:    return "assert";
         case N_EXPR_ASSUME:    return "assume";
         case N_EXPR_UB:        return "ub";
+        case N_EXPR_POISON:    return "poison";
         case N_EXPR_UNREACHABLE: return "unreachable";
         case N_EXPR_TRAP:      return "trap";
         case N_EXPR_ATOMIC:    return "atomic";

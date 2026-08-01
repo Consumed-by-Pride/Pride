@@ -325,6 +325,84 @@ else
   fail=$((fail+1)); note FAIL "build_func_ref" "function reference not lowered"
 fi
 
+# EFFECT HANDLERS must lower to the three backend-agnostic opcodes, not to
+# a pile of AIR_UNKNOWN. The stdlib barely uses `handle`, so the 258-module
+# sweep could not catch this — it produced 9 unknowns for a 6-line handler.
+#
+# Arms are OPERANDS of the handler, not CFG successors: an arm is entered by
+# a non-local transfer from wherever the effect was performed, so an edge
+# from the installing block would be a lie. My first attempt added that edge
+# and the verifier rejected it (jump arity, then dominance).
+cat > /tmp/pear_t_handle.pie <<'PIE'
+mod t
+effect St
+  get : () -> i64
+  put : i64 -> ()
+fn f : i64 -> i64
+  | s ->
+    handle
+      perform St.get()
+    | St.get () k -> resume s
+    | St.put v  k -> resume 0i64
+PIE
+hd=$("$PEARC" --verify /tmp/pear_t_handle.pie 2>&1)
+h_unk=$(echo "$hd" | grep -c '= unknown')
+h_err=$(echo "$hd" | grep 'errors / warnings' | grep -oE '[0-9]+ / [0-9]+' | cut -d' ' -f1)
+h_arm=$(echo "$hd" | grep -c 'handle.arm')
+h_hnd=$(echo "$hd" | grep -c '= handle ')
+if [ "$h_unk" = "0" ] && [ "${h_err:-1}" = "0" ] && [ "$h_arm" = "2" ] && [ "$h_hnd" = "1" ]; then
+  pass=$((pass+1)); note PASS "build_handler" "(2 arms + 1 handle, 0 unknown, verifies)"
+else
+  fail=$((fail+1)); note FAIL "build_handler" "unknown=$h_unk err=$h_err arms=$h_arm handle=$h_hnd"
+  echo "$hd" | grep -E '    - |= unknown' | sed 's/^/      /' | head -5
+fi
+
+# `&place` must COMPUTE AN ADDRESS, never load and then take the address of
+# the loaded value. `&p[i]` emitted `load.index` + `addr.of`, which performs
+# a read the source never asked for and yields the address of a temporary.
+# AIR_ADDR_INDEX/ADDR_FIELD existed but nothing produced them — the opcodes
+# looked implemented, which is how it survived.
+cat > /tmp/pear_t_addr.pie <<'PIE'
+mod t
+struct S
+  x : i64
+fn f : (*i64, i64) -> i64
+  | (p, i) ->
+    let a = &p[i]
+    0i64
+fn g : *S -> i64
+  | s ->
+    let b = &s.x
+    0i64
+PIE
+ad=$("$PEARC" /tmp/pear_t_addr.pie 2>&1)
+a_ix=$(echo "$ad" | grep -c 'addr.index')
+a_fd=$(echo "$ad" | grep -c 'addr.field')
+a_ld=$(echo "$ad" | grep -c 'load.index')
+if [ "$a_ix" -ge 1 ] && [ "$a_fd" -ge 1 ] && [ "$a_ld" = "0" ]; then
+  pass=$((pass+1)); note PASS "build_addr_of_place" "(addr.index/addr.field, no spurious load)"
+else
+  fail=$((fail+1)); note FAIL "build_addr_of_place" "addr.index=$a_ix addr.field=$a_fd stray load.index=$a_ld"
+fi
+
+# NO ORPHAN OPCODES. An opcode that is defined, printed and parsed but never
+# PRODUCED looks implemented and is not — that is precisely how the &place
+# bug hid. Every opcode must have a producer in the build path or the
+# inference pass.
+orphan=""
+for op in $(grep -oE "AIR_[A-Z_]+" pear/a1/air.c3 | grep -v "AIR_NO_" | sort -u); do
+  low=$(echo "$op" | sed 's/^AIR_//' | tr 'A-Z' 'a-z')
+  if ! grep -q "$op" pear/a1/build.c3 && ! grep -q "$op" pear/a1/air_infer.c3 \
+     && ! grep -qi "new_${low}" pear/a1/air.c3; then
+    orphan="$orphan $op"
+  fi
+done
+if [ -z "$orphan" ]; then
+  pass=$((pass+1)); note PASS "no_orphan_opcodes" "(every opcode has a producer)"
+else
+  fail=$((fail+1)); note FAIL "no_orphan_opcodes" "defined but never produced:$orphan"
+fi
+
 # ── THE REAL TEST: the whole standard library ───────────────────────────
 #
 # 258 modules through pfront and into AIR. Asserts three things a small

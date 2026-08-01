@@ -35,6 +35,9 @@ extern fn int printf(char* fmt, ...);
 
 const int MAX_DEPTH = 400;
 const usz LA_SIZE   = 12;
+// Depth of the synthesised-token pushback stack. Two is the most any
+// construct needs (`type V = struct` reorders name and keyword).
+const usz PUSHBACK_MAX = 4;
 
 // `p.aux` marker on an N_PAT_IDENT that the parser could not distinguish from
 // a nullary enum variant (a bare uppercase name: `| M -> ...` vs `| Red ->`).
@@ -95,8 +98,8 @@ struct Parser
     // One-slot pushback buffer, for splitting `>>` at a generic close.
     // See Parser.push_back: without it the ring silently drops a real
     // token when a synthesised one is inserted.
-    Tok   pending;
-    bool  has_pending;
+    Tok[PUSHBACK_MAX] pending;
+    usz   pending_count;
 
     // Source line of the most recently consumed token. A layout block always
     // begins on a line AFTER the construct that introduces it, so this is how
@@ -126,7 +129,7 @@ fn void Parser.init(Parser* p, pfront_lex::Lexer* lx, Arena* a,
     p.init_block_level = 0;
     p.implicit_block = false;
     p.prev_line = 0;
-    p.has_pending = false;
+    p.pending_count = 0;
     p.fill();
 }
 
@@ -261,18 +264,22 @@ fn bool Parser.expect_generic_close(Parser* p)
 */
 fn void Parser.push_back(Parser* p, Tok t)
 {
-    // The token about to fall off the end is preserved, not dropped.
-    if (p.has_pending)
+    /*
+     The token about to fall off the end is PRESERVED, not dropped.
+
+     A small stack rather than one slot: `type V = struct` needs two
+     consecutive pushes (the name, then the keyword back on top of it) to
+     reorder the ring into the shape parse_struct_decl expects. A
+     single-slot buffer rejected the second push and left the ring
+     scrambled.
+    */
+    if (p.pending_count >= PUSHBACK_MAX)
     {
-        // Two pending tokens would need a real queue. This never happens:
-        // push_back is only called once per generic close, and each close
-        // consumes a token first. Assert by construction rather than
-        // silently corrupting the stream.
         p.err(1010, "internal: token pushback overflow");
         return;
     }
-    p.pending = p.ring[LA_SIZE - 1];
-    p.has_pending = true;
+    p.pending[p.pending_count] = p.ring[LA_SIZE - 1];
+    p.pending_count = p.pending_count + 1;
     for (usz i = LA_SIZE - 1; i > 0; i--) { p.ring[i] = p.ring[i - 1]; }
     p.ring[0] = t;
 }
@@ -281,10 +288,10 @@ fn void Parser.push_back(Parser* p, Tok t)
 // lexer's. Keeps push_back lossless.
 fn Tok Parser.next_raw(Parser* p)
 {
-    if (p.has_pending)
+    if (p.pending_count > 0)
     {
-        p.has_pending = false;
-        return p.pending;
+        p.pending_count = p.pending_count - 1;
+        return p.pending[p.pending_count];
     }
     return p.lx.next();
 }
@@ -1273,6 +1280,74 @@ fn Node* Parser.parse_pattern_atom(Parser* p)
             p.advance();
             return p.mk_at(Nk.N_PAT_WILDCARD, t);
 
+        case TOKEN_LBRACE:
+        {
+            /*
+             An ANONYMOUS struct pattern, spec §8:
+
+                 match point
+                   | { x: 0, y: 0 } → "origin"
+                   | { x: 0, y }    → "on y-axis"
+                   | { x, y }       → "general"
+
+             and the tagged-sum form from §9, `| ({ some: v }, _) -> v`.
+
+             Only the NAMED form (`Point { x, y }`) had a rule, because
+             that is the only one the stdlib writes. The anonymous form —
+             which is what the spec uses for every example, since the type
+             is already known from the scrutinee — failed with "expected a
+             pattern".
+
+             Same node shape as the named form, minus the path child, so
+             exhaustiveness checking and lowering need no new case.
+            */
+            p.advance();
+            Node* sp = p.mk_at(Nk.N_PAT_STRUCT, t);
+            sp.flags = sp.flags | pfront_core::NF_REFUTABLE;
+            p.skip_layout();
+            while (!p.check(Tk.TOKEN_RBRACE) && !p.at_end())
+            {
+                Tok fname = p.cur();
+                if (fname.type == Tk.TOKEN_DOTDOT)
+                {
+                    p.advance();
+                    p.add(sp, p.mk_at(Nk.N_PAT_REST, fname));
+                    p.skip_layout();
+                    break;
+                }
+                if (!tok_is_member_name(fname.type))
+                {
+                    p.err(1023, "expected a field name in struct pattern");
+                    break;
+                }
+                p.advance();
+                Node* fld = p.mk_at(Nk.N_PAT_FIELD, fname);
+                fld.name_id = p.intern_tok(fname);
+                fld.p.sptr = fname.start;
+                fld.p.slen = fname.len;
+                if (p.accept(Tk.TOKEN_COLON))
+                {
+                    p.add(fld, p.parse_pattern());
+                }
+                else
+                {
+                    // Shorthand `{ x }` binds a variable of the same name.
+                    Node* bind = p.mk_at(Nk.N_PAT_IDENT, fname);
+                    bind.name_id = fld.name_id;
+                    bind.p.sptr = fname.start;
+                    bind.p.slen = fname.len;
+                    p.add(fld, bind);
+                }
+                p.add(sp, fld);
+                p.skip_layout();
+                if (!p.accept(Tk.TOKEN_COMMA)) { break; }
+                p.skip_layout();
+            }
+            p.skip_layout();
+            p.expect(Tk.TOKEN_RBRACE, 1024, "expected '}' to close struct pattern");
+            return sp;
+        }
+
         case TOKEN_DOTDOT:
             p.advance();
             return p.mk_at(Nk.N_PAT_REST, t);
@@ -1650,6 +1725,47 @@ fn Node* Parser.parse_expr_prec(Parser* p, int min_prec)
             int cont_prec = infix_prec(after);
             bool continues = cont_prec != 0 && cont_prec >= min_prec;
             if (after == Tk.TOKEN_PIPE && p.in_fn_sig) { continues = false; }
+
+            /*
+             AMBIGUOUS PREFIX/INFIX OPERATORS AT LINE START.
+
+             `*` and `&` are both infix (multiply, bitwise-and) and prefix
+             (dereference, address-of). At the start of a NEW LINE the
+             prefix reading is meant:
+
+                 let a = &n
+                 *a            <- dereference, not `&n * a`
+
+             Treating them as a continuation silently merged the two
+             statements and the second's binder came out unresolved. The
+             same applies to `-` (negate) and `+`.
+
+             A genuine continuation puts the operator at the END of the
+             previous line, which this branch does not see — that case is
+             handled by skip_continuation_layout after the operator is
+             consumed. So an ambiguous operator appearing FIRST on a line
+             is always the prefix form.
+            */
+            if (after == Tk.TOKEN_STAR || after == Tk.TOKEN_AMP
+                || after == Tk.TOKEN_MINUS || after == Tk.TOKEN_PLUS)
+            {
+                /*
+                 ...but a CONTINUATION line is indented deeper than the
+                 statement that owns it:
+
+                     (n + 0) + (n + 0)
+                       + (n * 1)          <- indented: infix continuation
+                 vs
+                     let a = &n
+                     *a                   <- same column: prefix deref
+
+                 Only the second is a new statement. Using the token kind
+                 alone broke every leading-operator continuation in
+                 experiments/test_irdl_trs.pie, which is exactly what that
+                 file exists to check.
+                */
+                if (p.peek(look).col - 1 <= p.stmt_indent) { continues = false; }
+            }
             if (!continues) { break; }
             for (usz k = 0; k < look; k++) { p.advance(); }
             t = p.ct();
@@ -1841,6 +1957,9 @@ fn bool tok_starts_expr(Tk t)
         case TOKEN_KW_SIZEOF:
         case TOKEN_KW_ALIGNOF:
         case TOKEN_KW_OFFSETOF:
+        case TOKEN_KW_POISON:
+        case TOKEN_KW_FREEZE:
+        case TOKEN_KW_INVARIANT:
         case TOKEN_KW_TRANSMUTE:
         case TOKEN_KW_SYSCALL:
         case TOKEN_KW_UNSAFE:
@@ -2251,6 +2370,23 @@ fn Node* Parser.parse_primary(Parser* p)
             id.name_id = p.intern_tok(t);
             id.p.sptr = t.start;
             id.p.slen = t.len;
+            /*
+             STRUCT UPDATE SYNTAX, spec §9: `let v2 = v { x: 99.0 }`.
+
+             Only the uppercase TOKEN_TYPEVAR arm checked for a following
+             `{`, because a struct LITERAL is written with a type name.
+             But an UPDATE is written with a lowercase VALUE, and it has
+             the identical shape — so `v { x: 99.0 }` stopped at the brace
+             and reported "expected an expression".
+
+             Same node kind: an update is a literal whose base is a value
+             rather than a type, and the resolver already tells them apart
+             by what the head resolves to.
+            */
+            if (p.check(Tk.TOKEN_LBRACE) && !p.no_struct_lit)
+            {
+                return p.parse_struct_literal(id, t);
+            }
             return id;
         }
 
@@ -2479,6 +2615,41 @@ fn Node* Parser.parse_primary(Parser* p)
             bool paren = p.accept(Tk.TOKEN_LPAREN);
             n.type_ann = p.parse_type();
             if (paren) { p.expect(Tk.TOKEN_RPAREN, 1043, "expected ')' after type operand"); }
+            return n;
+        }
+
+        case TOKEN_KW_POISON:
+        {
+            /*
+             `poison` — a value that propagates UB if used (spec §14).
+             No parse rule existed, so it fell through to the identifier
+             path and came out as an unresolved name.
+
+             Nullary: it takes no operand. NOT N_EXPR_UB — that is `ub!`,
+             which requires an enclosing `unsafe`; `poison` does not.
+            */
+            p.advance();
+            return p.mk_at(Nk.N_EXPR_POISON, t);
+        }
+
+        case TOKEN_KW_FREEZE:
+        {
+            // `freeze n` — stops UB propagation from a poison value (§14).
+            p.advance();
+            Node* n = p.mk_at(Nk.N_EXPR_ASSUME, t);
+            n.p.aux = 1;          // 1 = freeze, distinct from a bare assume
+            p.add(n, p.parse_unary());
+            return n;
+        }
+
+        case TOKEN_KW_INVARIANT:
+        {
+            // `invariant cond` — an optimiser hint like `assume`, but
+            // asserted to hold at every iteration rather than once (§14).
+            p.advance();
+            Node* n = p.mk_at(Nk.N_EXPR_ASSUME, t);
+            n.p.aux = 2;          // 2 = invariant
+            p.add(n, p.parse_expr());
             return n;
         }
 
@@ -4106,13 +4277,52 @@ fn Node* Parser.parse_fn_decl(Parser* p, bool is_pub)
             Node* cl = p.mk_at(Nk.N_CLAUSE, bar);
             bool sv2 = p.in_fn_sig;
             p.in_fn_sig = true;
-            p.add(cl, p.parse_pattern());
+            Node* cpat = p.parse_pattern();
+
+            /*
+             OR-PATTERNS in a function clause, spec §8:
+
+                 | 'a' | 'e' | 'i' | 'o' | 'u' → "vowel"
+
+             The clause loop treats `|` as the ARM separator, so an
+             alternative inside one arm looked like the start of the next
+             and the parser demanded an arrow. Collect them: after the
+             first pattern, a `|` that is NOT followed by another arm's
+             worth of pattern-then-arrow is an alternative.
+
+             Distinguishing them needs no lookahead trick — an alternative
+             is simply a pattern followed eventually by the SAME arrow, so
+             keep absorbing `| pattern` until the arrow appears.
+            */
+            while (p.check(Tk.TOKEN_PIPE))
+            {
+                p.advance();
+                Node* alt = p.parse_pattern();
+                if (alt == null) { break; }
+                Node* orp = p.mk_at(Nk.N_PAT_OR, bar);
+                orp.flags = orp.flags | pfront_core::NF_REFUTABLE;
+                p.add(orp, cpat);
+                p.add(orp, alt);
+                cpat = orp;
+            }
+            p.add(cl, cpat);
             p.in_fn_sig = sv2;
-            if (p.check(Tk.TOKEN_KW_IF))
+
+            /*
+             GUARDS, spec §8: `| pattern, guard → body`.
+
+             Only the `if` spelling was accepted. The spec's own examples
+             use a comma (`| n, n < 0 → "negative"`), which left the comma
+             where the arrow was expected.
+            */
+            if (p.check(Tk.TOKEN_KW_IF) || p.check(Tk.TOKEN_COMMA))
             {
                 Tok g = p.advance();
                 Node* guard = p.mk_at(Nk.N_GUARD, g);
+                bool sv_g = p.in_fn_sig;
+                p.in_fn_sig = true;
                 p.add(guard, p.parse_expr());
+                p.in_fn_sig = sv_g;
                 p.add(cl, guard);
             }
             if (!p.accept(Tk.TOKEN_ARROW) && !p.accept(Tk.TOKEN_ARROW_ASCII))
@@ -4186,6 +4396,18 @@ fn Node* Parser.parse_struct_decl(Parser* p, bool is_pub, Nk kind)
     n.p.sptr = nm.start;
     n.p.slen = nm.len;
     p.parse_typarams(n);
+
+    /*
+     Struct ATTRIBUTES, spec §9: `struct CacheLine #align(64)`,
+     `struct PackedHdr #packed`. Nothing consumed them, so the `#` sat
+     where the field list was expected and every field then failed with
+     "expected an expression".
+
+     skip_trailing_attrs already existed and was already used for
+     functions; the struct parser simply never called it. Layout and ABI
+     attributes are exactly the ones a systems language cannot do without.
+    */
+    p.skip_trailing_attrs();
     p.skip_newlines();
 
     bool braced = p.accept(Tk.TOKEN_LBRACE);
@@ -4313,6 +4535,70 @@ fn Node* Parser.parse_type_alias(Parser* p, bool is_pub)
     n.p.sptr = nm.start;
     n.p.slen = nm.len;
     p.parse_typarams(n);
+
+    /*
+     `type Name = struct` / `= union` / `= enum` — the spec's PRIMARY
+     spelling for these (§9 writes every struct that way), and it did not
+     parse at all: the alias read `struct` as a type name and then choked
+     on the field list.
+
+     The stdlib only ever writes the bare `struct Name` form, which is why
+     nothing caught this. Both spellings must produce the SAME declaration
+     node, or downstream passes would see two shapes for one concept.
+
+     Delegating to the real declaration parser gives that for free; it
+     needs the name and type parameters transplanted, since it expects to
+     read them itself.
+    */
+    if (p.check(Tk.TOKEN_EQ))
+    {
+        Tk after = p.peek(1).type;
+        if (after == Tk.TOKEN_KW_STRUCT || after == Tk.TOKEN_KW_UNION
+            || after == Tk.TOKEN_KW_ENUM)
+        {
+            p.advance();                       // '='
+            /*
+             The declaration parsers do `advance()` for their own keyword
+             and THEN read the name. Here the name came before the keyword,
+             so consume the keyword now and push the name into its place:
+             the parser's advance() eats a copy of the name token, and the
+             real one is what it reads next.
+
+             Pushing the name without consuming the keyword named every
+             such struct `struct`, because advance() ate the pushed name
+             and the keyword became the identifier.
+            */
+            /*
+             Order matters: the declaration parser calls advance() for its
+             own keyword and only then reads the name. So the ring must be
+
+                 [ keyword, NAME, ... ]
+
+             Consume the keyword, push the name, then push the keyword back
+             on top of it. Pushing only the name left the ring as
+             [ NAME, keyword, ... ] — advance() ate the name and every
+             such struct came out called `struct`.
+            */
+            Tok kw = p.advance();
+            p.push_back(nm);
+            p.push_back(kw);
+            Node* d = after == Tk.TOKEN_KW_STRUCT
+                        ? p.parse_struct_decl(is_pub, Nk.N_DECL_STRUCT)
+                    : after == Tk.TOKEN_KW_UNION
+                        ? p.parse_struct_decl(is_pub, Nk.N_DECL_UNION)
+                    :     p.parse_enum_decl(is_pub);
+            if (d != null)
+            {
+                for (usz i = 0; i < n.child_count; i++)
+                {
+                    Node* c = n.children[i];
+                    if (c != null && c.kind == Nk.N_DECL_TYPEPARAM) { p.add(d, c); }
+                }
+            }
+            return d;
+        }
+    }
+
     if (p.accept(Tk.TOKEN_EQ))
     {
         Node* ty = p.parse_type();
@@ -4498,7 +4784,19 @@ fn Node* Parser.parse_impl_decl(Parser* p, bool is_pub)
     if (is_pub) { n.flags = n.flags | pfront_core::NF_PUB; }
     p.parse_typarams(n);
     Node* first = p.parse_type();
-    if (p.check(Tk.TOKEN_IDENT) && p.cur().len == 3)
+    /*
+     `impl Iface for Type` — `for` is a KEYWORD (TOKEN_KW_FOR), not an
+     identifier.
+
+     The check looked for a three-character IDENT, which `for` never is,
+     so the interface/target split never happened and the `for` was then
+     parsed as a for-LOOP: "expected 'in' in a for loop", on a declaration.
+
+     `impl ... for` has ZERO uses in the stdlib, which is exactly why this
+     survived. The IDENT branch is kept in case a soft spelling appears.
+    */
+    if (p.check(Tk.TOKEN_KW_FOR)
+        || (p.check(Tk.TOKEN_IDENT) && p.cur().len == 3))
     {
         // `impl Iface for Type`
         p.advance();
@@ -4525,7 +4823,25 @@ fn Node* Parser.parse_impl_decl(Parser* p, bool is_pub)
         if (p.check(Tk.TOKEN_KW_FN)) { p.add(n, p.parse_fn_decl(false)); }
         else if (p.check(Tk.TOKEN_NEWLINE)) { p.advance(); }
         else { break; }
+        /*
+         Only NEWLINEs between members, never a DEDENT.
+
+         skip_newlines is right; skip_layout would eat the DEDENT that
+         closes the impl block, and the loop would then keep taking `fn`
+         declarations from the rest of the file. Every function after an
+         `impl` ended up nested inside it — silently, with the only symptom
+         an "unresolved name" at the first use.
+
+         Same failure as the match-arm loop, and for the same reason: a
+         member loop must not consume its own terminator.
+        */
         p.skip_newlines();
+        // A DEDENT here ends the block even if the member parser already
+        // consumed the one it was expecting.
+        if (indented && p.check(Tk.TOKEN_DEDENT)) { break; }
+        // A top-level declaration keyword also ends it: the impl's own
+        // DEDENT may have been absorbed by the last member's body.
+        if (indented && tok_starts_decl(p.ct()) && p.cur().col == 1) { break; }
     }
     if (indented) { while (p.accept(Tk.TOKEN_DEDENT)) {} }
     if (braced) { p.expect(Tk.TOKEN_RBRACE, 1098, "expected '}' to close impl"); }
