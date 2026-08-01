@@ -278,7 +278,7 @@ fn void Dom.copy_row(Dom* d, usz dst, usz src)
  block has no predecessors, and giving it the universal set would make it
  appear to dominate everything.
 */
-fn void compute_dom(Air* m, Fn* f, Dom* d, bool* reach, usz nblocks)
+fn void compute_dom(Air* m, Fn* f, Dom* d, bool* reach)
 {
     // Scratch row at index n-1 is not safe to borrow, so allocate one extra
     // row's worth of space by convention: callers pass nblocks = block_count
@@ -366,7 +366,7 @@ fn void check_function(Air* m, Fn* f, Report* r)
 
     Dom d;
     bool have_dom = d.init(n);
-    if (have_dom) { compute_dom(m, f, &d, reach, n); }
+    if (have_dom) { compute_dom(m, f, &d, reach); }
 
     for (usz bi = 0; bi < f.block_count; bi++)
     {
