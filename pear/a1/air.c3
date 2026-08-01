@@ -1107,6 +1107,49 @@ fn bool AirModule.value_fits(AirModule* m, uint vid, int bits, bool is_signed)
     return pear_erm::r_fits(&v.facts.range, bits, is_signed);
 }
 
+/*
+ Does this value fit its OWN declared width and signedness?
+
+ The variant above takes both as parameters, which is right when a2 asks
+ "could this be narrowed to 32 bits?" but leaves the value's recorded
+ `is_signed` unread — a field that is set and never consulted is a field
+ that does nothing, and it would silently answer the wrong question for
+ an unsigned value whose range dips below zero.
+
+ A value with no declared width answers false: unknown is not "fits".
+*/
+fn bool AirModule.value_fits_declared(AirModule* m, uint vid)
+{
+    AirValue* v = m.val(vid);
+    if (v == null || v.facts.width == 0) { return false; }
+    return pear_erm::r_fits(&v.facts.range, v.facts.width, v.facts.is_signed);
+}
+
+/*
+ Values whose range provably exceeds their own declared type.
+
+ This is a REAL query, not a decoration: it is how a2 finds a constant
+ that has been truncated (`300 as u8` folds to 44 — pfront's folder gets
+ this right and the IR must not contradict it) and how it decides an
+ overflow check cannot be elided.
+*/
+fn usz AirModule.count_range_exceeds_width(AirModule* m)
+{
+    usz n = 0;
+    for (usz i = 1; i < m.value_count; i++)
+    {
+        AirValue* v = &m.values[i];
+        if (v.block == AIR_NO_BLOCK) { continue; }
+        if (v.facts.width == 0) { continue; }
+        if (v.facts.range.is_top || v.facts.range.is_bottom) { continue; }
+        if (!pear_erm::r_fits(&v.facts.range, v.facts.width, v.facts.is_signed))
+        {
+            n = n + 1;
+        }
+    }
+    return n;
+}
+
 fn bool AirModule.value_nonnull(AirModule* m, uint vid)
 {
     AirValue* v = m.val(vid);

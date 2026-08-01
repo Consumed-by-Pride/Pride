@@ -403,6 +403,23 @@ else
   fail=$((fail+1)); note FAIL "no_orphan_opcodes" "defined but never produced:$orphan"
 fi
 
+# `is_signed` and `width` must be READ, not just written. A fact that is
+# recorded and never consulted is decoration — the exact failure mode this
+# whole exercise is about.
+#
+# The query is real: it is how a2 finds a truncated constant (`300 as u8`
+# folds to 44, and the IR must not claim otherwise) and how it decides an
+# overflow check cannot be elided.
+wd=$("$BIN" pear/a1/tests/ok_width.air 2>&1)
+w_n=$(echo "$wd" | grep -oE 'width exceeded: [0-9]+' | grep -oE '[0-9]+$')
+w_err=$(echo "$wd" | grep 'errors / warnings' | grep -oE '[0-9]+ / [0-9]+' | cut -d' ' -f1)
+# %1 (300 in 8 bits) and %3 (400 in 8 bits) exceed; %2 (100) fits.
+if [ "${w_n:-0}" = "2" ] && [ "${w_err:-1}" = "0" ]; then
+  pass=$((pass+1)); note PASS "erm_width_signedness" "(2 of 3 values exceed their declared width)"
+else
+  fail=$((fail+1)); note FAIL "erm_width_signedness" "exceeded=$w_n errors=$w_err (want 2/0)"
+fi
+
 # ── THE REAL TEST: the whole standard library ───────────────────────────
 #
 # 258 modules through pfront and into AIR. Asserts three things a small

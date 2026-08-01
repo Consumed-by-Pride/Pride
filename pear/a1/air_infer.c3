@@ -266,6 +266,15 @@ fn void infer_value(Air* m, uint vid)
             if (a == null || b == null) { break; }
             pear_erm::Range ra = a.facts.range;
             pear_erm::Range rb = b.facts.range;
+            /*
+             Signedness and width propagate through arithmetic: a mix of
+             signed and unsigned is treated as unsigned, which is the
+             conservative direction for r_fits (an unsigned bound rejects
+             a negative range rather than accepting it).
+            */
+            v.facts.is_signed = a.facts.is_signed && b.facts.is_signed;
+            if (a.facts.width == b.facts.width) { v.facts.width = a.facts.width; }
+
             switch (v.p.op)
             {
                 case ABO_ADD: v.facts.range = range_add(ra, rb);
@@ -616,6 +625,7 @@ struct ErmStats
     usz may_fault;
     usz decided_cmps;   // comparisons R already settles -- the payoff metric
     usz entry_loads;    // loads provably unaffected by this function
+    usz width_exceeded; // values whose range overflows their declared type
 }
 
 fn void ErmStats.init(ErmStats* s)
@@ -623,7 +633,7 @@ fn void ErmStats.init(ErmStats* s)
     s.values = 0; s.ranged = 0; s.const_valued = 0; s.nonnull = 0;
     s.known_bits = 0; s.mem_defs = 0; s.mem_uses = 0; s.mem_versions = 0;
     s.sp_nonlocal = 0; s.sp_local = 0; s.may_fault = 0;
-    s.decided_cmps = 0; s.entry_loads = 0;
+    s.decided_cmps = 0; s.entry_loads = 0; s.width_exceeded = 0;
 }
 
 fn void run(Air* m, ErmStats* st)
@@ -663,6 +673,7 @@ fn void run(Air* m, ErmStats* st)
 
     st.decided_cmps = count_decided_comparisons(m);
     st.entry_loads = count_entry_loads(m);
+    st.width_exceeded = m.count_range_exceeds_width();
 }
 
 /*
@@ -757,6 +768,8 @@ fn void print_stats(ErmStats* s)
     printf("  E: may-fault     : %d\n", (int)s.may_fault);
     printf("  >> decided cmps  : %d   (branches R already settles)\n", (int)s.decided_cmps);
     printf("  >> entry loads   : %d   (provably unaffected by this fn)\n", (int)s.entry_loads);
+    printf("  >> width exceeded: %d   (range overflows the declared type)\n",
+           (int)s.width_exceeded);
     printf("  SP: non-local    : %d  block-local: %d\n",
            (int)s.sp_nonlocal, (int)s.sp_local);
     if (s.sp_nonlocal + s.sp_local > 0)
