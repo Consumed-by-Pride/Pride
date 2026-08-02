@@ -903,6 +903,65 @@ else
   fail=$((fail+1)); note FAIL "a2_ring_loop_carried" "only $r2 of 2 indices bounded across the back edge"
 fi
 
+# a2 MUST NOT MISCOMPILE A COUNTED LOOP.
+#
+# `for i in 0..16 { s = s + i }` returns 120. An earlier attempt at
+# iterating the analyses to a fixpoint compiled it to `return 0`: the exit
+# sigma's [16,MAX] reached the loop header's phi, SCCP folded `i < 16` to
+# false, and DCE deleted the body. Asserted directly, because "the loop is
+# still there" is the property that matters and no metric implies it.
+cat > /tmp/pear_t_loopkeep.pie <<'PIE'
+mod t
+fn f : i64 -> i64
+  | u ->
+    let mut s = 0i64
+    for i in 0i64..16i64
+      s = s + i
+    s
+PIE
+"$PEARC" /tmp/pear_t_loopkeep.pie > /tmp/pear_t_loopkeep.air 2>/dev/null
+lk=$("$A2" /tmp/pear_t_loopkeep.air 2>/dev/null)
+lk_add=$(echo "$lk" | grep -c 'op=add')
+lk_phi=$(echo "$lk" | grep -c 'phi ')
+if [ "$lk_add" -ge 2 ] && [ "$lk_phi" -ge 2 ]; then
+  pass=$((pass+1)); note PASS "a2_keeps_counted_loop" "($lk_add adds, $lk_phi phis survive)"
+else
+  fail=$((fail+1)); note FAIL "a2_keeps_counted_loop" "loop deleted: adds=$lk_add phis=$lk_phi"
+fi
+
+# A memory phi is the M half of SP-ERM-e-SSI and nothing names it as an
+# SSA operand, so ordinary liveness saw it as dead and DCE deleted it --
+# throwing away the one thing LLVM cannot serialise.
+mp_f=/tmp/pear_a2_sweep/stdlib_hash_crc.pie.air
+if [ -e "$mp_f" ]; then
+  mp_n=$("$A2" "$mp_f" 2>/dev/null | grep -c 'mem.phi')
+  if [ "${mp_n:-0}" -ge 5 ]; then
+    pass=$((pass+1)); note PASS "a2_memphi_survives_dce" "($mp_n memory phis kept)"
+  else
+    fail=$((fail+1)); note FAIL "a2_memphi_survives_dce" "only $mp_n memory phis survived DCE"
+  fi
+fi
+
+# A sigma's refinement is true on ONE EDGE. It must never appear on the
+# unrefined value, which is live on both.
+#
+# Checked by running a2 over its OWN OUTPUT. With one pass the leak is
+# invisible -- the bad fact is written to the table but nothing re-reads
+# it -- so a single-pass check passes even with the guard removed. The
+# second pass is what re-seeds from the table and exposes it.
+leak=0
+for f in "$SWEEP"/*.air; do
+  [ -e "$f" ] || continue
+  "$A2" "$f" > /tmp/pear_leak1.air 2>/dev/null
+  n=$("$A2" /tmp/pear_leak1.air 2>/dev/null | grep 'range=-9223372036854775808\.\.-1' | grep -vc 'sigma')
+  leak=$((leak + ${n:-0}))
+done
+if [ "$leak" = "0" ]; then
+  pass=$((pass+1)); note PASS "a2_sigma_no_leak" "(edge-local ranges stay on their sigma)"
+else
+  fail=$((fail+1)); note FAIL "a2_sigma_no_leak" "$leak edge-local ranges leaked onto shared values"
+fi
+
 # D1: facts must SURVIVE. The honest measure is reachability -- an entry
 # still named by a live value -- because nothing ever removes table
 # entries, so counting entries would report 100% survival even on a pass
