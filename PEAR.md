@@ -739,6 +739,69 @@ holes and that the facts a3/a5 will need are proven and survive.
 
 ---
 
+### Robustness: what broke when the compiler was attacked
+
+Everything above was measured on the standard library, which is friendly
+input. Deliberately hostile input found a different class of defect, and
+none of it was visible from reading the code.
+
+**Silent truncation — seven fixed-size buffers.** a1 lowered every
+variadic construct through `uint[16] ops` with a `k < 16` loop guard, and
+clause lists, match arms, the match join and phi operands through
+`[64]`. Everything past the bound was dropped, mostly with no diagnostic
+at all:
+
+| construct | old cap | what a 20/80/300-wide case produced |
+|---|---|---|
+| call arguments | 16 | 4 arguments silently missing |
+| struct literal fields | 16 | 4 fields missing |
+| handler arms | 32 | 8 arms missing |
+| function clauses | 64 | 236 of 300 dropped (reported, still wrong) |
+| match arms | 64 | 436 of 500 dropped, silently |
+| match join results | 64 | malformed φ |
+| φ operands | 64 | 64 operands for 301 predecessors |
+
+The last two hid each other: the clause cap kept joins small enough that
+the φ cap never showed. Variadic operands now use a growable **stack** on
+the Builder — it has to be a stack, because lowering an operand recurses.
+
+**x09_torture_scale.pie was passing on a crash.** pearc segfaulted on it
+(exit 139) and the assertion read the missing count through `${n:-0}`, so
+a crash scored as "0 lowering holes". The exit status is now checked
+separately, and the file went from segfault to 3,210 values.
+
+**Two unguarded recursions.** `a + b + c + ...` is flat to the parser —
+MAX_DEPTH never fires — and N deep to anything walking children. a1's
+lowering died at ~900 terms, pfront's `resolve_expr`/`resolve_stmt`
+mutual recursion at ~5,000. Both now have measured limits (850 and 2,000)
+and report instead of dying. The a1 number is tight on purpose: the walk
+survives 850 levels and dies at 900, so the real margin over
+x09's 800 was about 12%.
+
+**A parser that never made progress.** `irdl` followed by `{ *` — eight
+characters — spun 3.7 million times in five seconds on the same token,
+allocating an AST node each turn, until the OOM killer intervened.
+`parse_irdl_decl` was the one block scanner without a final
+`else { break; }`. Found by fuzzing 168 generated and byte-flipped files;
+after the fix, 0 crashes and 0 hangs across all of them, plus 80
+mutated `.air` files through a1 and a2.
+
+**Memory φ lost their incoming blocks on every round trip.** The printer
+emitted `@label` only for `AIR_PHI`, so `mem.phi %30 %54` came back with
+`op_count 2, inc_count 0` — 1,585 verify errors across the library. It
+was invisible because a1 places *zero* memory φ and a2 places all of
+them, so only a2's output could show it, and nothing was routinely
+re-reading a2's output until the fixpoint work started.
+
+**What the round trip actually guarantees.** The strict D3 property
+(`air_eq` plus byte-identical renderings) holds on the self-test's
+hand-built modules. Over 258 real lowered modules the honest statement is
+weaker: 169 are byte-identical immediately, 89 differ only in `; pred=`
+comment ordering, and 12 *gain* a `range=` on a φ because re-parsing
+re-runs inference with the operands already in place. All 258 converge
+within 5 passes. The test asserts convergence, because that is what is
+true.
+
 ## 10. Testing
 
 Mirrors `pfront_tests/run.sh`, which is at 61/61 and asserts behaviour rather
