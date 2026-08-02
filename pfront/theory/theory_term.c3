@@ -380,10 +380,30 @@ const int OP_KEY_BASE = 512;
  The value is folded into a distinct band so it cannot collide with a
  node kind or an operator key.
 */
-const int LIT_KEY_BASE = 1000000;
-// Variants live in their own band so a variant's name_id cannot collide
-// with a literal's value or with a node kind.
-const int VAR_KEY_BASE = 2000000;
+/*
+ Key bands.
+
+ These must stay SMALL. theory_trs.c3 uses top_key directly as an index
+ into a discrimination table of DISC_KINDS = 1024 buckets and clamps
+ anything larger to the last bucket:
+
+     if (k >= DISC_KINDS) { k = DISC_KINDS - 1; }
+
+ So a band at 1,000,000 does not merely waste space -- it funnels every
+ literal, variant and call into one shared bucket, which is exactly the
+ collapse these keys exist to prevent. The rule index degrades to a
+ linear scan of every call-headed rule for every call-headed term.
+
+ The bands are therefore packed just above the node kinds and hashed
+ into their range, so distinct names usually land in distinct buckets
+ while the whole key space stays inside the table. A hash collision
+ costs precision, never correctness: two terms sharing a bucket are
+ still compared structurally by term_eq before a rule fires.
+*/
+const int LIT_KEY_BASE  = 600;
+const int VAR_KEY_BASE  = 740;
+const int CALL_KEY_BASE = 880;
+const int KEY_BAND      = 140;
 
 fn int top_key(Node* n)
 {
@@ -410,7 +430,9 @@ fn int top_key(Node* n)
     if (lit != null && (lit.kind == Nk.N_EXPR_INT || lit.kind == Nk.N_EXPR_CHAR
                         || lit.kind == Nk.N_EXPR_BOOL))
     {
-        return LIT_KEY_BASE + (int)lit.p.ival;
+        long v = (long)lit.p.ival;
+        if (v < 0) { v = -v; }
+        return LIT_KEY_BASE + (int)(v % (long)KEY_BAND);
     }
     /*
      A VARIANT is keyed by which variant it is, for exactly the reason a
@@ -428,7 +450,42 @@ fn int top_key(Node* n)
     */
     if (n.kind == Nk.N_PAT_VARIANT && n.name_id != 0)
     {
-        return VAR_KEY_BASE + (int)n.name_id;
+        return VAR_KEY_BASE + (int)(n.name_id % (uint)KEY_BAND);
+    }
+    /*
+     A CALL is keyed by its callee, for the third time the same reasoning
+     applies: `foo(x)` and `bar(x)` are both N_EXPR_CALL, so returning the
+     kind made every call one constructor and the decision tree could not
+     tell two rewrite rules apart.
+
+     This is how a rule set for a network protocol -- `emit_msg(m)` and
+     `recv_msg(m)`, which can never both match the same term -- was
+     reported as having a redundant rule. Rewrite rules are almost always
+     headed by a call, so this affected essentially every rule set with
+     more than one rule.
+
+     Two spellings reach here. An ordinary call has the callee as child 0;
+     a METHOD call (`T.op(a)`, which is what the parser builds for a
+     dotted call) carries the operation in its own name_id. Both are keyed
+     by that name.
+    */
+    if (n.kind == Nk.N_EXPR_METHOD && n.name_id != 0)
+    {
+        return CALL_KEY_BASE + (int)(n.name_id % (uint)KEY_BAND);
+    }
+    if (n.kind == Nk.N_EXPR_CALL && n.child_count > 0)
+    {
+        Node* callee = n.children[0];
+        if (callee != null && callee.kind == Nk.N_EXPR_IDENT && callee.name_id != 0)
+        {
+            return CALL_KEY_BASE + (int)(callee.name_id % (uint)KEY_BAND);
+        }
+        /*
+         An indirect call -- through a field, an index, another call --
+         has no static callee name. It keeps the kind key and stays
+         conservative: more terms treated as possibly-equal, never fewer.
+         Inventing a key from a non-name would collide, which is the bug.
+        */
     }
     return (int)n.kind;
 }

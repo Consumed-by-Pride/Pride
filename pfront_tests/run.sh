@@ -1026,6 +1026,64 @@ if [ -x ./pearc ]; then
     fail=$((fail+1))
   fi
 
+  # The TERM REWRITER must converge, and must not rewrite its own rules.
+  #
+  # Three compounding bugs made a two-rule chain take 32,768 firings and
+  # never reach a fixpoint:
+  #
+  #   * normalize() walked the `rewrite` block itself, so the rewriter
+  #     matched its own left-hand sides and rewrote the RULES into their
+  #     right-hand sides -- corrupting the rule set, not just looping
+  #   * after each root rewrite it re-normalised every child, re-walking
+  #     an already-normal subtree once per step
+  #   * top_key's new bands sat at 1,000,000 while theory_trs indexes a
+  #     1024-bucket discrimination table with that value and clamps, so
+  #     every literal, variant and call collapsed into one bucket
+  #
+  # `foo(x) -> bar(x)` and `bar(x) -> x` is the whole test: two rules, one
+  # term. Anything above a handful of firings means it is not converging.
+  printf 'mod t\nlet r : Rewrite = rewrite\n  | foo(x) ↦ bar(x)\n  | bar(x) ↦ x\nfn f : i64 -> i64\n  | n -> foo(n)\nfn foo : i64 -> i64\n  | x -> x\nfn bar : i64 -> i64\n  | x -> x\n' > /tmp/pf_trs.pie
+  fr=$(./pfrontc /tmp/pf_trs.pie 2>&1 | grep -oE '[0-9]+ firings' | grep -oE '[0-9]+')
+  # Threshold is 2, not "small": the correct answer for two rules on one
+  # term is exactly two firings. Allowing 16 let the rule-body fix be
+  # reverted (6 firings) while the test still passed, which is a test
+  # that measures the wrong thing.
+  if [ "${fr:-99999}" -le 2 ]; then
+    printf '  PASS  %-26s %s\n' "trs_converges" "(2-rule chain in $fr firings)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "trs_converges" "$fr firings -- not converging"
+    fail=$((fail+1))
+  fi
+
+  # ...and it must still FIRE. A rewriter that converges by doing nothing
+  # would pass the check above.
+  printf 'mod t\nlet r : Rewrite = rewrite\n  | zero_add(x) ↦ x\nfn zero_add : i64 -> i64\n  | x -> x\nfn use_it : i64 -> i64\n  | n -> zero_add(n) |> r\n' > /tmp/pf_trs2.pie
+  f2=$(./pfrontc /tmp/pf_trs2.pie 2>&1 | grep -oE '[0-9]+ firings' | grep -oE '[0-9]+')
+  if [ "${f2:-0}" -ge 1 ]; then
+    printf '  PASS  %-26s %s\n' "trs_still_fires" "($f2 firing on a matching term)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "trs_still_fires" "the rewriter fired nothing at all"
+    fail=$((fail+1))
+  fi
+
+  # Distinct CALL patterns are distinct constructors. `emit_msg(m)` and
+  # `recv_msg(m)` can never match the same term, and top_key returned the
+  # node KIND for both -- so essentially every rule set with more than one
+  # call-headed rule was reported as having a redundant rule.
+  printf 'mod t\nlet r : Rewrite = rewrite\n  | foo(x) ↦ x\n  | bar(x) ↦ x\nfn f : i64 -> i64\n  | n -> n\n' > /tmp/pf_ck.pie
+  printf 'mod t\nlet r : Rewrite = rewrite\n  | foo(x) ↦ x\n  | foo(y) ↦ y\nfn f : i64 -> i64\n  | n -> n\n' > /tmp/pf_ck2.pie
+  ck=$(./pfrontc /tmp/pf_ck.pie 2>&1 | grep -oE '[0-9]+ redundant' | grep -oE '[0-9]+')
+  ck2=$(./pfrontc /tmp/pf_ck2.pie 2>&1 | grep -oE '[0-9]+ redundant' | grep -oE '[0-9]+')
+  if [ "${ck:-1}" = "0" ] && [ "${ck2:-0}" -ge 1 ]; then
+    printf '  PASS  %-26s %s\n' "trs_call_keys" "(distinct callees separate, duplicate caught)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "trs_call_keys" "distinct=$ck duplicate=$ck2 (want 0 and >=1)"
+    fail=$((fail+1))
+  fi
+
   # No construct in the syntax suite may leave a lowering hole.
   sh=0
   for f in pfront_tests/syntax/x*.pie; do

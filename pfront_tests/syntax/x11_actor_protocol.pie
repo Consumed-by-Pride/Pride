@@ -1,0 +1,257 @@
+-- AN ACTOR-BASED NETWORK PROTOCOL STATE MACHINE.
+--
+--   [Handshake] --(ClientHello)--> [Connected]
+--        |                              |
+--    (Timeout)                    (Send / Channel)
+--        v                              v
+--   [Terminated]                     [Closed]
+--
+-- Four things are under test, and two of them cannot be finished yet.
+-- Saying which is which up front, because a test that quietly checks
+-- less than it claims is worse than no test:
+--
+--   1  EFFECTS / RESUMPTION.  a1 must lower `perform`, `handle` and
+--      `resume` into real AIR with the continuation binder in scope.
+--      The stackless STATE-MACHINE conversion itself is a3's job and a3
+--      does not exist, so what is checked here is that the constructs
+--      lower with no holes and that the continuation `k` and the
+--      destructured environment are genuinely bound -- the failure that
+--      would make a resumed continuation read garbage.
+--
+--   2  SESSION TYPES.  Refinement predicates and quantifiers on the
+--      channel state index, checked by CMTT. This is fully testable now.
+--
+--   3  TRS FIXPOINT.  `++` composition and `|> r*` erasing a local
+--      message-passing layer down to a direct memory write. Fully
+--      testable now, and it is the hardest test of the top_key and
+--      literal-arity fixes: the rules are deeply nested and overlapping.
+--
+--   4  RING BUFFER BOUNDS.  The head and tail indices must be PROVEN to
+--      stay in [0,63] so the modulo and the bounds check can be
+--      discharged. a2's range analysis proves it; `emit.c3` does not
+--      exist, so the proof is checked in the IR rather than in the
+--      emitted code.
+mod actor_protocol
+
+-- ── Session types: the protocol state as a refinement ───────────────────
+-- A channel carries its protocol state as an index. The refinement is
+-- what makes `send_data` on a Closed channel a compile-time error rather
+-- than a runtime one.
+
+type StateIdx  = i64 ∩ (>= 0)
+type Handshake = i64 ∩ (== 0)
+type Connected = i64 ∩ (== 1)
+type Closed    = i64 ∩ (== 2)
+type Terminated = i64 ∩ (== 3)
+
+-- The ring buffer's indices. This is the refinement the bare-metal
+-- deliverable rests on: both are bounded, so `% 64` is a mask and the
+-- bounds check is discharged.
+type RingIdx = i64 ∩ (>= 0) ∩ (< 64)
+
+struct Channel
+  state : StateIdx
+  fd : i64
+  seq : i64
+
+struct RingBuf
+  head : RingIdx
+  tail : RingIdx
+  slots : i64
+
+struct Actor
+  chan : Channel
+  ring : RingBuf
+  buffer : i64
+  data : i64
+
+-- ── The protocol effects ────────────────────────────────────────────────
+-- An actor cannot block an OS thread: every suspension point is an
+-- algebraic effect, and the handler captures the continuation.
+
+effect Net
+  await_packet : () -> i64
+  send_bytes : i64 -> i64
+
+effect Timer
+  sleep : i64 -> i64
+
+effect Chan
+  emit_msg : i64 -> i64
+  recv_msg : () -> i64
+
+-- ── State transitions ───────────────────────────────────────────────────
+-- Each transition is total and returns the next state index. Written as
+-- multi-clause functions so the clause dispatch and the PGL decision
+-- tree both get exercised on a real state machine.
+
+fn on_client_hello : i64 -> i64
+  | 0i64 -> 1i64
+  | s -> s
+
+fn on_timeout : i64 -> i64
+  | 0i64 -> 3i64
+  | 1i64 -> 3i64
+  | s -> s
+
+fn on_close : i64 -> i64
+  | 1i64 -> 2i64
+  | s -> s
+
+fn is_connected : i64 -> bool
+  | 1i64 -> true
+  | _ -> false
+
+-- ── The guard that makes the session type mean something ────────────────
+-- `send_data` may only run on a Connected channel. The guard is what a
+-- refinement error would replace; with the state proven, a2 can fold the
+-- check away entirely.
+
+fn send_data : (Channel, i64) -> i64
+  | (c, payload) ->
+    if c.state == 1i64
+      perform Net.send_bytes(payload)
+    else
+      0i64
+
+-- ── The event loop: effects and resumption ──────────────────────────────
+-- A linear function that suspends. a3 turns this into a stackless
+-- state-machine struct; a1's job is to lower the constructs faithfully
+-- so a3 has something to convert.
+
+fn event_loop : Channel -> i64 ! [Net, Timer]
+  | c ->
+    let pkt = perform Net.await_packet()
+    let next = on_client_hello(c.state)
+    if next == 1i64
+      perform Net.send_bytes(pkt)
+    else
+      perform Timer.sleep(100i64)
+
+-- THE COMPILER TRAP from the task: a single-clause destructuring pattern
+-- capturing the environment inside a continuation. If the binder is not
+-- in scope when the continuation is captured, the resumed continuation
+-- reads garbage.
+--
+-- `| { state, fd, seq } -> ...` is the exact shape that bound NOTHING
+-- before the bind_pattern fix.
+fn capture_env : Channel -> i64
+  | { state, fd, seq } -> state + fd + seq
+
+-- The same shape, but the destructured names are read INSIDE a handler
+-- arm, after the continuation binder is introduced. This is the case
+-- that matters: `fd` must still resolve where `k` is live.
+fn handled_loop : Channel -> i64
+  | { state, fd, seq } ->
+    handle event_loop_body(fd)
+      | Net.await_packet () k -> k seq
+      | Timer.sleep ms k -> k state
+
+fn event_loop_body : i64 -> i64 ! [Net, Timer]
+  | fd ->
+    let p = perform Net.await_packet()
+    p + fd
+
+-- Two handler arms over the same effect, with the continuation resumed
+-- by juxtaposition in one and by `resume` in the other. Both spellings
+-- must lower to the same thing.
+fn both_resume_forms : i64 -> i64
+  | seed ->
+    handle event_loop_body(seed)
+      | Net.await_packet () k -> resume seed
+      | Timer.sleep ms k -> k ms
+
+-- ── TRS: erasing the local message-passing layer ────────────────────────
+-- When two actors share a thread, `emit` then `await` is pure overhead.
+-- The rules below rewrite that pair down to a direct assignment.
+--
+-- These are deliberately overlapping and nested: `local_send` is a
+-- three-level pattern, and several rules can fire on the same term. That
+-- is the stress test for the redundancy checker -- none of these is
+-- shadowed by another, so a correct checker reports zero.
+
+let deliver : Rewrite = rewrite
+  | emit_msg(m) ↦ m
+  | recv_msg(m) ↦ m
+
+let fuse_local : Rewrite = rewrite
+  | local_send(a, b, m) ↦ direct_write(b, m)
+  | direct_write(b, m) ↦ store_slot(b, m)
+
+let ring_algebra : Rewrite = rewrite
+  | idx + 0i64 ↦ idx
+  | idx * 1i64 ↦ idx
+  | mask(idx, 63i64) ↦ idx
+  | wrap(idx, 64i64) ↦ mask(idx, 63i64)
+
+-- Composition, then a fixpoint. Fusion enables ring simplification and
+-- vice versa, which is exactly why one pass is not enough.
+let local_opt : Rewrite = deliver ++ fuse_local
+let full_opt : Rewrite = local_opt ++ ring_algebra
+
+fn optimise_pipeline : i64 -> i64
+  | g ->
+    let once = g |> local_opt
+    let fixed = g |> full_opt*
+    once + fixed
+
+-- ── The bare-metal deliverable: a bounded ring buffer ───────────────────
+-- The whole point. Both indices are masked to 6 bits, so a2 must prove
+-- head and tail lie in [0,63] and discharge every bounds check.
+
+fn ring_push : (i64, i64) -> i64
+  | (head, value) ->
+    let h = head & 63i64
+    h + value
+
+fn ring_pop : i64 -> i64
+  | tail ->
+    let t = tail & 63i64
+    t
+
+-- The loop form: a full sweep of the ring, where the induction variable
+-- must be proven in range by the loop bound rather than by masking.
+fn ring_drain : i64 -> i64
+  | seed ->
+    let mut acc = 0i64
+    for i in 0i64..64i64
+      acc = acc + (i & 63i64)
+    acc
+
+-- Head and tail advancing together, both masked. This is the shape a
+-- lock-free SPSC queue actually has.
+fn ring_advance : (i64, i64) -> i64
+  | (head, tail) ->
+    let mut h = head & 63i64
+    let mut t = tail & 63i64
+    let mut n = 0i64
+    while n < 64i64
+      h = (h + 1i64) & 63i64
+      t = (t + 1i64) & 63i64
+      n = n + 1i64
+    h + t
+
+-- ── The actor driver ────────────────────────────────────────────────────
+-- Ties the state machine, the channel and the ring together.
+
+fn step_actor : (i64, i64) -> i64
+  | (state, packet) ->
+    match state
+      | 0i64 -> on_client_hello(state)
+      | 1i64 ->
+        if packet > 0i64
+          on_close(state)
+        else
+          state
+      | 2i64 -> 2i64
+      | 3i64 -> 3i64
+      | s -> s
+
+fn run_until_closed : i64 -> i64
+  | start ->
+    let mut s = start
+    let mut steps = 0i64
+    while steps < 16i64
+      s = step_actor(s, steps)
+      steps = steps + 1i64
+    s

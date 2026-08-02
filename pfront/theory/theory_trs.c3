@@ -382,6 +382,38 @@ fn Node* Rewriter.normalize(Rewriter* rw, Node* n, int depth)
     if (n == null) { return null; }
     if (depth > TRS_MAX_DEPTH) { rw.depth_exceeded = rw.depth_exceeded + 1; return n; }
 
+    /*
+     Never rewrite a rule's own definition.
+
+     A `rewrite | lhs -> rhs` block is an N_DECL_FN with NF_SYNTHETIC
+     whose clause children ARE the rules -- RuleSet.collect reads exactly
+     those nodes. normalize walked them like any other subtree, so the
+     rewriter matched its own left-hand sides and rewrote the rules into
+     their own right-hand sides.
+
+     The damage was not subtle. Two rules as simple as
+
+         | foo(x) -> bar(x)
+         | bar(x) -> x
+
+     produced 32,768 firings and never reached a fixpoint: rewriting the
+     definition of rule 1 creates a new `bar` term, which rule 2 matches,
+     which changes the rule set the next round reads, which fires again.
+     run_fixpoint exhausted all 8 rounds every time, 4,096 firings per
+     round, and reported success. The actor-protocol test hit 65,548.
+
+     It also silently CORRUPTS the rule set: after the first round the
+     rules are no longer the ones the programmer wrote.
+
+     Skipped by flag rather than by node kind because an ordinary nested
+     function is a legitimate rewrite target; only the synthetic block a
+     rewrite value desugars to is off limits.
+    */
+    if (n.kind == Nk.N_DECL_FN && (n.flags & pfront_core::NF_SYNTHETIC) != 0)
+    {
+        return n;
+    }
+
     if (rw.use_memo)
     {
         Node* cached = rw.memo.get(n);
@@ -397,20 +429,62 @@ fn Node* Rewriter.normalize(Rewriter* rw, Node* n, int depth)
         if (after != null && after != before) { cur.set_child(i, after); }
     }
 
-    // Then repeatedly rewrite at the root until no rule applies.
+    /*
+     Then repeatedly rewrite at the root until no rule applies.
+
+     ── Why the children are NOT re-normalised here ─────────────────────
+
+     They were, and it cost an exponential blowup. The children are
+     already in normal form when this loop starts -- that is what the
+     loop above did -- and a rewrite at the ROOT replaces the root node
+     while its operands are substituted subterms of those already-normal
+     children. Re-walking them meant every root step re-normalised the
+     whole subtree from scratch:
+
+         1 rule  in a chain ->      2 firings
+         2 rules in a chain -> 32,768 firings
+
+     Measured, on two rules as simple as `foo(x) -> bar(x)` and
+     `bar(x) -> x`. The count is 2^15, not a coincidence: each root
+     rewrite doubles the work below it.
+
+     The memoisation that was supposed to absorb this could never fire.
+     `Memo` is keyed by node POINTER, and `instantiate` builds a fresh
+     node for every right-hand side, so the key is new every time. Memo
+     hits were 0 on every file in the project, including the whole
+     standard library.
+
+     What a root rewrite CAN expose is a redex in the substituted
+     operands -- `foo(bar(y))` rewriting to `bar(y)` puts a `bar` at the
+     root, which the next turn of this same loop handles. So the loop
+     alone is sufficient, and the inner re-walk was pure duplication.
+
+     A term whose children genuinely change shape is handled by
+     run_fixpoint, which re-runs the whole traversal until a round fires
+     nothing.
+    */
     int guard = 0;
     while (guard < 1024)
     {
         Node* stepped = rw.try_rules(cur);
         if (stepped == null) { break; }
-        // The result may expose new redexes in its own children.
-        for (usz i = 0; i < stepped.child_count; i++)
-        {
-            stepped.set_child(i, rw.normalize(stepped.children[i], depth + 1));
-        }
         cur = stepped;
         guard = guard + 1;
         if (rw.fuel <= 0) { break; }
+    }
+
+    /*
+     Normalise the operands the rewrite substituted in. Done ONCE, after
+     the root has stopped changing, rather than once per root step.
+    */
+    if (cur != n)
+    {
+        for (usz i = 0; i < cur.child_count; i++)
+        {
+            Node* before = cur.children[i];
+            Node* after = rw.normalize(before, depth + 1);
+            if (after != null && after != before) { cur.set_child(i, after); }
+        }
     }
 
     if (rw.use_memo && cur != n) { rw.memo.put(n, cur); }
