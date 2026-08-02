@@ -802,6 +802,57 @@ re-runs inference with the operands already in place. All 258 converge
 within 5 passes. The test asserts convergence, because that is what is
 true.
 
+### Fault injection: testing the tests
+
+Fuzzing finds inputs the compiler mishandles. It cannot find *rules the
+suite never checks*. For that the method is to break something on purpose
+and see whether anything notices — and at this point it is the more
+productive of the two.
+
+Fourteen deliberate mutations of pfront/a1/a2 invariants. Eleven were
+caught. The three that were not are the interesting result, and two of
+them turned out to be honest findings rather than gaps:
+
+| mutation | caught? |
+|---|---|
+| parser depth 400 → 3 | yes — 33 failures, stdlib 258 → 80 |
+| numeric suffix always signed | yes |
+| resolver depth guard removed | yes |
+| irdl progress guard reports but does not `break` | yes |
+| σ/π edge-local facts seeded into the lineage table | yes — 4 failures |
+| range solver trusts itself over a1's seed | yes |
+| mem-φ no longer a DCE root | yes |
+| reader stops rebuilding the parameter list | yes |
+| DCE may delete parameters | yes |
+| printer stops escaping names | yes — 4 failures |
+| `mem.phi` labels not printed | yes |
+| **parameter placed outside the entry block** | **NO — fixed** |
+| SCCP folds effectful values | no — *unreachable* |
+| `inc_count != op_count` disabled | no — *unreachable from text* |
+
+**The real gap.** The parameter rebuild scanned only the entry block,
+which looks right — SSI property 1 puts parameters at entry — but made
+the rule unenforceable: a parameter anywhere else was never found,
+`param_count` stayed 0, and the check that exists to catch precisely that
+iterated zero times. `bad_param_detached.air` was ACCEPTED. Fixed by
+collecting `AIR_PARAM` from every block and letting the verifier judge
+placement.
+
+**The two non-gaps, stated rather than papered over.** SCCP's
+`op_has_effect` guard has no case to catch, because the lattice never
+assigns a constant to a call or a load in the first place; it is defence
+in depth and becomes load-bearing the moment a2 learns callee return
+values. `inc_count != op_count` cannot fail through the reader, which
+sets the two equal unconditionally — it guards the in-memory builders,
+and it is what caught the memory-φ bug via a2's output. Neither was given
+a fixture, because a fixture that passes for the wrong reason is worse
+than an acknowledged hole.
+
+**A test that was vacuous.** `dce_keeps_arity` originally asserted only
+that the reported counter was zero — which is trivially true when the
+counter is deleted. It now asserts the surviving parameter first, and the
+counter merely corroborates.
+
 ## 10. Testing
 
 Mirrors `pfront_tests/run.sh`, which is at 61/61 and asserts behaviour rather
