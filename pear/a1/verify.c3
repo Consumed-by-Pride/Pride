@@ -523,7 +523,31 @@ fn void check_function(Air* m, Fn* f, Report* r)
                 // meaningful position after a real instruction.
                 if (seen_non_phi) { r.err("phi appears after a non-phi value", vid); }
 
-                // ── STRUCTURAL: one operand per predecessor ─────────────
+                /*
+                 ── STRUCTURAL: one operand per incoming block ──────────
+
+                 NOT reachable through the text reader, and that is worth
+                 saying rather than leaving as an apparent gap: the parser
+                 sets inc_count = op_count unconditionally when it builds
+                 a phi, so no .air file can produce a mismatch. Disabling
+                 this line leaves the whole regression suite green, and
+                 the two negative fixtures that look like they cover it
+                 (bad_phi_arity) are actually caught by the predecessor
+                 check below, which fires first.
+
+                 It guards the IN-MEMORY builders instead -- a1's own
+                 lowering, and a3/a4 when they arrive -- where the two
+                 arrays are filled by separate loops and can genuinely
+                 diverge. That is exactly how the memory-phi bug appeared:
+                 a1 emitted a phi whose labels were never printed, and on
+                 re-read op_count was 2 with inc_count 0. This check is
+                 what caught it, via a2's output rather than via a
+                 fixture.
+
+                 Kept, documented as unreachable from the text, and
+                 deliberately not given a fixture that would pass for the
+                 wrong reason.
+                */
                 if (v.inc_count != v.op_count)
                 {
                     r.err("phi operand count differs from its incoming-block count", vid);

@@ -1,0 +1,26 @@
+; A phi with two operands but only one incoming label.
+;
+; The verifier has always checked `inc_count != op_count`, and NOTHING
+; exercised it: disabling the check outright left the whole regression
+; suite green. A rule with no negative fixture is a rule that can be
+; deleted by accident, which is how the memory-phi label bug survived --
+; the same check was live but the printer never produced the shape.
+;
+; A phi short of its incoming labels reads an undefined value on the
+; edges it does not name.
+func f entry=b1
+  block b1
+    %1 = const.int ival=0  [range=0..0 w=64]
+    branch %1 b2 b3
+  end
+  block b2  ; pred=b1
+    jump b4
+  end
+  block b3  ; pred=b1
+    jump b4
+  end
+  block b4  ; pred=b2,b3
+    %2 = phi %1@b2 %1
+    ret %2
+  end
+endfunc

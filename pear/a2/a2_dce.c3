@@ -645,9 +645,13 @@ fn void run_function(Air* m, Fn* f, DceStats* st)
  would hide the bug, and the number is printed with the other DCE
  statistics where a non-zero value is impossible to miss.
 
- This is cheap -- one integer per function -- and it is the only thing
- standing between a DCE bug and every caller in the program passing its
- arguments to the wrong slots.
+ This is cheap -- one integer per function -- and it is a REPORT, not the
+ test. Deleting the comparison below leaves the suite green, correctly:
+ what actually protects the interface is is_root() keeping AIR_PARAM, and
+ that is asserted directly by ok_unused_param.air checking the parameter
+ is still THERE. The counter exists so that a future DCE change which
+ does drop an argument says so on stdout instead of being found by a
+ caller.
 */
 fn void run(Air* m, DceStats* st)
 {

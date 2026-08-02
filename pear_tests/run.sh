@@ -757,13 +757,19 @@ fi
 # Two assertions, because they fail independently: the reported counter
 # must be 0, and the parameter must still be in the output. Checking only
 # the counter would pass if the counter itself stopped working.
+#
+# The SURVIVING PARAMETER is the real assertion; the counter is only
+# corroborating. Checking the counter alone would pass vacuously if the
+# guard were deleted -- verified by deleting it, which left this green
+# until the param count was checked too.
 up=$("$A2" --stats pear/a2/tests/ok_unused_param.air 2>/dev/null)
 up_ch=$(echo "$up" | grep -oE 'arity kept  : [0-9]+' | grep -oE '[0-9]+$')
 up_n=$("$A2" pear/a2/tests/ok_unused_param.air 2>/dev/null | grep -c '= param')
-if [ "${up_ch:-1}" = "0" ] && [ "${up_n:-0}" = "1" ]; then
-  pass=$((pass+1)); note PASS "dce_keeps_arity" "(an unused parameter is still interface)"
+up_has_line=$(echo "$up" | grep -c 'arity kept')
+if [ "${up_n:-0}" = "1" ] && [ "${up_ch:-1}" = "0" ] && [ "${up_has_line:-0}" = "1" ]; then
+  pass=$((pass+1)); note PASS "dce_keeps_arity" "(unused parameter survives; guard reports 0 changed)"
 else
-  fail=$((fail+1)); note FAIL "dce_keeps_arity" "arity_changed=$up_ch surviving_params=$up_n (want 0 / 1)"
+  fail=$((fail+1)); note FAIL "dce_keeps_arity" "surviving_params=$up_n arity_changed=$up_ch guard_present=$up_has_line (want 1 / 0 / 1)"
 fi
 
 # And the parameter list must SURVIVE A ROUND TRIP, which is what makes

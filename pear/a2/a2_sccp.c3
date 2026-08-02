@@ -657,8 +657,24 @@ fn void run_function(Air* m, Fn* f, pear_a2_facts::Facts2* facts, SccpStats* st)
             Cell c = s.cells[vid];
             if (c.lat != Lat.LAT_CONST) { continue; }
             if (v.op == Op.AIR_CONST_INT || v.op == Op.AIR_CONST_BOOL) { continue; }
-            // Only fold things that are pure: a call returning a constant
-            // still has to be called.
+            /*
+             Only fold things that are pure: a call returning a constant
+             still has to be called.
+
+             MEASURED, and reported honestly: removing this line changes
+             nothing observable today. The lattice never assigns LAT_CONST
+             to a call, a load or a store in the first place -- they are
+             opaque to the transfer function -- so the guard has no case
+             to catch. It is kept as defence in depth, not because a test
+             covers it, and the injection experiment that established this
+             is recorded rather than turned into a test that would pass
+             vacuously.
+
+             It becomes load-bearing the moment a2 learns anything about
+             callee return values, which is the natural next precision
+             step given that `call` is the second-largest source of
+             un-ranged comparison operands.
+            */
             if (pear_air::op_has_effect(v.op)) { continue; }
             if (v.op == Op.AIR_MEM_PHI || v.op == Op.AIR_MEM_ENTRY) { continue; }
 

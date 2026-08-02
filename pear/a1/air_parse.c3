@@ -1144,14 +1144,45 @@ fn void Parse.rebuild_params(Parse* p)
         pear_air::AirFunc* f = p.m.fun((uint)fi);
         if (f == null) { continue; }
         if (f.param_count != 0) { continue; }   // already known
+        /*
+         Scan EVERY block, not just the entry.
+
+         Scanning only the entry block looks right -- SSI property 1 says
+         a parameter is defined at CFG entry -- but it makes the verifier
+         unable to report the violation: a parameter placed in some other
+         block simply would not be found, param_count would stay 0, and
+         the check that exists to catch exactly that would iterate zero
+         times. The fixture bad_param_detached.air was ACCEPTED for this
+         reason.
+
+         Collecting them wherever they are, and letting verify.c3 judge
+         whether the placement is legal, keeps the reader honest and the
+         rule enforceable. Entry-block parameters still come first and in
+         order, so a well-formed module round-trips unchanged.
+        */
         pear_air::AirBlock* e = p.m.blk(f.entry);
-        if (e == null) { continue; }
-        for (usz i = 0; i < e.value_count; i++)
+        if (e != null)
         {
-            pear_air::AirValue* v = p.m.val(e.values[i]);
-            if (v == null || v.is_phi_hole) { continue; }
-            if (v.op != pear_air::AirOp.AIR_PARAM) { continue; }
-            p.m.add_param(f.id, v.id);
+            for (usz i = 0; i < e.value_count; i++)
+            {
+                pear_air::AirValue* v = p.m.val(e.values[i]);
+                if (v == null || v.is_phi_hole) { continue; }
+                if (v.op != pear_air::AirOp.AIR_PARAM) { continue; }
+                p.m.add_param(f.id, v.id);
+            }
+        }
+        for (usz bi = 0; bi < f.block_count; bi++)
+        {
+            if (f.blocks[bi] == f.entry) { continue; }
+            pear_air::AirBlock* b2 = p.m.blk(f.blocks[bi]);
+            if (b2 == null) { continue; }
+            for (usz i = 0; i < b2.value_count; i++)
+            {
+                pear_air::AirValue* v = p.m.val(b2.values[i]);
+                if (v == null || v.is_phi_hole) { continue; }
+                if (v.op != pear_air::AirOp.AIR_PARAM) { continue; }
+                p.m.add_param(f.id, v.id);
+            }
         }
     }
 }
