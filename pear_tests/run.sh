@@ -710,6 +710,30 @@ else
   echo "$f2" | grep -E 'load\.index|op=add|op=lt' | sed 's/^/      /' | head -4
 fi
 
+# A MEMORY phi must round-trip its incoming blocks.
+#
+# The printer emitted `@label` only for AIR_PHI, so a memory phi printed
+# as `mem.phi %30 %54` with the incoming blocks missing from the text
+# entirely. Reading that back gave op_count 2, inc_count 0 -- which
+# verify.c3 already rejected as "phi operand count differs from its
+# incoming-block count". 75 errors on io.pie, 1,585 across the standard
+# library, and every one of them invisible until the IR made a round
+# trip: a1 places no memory phi at all, a2 does, so only a2's output
+# could show it.
+#
+# Assert BOTH halves: the labels are in the text, and the result verifies
+# after being read back.
+"$PEARC" stdlib/io.pie > /tmp/pear_mp0.air 2>/dev/null
+"$A2" /tmp/pear_mp0.air > /tmp/pear_mp1.air 2>/dev/null
+mp_n=$(grep -c 'mem\.phi' /tmp/pear_mp1.air)
+mp_lab=$(grep 'mem\.phi' /tmp/pear_mp1.air | grep -c '@')
+mp_err=$("$A2" --stats /tmp/pear_mp1.air 2>/dev/null | grep 'errors / warnings' | sed -E 's/.*: *([0-9]+) *\/.*/\1/')
+if [ "${mp_n:-0}" -gt 0 ] && [ "${mp_n:-0}" = "${mp_lab:-0}" ] && [ "${mp_err:-1}" = "0" ]; then
+  pass=$((pass+1)); note PASS "mem_phi_roundtrip" "($mp_n mem-phis keep their labels, 0 verify errors)"
+else
+  fail=$((fail+1)); note FAIL "mem_phi_roundtrip" "mem-phis=$mp_n labelled=$mp_lab verify errors=$mp_err"
+fi
+
 # D3 over WIDE operand lists: what a1 prints, a1 must read back.
 #
 # a1's printer had no arity limit but its READER capped an operand list

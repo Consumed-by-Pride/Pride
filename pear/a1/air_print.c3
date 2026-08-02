@@ -291,9 +291,22 @@ fn void print_value(Out* o, Air* m, Numbering* nb, uint vid, bool with_origin)
     {
         o.str(" %");
         o.unum((ulong)nb.get(m.operands[v.op_off + i]));
-        // A φ names the block each operand arrives from, inline, so the
-        // pairing is visible in the text and cannot be misread.
-        if (v.op == Op.AIR_PHI && i < v.inc_count)
+        /*
+         A φ names the block each operand arrives from, inline, so the
+         pairing is visible in the text and cannot be misread.
+
+         MEM_PHI too. It was omitted here, so a memory φ printed as
+         `mem.phi %30 %54` with no `@label` at all -- the incoming blocks
+         simply were not in the text. Reading that back gave op_count 2
+         and inc_count 0, which is exactly what verify.c3 rejects as
+         "phi operand count differs from its incoming-block count": 75
+         errors on io.pie alone, and 1,585 across the standard library,
+         every one of them appearing only AFTER a round trip. a2 places
+         the memory φ, so a1's own output never showed it and the printer
+         and the verifier disagreed in a direction nothing tested.
+        */
+        bool any_phi_here = v.op == Op.AIR_PHI || v.op == Op.AIR_MEM_PHI;
+        if (any_phi_here && i < v.inc_count)
         {
             o.str("@");
             print_label(o, m, m.phi_blocks[v.inc_off + i]);

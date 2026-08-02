@@ -706,7 +706,9 @@ fn void Parse.parse_value_line(Parse* p, uint block)
     uint* incs = null;
     usz ocap = 0;
     usz nops = 0;
-    bool is_phi = op == Op.AIR_PHI;
+    // MEM_PHI carries `@label` suffixes exactly like a value φ; the
+    // printer emits them for both, so the reader must accept both.
+    bool is_phi = op == Op.AIR_PHI || op == Op.AIR_MEM_PHI;
 
     while (!p.sc.at_eol())
     {
