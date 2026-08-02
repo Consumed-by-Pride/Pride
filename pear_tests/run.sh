@@ -752,6 +752,71 @@ else
   fail=$((fail+1)); note FAIL "roundtrip_converges" "$rt_never fixtures never reach a stable rendering"
 fi
 
+# A parameter nothing reads must SURVIVE DCE: arity is interface.
+#
+# Two assertions, because they fail independently: the reported counter
+# must be 0, and the parameter must still be in the output. Checking only
+# the counter would pass if the counter itself stopped working.
+up=$("$A2" --stats pear/a2/tests/ok_unused_param.air 2>/dev/null)
+up_ch=$(echo "$up" | grep -oE 'arity kept  : [0-9]+' | grep -oE '[0-9]+$')
+up_n=$("$A2" pear/a2/tests/ok_unused_param.air 2>/dev/null | grep -c '= param')
+if [ "${up_ch:-1}" = "0" ] && [ "${up_n:-0}" = "1" ]; then
+  pass=$((pass+1)); note PASS "dce_keeps_arity" "(an unused parameter is still interface)"
+else
+  fail=$((fail+1)); note FAIL "dce_keeps_arity" "arity_changed=$up_ch surviving_params=$up_n (want 0 / 1)"
+fi
+
+# And the parameter list must SURVIVE A ROUND TRIP, which is what makes
+# every param check in verify.c3 mean anything.
+#
+# The list was never reconstructed by the reader: param_count was 1
+# before a round trip and 0 after, measured directly. So the whole
+# parameter section of the verifier was dead code on any file loaded from
+# disk -- which is every file a2 has ever been given.
+"$PEARC" /dev/null >/dev/null 2>&1
+printf 'mod rp\nfn f : (i64, i64) -> i64\n  | (a, b) -> a\n' > /tmp/pear_rp.pie
+"$PEARC" /tmp/pear_rp.pie > /tmp/pear_rp.air 2>/dev/null
+rp_direct=$("$PEARC" --verify /tmp/pear_rp.pie 2>/dev/null | grep -oE 'parameters       : [0-9]+' | grep -oE '[0-9]+$')
+rp_reread=$("$BIN" /tmp/pear_rp.air 2>/dev/null | grep -oE 'parameters       : [0-9]+' | grep -oE '[0-9]+$')
+if [ "${rp_direct:-0}" -ge 1 ] && [ "${rp_direct:-0}" = "${rp_reread:-0}" ]; then
+  pass=$((pass+1)); note PASS "param_list_rebuilt" "($rp_direct params checked from source, $rp_reread after re-read)"
+else
+  fail=$((fail+1)); note FAIL "param_list_rebuilt" "params checked: $rp_direct from source but $rp_reread after a round trip"
+fi
+
+# MALFORMED AIR CORPUS: 46 hand-built and structurally corrupted files.
+#
+# This is the reader's and a2's own hostile-input suite: duplicated and
+# deleted lines, dangling value references, self-referential phis, a
+# phi whose operand is itself, cyclic jumps, an entry pointing at a
+# block that does not exist, out-of-range literals, empty files.
+#
+# The property is NOT that these are accepted -- most should be rejected.
+# It is that a1 and a2 always terminate with a diagnostic instead of a
+# signal, and, crucially, that a2 never turns IR a1 called VALID into IR
+# that fails verification. That second half is what would catch an
+# optimiser corrupting a program it was handed correctly.
+af_sig=0; af_broke=0; af_n=0; af_valid=0
+for f in pear/a2/tests/fuzz/air/*.air; do
+  [ -e "$f" ] || continue
+  af_n=$((af_n+1))
+  ( ulimit -v 3000000; timeout 20 "$BIN" "$f" >/dev/null 2>&1 ); r1=$?
+  ( ulimit -v 3000000; timeout 20 "$A2" "$f" >/dev/null 2>&1 ); r2=$?
+  [ $r1 -ge 124 ] && af_sig=$((af_sig+1))
+  [ $r2 -ge 124 ] && { af_sig=$((af_sig+1)); continue; }
+  e1=$(timeout 20 "$BIN" "$f" 2>/dev/null | grep 'errors / warnings' | sed -E 's/.*: *([0-9]+) *\/.*/\1/')
+  [ -z "$e1" ] && continue
+  [ "${e1:-1}" != "0" ] && continue
+  af_valid=$((af_valid+1))
+  e2=$(timeout 20 "$A2" --stats "$f" 2>/dev/null | grep 'errors / warnings' | sed -E 's/.*: *([0-9]+) *\/.*/\1/')
+  [ "${e2:-0}" != "0" ] && { af_broke=$((af_broke+1)); note INFO "  $(basename "$f")" "a1 said valid, a2 produced $e2 errors"; }
+done
+if [ "$af_sig" = "0" ] && [ "$af_broke" = "0" ]; then
+  pass=$((pass+1)); note PASS "air_fuzz_corpus" "($af_n files, $af_valid valid: 0 signals, a2 broke none)"
+else
+  fail=$((fail+1)); note FAIL "air_fuzz_corpus" "signals=$af_sig a2_corrupted=$af_broke of $af_n"
+fi
+
 # A name that is not a plain word must survive the round trip.
 #
 # Pride is untyped and permissive, and pfront's error recovery will hand

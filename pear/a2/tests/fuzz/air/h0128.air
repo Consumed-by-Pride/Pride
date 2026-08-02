@@ -1,0 +1,6 @@
+func f entry=b1
+  block b1
+    %1 = const.int ival=0  [range=100..1]
+    ret %1
+  end
+endfunc

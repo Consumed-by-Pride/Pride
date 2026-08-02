@@ -1,0 +1,118 @@
+; note: 15 front-end errors; lowering anyway
+module stdlib/alloc.pie
+func arena_new entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=sz
+    %3 = global.addr name=arena
+    %4 = call %3 %2  [mem=def:1<-0]
+    ret %4
+  end
+endfunc
+func arena_destroy entry=b2
+  block b2
+    %5 = mem.entry  [mem=entry:0<-0]
+    %6 = param name=a
+    %7 = global.addr name=arena
+    %8 = call %7 %6  [mem=def:1<-0]
+    ret %8
+  end
+endfunc
+func arena_clear entry=b3
+  block b3
+    %9 = mem.entry  [mem=entry:0<-0]
+    %10 = param name=a
+    %11 = global.addr name=arena
+    %11 = global.addr name=arena
+    %12 = call %11 %10  [mem=def:1<-0]
+    ret %12
+  end
+endfunc
+func arena_alloc entry=b4
+  block b4
+    %13 = mem.entry  [mem=entry:0<-0]
+    %13 = mem.entry  [mem=entry:0<-0]
+    %14 = param name=_
+    %15 = load.field %14 index=0  [mem=use:0<-0]
+    %16 = load.field %14 index=1  [mem=use:0<-0]
+    %17 = load.field %14 index=2  [mem=use:0<-0]
+    %18 = global.addr name=arena
+    %19 = call %18 %15 %16 %17  [mem=def:1<-0]
+    ret %19
+  end
+endfunc
+func arena_alloc_zeroed entry=b5
+  block b5
+    %20 = mem.entry  [mem=entry:0<-0]
+    %21 = param name=_
+    %22 = load.field %21 index=0  [mem=use:0<-0]
+    %22 = load.field %21 index=0  [mem=use:0<-0]
+    %23 = load.field %21 index=1  [mem=use:0<-0]
+    %24 = load.field %21 index=2  [mem=use:0<-0]
+    %25 = global.addr name=arena
+    %26 = call %25 %22 %23 %24  [mem=def:1<-0]
+    ret %26
+  end
+endfunc
+func bump_new entry=b6
+  block b6
+    %27 = mem.entry  [mem=entry:0<-0]
+    %28 = param name=sz
+    %29 = global.addr name=bump
+    %30 = call %29 %28  [mem=def:1<-0]
+    ret %30
+  end
+endfunc
+func bump_from_buffer entry=b7
+  block b7
+    %31 = mem.entry  [mem=entry:0<-0]
+    %32 = param name=_
+    %33 = load.field %32 index=0  [mem=use:0<-0]
+    %34 = load.field %32 index=1  [mem=use:0<-0]
+    %35 = global.addr name=bump
+    %36 = call %35 %33 %34  [mem=def:1<-0]
+    ret %36
+  end
+endfunc
+func bump_destroy entry=b8
+  block b8
+    %37 = mem.entry  [mem=entry:0<-0]
+    %38 = param name=b
+    %39 = global.addr name=bump
+    %40 = call %39 %38  [mem=def:1<-0]
+    ret %40
+  end
+endfunc
+func bump_reset entry=b9
+  block b9
+    %41 = mem.entry  [mem=entry:0<-0]
+    %43 = global.addr name=bump
+    %42 = param name=b
+    %44 = call %43 %42  [mem=def:1<-0]
+    ret %44
+  end
+endfunc
+func bump_alloc entry=b10
+  block b10
+    %45 = mem.entry  [mem=entry:0<-0]
+    %46 = param name=_
+    %47 = load.field %46 index=0  [mem=use:0<-0]
+    %48 = load.field %46 index=1  [mem=use:0<-0]
+    %50 = global.addr name=bump
+    %49 = load.field %46 index=2  [mem=use:0<-0]
+    %51 = call %50 %47 %48 %49  [mem=def:1<-0]
+    ret %51
+  end
+endfunc
+func bump_alloc_zeroed entry=b11
+  block b11
+    %52 = mem.entry  [mem=entry:0<-0]
+    %53 = param name=_
+    %54 = load.field %53 index=0  [mem=use:0<-0]
+    %55 = load.field %53 index=1  [mem=use:0<-0]
+    %56 = load.field %53 index=2  [mem=use:0<-0]
+    %57 = global.addr name=bump
+    %58 = call %57 %54 %55 %56  [mem=def:1<-0]
+    ret %58
+  end
+endfunc

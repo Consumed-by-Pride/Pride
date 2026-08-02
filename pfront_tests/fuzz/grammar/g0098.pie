@@ -1,0 +1,13 @@
+mod g
+∃ Foo 0x736f6d6570736575u64 assert & mut \ irdl assume unsafe graph mem as assume < opcode ==
+	!
+    graph y 1 continue for 0x736f6d6570736575u64 ~ and [
+    { mod
+    Bar
+  continue
+	\ quote  Foo while
+	stage 1.5f64 opcode fn
+    z
+  block :: ∀
+	% true
+	

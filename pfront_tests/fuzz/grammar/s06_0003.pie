@@ -1,0 +1,5 @@
+mod s
+effect E
+  op0 : (i64) -> i64
+  op1 : (i64) -> i64
+  op2 : (i64) -> i64

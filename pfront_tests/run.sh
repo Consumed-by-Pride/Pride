@@ -1160,6 +1160,41 @@ if [ -x ./pearc ]; then
   else
     pass=$((pass+1)); printf '  PASS  %-26s %s\n' "syntax_lowering_no_crash" "(every syntax file lowers without crashing)"
   fi
+  # GRAMMAR FUZZ CORPUS: 168 files of hostile but token-shaped input.
+  #
+  # Kept in the tree rather than regenerated, because a corpus that
+  # changes every run cannot regress. These found the irdl progress loop
+  # and the operator-named-function bug; both fixtures are in
+  # pfront_tests/fuzz/ alongside.
+  #
+  # Three properties, in increasing strength:
+  #   1. neither binary exits on a signal or hangs;
+  #   2. everything a1 lowers VERIFIES;
+  #   3. AIR_UNKNOWN appears only where pfront already reported an error
+  #      -- i.e. no lowering holes on input the front end accepted.
+  gf_sig=0; gf_verr=0; gf_hole=0; gf_n=0
+  for f in pfront_tests/fuzz/grammar/*.pie; do
+    [ -e "$f" ] || continue
+    gf_n=$((gf_n+1))
+    ( ulimit -v 3000000; timeout 25 ./pfrontc "$f" -I stdlib --plain --quiet >/dev/null 2>&1 )
+    [ $? -ge 124 ] && gf_sig=$((gf_sig+1))
+    out=$( ( ulimit -v 3000000; timeout 25 ./pearc --verify "$f" -I stdlib 2>/dev/null ) )
+    rc=$?
+    if [ $rc -ge 124 ]; then gf_sig=$((gf_sig+1)); continue; fi
+    e=$(echo "$out" | grep 'errors / warnings' | sed -E 's/.*: *([0-9]+) *\/.*/\1/')
+    u=$(echo "$out" | grep -oE 'unsupported      : [0-9]+' | grep -oE '[0-9]+$')
+    gf_verr=$((gf_verr + ${e:-0}))
+    if [ "${u:-0}" != "0" ]; then
+      pe=$(./pfrontc "$f" -I stdlib --plain --quiet 2>&1 | grep -oE 'errors=[0-9]+' | grep -oE '[0-9]+')
+      [ "${pe:-0}" = "0" ] && gf_hole=$((gf_hole+1))
+    fi
+  done
+  if [ "$gf_sig" = "0" ] && [ "$gf_verr" = "0" ] && [ "$gf_hole" = "0" ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "grammar_fuzz_corpus" "($gf_n files: 0 signals, 0 verify errors, 0 holes on clean input)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "grammar_fuzz_corpus" "signals=$gf_sig verify_errors=$gf_verr holes_on_clean=$gf_hole of $gf_n"
+  fi
+
   # PROGRESS: no block scanner may loop without consuming a token.
   #
   # `irdl` followed by `{ *` is eight characters and hung pfrontc until

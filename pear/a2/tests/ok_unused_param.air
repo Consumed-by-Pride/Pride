@@ -1,0 +1,25 @@
+; A parameter that nothing reads is STILL part of the interface.
+;
+; DCE keeps AIR_PARAM as a root for exactly this reason, and nothing
+; verified that it did. Proven by injection: making is_root return false
+; for AIR_PARAM deletes `unused` here and the ENTIRE regression suite --
+; 74 assertions at the time, including a full verify of the result --
+; stayed green. The verifier cannot catch it either: the parameter list
+; is rebuilt from the surviving AIR_PARAM values, so "deleted a
+; parameter" and "never had one" are indistinguishable afterwards.
+;
+; Dropping an argument is an ABI change. Every caller then passes its
+; remaining arguments to the wrong slots, and nothing in the IR says so.
+;
+; a2 now captures each function's arity before DCE and compares after,
+; reporting `DCE: arity kept : N changed`. This fixture is the one that
+; makes that number move.
+module /tmp/up.pie
+func g entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=unused
+    %3 = const.int ival=7  [range=7..7 w=64 kb=18446744073709551608/7]
+    ret %3
+  end
+endfunc

@@ -1,0 +1,169 @@
+; note: 2 front-end errors; lowering anyway
+module stdlib/crypto/crc32_fast.pie
+func crc32_fast_slice entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=_
+    %3 = load.field %2 index=0  [mem=use:0<-0]
+    %4 = load.field %2 index=1  [mem=use:0<-0 nonlocal]
+    %5 = const.int ival=4294967295  [range=4294967295..4294967295 w=32 kb=18446744069414584320/4294967295 nonlocal]
+    %6 = cast %3 name=_  [nonlocal]
+    %7 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    jump b2
+  end
+  block b2  ; pred=b1,b8
+    %8 = phi %7@b1 %34@b8  [nonlocal]
+    %9 = phi %4@b1 %9@b8  [nonlocal]
+    %10 = phi %5@b1 %24@b8  [nonlocal]
+    %11 = phi %6@b1 %11@b8  [nonlocal]
+    %12 = bin %8 %9 op=lt  [range=0..1 w=1]
+    branch %12 b3 b5
+  end
+  block b3  ; pred=b2
+    %13 = sigma %8 fact=lt origin=%8
+    %14 = load.index %11 %13  [mem=use:0<-0 mayfault]
+    %15 = pi %13 %14 fact=inbounds  [range=0..9223372036854775807 nonlocal] origin=%8
+    %16 = cast %14 name=u32  [range=0..4294967295 w=32]
+    %17 = bin %10 %16 op=xor  [nonlocal]
+    %18 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    jump b6
+  end
+  block b4  ; pred=b5
+    %19 = const.unit
+    %20 = const.int ival=4294967295  [range=4294967295..4294967295 w=32 kb=18446744069414584320/4294967295]
+    %21 = bin %10 %20 op=xor
+    ret %21
+  end
+  block b5  ; pred=b2
+    %22 = sigma %8 fact=ge origin=%8
+    jump b4
+  end
+  block b6  ; pred=b3,b12
+    %23 = phi %18@b3 %45@b12  [range=-9223372036854775807..8 nonlocal]
+    %24 = phi %17@b3 %43@b12  [nonlocal]
+    %25 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %26 = bin %23 %25 op=lt  [range=0..1 w=1]
+    branch %26 b7 b9
+  end
+  block b7  ; pred=b6
+    %27 = sigma %23 fact=lt  [range=-9223372036854775808..7 nonlocal] origin=%23
+    %28 = const.int ival=1  [range=1..1 w=32 kb=18446744073709551614/1]
+    %29 = bin %24 %28 op=and  [range=0..1]
+    %30 = const.int ival=0  [range=0..0 w=32 kb=18446744073709551615/0]
+    %31 = bin %29 %30 op=ne  [range=0..1 w=1]
+    branch %31 b10 b11
+  end
+  block b8  ; pred=b9
+    %32 = const.unit
+    %33 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %34 = bin %15 %33 op=add  [nonlocal]
+    jump b2
+  end
+  block b9  ; pred=b6
+    %35 = sigma %23 fact=ge  [range=8..9223372036854775807] origin=%23
+    jump b8
+  end
+  block b10  ; pred=b7
+    %36 = const.int ival=1  [range=1..1 w=32 kb=18446744073709551614/1]
+    %37 = bin %24 %36 op=shr
+    %38 = const.int ival=3988292384  [range=3988292384..3988292384 w=32 kb=18446744069721259231/3988292384]
+    %39 = bin %37 %38 op=xor  [nonlocal]
+    jump b12
+  end
+  block b11  ; pred=b7
+    %40 = const.int ival=1  [range=1..1 w=32 kb=18446744073709551614/1]
+    %41 = bin %24 %40 op=shr  [nonlocal]
+    jump b12
+  end
+  block b12  ; pred=b10,b11
+    %42 = phi %39@b10 %41@b11  [nonlocal]
+    %43 = phi %39@b10 %41@b11  [nonlocal]
+    %44 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %45 = bin %27 %44 op=add  [range=-9223372036854775807..8 nonlocal]
+    jump b6
+  end
+endfunc
+func crc32c_fast_slice entry=b13
+  block b13
+    %46 = mem.entry  [mem=entry:0<-0]
+    %47 = param name=_
+    %48 = load.field %47 index=0  [mem=use:0<-0]
+    %49 = load.field %47 index=1  [mem=use:0<-0 nonlocal]
+    %50 = const.int ival=4294967295  [range=4294967295..4294967295 w=32 kb=18446744069414584320/4294967295 nonlocal]
+    %51 = cast %48 name=_  [nonlocal]
+    %51 = cast %48 name=_  [nonlocal]
+    %52 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    jump b14
+  end
+  block b14  ; pred=b13,b20
+    %53 = phi %52@b13 %79@b20  [nonlocal]
+    %54 = phi %49@b13 %54@b20  [nonlocal]
+    %55 = phi %50@b13 %69@b20  [nonlocal]
+    %56 = phi %51@b13 %56@b20  [nonlocal]
+    %57 = bin %53 %54 op=lt  [range=0..1 w=1]
+    branch %57 b15 b17
+  end
+  block b15  ; pred=b14
+    %58 = sigma %53 fact=lt origin=%53
+    %59 = load.index %56 %58  [mem=use:0<-0 mayfault]
+    %60 = pi %58 %59 fact=inbounds  [range=0..9223372036854775807 nonlocal] origin=%53
+    %61 = cast %59 name=u32  [range=0..4294967295 w=32]
+    %62 = bin %55 %61 op=xor  [nonlocal]
+    %63 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    jump b18
+  end
+  block b16  ; pred=b17
+    %64 = const.unit
+    %65 = const.int ival=4294967295  [range=4294967295..4294967295 w=32 kb=18446744069414584320/4294967295]
+    %66 = bin %55 %65 op=xor
+    ret %66
+  end
+  block b17  ; pred=b14
+    %67 = sigma %53 fact=ge origin=%53
+    jump b16
+  end
+  block b18  ; pred=b15,b24
+    %68 = phi %63@b15 %90@b24  [range=-9223372036854775807..8 nonlocal]
+    %69 = phi %62@b15 %88@b24  [nonlocal]
+    %70 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %71 = bin %68 %70 op=lt  [range=0..1 w=1]
+    branch %71 b19 b21
+  end
+  block b19  ; pred=b18
+    %72 = sigma %68 fact=lt  [range=-9223372036854775808..7 nonlocal] origin=%68
+    %73 = const.int ival=1  [range=1..1 w=32 kb=18446744073709551614/1]
+    %74 = bin %69 %73 op=and  [range=0..1]
+    %75 = const.int ival=0  [range=0..0 w=32 kb=18446744073709551615/0]
+    %76 = bin %74 %75 op=ne  [range=0..1 w=1]
+    branch %76 b22 b23
+  end
+  block b20  ; pred=b21
+    %77 = const.unit
+    %78 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %79 = bin %60 %78 op=add  [nonlocal]
+    jump b14
+  end
+  block b21  ; pred=b18
+    %80 = sigma %68 fact=ge  [range=8..9223372036854775807] origin=%68
+    jump b20
+  end
+  block b22  ; pred=b19
+    %81 = const.int ival=1  [range=1..1 w=32 kb=18446744073709551614/1]
+    %82 = bin %69 %81 op=shr
+    %83 = const.int ival=2197175160  [range=2197175160..2197175160 w=32 kb=18446744071512376455/2197175160]
+    %84 = bin %82 %83 op=xor  [nonlocal]
+    jump b24
+  end
+  block b23  ; pred=b19
+    %85 = const.int ival=1  [range=1..1 w=32 kb=18446744073709551614/1]
+    %86 = bin %69 %85 op=shr  [nonlocal]
+    jump b24
+  end
+  block b24  ; pred=b22,b23
+    %87 = phi %84@b22 %86@b23  [nonlocal]
+    %88 = phi %84@b22 %86@b23  [nonlocal]
+    %89 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %90 = bin %72 %89 op=add  [range=-9223372036854775807..8 nonlocal]
+    jump b18
+  end
+endfunc

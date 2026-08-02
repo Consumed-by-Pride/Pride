@@ -1,0 +1,82 @@
+; note: 13 front-end errors; lowering anyway
+module stdlib/compute.pie
+func wspool_new entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=n
+    %3 = global.addr name=threadpool
+    %4 = call %3 %2  [mem=def:1<-0]
+    ret %4
+  end
+endfunc
+func wspool_destroy entry=b2
+  block b2
+    %5 = mem.entry  [mem=entry:0<-0]
+    %6 = param name=p
+    %7 = global.addr name=threadpool
+    %8 = call %7 %6  [mem=def:1<-0]
+    ret %8
+  end
+endfunc
+func wspool_submit entry=b3
+  block b3
+    %9 = mem.entry  [mem=entry:0<-0]
+    %10 = param name=_
+    %11 = load.field %10 index=0  [mem=use:0<-0]
+    %12 = load.field %10 index=1  [mem=use:0<-0]
+    %13 = global.addr name=threadpool
+    %14 = call %13 %11 %12  [mem=def:1<-0]
+    ret %14
+  end
+end
+func wspool_parallel_for entry=b4
+  block b4
+    %15 = mem.entry  [mem=entry:0<-0]
+    %16 = param name=_
+    %17 = load.field %16 index=0  [mem=use:0<-0]
+    %18 = load.field %16 index=1  [mem=use:0<-0]
+    %19 = load.field %16 index=2  [mem=use:0<-0]
+    %20 = load.field %16 index=3  [mem=use:0<-0]
+    %21 = global.addr name=threadpool
+    %22 = call %21 %17 %18 %19 %20  [mem=def:1<-0]
+    ret %22
+  end
+endfunc
+func gemm_parallel entry=b5
+  block b5
+    %23 = mem.entry  [mem=entry:0<-0]
+    %23 = mem.entry  [mem=entry:0<-0]
+    %24 = param name=_
+    %25 = load.field %24 index=0  [mem=use:0<-0]
+    %26 = load.field %24 index=1  [mem=use:0<-0]
+    %27 = load.field %24 index=2  [mem=use:0<-0]
+    %28 = load.field %24 index=3  [mem=use:0<-0]
+    %30 = load.field %24 index=5  [mem=use:0<-0]
+    %31 = load.field %24 index=6  [mem=use:0<-0]
+    %32 = global.addr name=blas
+    %33 = call %32 %25 %26 %27 %28 %29 %30 %31  [mem=def:1<-0]
+    ret %33
+  end
+endfunc
+func relu_parallel entry=b6
+  block b6
+    %34 = mem.entry  [mem=entry:0<-0]
+    %35 = param name=_
+    %36 = load.field %35 index=0  [mem=use:0<-0]
+    %38 = global.addr name=blas
+    %37 = load.field %35 index=1  [mem=use:0<-0]
+    %39 = call %38 %36 %37  [mem=def:1<-0]
+    ret %39
+  end
+endfunc
+func sigmoid_parallel entry=b7
+  block b7
+    %40 = mem.entry  [mem=entry:0<-0]
+    %41 = param name=_
+    %42 = load.field %41 index=0  [mem=use:0<-0]
+    %43 = load.field %41 index=1  [mem=use:0<-0]
+    %44 = globa
+    %45 = call %44 %42 %43  [mem=def:1<-0]
+    r
+  end
+endfunc

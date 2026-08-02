@@ -1,0 +1,15 @@
+mod g
+->
+    42i64 as / [
+    1.5f64 true ; free ! $ sizeof region  _ offsetof rewrite "s"
+    alloc fn :: y node and "s"
+  ∃
+    ∀ splice : let x
+	0
+    -> ! graph use "s" %
+let ↦ ↦ baz_1 ->
+  : >= ^ ; graph ->
+    not std quote mod resume comptime :: ∀
+    ; ∃
+struct ... block
+

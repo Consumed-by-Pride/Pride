@@ -1,0 +1,80 @@
+; note: 9 front-end errors; lowering anyway
+module stdlib/codegen/aarch64.pie
+func aarch64_new entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=_
+    %3 = global.addr name=Aarch64Asm
+    %4 = global.addr name=vec
+    %5 = const.int ival=4  [range=4..4 w=64 kb=18446744073709551611/4]
+    %6 = call %4 %5  [mem=def:1<-0]
+    %7 = struct %3 %6 name=Aarch64Asm
+    ret %7
+  end
+endfunc
+func aarch64_destroy entry=b2
+  block b2
+    %8 = mem.entry  [mem=entry:0<-0]
+    %9 = param name=a
+    %10 = global.addr name=vec
+    %11 = addr.field %9 index=0 field=buf  [null=nonnull]
+    %12 = call %10 %11  [mem=def:1<-0]
+    ret %12
+  end
+endfunc
+func aarch64_emit_word entry=b3
+  block b3
+    %13 = mem.entry  [mem=entry:0<-0]
+    %14 = param name=_
+    %15 = load.field %14 index=0  [mem=use:0<-0]
+    %16 = load.field %14 index=1  [mem=use:0<-0]
+    %17 = global.addr name=vec
+    %18 = addr.field %15 index=0 field=buf  [null=nonnull]
+    %19 = addr.of %16  [null=nonnull]
+    %20 = cast %19 name=ptr
+    %21 = call %17 %1
+    ret %21
+  end
+endfunc
+func aarch64_emit_nop entry=b4
+  block b4
+    %22 = mem.entry  [mem=entry:0<-0]
+    %23 = param name=a
+    %24 = func.ref name=aarch64_emit_word  [null=nonnull]
+    %25 = const.int ival=3573751839  [range=3573751839..3573751839 w=32 kb=18446744070135799776/3573751839]
+    %26 = call %24 %23 %25  [mem=def:1<-0]
+    ret %26
+  end
+endfunc
+func aarch64_emit_ret entry=b5
+  block b5
+    %27 = mem.entry  [mem=entry:0<-0]
+    %28 = param name=a
+    %29 = func.ref name=aarch64_emit_word  [null=nonnull]
+    %30 = const.int ival=3596559296  [range=3596559296..3596559296 w=32 kb=18446744070112992319/3596559296]
+    %31 = call %29 %28 %30  [mem=def:1<-0]
+    ret %31
+  end
+endfunc
+func aarch64_len entry=b6
+  block b6
+    %32 = mem.entry  [mem=entry:0<-0]
+    %33 = param name=a
+    %34 = global.addr name=vec
+    %35 = addr.field %33 index=0 field=buf  [null=nonnull]
+    %36 = call %34 %35  [mem=def:1<-0]
+    %37 = const.int ival=4  [range=4..4 w=64 kb=18446744073709551611/4]
+    %38 = bin %36 %37 op=mul
+    ret %38
+  end
+endfunc
+func aarch64_ptr entry=b7
+  block b7
+    %39 = mem.entry  [mem=entry:0<-0]
+    %40 = param name=a
+    %41 = global.addr name=vec
+    %42 = addr.field %40 index=0 field=buf  [null=nonnull]
+    %43 = call %41 %42  [mem=def:1<-0]
+    ret %43
+  end
+endfunc

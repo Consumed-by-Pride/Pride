@@ -1,0 +1,298 @@
+; note: 9 front-end errors; lowering anyway
+module stdlib/compress/snappy_lite.pie
+func snappy_encode_slice entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=_
+    %3 = load.field %2 index=0  [mem=use:0<-0 nonlocal]
+    %4 = load.field %2 index=1  [mem=use:0<-0 nonlocal]
+    %5 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %6 = bin %4 %5 op=le  [range=0..1 w=1]
+    branch %6 b2 b3
+  end
+  block b2  ; pred=b1
+    %7 = sigma %4 fact=le  [range=-9223372036854775808..0] origin=%4
+    %8 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %9 = cast %8 name=ptr
+    %9 = cast %8 name=ptr
+    %10 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %11 = tuple %9 %10  [nonlocal]
+    jump b4
+  end
+  block b3  ; pred=b1
+    %12 = sigma %4 fact=gt  [range=1..9223372036854775807 nonlocal] origin=%4
+    %13 = const.int ival=6  [range=6..6 w=64 kb=18446744073709551609/6]
+    %14 = bin %12 %13 op=div  [range=0..1537228672809129301 mayfault]
+    %15 = bin %12 %14 op=add
+    %16 = const.int ival=32  [range=32..32 w=64 kb=18446744073709551583/32]
+    %17 = bin %15 %16 op=add
+    %18 = global.addr name=os
+    %19 = load.field %18 index=0 field=linux  [mem=use:0<-0]
+    %20 = call %19 %17  [mem=def:1<-0]
+    %21 = cast %20 name=_  [nonlocal]
+    %22 = global.addr name=varint
+    %23 = cast %21 name=ptr
+    %24 = const.int ival=10  [range=10..10 w=64 kb=18446744073709551605/10]
+    %25 = call %22 %12 %23 %24  [mem=def:2<-1 nonlocal]
+    %26 = cast %3 name=_  [nonlocal]
+    %27 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    jump b5
+  end
+  block b4  ; pred=b2,b7
+    %28 = phi %11@b2 %41@b7  [nonlocal]
+    ret %28
+  end
+  block b5  ; pred=b3,b14
+    %29 = phi %27@b3 %72@b14  [nonlocal]
+    %30 = phi %12@b3 %30@b14  [nonlocal]
+    %31 = phi %26@b3 %59@b14  [nonlocal]
+    %32 = phi %21@b3 %60@b14  [nonlocal]
+    %33 = phi %25@b3 %57@b14  [nonlocal]
+    %34 = bin %29 %30 op=lt  [range=0..1 w=1]
+    branch %34 b6 b8
+  end
+  block b6  ; pred=b5
+    %35 = sigma %29 fact=lt  [nonlocal] origin=%29
+    %36 = bin %30 %35 op=sub
+    %37 = const.int ival=60  [range=60..60 w=64 kb=18446744073709551555/60]
+    %38 = bin %36 %37 op=lt  [range=0..1 w=1]
+    branch %38 b9 b10
+  end
+  block b7  ; pred=b8
+    %39 = const.unit
+    %40 = cast %32 name=ptr
+    %41 = tuple %40 %33  [nonlocal]
+    jump b4
+  end
+  block b8  ; pred=b5
+    %42 = sigma %29 fact=ge origin=%29
+    jump b7
+  end
+  block b9  ; pred=b6
+    %43 = bin %30 %35 op=sub  [nonlocal]
+    jump b11
+  end
+  block b10  ; pred=b6
+    %44 = const.int ival=60  [range=60..60 w=64 kb=18446744073709551555/60 nonlocal]
+    jump b11
+  end
+  block b11  ; pred=b9,b10
+    %45 = phi %43@b9 %44@b10  [nonlocal]
+    %46 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %47 = bin %45 %46 op=sub
+    %48 = const.int ival=2  [range=2..2 w=64 kb=18446744073709551613/2]
+    %49 = bin %47 %48 op=shl
+    %50 = cast %49 name=u8  [range=0..255 w=8]
+    %51 = store.index %32 %50 %33  [mem=def:3<-2]
+    %52 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %53 = bin %33 %52 op=add  [nonlocal]
+    %54 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    jump b12
+  end
+  block b12  ; pred=b11,b13
+    %55 = phi %54@b11 %70@b13  [nonlocal]
+    %56 = phi %45@b11 %56@b13  [nonlocal]
+    %57 = phi %53@b11 %68@b13  [nonlocal]
+    %58 = phi %35@b11 %58@b13  [nonlocal]
+    %59 = phi %31@b11 %59@b13  [nonlocal]
+    %60 = phi %32@b11 %60@b13  [nonlocal]
+    %61 = bin %55 %56 op=lt  [range=0..1 w=1]
+    branch %61 b13 b15
+  end
+  block b13  ; pred=b12
+    %62 = sigma %55 fact=lt origin=%55
+    %63 = bin %58 %62 op=add
+    %64 = load.index %59 %63  [mem=use:0<-3 mayfault]
+    %65 = pi %63 %64 fact=inbounds  [range=0..9223372036854775807] origin=%63
+    %66 = store.index %60 %64 %57  [mem=def:4<-3]
+    %67 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %68 = bin %57 %67 op=add  [nonlocal]
+    %69 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %70 = bin %62 %69 op=add  [nonlocal]
+    jump b12
+  end
+  block b14  ; pred=b15
+    %71 = const.unit
+    %72 = bin %58 %56 op=add  [nonlocal]
+    jump b5
+  end
+  block b15  ; pred=b12
+    %73 = sigma %55 fact=ge origin=%55
+    jump b14
+  end
+endfunc
+func snappy_decode_slice entry=b16
+  block b16
+    %74 = mem.entry  [mem=entry:0<-0]
+    %75 = param name=_
+    %76 = load.field %75 index=0  [mem=use:0<-0 nonlocal]
+    %77 = load.field %75 index=1  [mem=use:0<-0 nonlocal]
+    %78 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %79 = bin %77 %78 
+    branch %79 b17 b18
+  end
+  block b17  ; pred=b16
+    %80 = sigma %77 fact=le  [range=-9223372036854775808..0] origin=%77
+    %81 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %82 = cast %81 name=ptr
+    %83 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %84 = const.bool ival=0  [range=0..1 w=1]
+    %85 = tuple %82 %83 %84  [nonlocal]
+    jump b19
+  end
+  block b18  ; pred=b16
+    %86 = sigma %77 fact=gt  [range=1..9223372036854775807 nonlocal] origin=%77
+    %87 = global.addr name=varint
+    %88 = call %87 %76 %86  [mem=def:1<-0]
+    %89 = load.field %88 index=0  [mem=use:0<-1 nonlocal]
+    %90 = load.field %88 index=1  [mem=use:0<-1 nonlocal]
+    %91 = load.field %88 index=2  [mem=use:0<-1]
+    %92 = un %91 op=not
+    %93 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %94 = bin %89 %93 op=le  [range=0..1 w=1]
+    %95 = bin %92 %94 op=lor  [range=0..1 w=1]
+    branch %95 b20 b21
+  end
+  block b19  ; pred=b17,b22
+    %96 = phi %85@b17 %111@b22  [nonlocal]
+    ret %96
+  end
+  block b20  ; pred=b18
+    %97 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %98 = cast %97 name=ptr
+    %99 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %100 = const.bool ival=0  [range=0..1 w=1]
+    %101 = tuple %98 %99 %100  [nonlocal]
+    jump b22
+  end
+  block b21  ; pred=b18
+    %102 = global.addr name=os
+    %103 = load.field %102 index=0 field=linux  [mem=use:0<-1]
+    %104 = const.int ival=16  [range=16..16 w=64 kb=18446744073709551599/16]
+    %105 = bin %89 %104 op=add
+    %106 = call %103 %105  [mem=def:2<-1]
+    %107 = cast %106 name=_  [nonlocal]
+    %108 = cast %76 name=_  [nonlocal]
+    %109 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    %110 = const.bool ival=1  [range=0..1 w=1 nonlocal]
+    jump b23
+  end
+  block b22  ; pred=b20,b37
+    %111 = phi %101@b20 %180@b37  [nonlocal]
+    jump b19
+  end
+  block b23  ; pred=b21,b28
+    %112 = phi %90@b21 %166@b28  [nonlocal]
+    %113 = phi %86@b21 %113@b28  [nonlocal]
+    %114 = phi %109@b21 %165@b28  [nonlocal]
+    %115 = phi %89@b21 %115@b28  [nonlocal]
+    %116 = phi %107@b21 %154@b28  [nonlocal]
+    %117 = phi %108@b21 %153@b28  [nonlocal]
+    %118 = bin %112 %113 op=lt  [range=0..1 w=1]
+    %119 = bin %114 %115 op=lt  [range=0..1 w=1]
+    %120 = bin %118 %119 op=land  [range=0..1 w=1]
+    branch %120 b24 b25
+  end
+  block b24  ; pred=b23
+    %121 = load.index %117 %112  [mem=use:0<-2 mayfault]
+    %122 = pi %112 %121 fact=inbounds  [range=0..9223372036854775807] origin=%112
+    %123 = cast %121 name=i64  [w=64 nonlocal]
+    %124 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %125 = bin %122 %124 op=add  [nonlocal]
+    %126 = const.int ival=3  [range=3..3 w=64 kb=18446744073709551612/3]
+    %127 = bin %123 %126 op=and  [range=0..3 w=64 nonlocal]
+    %128 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %129 = bin %127 %128 op=eq  [range=0..1 w=1]
+    branch %129 b26 b27
+  end
+  block b25  ; pred=b23,b29,b27
+    %130 = phi %110@b23 %147@b29 %146@b27  [range=0..1 w=1 nonlocal]
+    %131 = const.unit
+    %132 = un %130 op=not
+    branch %132 b35 b36
+  end
+  block b26  ; pred=b24
+    %133 = sigma %127 fact=eq  [range=0..0 w=64] origin=%127
+    %134 = const.int ival=2  [range=2..2 w=64 kb=18446744073709551613/2]
+    %135 = bin %123 %134 op=shr  [w=64]
+    %136 = const.int ival=63  [range=63..63 w=64 kb=18446744073709551552/63]
+    %137 = bin %135 %136 op=and  [range=0..63 w=64]
+    %138 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %139 = bin %137 %138 op=add  [range=1..64 w=64 nonlocal]
+    %140 = bin %125 %139 op=add
+    %141 = bin %140 %113 op=gt  [range=0..1 w=1]
+    %142 = bin %114 %139 op=add
+    %143 = bin %142 %115 op=gt  [range=0..1 w=1]
+    %144 = bin %141 %143 op=lor  [range=0..1 w=1]
+    branch %144 b29 b30
+  end
+  block b27  ; pred=b24
+    %145 = sigma %127 fact=ne  [range=1..3 w=64] origin=%127
+    %146 = const.bool ival=0  [range=0..1 w=1 nonlocal]
+    jump b25
+  end
+  block b28  ; pred=b33
+    jump b23
+  end
+  block b29  ; pred=b26
+    %147 = const.bool ival=0  [range=0..1 w=1 nonlocal]
+    jump b25
+  end
+  block b30  ; pred=b26
+    %148 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    jump b31
+  end
+  block b31  ; pred=b30,b32
+    %149 = phi %148@b30 %163@b32  [nonlocal]
+    %150 = phi %139@b30 %150@b32  [nonlocal]
+    %151 = phi %114@b30 %151@b32  [nonlocal]
+    %152 = phi %125@b30 %152@b32  [nonlocal]
+    %153 = phi %117@b30 %153@b32  [nonlocal]
+    %154 = phi %116@b30 %154@b32  [nonlocal]
+    %155 = bin %149 %150 op=lt  [range=0..1 w=1]
+    branch %155 b32 b34
+  end
+  block b32  ; pred=b31
+    %156 = sigma %149 fact=lt origin=%149
+    %157 = bin %152 %156 op=add
+    %158 = load.index %153 %157  [mem=use:0<-2 mayfault]
+    %159 = pi %157 %158 fact=inbounds  [range=0..9223372036854775807] origin=%157
+    %160 = bin %151 %156 op=add
+    %161 = store.index %154 %158 %160  [mem=def:3<-2]
+    %162 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %163 = bin %156 %162 op=add  [nonlocal]
+    jump b31
+  end
+  block b33  ; pred=b34
+    %164 = const.unit
+    %165 = bin %151 %150 op=add  [nonlocal]
+    %166 = bin %152 %150 op=add  [nonlocal]
+    jump b28
+  end
+  block b34  ; pred=b31
+    %167 = sigma %149 fact=ge origin=%149
+    jump b33
+  end
+  block b35  ; pred=b25
+    %168 = glob
+    %169 = load.field %168 index=0 field=linux  [mem=use:0<-3]
+    %170 = cast %116 name=ptr
+    %171 = call %169 %170  [mem=def:4<-3]
+    %172 = const.int ival=0  [range=
+    %173 = cast %172 name=ptr
+    %174 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %175 = const.bool ival=0  [range=0..1 w=1]
+    %176 = tuple %173 %174 %175  [nonlocal]
+    jump b37
+  end
+  block b36  ; pred=b25
+    %177 = cast %116 name=ptr
+    %178 = const.bool ival=1  [range=0..1 w=1]
+    %179 = tuple %177 %114 %178  [nonlocal]
+    jump b37
+  end
+  block b37  ; pred=b35,b36
+    %180 = phi %176@b35 %179@b36  [nonlocal]
+    jump b22
+  end
+endfunc

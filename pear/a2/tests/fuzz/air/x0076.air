@@ -1,0 +1,181 @@
+; note: 9 front-end errors; lowering anyway
+module stdlib/crypto/chacha20.pie
+func chacha20_new entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=_
+    %3 = load.field %2 index=0  [mem=use:0<-0]
+    %4 = load.field %2 index=1  [mem=use:0<-0]
+    %5 = global.addr name=os
+    %6 = load.field %5 index=0 field=linux  [mem=use:0<-0]
+    %7 = const.int ival=32  [range=32..32 w=64 kb=18446744073709551583/32]
+    %8 = call %6 %7  [mem=def:1<-0]
+    %9 = cast %8 name=_
+    %10 = global.addr name=os
+    %11 = load.field %10 index=0 field=linux  [mem=use:0<-1]
+    %12 = const.int ival=12  [range=12..12 w=64 kb=18446744073709551603/12]
+    %13 = call %11 %12  [mem=def:2<-1]
+    %14 = cast %13 name=_
+    %15 = global.addr name=os
+    %16 = load.field %15 index=0 field=linux  [mem=use:0<-2]
+    %17 = cast %9 name=ptr
+    %18 = const.int ival=32  [range=32..32 w=64 kb=18446744073709551583/32]
+    %19 = call %16 %17 %3 %18  [mem=def:3<-2]
+    %20 = global.addr name=os
+    %21 = load.field %20 index=0 field=linux  [mem=use:0<-3]
+    %22 = cast %14 name=ptr
+    %23 = const.int ival=12  [range=12..12 w=64 kb=18446744073709551603/12]
+    %24 = call %21 %22 %4 %23  [mem=def:4<-3]
+    %25 = global.addr name=ChaCha20
+    %26 = struct %25 %9 %14 name=ChaCha20
+    ret %26
+  end
+endfunc
+func chacha20_destroy entry=b2
+  block b2
+    %27 = mem.entry  [mem=entry:0<-0]
+    %28 = param name=ctx  [nonlocal]
+    %29 = load.field %28 index=0 field=key  [mem=use:0<-0]
+    %30 = cast %29 name=i64  [w=64]
+    %31 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %32 = bin %30 %31 op=ne  [range=0..1 w=1]
+    branch %32 b3 b4
+  end
+  block b3  ; pred=b2
+    %33 = global.addr name=os
+    %34 = load.field %33 index=0 field=linux  [mem=use:0<-0]
+    %35 = load.field %28 index=0 field=key  [mem=use:0<-0]
+    %36 = cast %35 name=ptr
+    %37 = call %34 %36  [mem=def:1<-0]
+    jump b4
+  end
+  block b4  ; pred=b2,b3
+    %38 = load.field %28 index=0 field=nonce  [mem=use:0<-1]
+    %39 = cast %38 name=i64  [w=64]
+    %40 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %41 = bin %39 %40 op=ne  [range=0..1 w=1]
+    branch %41 b5 b6
+  end
+  block b5  ; pred=b4
+    %42 = global.addr name=os
+    %43 = load.field %42 index=0 field=linux  [mem=use:0<-1]
+    %44 = load.field %28 index=0 field=nonce  [mem=use:0<-1]
+    %45 = cast %44 name=ptr
+    %46 = call %43 %45  [mem=def:2<-1]
+    jump b6
+  end
+  block b6  ; pred=b4,b5
+    %47 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %48 = cast %47 name=_
+    %49 = store.field %28 %48 index=0 field=key  [mem=def:3<-2]
+    %50 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %51 = cast %50 name=_
+    %52 = store.field %28 %51 index=0 field=nonce  [mem=def:4<-3]
+    ret %52
+  end
+endfunc
+func chacha20_crypt_slice entry=b7
+  block b7
+    %53 = mem.entry  [mem=entry:0<-0]
+    %54 = param name=_
+    %55 = load.field %54 index=0  [mem=use:0<-0]
+    %56 = load.field %54 index=1  [mem=use:0<-0]
+    %57 = load.field %54 index=2  [mem=use:0<-0 nonlocal]
+    %58 = load.field %54 index=3  [mem=use:0<-0]
+    %59 = global.addr name=os
+    %60 = load.field %59 index=0 field=linux  [mem=use:0<-0]
+    %61 = call %60 %57  [mem=def:1<-0]
+    %62 = cast %61 name=_  [nonlocal]
+    %63 = cast %56 name=_  [nonlocal]
+    %64 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    %65 = load.field %55 index=0 field=key  [mem=use:0<-1]
+    %66 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %67 = load.index %65 %66  [mem=use:0<-1 mayfault]
+    %68 = pi %66 %67 fact=inbounds  [range=0..0 w=64 kb=18446744073709551615/0] origin=%66
+    %69 = load.field %55 index=0 field=nonce  [mem=use:0<-1]
+    %70 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %71 = load.index %69 %70  [mem=use:0<-1 mayfault]
+    %72 = pi %70 %71 fact=inbounds  [range=0..0 w=64 kb=18446744073709551615/0] origin=%70
+    %73 = bin %67 %71 op=xor
+    %74 = bin %73 %58 op=xor  [nonlocal]
+    jump b8
+  end
+  block b8  ; pred=b7,b13
+    %75 = phi %64@b7 %107@b13  [nonlocal]
+    %76 = phi %57@b7 %76@b13  [nonlocal]
+    %77 = phi %62@b7 %77@b13  [nonlocal]
+    %78 = phi %74@b7 %105@b13  [nonlocal]
+    %79 = phi %63@b7 %79@b13  [nonlocal]
+    %80 = bin %75 %76 op=lt  [range=0..1 w=1]
+    branch %80 b9 b11
+  end
+  block b9  ; pred=b8
+    %81 = sigma %75 fact=lt origin=%75
+    %82 = const.int ival=4  [range=4..4 w=64 kb=18446744073709551611/4]
+    %83 = bin %81 %82 op=mod  [range=-3..3 mayfault]
+    %84 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %85 = bin %83 %84 op=mul  [range=-24..24]
+    %86 = bin %78 %85 op=shr
+    %87 = const.int ival=255  [range=255..255 w=32 kb=18446744073709551360/255]
+    %88 = bin %86 %87 
+    %89 = cast %88 name=u8  [range=0..255 w=8]
+    %90 = load.index %79 %81  [mem=use:0<-1 mayfault]
+    %91 = pi %81 %90 fact=inbounds  [range=0..9223372036854775807 nonlocal] origin=%75
+    %92 = bin %90 %89 op=xor
+    %93 = store.index %77 %92 %91  [mem=def:2<-1]
+    %94 = const.int ival=4  [range=4..4 w=64 kb=18446744073709551611/4]
+    %95 = bin %91 %94 op=mod  [range=0..3 mayfault]
+    %96 = const.int ival=3  [range=3..3 w=64 kb=18446744073709551612/3]
+    %97 = bin %95 %96 op=eq  [range=0..1 w=1]
+    branch %97 b12 b13
+  end
+  block b10  ; pred=b11
+    %98 = const.unit
+    %99 = cast %77 name=ptr
+    ret %99
+  end
+  block b11  ; pred=b8
+    %100 = sigma %75 fact=ge origin=%75
+    jump b10
+  end
+  block b12  ; pred=b9
+    %101 = const.int ival=1664525  [range=1664525..1664525 w=32 kb=18446744073707887090/1664525]
+    %102 = bin %78 %101 op=mul
+    %103 = const.int ival=1013904223  [range=1013904223..1013904223 w=32 kb=18446744072695647392/1013904223]
+    %104 = bin %102 %103 op=add  [nonlocal]
+    jump b13
+  end
+  block b13  ; pred=b9,b12
+    %105 = phi %78@b9 %104@b12  [nonlocal]
+    %106 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %107 = bin %91 %106 op=add  [nonlocal]
+    jump b8
+  end
+endfunc
+func chacha20_encrypt entry=b14
+  block b14
+    %108 = mem.entry  [mem=entry:0<-0]
+    %109 = param name=_
+    %110 = load.field %109 index=0  [mem=use:0<-0]
+    %111 = load.field %109 index=1  [mem=use:0<-0]
+    %112 = load.field %109 index=2  [mem=use:0<-0]
+    %113 = func.ref name=chacha20_crypt_slice  [null=nonnull]
+    %114 = const.int ival=1  [range=1..1 w=32 kb=18446744073709551614/1]
+    %115 = call %113 %110 %111 %112 %114  [mem=def:1<-0]
+    ret %115
+  end
+endfunc
+func chacha20_decrypt entry=b15
+    %1 = bin %1 %1 op=add
+  block b15
+    %116 = mem.entry  [mem=entry:0<-0]
+    %117 = param name=_
+    %118 = load.field %117 index=0  [mem=use:0<-0]
+    %119 = load.field %117 index=1  [mem=use:0<-0]
+    %120 = load.field %117 index=2  [mem=use:0<-0]
+    %121 = func.ref name=chacha20_crypt_slice  [null=nonnull]
+    %122 = const.int ival=1  [range=1..1 w=32 kb=18446744073709551614/1]
+    %123 = call %121 %118 %119 %120 %122  [mem=def:1<-0]
+    ret %123
+  end
+endfunc

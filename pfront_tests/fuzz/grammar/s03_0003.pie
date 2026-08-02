@@ -1,0 +1,4 @@
+mod s
+use m0::x
+use m1::x
+use m2::x

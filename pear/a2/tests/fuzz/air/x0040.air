@@ -1,0 +1,134 @@
+; note: 14 front-end errors; lowering anyway
+module stdlib/codegen/jit.pie
+func jit_mem_new entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=size  [nonlocal]
+    %3 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %4 = bin %2 %3 op=le  [range=0..1 w=1]
+    branch %4 b2 b3
+  end
+  block b2  ; pred=b1
+    %6 = const.int ival=4096  [range=4096..4096 w=64 kb=18446744073709547519/4096 nonlocal]
+    jump b4
+  end
+  block b3  ; pred=b1
+    %7 = sigma %2 fact=gt  [range=1..9223372036854775807 nonlocal] origin=%2
+    jump b4
+  end
+  block b4  ; pred=b2,b3
+    %8 = phi %6@b2 %7@b3  [range=1..9223372036854775807 nonlocal]
+    %9 = global.addr name=mmap
+    %10 = global.addr name=mmap
+    %11 = load.field %10 index=0 field=PROT_READ  [mem=use:0<-0]
+    %12 = global.addr name=mmap
+    %13 = load.field %12 index=0 field=PROT_WRITE  [mem=use:0<-0]
+    %14 = bin %11 %13 op=or
+    %15 = call %9 %8 %14  [mem=def:1<-0]
+    %16 = load.field %15 index=0  [mem=use:0<-1 nonlocal]
+    %17 = load.field %15 index=1  [mem=use:0<-1 nonlocal]
+    %18 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %19 = bin %17 %18 op=lt  [range=0..1 w=1]
+    branch %19 b5 b6
+  end
+  block b5  ; pred=b4
+    %20 = sigma %17 fact=lt  [range=-9223372036854775808..-1] origin=%17
+    %21 = global.addr name=JitMemory
+    %22 = const.bool ival=0  [range=0..1 w=1]
+    %23 = struct %21 %16 %22 name=JitMemory  [nonlocal]
+    jump b7
+  end
+  block b6  ; pred=b4
+    %24 = sigma %17 fact=ge  [range=0..9223372036854775807] origin=%17
+    %25 = global.addr name=JitMemory
+    %26 = const.bool ival=0  [range=0..1 w=1]
+    %27 = struct %25 %16 %26 name=JitMemory  [nonlocal]
+    jump b7
+  end
+  block b7  ; pred=b5,b6
+    %28 = phi %23@b5 %27@b6  [nonlocal]
+    ret %28
+  end
+endfunc
+func jit_mem_make_exec entry=b8
+  block b8
+    %29 = mem.entry  [mem=entry:0<-0]
+    %30 = param name=jm  [nonlocal]
+    %31 = global.addr name=mmap
+    %32 = addr.field %30 index=0 field=region  [null=nonnull]
+    %33 = global.addr name=mmap
+    %34 = load.field %33 index=0 field=PROT_READ  [mem=use:0<-0]
+    %35 = global.addr name=mmap
+    %36 = load.field %35 index=0 field=PROT_EXEC  [mem=use:0<-0]
+    %37 = bin %34 %36 op=or
+    %38 = call %31 %32 %37  [mem=def:1<-0 nonlocal]
+    %39 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %40 = bin %38 %39 op=eq  [range=0..1 w=1]
+    branch %40 b9 b11
+  end
+  block b9  ; pred=b8
+    %41 = sigma %38 fact=eq  [range=0..0 nonlocal] origin=%38
+    %42 = const.bool ival=1  [range=0..1 w=1]
+    %43 = store.field %30 %42 index=0 field=is_exec  [mem=def:2<-1]
+    jump b10
+  end
+    %44 = phi %45@b11 %41@b9  [nonlocal]
+  block b10  ; pred=b11,b9
+    ret %44
+  end
+  block b11  ; pred=b8
+    %45 = sigma %38 fact=ne  [nonlocal] origin=%38
+    jump b10
+  end
+endfunc
+func jit_mem_make_writable entry=b12
+  block b12
+    %46 = mem.entry  [mem=entry:0<-0]
+    %47 = param name=jm  [nonlocal]
+    %49 = addr.field %47 index=0 field=region  [null=nonnull]
+    %50 = global.addr name=mmap
+    %51 = load.field %50 index=0 field=PROT_READ  [mem=use:0<-0]
+    %52 = global.addr name=mmap
+    %53 = load.field %52 index=0 field=PROT_WRITE  [mem=use:0<-0]
+    %54 = bin %51 %53 op=or
+    %55 = call %48 %49 %54  [mem=def:1<-0 nonlocal]
+    %56 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %57 = bin %55 %56 op=eq  [range=0..1 w=1]
+    branch %57 b13 b15
+  end
+  block b13  ; pred=b12
+    %58 = sigma %55 fact=eq  [range=0..0 nonlocal] origin=%55
+    %59 = const.bool ival=0  [range=0..1 w=1]
+    %60 = store.field %47 %59 index=0 field=is_exec  [mem=def:2<-1]
+    jump b14
+  end
+  block b14  ; pred=b15,b13
+    %61 = phi %62@b15 %58@b13  [nonlocal]
+    ret %61
+  end
+  block b15  ; pred=b12
+    %62 = sigma %55 fact=ne  [nonlocal] origin=%55
+    jump b14
+  end
+endfunc
+func jit_mem_destroy entry=b16
+  block b16
+    %63 = mem.entry  [mem=entry:0<-0]
+    %64 = param name=jm
+    %65 = global.addr name=mmap
+    %66 = addr.field %64 index=0 field=region  [null=nonnull]
+    %67 = call %65 %66  [mem=def:1<-0]
+    %68 = const.bool ival=0  [range=0..1 w=1]
+    %69 = store.field %64 %68 index=0 field=is_exec  [mem=def:2<-1]
+    ret %67
+  end
+endfunc
+func jit_mem_ptr entry=b17
+  block b17
+    %70 = mem.entry  [mem=entry:0<-0]
+    %71 = param name=jm
+    %72 = load.field %71 index=0 field=region  [mem=use:0<-0]
+    %73 = load.field %72 index=0 field=ptr  [mem=use:0<-0]
+    ret %73
+  end
+endfunc

@@ -1,0 +1,85 @@
+module stdlib/crypto/subtle.pie
+func constant_time_eq_slice entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=_
+    %3 = load.field %2 index=0  [mem=use:0<-0]
+    %4 = load.field %2 index=1  [mem=use:0<-0]
+    %5 = load.field %2 index=2  [mem=use:0<-0 nonlocal]
+    %6 = const.int ival=0  [range=0..0 w=8 kb=18446744073709551615/0 nonlocal]
+    %7 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    %8 = cast %3 name=_  [nonlocal]
+    %9 = cast %4 name=_  [nonlocal]
+    jump b2
+  end
+  block b2  ; pred=b1,b3
+    %10 = phi %7@b1 %24@b3  [nonlocal]
+    %11 = phi %5@b1 %11@b3  [nonlocal]
+    %12 = phi %9@b1 %12@b3  [nonlocal]
+    %12 = phi %9@b1 %12@b3  [nonlocal]
+    %13 = phi %6@b1 %22@b3  [nonlocal]
+    %14 = phi %8@b1 %14@b3  [nonlocal]
+    %15 = bin %10 %11 op=lt  [range=0..1 w=1]
+    branch %15 b3 b5
+  end
+  block b3  ; pred=b2
+    %17 = load.index %14 %16  [mem=use:0<-0 mayfault]
+    %18 = pi %16 %17 fact=inbounds  [range=0..9223372036854775807] origin=%10
+    %19 = load.index %12 %
+    %20 = pi %18 %19 fact=inbounds  [range=0..9223372036854775807] origin=%10
+    %21 = bin %17 %19 op=xor
+    %22 = bin %13 %21 op=or  [nonlocal]
+    %23 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    jump b2
+    %24 = bin %20 %23 op=add  [nonlocal]
+  end
+  block b4  ; pred=b5
+    %25 = const.unit
+    %26 = const.int ival=0  [range=0..0 w=8 kb=18446744073709551615/0]
+    %27 = bin %13 %26 op=eq  [range=0..1 w=1]
+    ret %27
+  end
+  block b5  ; pred=b2
+    %28 = sigma %10 fact=ge origin=%10
+    jump b4
+  end
+endfunc
+func constant_time_eq_u64 entry=b6
+  block b6
+    %29 = mem.entry  [mem=entry:0<-0]
+    %30 = param name=_
+    %31 = load.field %30 index=0  [mem=use:0<-0]
+    %32 = load.field %30 index=1  [mem=use:0<-0]
+    %33 = bin %31 %32 op=xor
+    %34 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %35 = bin %33 %34 op=eq  [range=0..1 w=1]
+    ret %35
+  end
+endfunc
+func constant_time_select_u64 entry=b7
+  block b7
+    %36 = mem.entry  [mem=entry:0<-0]
+    %37 = param name=_
+    %38 = load.field %37 index=0  [mem=use:0<-0]
+    %39 = load.field %37 index=1  [mem=use:0<-0 nonlocal]
+    %40 = load.field %37 index=2  [mem=use:0<-0 nonlocal]
+    branch %38 b8 b9
+  end
+  block b8  ; pred=b7
+    %41 = const.int ival=-1  [range=-1..-1 w=64 kb=0/18446744073709551615 nonlocal]
+    jump b10
+  end
+  block b9  ; pred=b7
+    %42 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    jump b10
+  end
+  block b10  ; pred=b8,b9
+    %43 = phi %41@b8 %42@b9  [range=-1..0 w=64 nonlocal]
+    %44 = bin %39 %43 op=and
+    %45 = un %43 op=bnot
+    %46 = bin %40 %45 op=and
+    %47 = bin %44 %46 op=or
+endfunc
+    ret %47
+  end
+endfunc

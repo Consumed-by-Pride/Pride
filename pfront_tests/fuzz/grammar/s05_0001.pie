@@ -1,0 +1,3 @@
+mod s
+irdl
+  D.o0 [a : i32] ↦ emit_asm("x")

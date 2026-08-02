@@ -1,0 +1,183 @@
+; note: 30 front-end errors; lowering anyway
+module stdlib/db/sstable.pie
+func sstable_create_from_memtable entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=_
+    %3 = load.field %2 index=0  [mem=use:0<-0]
+    %4 = load.field %2 index=1  [mem=use:0<-0 nonlocal]
+    %5 = global.addr name=file
+    %6 = call %5 %3  [mem=def:1<-0 nonlocal]
+    %7 = load.field %6 index=0 field=fd  [mem=use:0<-1]
+    %8 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %9 = bin %7 %8 op=lt  [range=0..1 w=1]
+    branch %9 b2 b3
+  end
+  block b2  ; pred=b1
+    %10 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %11 = un %10 op=neg  [nonlocal]
+    jump b4
+  end
+  block b3  ; pred=b1
+    %12 = global.addr name=vec
+    %13 = addr.field %4 index=0 field=entries  [null=nonnull]
+    %14 = call %12 %13  [mem=def:2<-1 nonlocal]
+    %15 = global.addr name=os
+    %16 = load.field %15 index=0 field=linux  [mem=use:0<-2]
+    %17 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %18 = call %16 %17  [mem=def:3<-2]
+    %19 = cast %18 name=_  [nonlocal]
+    %20 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %21 = store.index %19 %14 %20  [mem=def:4<-3]
+    %22 = global.addr name=file
+    %23 = addr.of %6  [null=nonnull]
+    %24 = cast %19 name=ptr
+    %25 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %26 = call %22 %23 %24 %25  [mem=def:5<-4]
+    %27 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    jump b5
+  end
+  block b4  ; pred=b2,b7
+    %28 = phi %11@b2 %82@b7  [nonlocal]
+    ret %28
+  end
+  block b5  ; pred=b3,b6
+    %29 = phi %27@b3 %73@b6  [nonlocal]
+    %30 = phi %14@b3 %30@b6  [nonlocal]
+    %31 = phi %6@b3 %31@b6  [nonlocal]
+    %32 = phi %4@b3 %32@b6  [nonlocal]
+    %33 = phi %19@b3 %33@b6  [nonlocal]
+    %34 = bin %29 %30 op=lt  [range=0..1 w=1]
+    branch %34 b6 b8
+  end
+  block b6  ; pred=b5
+    %35 = sigma %29 fact=lt origin=%29
+    %36 = global.addr name=vec
+    %37 = addr.field %32 index=0 field=entries  [null=nonnull]
+    %38 = call %36 %37 %35  [mem=def:6<-5]
+    %39 = cast %38 name=_
+    %40 = global.addr name=string
+    %41 = addr.field %39 index=0 field=key  [null=nonnull]
+    %42 = call %40 %41  [mem=def:7<-6]
+    %43 = global.addr name=string
+    %44 = addr.field %39 index=0 field=val  [null=nonnull]
+    %45 = call %43 %44  [mem=def:8<-7]
+    %46 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %47 = store.index %33 %42 %46  [mem=def:9<-8]
+    %48 = global.addr name=file
+    %49 = addr.of %31  [null=nonnull]
+    %50 = cast %33 name=ptr
+    %51 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %52 = call %48 %49 %50 %51  [mem=def:10<-9]
+    %53 = global.addr name=file
+    %54 = addr.of %31  [null=nonnull]
+    %55 = global.addr name=string
+    %56 = addr.field %39 index=0 field=key  [null=nonnull]
+    %57 = call %55 %56  [mem=def:11<-10]
+    %58 = call %53 %54 %57 %42  [mem=def:12<-11]
+    %59 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %60 = store.index %33 %45 %59  [mem=def:13<-12]
+    %61 = global.addr name=file
+    %62 = addr.of %31  [null=nonnull]
+    %63 = cast %33 name=ptr
+    %64 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %65 = call %61 %62 %63 %64  [mem=def:14<-13]
+    %66 = global.addr name=file
+    %67 = addr.of %31  [null=nonnull]
+    %68 = global.addr name=string
+    %69 = addr.field %39 index=0 field=val  [null=nonnull]
+    %70 = call %68 %69  [mem=def:15<-14]
+    %71 = call %66 %67 %70 %45  [mem=def:16<-15]
+    %73 = bin %35 %72 op=add  [nonlocal]
+    %72 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    jump b5
+  end
+  block b7  ; pred=b8
+    %74 = const.unit
+    %75 = global.addr name=os
+    %76 = load.field %75 index=0 field=linux  [mem=use:0<-16]
+    %77 = cast %33 name=ptr
+    %78 = call %76 %77  [mem=def:17<-16]
+    %79 = global.addr name=file
+    %80 = addr.of %31  [null=nonnull]
+    %81 = call %79 %80  [mem=def:18<-17]
+    %82 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    jump b4
+  end
+  block b8  ; pred=b5
+    %83 = sigma %29 fact=ge origin=%29
+    jump b7
+  end
+endfunc
+func sstable_open entry=b9
+  block b9
+    %84 = mem.entry  [mem=entry:0<-0]
+    %85 = param name=path_cstr
+    %86 = global.addr name=file
+    %87 = call %86 %85  [mem=def:1<-0 nonlocal]
+    %88 = load.field %87 index=0 field=fd  [mem=use:0<-1]
+    %89 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %90 = bin %88 %89 op=lt  [range=0..1 w=1]
+    branch %90 b10 b11
+  end
+  block b10  ; pred=b9
+    %91 = global.addr name=SsTable
+    %92 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %93 = struct %91 %87 %92 name=SsTable  [nonlocal]
+    jump b12
+  end
+  block b11  ; pred=b9
+    %94 = global.addr name=os
+    %96 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %95 = load.field %94 index=0 field=linux  [mem=use:0<-1]
+    %97 = call %95 %96  [mem=def:2<-1]
+    %98 = cast %97 name=_  [nonlocal]
+    %99 = global.addr name=file
+    %100 = addr.of %87  [null=nonnull]
+    %101 = cast %98 name=ptr
+    %102 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %103 = call %99 %100 %101 %102  [mem=def:3<-2 nonlocal]
+    %104 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %105 = bin %103 %104 op=eq  [range=0..1 w=1]
+    branch %105 b13 b14
+  end
+  block b12  ; pred=b10,b15
+    %106 = phi %93@b10 %119@b15  [nonlocal]
+    ret %106
+  end
+  block b13  ; pred=b11
+    %107 = sigma %103 fact=eq  [range=8..8] origin=%103
+    %108 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %109 = load.index %98 %108  [mem=use:0<-3 nonlocal mayfault]
+    %110 = pi %108 %109 fact=inbounds  [range=0..0 w=64 kb=18446744073709551615/0] origin=%108
+    jump b15
+  end
+  block b14  ; pred=b11
+    %111 = sigma %103 fact=ne origin=%103
+    %112 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    jump b15
+  end
+  block b15  ; pred=b13,b14
+    %113 = phi %109@b13 %112@b14  [nonlocal mayfault]
+    %114 = global.addr name=os
+    %116 = cast %98 name=ptr
+    %115 = load.field %114 index=0 field=linux  [mem=use:0<-3]
+    %117 = call %115 %116  [mem=def:4<-3]
+    %118 = global.addr name=SsTable
+    %119 = struct %118 %87 %113 name=SsTable  [nonlocal]
+    jump b12
+  end
+endfunc
+func sstable_close entry=b16
+  block b16
+    %120 = mem.entry  [mem=entry:0<-0]
+    jump b0
+    %121 = param name=sst
+    %122 = global.addr name=file
+    %123 = addr.field %121 index=0 field=file_h  [null=nonnull]
+    %124 = call %122 %123  [mem=def:1<-0]
+    %125 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %126 = store.field %121 %125 index=0 field=entries  [mem=def:2<-1]
+    ret %126
+  end
+endfunc

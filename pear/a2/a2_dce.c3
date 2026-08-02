@@ -75,6 +75,7 @@ struct DceStats
     usz blocks_removed;
     usz stores_removed;    // stores to a location nothing ever loads
     usz phi_holes_reaped;  // a1's neutralised phis, finally deleted
+    usz arity_changed;     // functions whose parameter count DCE altered — must be 0
     usz jumps_threaded;    // empty jump-only blocks folded away
 }
 
@@ -83,6 +84,7 @@ fn void DceStats.init(DceStats* s)
     s.values_before = 0; s.values_after = 0; s.values_removed = 0;
     s.blocks_before = 0; s.blocks_after = 0; s.blocks_removed = 0;
     s.stores_removed = 0; s.phi_holes_reaped = 0; s.jumps_threaded = 0;
+    s.arity_changed = 0;
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -626,15 +628,65 @@ fn void run_function(Air* m, Fn* f, DceStats* st)
     c.destroy();
 }
 
+/*
+ A function's ARITY is part of its interface, and DCE must not change it.
+
+ is_root() returns true for AIR_PARAM for exactly this reason, but nothing
+ checked that the rule held. Proven by injection: making is_root return
+ false for AIR_PARAM deleted a live argument from a two-argument function
+ and the whole regression suite -- 74 assertions, including a full verify
+ of the result -- stayed green. The verifier could not catch it either,
+ because the parameter list is rebuilt from the surviving AIR_PARAM
+ values, so deleting a parameter and forgetting it are indistinguishable
+ after the fact.
+
+ So the arity is captured BEFORE the pass and compared after. A mismatch
+ is counted and reported rather than silently repaired: repairing it
+ would hide the bug, and the number is printed with the other DCE
+ statistics where a non-zero value is impossible to miss.
+
+ This is cheap -- one integer per function -- and it is the only thing
+ standing between a DCE bug and every caller in the program passing its
+ arguments to the wrong slots.
+*/
 fn void run(Air* m, DceStats* st)
 {
     st.init();
+
+    usz nf = m.func_count;
+    usz* arity_before = (usz*)malloc((nf == 0 ? 1 : nf) * usz::size);
+    if (arity_before != null)
+    {
+        for (usz i = 0; i < nf; i++)
+        {
+            Fn* f = m.fun((uint)i);
+            arity_before[i] = f == null ? 0 : f.param_count;
+        }
+    }
+
     for (usz i = 1; i < m.func_count; i++)
     {
         Fn* f = m.fun((uint)i);
         if (f == null) { continue; }
         st.blocks_before = st.blocks_before + f.block_count;
         run_function(m, f, st);
+    }
+
+    if (arity_before != null)
+    {
+        for (usz i = 1; i < nf && i < m.func_count; i++)
+        {
+            Fn* f = m.fun((uint)i);
+            if (f == null) { continue; }
+            usz live = 0;
+            for (usz k = 0; k < f.param_count; k++)
+            {
+                Val* pv = m.val(f.params[k]);
+                if (pv != null && pv.block != pear_air::AIR_NO_BLOCK) { live = live + 1; }
+            }
+            if (live != arity_before[i]) { st.arity_changed = st.arity_changed + 1; }
+        }
+        free((void*)arity_before);
     }
 }
 
@@ -648,6 +700,10 @@ fn void print_stats(DceStats* s)
            (int)s.stores_removed);
     printf("  DCE: phi holes   : %d   (a1's neutralised phis, reaped)\n",
            (int)s.phi_holes_reaped);
+    // Must be zero. A parameter is part of the function's interface, and
+    // silently dropping one is an ABI change every caller gets wrong.
+    printf("  DCE: arity kept  : %d changed   (parameters are interface, must be 0)\n",
+           (int)s.arity_changed);
     printf("  DCE: jumps folded: %d   (empty jump-only blocks)\n",
            (int)s.jumps_threaded);
 }

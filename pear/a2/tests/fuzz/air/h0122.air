@@ -1,0 +1,5 @@
+func f entry=b1
+  block b1
+    jump b1
+  end
+endfunc

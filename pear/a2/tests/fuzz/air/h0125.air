@@ -1,0 +1,6 @@
+func f entry=b1
+  block b1
+    %1 = mem.phi %1 %1
+    ret
+  end
+endfunc

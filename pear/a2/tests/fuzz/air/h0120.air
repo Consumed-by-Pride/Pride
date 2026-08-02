@@ -1,0 +1,6 @@
+func f entry=b1
+  block b1
+    %1 = phi %1@b1
+    ret %1
+  end
+endfunc

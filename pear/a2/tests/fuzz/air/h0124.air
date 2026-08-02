@@ -1,0 +1,6 @@
+func f entry=b1
+  block b1
+    %1 = sigma %1 fact=lt  origin=%1
+    ret %1
+  end
+endfunc

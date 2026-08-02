@@ -1098,11 +1098,62 @@ fn bool parse_into(Air* m, char* src, usz len, usz* out_errors)
 
     p.pass1();
     p.pass2();
+    p.rebuild_params();
 
     if (out_errors != null) { *out_errors = p.errors; }
     p.labels.destroy();
     p.ids.destroy();
     return p.ok;
+}
+
+/*
+ Rebuild each function's PARAMETER LIST from the values just read.
+
+ The list was never reconstructed at all. a1 builds it with add_param
+ while lowering, but nothing wrote it to the text and nothing rebuilt it
+ on the way back in, so `param_count` was 1 before a round trip and 0
+ after -- measured directly, not inferred. Everything downstream of a
+ round trip therefore saw functions with no arity:
+
+   * every parameter check in verify.c3 iterates `f.param_count` and so
+     became silently INERT the moment the IR had been re-read. The whole
+     block was dead code on any file loaded from disk, which is every
+     file a2 has ever seen;
+   * a2's DCE treats AIR_PARAM as a root because a parameter is part of
+     the interface -- but with the list empty, nothing could check that
+     it had honoured it. Injecting a bug that let DCE delete parameters
+     removed a live argument from a two-argument function and the entire
+     74-test suite stayed green;
+   * a3 would inherit functions whose arity is unknown, which is not a
+     recoverable position for a CPS conversion.
+
+ Rebuilding from the ORDER of AIR_PARAM values in the entry block, rather
+ than adding an arity to the header, is deliberate: the parameters are
+ already in the text as values, so a separate count in the header would
+ be a second source of truth that can disagree with the first. This
+ derives the list from the values that are actually there.
+
+ Order is the entry block's value order, which is the order a1 emitted
+ them in, so the list round-trips identically rather than merely having
+ the right length.
+*/
+fn void Parse.rebuild_params(Parse* p)
+{
+    for (usz fi = 1; fi < p.m.func_count; fi++)
+    {
+        pear_air::AirFunc* f = p.m.fun((uint)fi);
+        if (f == null) { continue; }
+        if (f.param_count != 0) { continue; }   // already known
+        pear_air::AirBlock* e = p.m.blk(f.entry);
+        if (e == null) { continue; }
+        for (usz i = 0; i < e.value_count; i++)
+        {
+            pear_air::AirValue* v = p.m.val(e.values[i]);
+            if (v == null || v.is_phi_hole) { continue; }
+            if (v.op != pear_air::AirOp.AIR_PARAM) { continue; }
+            p.m.add_param(f.id, v.id);
+        }
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════

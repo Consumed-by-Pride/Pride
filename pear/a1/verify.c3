@@ -90,6 +90,14 @@ struct Report
     // strong-SSI verification on a program with no φ and no σ.
     usz dom_checked;
     usz sigma_checked;
+    /*
+     Parameters actually CHECKED. Reported because this section was
+     vacuous for years: the reader never rebuilt the parameter list, so
+     `param_count` was 0 on every file loaded from disk and every check
+     below it silently did nothing. A zero here on a program with
+     arguments means the interface is not being verified at all.
+    */
+    usz params_checked;
 
     char*[MAX_REPORTED] msgs;
     uint[MAX_REPORTED]  where;
@@ -102,7 +110,7 @@ fn void Report.init(Report* r)
     r.blocks_checked = 0; r.values_checked = 0;
     r.reachable_blocks = 0; r.unreachable_blocks = 0;
     r.phi_count = 0; r.mem_phi_count = 0; r.sigma_count = 0; r.effect_count = 0;
-    r.dom_checked = 0; r.sigma_checked = 0;
+    r.dom_checked = 0; r.sigma_checked = 0; r.params_checked = 0;
     r.msg_count = 0;
 }
 
@@ -138,6 +146,7 @@ fn void print_report(Report* r)
     printf("  effectful values : %d\n", (int)r.effect_count);
     printf("  dominance checks : %d\n", (int)r.dom_checked);
     printf("  sigma-edge checks: %d\n", (int)r.sigma_checked);
+    printf("  parameters       : %d checked\n", (int)r.params_checked);
     printf("  errors / warnings: %d / %d\n", (int)r.errors, (int)r.warnings);
     for (usz i = 0; i < r.msg_count; i++)
     {
@@ -667,10 +676,33 @@ fn void check_function(Air* m, Fn* f, Report* r)
     */
     for (usz pi = 0; pi < f.param_count; pi++)
     {
+        r.params_checked = r.params_checked + 1;
         Val* p = m.val(f.params[pi]);
         if (p == null) { r.err("parameter references a value that does not exist", f.id); continue; }
         if (p.op != Op.AIR_PARAM) { r.err("parameter list holds a non-param value", p.id); }
-        if (p.block != f.entry)
+        /*
+         DETACHED, not merely misplaced.
+
+         A value is deleted in PEAR by setting `block = AIR_NO_BLOCK`, so
+         a deleted parameter is still reachable through m.val() and still
+         has op == AIR_PARAM. The check below compared `p.block` against
+         `f.entry` and reported "not defined in the entry block", which is
+         the wrong diagnosis and, worse, was never reached: AIR_NO_BLOCK
+         is not the entry, so this branch DID fire -- but only as one
+         generic error among others, and nothing distinguished "a pass
+         deleted an argument" from "a parameter is in the wrong block".
+
+         Proven by injection: making DCE treat AIR_PARAM as deletable
+         removed a live parameter from a two-argument function and the
+         entire 74-test suite stayed green. A function silently losing an
+         argument is an ABI change; every caller now passes its arguments
+         to the wrong slots.
+        */
+        if (p.block == pear_air::AIR_NO_BLOCK)
+        {
+            r.err("parameter was deleted but is still in the function's parameter list", p.id);
+        }
+        else if (p.block != f.entry)
         {
             r.err("parameter is not defined in the entry block (SSI property 1)", p.id);
         }

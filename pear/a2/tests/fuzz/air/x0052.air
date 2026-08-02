@@ -1,0 +1,77 @@
+; note: 2 front-end errors; lowering anyway
+module stdlib/compress/adler32_stream.pie
+func adler32_stream_new entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=_
+    %3 = global.addr name=Adler32Stream
+    %4 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %5 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %6 = struct %3 %4 %5 name=Adler32Stream
+    ret %6
+  end
+endfunc
+func adler32_stream_update entry=b2
+  block b2
+    %7 = mem.entry  [mem=entry:0<-0]
+    %8 = param name=_
+    %9 = load.field %8 index=0  [mem=use:0<-0 nonlocal]
+    %10 = load.field %8 index=1  [mem=use:0<-0]
+    %11 = load.field %8 index=2  [mem=use:0<-0 nonlocal]
+    %12 = cast %10 name=_  [nonlocal]
+    %13 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    %14 = load.field %9 index=0 field=s1  [mem=use:0<-0 nonlocal]
+    %15 = load.field %9 index=0 field=s2  [mem=use:0<-0 nonlocal]
+    jump b3
+  end
+  block b3  ; pred=b2,b4
+    %16 = phi %13@b2 %33@b4  [nonlocal]
+    %17 = phi %11@b2 %17@b4  [nonlocal]
+    %18 = phi %15@b2 %31@b4  [nonlocal mayfault]
+    %19 = phi %14@b2 %28@b4  [nonlocal mayfault]
+    %20 = phi %12@b2 %20@b4  [nonlocal]
+    %21 = bin %16 %17 op=lt  [range=0..1 w=1]
+    branch %21 b4 b6
+  end
+  block b4  ; pred=b3
+    %22 = sigma %16 fact=lt origin=%16
+    %23 = load.index %20 %22  [mem=use:0<-0 mayfault]
+    %24 = pi %22 %23 fact=inbounds  [range=0..9223372036854775807] origin=%16
+    %25 = cast %23 name=u64  [w=64]
+    %26 = bin %19 %25 op=add
+    %27 = const.int ival=65521  [range=65521..65521 w=64 kb=18446744073709486094/65521]
+    %28 = bin %26 %27 op=mod  [range=-65520..65520 nonlocal mayfault]
+    %29 = bin %18 %28 op=add
+    %30 = const.int ival=65521  [range=65521..65521 w=64 kb=18446744073709486094/65521]
+    %31 = bin %29 %30 op=mod  [range=-65520..65520 nonlocal mayfault]
+    %32 = const.int ival=1  [range=
+    %33 = bin %24 %32 op=add  [nonlocal]
+    jump b3
+  end
+  block b5  ; pred=b6
+    %34 = const.unit
+    %35 = store.field %9 %19 index=0 field=s1  [mem=def:1<-0]
+    %36 = store.field %9 %18 index=0 field=s2  [mem=def:2<-1]
+    %37 = const.int ival=16  [range=16..16 w=64 kb=18446744073709551599/16]
+    %38 = bin %18 %37 op=shl
+    %39 = bin %38 %19 op=or
+    %40 = cast %39 name=u32  [range=0..4294967295 w=32]
+    ret %40
+  end
+  block b6  ; pred=b3
+    %41 = sigma %16 fact=ge origin=%16
+    jump b5
+  end
+endfunc
+func adler32_stream_value entry=b7
+  block b7
+    %43 = param name=st
+    %44 = load.field %43 index=0 field=s2  [mem=use:0<-0]
+    %45 = const.int ival=16  [range=16..16 w=64 kb=18446744073709551599/16]
+    %46 = bin %44 %45 op=shl
+    %47 = load.field %43 index=0 field=s1  [mem=use:0<-0]
+    %48 = bin %46 %47 op=or
+    %49 = cast %48 name=u32  [range=0..4294967295 w=32]
+    ret %49
+  end
+endfunc

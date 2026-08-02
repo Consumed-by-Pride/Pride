@@ -1,0 +1,110 @@
+; note: 18 front-end errors; lowering anyway
+module stdlib/compress.pie
+func rle_encode entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=_
+    %3 = load.field %2 index=0  [mem=use:0<-0]
+    %4 = load.field %2 index=1  [mem=use:0<-0]
+    %5 = global.addr name=rle
+    %6 = call %5 %3 %4  [mem=def:1<-0]
+    ret %6
+  end
+endfunc
+func rle_decode entry=b2
+  block b2
+    %7 = mem.entry  [mem=entry:0<-0]
+    %8 = param name=_
+    %9 = load.field %8 index=0  [mem=use:0<-0]
+    %10 = load.field %8 index=1  [mem=use:0<-0]
+    %11 = global.addr name=rle
+    %12 = call %11 %9 %10  [mem=def:1<-0]
+    ret %12
+  end
+endfunc
+func adler32_new entry=b3
+  block b3
+    %13 = mem.entry  [mem=entry:0<-0]
+    %14 = param name=_
+    %15 = global.addr name=adler32_stream
+    %16 = call %15  [mem=def:1<-0]
+    ret %16
+  end
+endfunc
+func adler32_update entry=b4
+  block b4
+    %17 = mem.entry  [mem=entry:0<-0]
+    %18 = param name=_
+    %19 = load.field %18 index=0  [mem=use:0<-0]
+    %20 = load.field %18 index=1  [mem=use:0<-0]
+    %21 = load.field %18 index=2  [mem=use:0<-0]
+    %22 = global.addr name=adler32_stream
+    %23 = call %22 %19 %20 %21  [mem=def:1<-0]
+    ret %23
+  end
+endfunc
+func adler32_value entry=b5
+  block b5
+    %24 = mem.entry  [mem=entry:0<-0]
+    %25 = param name=s
+    %26 = global.addr name=adler32_stream
+    %27 = call %26 %25  [mem=def:1<-0]
+    ret %27
+  end
+endfunc
+func lz4_bound entry=b6
+    %99999 = phi %1@bZZ
+  block b6
+    %28 = mem.entry  [mem=entry:0<-0]
+    %29 = param name=l
+    %30 = global.addr name=lz4
+    %31 = call %30 %29  [mem=def:1<-0]
+    ret %31
+  end
+endfunc
+func lz4_compress entry=b7
+  block b7
+    %32 = mem.entry  [mem=entry:0<-0]
+    %33 = param name=_
+    %34 = load.field %33 index=0  [mem=use:0<-0]
+    %35 = load.field %33 index=1  [mem=use:0<-0]
+    %36 = global.addr name=lz4
+    %37 = call %36 %34 %35  [mem=def:1<-0]
+    ret %37
+  end
+endfunc
+func lz4_decompress entry=b8
+  block b8
+    %38 = mem.entry  [mem=entry:0<-0]
+    %39 = param name=_
+    %40 = load.field %39 index=0  [mem=use:0<-0]
+    %41 = load.field %39 index=1  [mem=use:0<-0]
+    %42 = load.field %39 index=2  [mem=use:0<-0]
+    %43 = global.addr name=lz4
+    %44 = call %43 %40 %41 %42  [mem=def:1<-0]
+    ret %44
+  end
+endfunc
+func snappy_encode entry=b9
+  block b9
+    %45 = mem.entry  [mem=entry:0<-0]
+    %46 = param name=_
+    %47 = load.field %46 index=0  [mem=use:0<-0]
+    %48 = load.field %46 index=1  [mem=use:0<-0]
+    %49 = global.addr name=snappy_lite
+    %50 = call %49 %47 %48  [mem=def:1<-0]
+    ret %50
+  end
+endfunc
+func snappy_decode entry=b10
+  block b10
+    %51 = mem.entry  [mem=entry:0<-0]
+    %52 = param name=_
+    %53 = load.field %52 index=0  [mem=use:0<-0]
+    %53 = load.field %52 index=0  [mem=use:0<-0]
+    %54 = load.field %52 index=1  [mem=use:0<-0]
+    %55 = global.addr name=snappy_lite
+    %56 = call %55 %53 %54  [mem=def:1<-0]
+    ret %56
+  end
+endfunc

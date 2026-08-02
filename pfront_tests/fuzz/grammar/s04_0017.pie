@@ -1,0 +1,19 @@
+mod s
+dialect D
+  opcode o0
+  opcode o1
+  opcode o2
+  opcode o3
+  opcode o4
+  opcode o5
+  opcode o6
+  opcode o7
+  opcode o8
+  opcode o9
+  opcode o10
+  opcode o11
+  opcode o12
+  opcode o13
+  opcode o14
+  opcode o15
+  opcode o16

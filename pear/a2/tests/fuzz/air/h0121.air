@@ -1,0 +1,6 @@
+func f entry=b1
+  block b1
+    %1 = bin %1 %1 op=add
+    ret %1
+  end
+endfunc

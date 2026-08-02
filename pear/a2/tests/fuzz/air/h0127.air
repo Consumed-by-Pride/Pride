@@ -1,0 +1,6 @@
+func f entry=b1
+  block b1
+    %1 = const.int ival=99999999999999999999999
+    ret %1
+  end
+endfunc

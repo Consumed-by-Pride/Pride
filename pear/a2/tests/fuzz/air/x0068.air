@@ -1,0 +1,44 @@
+; note: 9 front-end errors; lowering anyway
+module stdlib/compute/blas.pie
+func compute_gemm_parallel entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=_
+    %3 = load.field %2 index=0  [mem=use:0<-0]
+    %4 = load.field %2 index=1  [mem=use:0<-0]
+    %5 = load.field %2 index=2  [mem=use:0<-0]
+    %6 = load.field %2 index=3  [mem=use:0<-0]
+    %7 = load.field %2 index=4  [mem=use:0<-0]
+    %8 = load.field %2 index=5  [mem=use:0<-0]
+    %9 = load.field %2 index=6  [mem=use:0<-0]
+    %10 = global.addr name=math
+    %11 = load.field %10 index=0 field=blas  [mem=use:0<-0]
+    %12 = call %11 %4 %5 %6 %7 %8 %9  [mem=def:1<-0]
+    ret %12
+  end
+endfunc
+func compute_relu
+  block b2
+    %13 = mem.entry  [mem=entry:0<-0]
+    %14 = param name=_
+    %15 = load.field %14 index=0  [mem=use:0<-0]
+    %16 = load.field %14 index=1  [mem=use:0<-0]
+    %17 = global.addr name=math
+    %17 = global.addr name=math
+    %18 = load.field %17 index=0 field=blas  [mem=use:0<-0]
+    %19 = call %18 %16  [mem=def:1<-0]
+    ret %19
+  end
+endfunc
+func compute_sigmoid_parallel entry=b3
+  block b3
+    %20 = mem.entry  [mem=entry:0<-0]
+    %21 = param name=_
+    %22 = load.field %21 index=0  [mem=use:0<-0]
+    %23 = load.field %21 index=1  [mem=use:0<-0]
+    %24 = global.addr name=math
+    %25 = load.field %24 index=0 field=blas  [mem=use:0<-0]
+    %26 = call %25 %23  [mem=def:1<-0]
+    ret %26
+    ret %26
+  end

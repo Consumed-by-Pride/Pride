@@ -1,0 +1,177 @@
+; note: 28 front-end errors; lowering anyway
+module stdlib/crypto.pie
+func ct_eq_slice entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=_
+    %3 = load.field %2 index=0  [mem=use:0<-0]
+    %4 = load.field %2 index=1  [mem=use:0<-0]
+    %5 = load.field %2 index=2  [mem=use:0<-0]
+    %6 = global.addr name=subtle
+    %7 = call %6 %3 %4 %5  [mem=def:1<-0]
+    ret %7
+  end
+endfunc
+func ct_eq_u64 entry=b2
+  block b2
+    %8 = mem.entry  [mem=entry:0<-0]
+    %9 = param name=_
+    %10 = load.field %9 index=0  [mem=use:0<-0]
+    %11 = load.field %9 index=1  [mem=use:0<-0]
+    %12 = global.addr name=subtle
+    %13 = call %12 %10 %11  [mem=def:1<-0]
+    ret %13
+  end
+endfunc
+func ct_select_u64 entry=b3
+  block b3
+    %14 = mem.entry  [mem=entry:0<-0]
+    %15 = param name=_
+    %16 = load.field %15 index=0  [mem=use:0<-0]
+    %17 = load.field %15 index=1  [mem=use:0<-0]
+    %18 = load.field %15 index=2  [mem=use:0<-0]
+    %19 = global.addr name=subtle
+    %20 = call %19 %16 %17 %18  [mem=def:1<-0]
+    ret %20
+  end
+endfunc
+func hex_encode entry=b4
+  block b4
+    %21 = mem.entry  [mem=entry:0<-0]
+    %22 = param name=_
+    %23 = load.field %22 index=0  [mem=use:0<-0]
+    %24 = load.field %22 index=1  [mem=use:0<-0]
+    %25 = load.field %22 index=2  [mem=use:0<-0]
+    %26 = global.addr name=hex
+    %27 = call %26 %23 %24 %25  [mem=def:1<-0]
+    ret %27
+  end
+endfunc
+func hex_decode entry=b5
+  block b5
+    %28 = mem.entry  [mem=entry:0<-0]
+    %29 = param name=_
+    %30 = load.field %29 index=0  [mem=use:0<-0]
+    %31 = load.field %29 index=1  [mem=use:0<-0]
+    %32 = global.addr name=hex
+    %33 = call %32 %30 %31  [mem=def:1<-0]
+    ret %33
+  end
+endfunc
+func sha256_hash entry=b6
+  block b6
+    %34 = mem.entry  [mem=entry:0<-0]
+    %35 = param name=_
+    %36 = load.field %35 index=0  [mem=use:0<-0]
+    %37 = load.field %35 index=1  [mem=use:0<-0]
+    %38 = global.addr name=sha256
+    %39 = call %38 %36 %37  [mem=def:1<-0]
+    ret %39
+  end
+endfunc
+func sha256_str entry=b7
+  block b7
+    %40 = mem.entry  [mem=entry:0<-0]
+    %41 = param name=cstr
+    %42 = global.addr name=sha256
+    %43 = call %42 %41  [mem=def:1<-0]
+    ret %43
+  end
+endfunc
+func hmac_new entry=b8
+  block b8
+    %44 = mem.entry  [mem=entry:0<-0]
+    %45 = param name=_
+    %46 = load.field %45 index=0  [mem=use:0<-0]
+    %47 = load.field %45 index=1  [mem=use:0<-0]
+    %48 = global.addr name=hmac
+    %49 = call %48 %46 %47  [mem=def:1<-0]
+    ret %49
+  end
+endfunc
+func hmac_compute entry=b9
+  block b9
+    %50 = mem.entry  [mem=entry:0<-0]
+    %51 = param name=_
+    %52 = load.field %51 index=0  [mem=use:0<-0]
+    %53 = load.field %51 index=1  [mem=use:0<-0]
+    %54 = load.field %51 index=2  [mem=use:0<-0]
+    %55 = global.addr name=hmac
+    %56 = call %55 %52 %53 %54  [mem=def:1<-0]
+    ret %56
+  end
+endfunc
+func hmac_destroy entry=b10
+  block b10
+    %57 = mem.entry  [mem=entry:0<-0]
+    %58 = param name=h
+    %59 = global.addr name=hmac
+    %60 = call %59 %58  [mem=def:1<-0]
+    ret %60
+  end
+endfunc
+func chacha20_new entry=b11
+  block b11
+    %61 = mem.entry  [mem=entry:0<-0]
+    %62 = param name=_
+    %63 = load.field %62 index=0  [mem=use:0<-0]
+    %64 = load.field %62 index=1  [mem=use:0<-0]
+    %65 = global.addr name=chacha20
+    ret %66
+  end
+endfunc
+func chacha20_encrypt entry=b12
+  block b12
+    %67 = mem.entry  [mem=entry:0<-0]
+    %68 = param name=_
+    %69 = load.field %68 index=0  [mem=use:0<-0]
+    %70 = load.field %68 index=1  [mem=use:0<-0]
+    %71 = load.field %68 index=2  [mem=use:0<-0]
+    %72 = global.addr name=chacha20
+    %73 = call %72 %69 %70 %71  [mem=def:1<-0]
+    ret %73
+  end
+endfunc
+func chacha20_decrypt entry=b13
+  block b13
+    %74 = mem.entry  [mem=entry:0<-0]
+    %75 = param name=_
+    %76 = load.field %75 index=0  [mem=use:0<-0]
+    %77 = load.field %75 index=1  [mem=use:0<-0]
+    %78 = load.field %75 index=2  [mem=use:0<-0]
+    %79 = global.addr name=chacha20
+    %80 = call %79 %76 %77 %78  [mem=def:1<-0]
+    ret %80
+  end
+endfunc
+func chacha20_destroy entry=b14
+  block b14
+    %81 = mem.entry  [mem=entry:0<-0]
+    %82 = param name=c
+    %83 = global.addr name=chacha20
+    %84 = call %83 %82  [mem=def:1<-0]
+    ret %84
+  end
+endfunc
+func crc32 entry=b15
+  block b15
+    %85 = mem.entry  [mem=entry:0<-0]
+    %86 = param name=_
+    %87 = load.field %86 index=0  [mem=use:0<-0]
+    %88 = load.field %86 index=1  [mem=use:0<-0]
+    %89 = global.addr name=crc32_fast
+    %90 = call %89 %87 %88  [mem=def:1<-0]
+    ret %90
+  end
+endfunc
+func crc32c entry=b16
+  block b16
+    %91 = mem.entry  [mem=entry:0<-0]
+    %92 = param name=_
+    %93 = load.field %92 index=0  [mem=use:0<-0]
+    %94 = load.field %92 index=1  [mem=use:0<-0]
+    %95 = global.addr name=crc32_fast
+    %96 = call %95 %93 %94  [mem=def:1<-0]
+    ret %96
+  end
+endfunc

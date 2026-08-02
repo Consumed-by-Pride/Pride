@@ -1,0 +1,91 @@
+; note: 6 front-end errors; lowering anyway
+module stdlib/channel.pie
+func unbounded entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=_
+    %3 = func.ref name=unbounded  [null=nonnull]
+    %4 = call %3  [mem=def:1<-0]
+    ret %4
+  end
+endfunc
+func send_unbounded entry=b2
+  block b2
+    %5 = mem.entry  [mem=entry:0<-0]
+    %6 = param name=_
+    %7 = load.field %6 index=0  [mem=use:0<-0]
+    %8 = load.field %6 index=1  [mem=use:0<-0]
+    %9 = func.ref name=unbounded  [null=nonnull]
+    %10 = call %9 %7 %8  [mem=def:1<-0]
+    ret %10
+  end
+endfunc
+func recv_unbounded entry=b3
+  block b3
+    %11 = mem.entry  [mem=entry:0<-0]
+    %12 = param name=rx
+    %13 = func.ref name=unbounded  [null=nonnull]
+    %14 = call %13 %12  [mem=def:1<-0]
+    ret %14
+  end
+endfunc
+func bounded entry=b4
+  block b4
+    %15 = mem.entry  [mem=entry:0<-0]
+    %2 = phi %1@b1 %2@b1 %3@b1
+    %16 = param name=c
+    %17 = func.ref name=bounded  [null=nonnull]
+    %18 = call %17 %16  [mem=def:1<-0]
+    ret %18
+  end
+endfunc
+func send_bounded entry=b5
+  block b5
+    %19 = mem.entry  [mem=entry:0<-0]
+    %20 = param name=_
+    %21 = load.field %20 index=0  [mem=use:0<-0]
+    %22 = load.field %20 index=1  [mem=use:0<-0]
+    %23 = func.ref name=bounded  [null=nonnull]
+    %24 = call %23 %21 %22  [mem=def:1<-0]
+    ret %24
+    ret %999999
+  end
+endfunc
+func recv_bounded entry=b6
+  block b6
+    %25 = mem.entry  [mem=entry:0<-0]
+    %26 = param name=rx
+    %27 = func.ref name=bounded  [null=nonnull]
+    %28 = call %27 %26  [mem=def:1<-0]
+    ret %28
+  end
+endfunc
+func oneshot entry=b7
+  block b7
+    %29 = mem.entry  [mem=entry:0<-0]
+    %30 = param name=_
+    %31 = func.ref name
+    %32 = call %31  [mem=def:1<-0]
+    ret %32
+  end
+endfunc
+func send_oneshot entry=b8
+  block b8
+    %33 = mem.entry  [mem=entry:0<-0]
+    %34 = param name=_
+    %35 = load.field %34 index=0  [mem=use:0<-0]
+    %36 = load.field %34 index=1  [mem=use:0<-0]
+    %37 = func.ref name=oneshot  [null=nonnull]
+    %38 = call %37 %35 %36  [mem=def:1<-0]
+    ret %38
+  end
+endfunc
+func recv_oneshot entry=b9
+  block b9
+    %39 = mem.entry  [mem=entry:0<-0]
+    %40 = param name=rx
+    %41 = func.ref name=oneshot  [null=nonnull]
+    %42 = call %41 %40  [mem=def:1<-0]
+    ret %42
+  end
+endfunc

@@ -1,0 +1,414 @@
+; note: 39 front-end errors; lowering anyway
+module stdlib/cli/arg_parser.pie
+func argparser_new entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=_
+    %3 = load.field %2 index=0  [mem=use:0<-0]
+    %4 = load.field %2 index=1  [mem=use:0<-0]
+    %5 = global.addr name=ArgParser
+    %6 = global.addr name=string
+    %7 = call %6 %3  [mem=def:1<-0]
+    %8 = global.addr name=string
+    %9 = call %8 %4  [mem=def:2<-1]
+    %10 = global.addr name=vec
+    %11 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %12 = call %10 %11  [mem=def:3<-2]
+    %13 = struct %5 %7 %9 %12 name=ArgParser
+    ret %13
+  end
+endfunc
+func argparser_destroy entry=b2
+  block b2
+    %14 = mem.entry  [mem=entry:0<-0]
+    %15 = param name=p  [nonlocal]
+    %16 = global.addr name=string
+    %17 = addr.field %15 index=0 field=prog_name  [null=nonnull]
+    %18 = call %16 %17  [mem=def:1<-0]
+    %19 = global.addr name=string
+    %20 = addr.field %15 index=0 field=doc  [null=nonnull]
+    %21 = call %19 %20  [mem=def:2<-1]
+    %22 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    %23 = global.addr name=vec
+    %24 = addr.field %15 index=0 field=flags  [null=nonnull]
+    %25 = call %23 %24  [mem=def:3<-2 nonlocal]
+    jump b3
+  end
+  block b3  ; pred=b2,b4
+    %26 = phi %22@b2 %38@b4  [nonlocal]
+    %27 = phi %25@b2 %27@b4  [nonlocal]
+    %28 = phi %15@b2 %28@b4  [nonlocal]
+    %29 = bin %26 %27 op=lt  [range=0..1 w=1]
+    branch %29 b4 b6
+  end
+  block b4  ; pred=b3
+    %30 = sigma %26 fact=lt origin=%26
+    %31 = global.addr name=flag
+    %32 = global.addr name=vec
+    %33 = addr.field %28 index=0 field=flags  [null=nonnull]
+    %34 = call %32 %33 %30  [mem=def:4<-3]
+    %35 = cast %34 name=_
+    %36 = call %31 %35  [mem=def:5<-4]
+    %37 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %38 = bin %30 %37 op=add  [nonlocal]
+    jump b3
+  end
+  block b5  ; pred=b6
+    %39 = const.unit
+    %40 = global.addr name=vec
+    %41 = addr.field %28 index=0 field=flags  [null=nonnull]
+    %42 = call %40 %41  [mem=def:6<-5]
+    ret %42
+  end
+  block b6  ; pred=b3
+    %43 = sigma %26 fact=ge origin=%26
+    jump b5
+  end
+endfunc
+func argparser_add_flag entry=b7
+  block b7
+    %44 = mem.entry  [mem=entry:0<-0]
+    %45 = param name=_
+    %46 = load.field %45 index=0  [mem=use:0<-0]
+    %47 = load.field %45 index=1  [mem=use:0<-0]
+    %48 = global.addr name=vec
+    %49 = addr.field %46 index=0 field=flags  [null=nonnull]
+    %50 = cast %47 name=ptr
+    %51 = call %48 %49 %50  [mem=def:1<-0]
+    ret %51
+  end
+endfunc
+func argparser_find_flag_by_name entry=b8
+  block b8
+    %52 = mem.entry  [mem=entry:0<-0]
+    %53 = param name=_
+    %54 = load.field %53 index=0  [mem=use:0<-0 nonlocal]
+    %55 = load.field %53 index=1  [mem=use:0<-0 nonlocal]
+    %56 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    %57 = global.addr name=vec
+    %58 = addr.field %54 index=0 field=flags  [null=nonnull]
+    %59 = call %57 %58  [mem=def:1<-0 nonlocal]
+    %60 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %61 = cast %60 name=_  [nonlocal]
+    jump b9
+  end
+  block b9  ; pred=b8,b14
+    %62 = phi %56@b8 %88@b14  [nonlocal]
+    %63 = phi %59@b8 %63@b14  [nonlocal]
+    %64 = phi %55@b8 %64@b14  [nonlocal]
+    %65 = phi %54@b8 %65@b14  [nonlocal]
+    %66 = bin %62 %63 op=lt  [range=0..1 w=1]
+    branch %66 b10 b12
+  end
+  block b10  ; pred=b9
+    %67 = sigma %62 fact=lt  [nonlocal] origin=%62
+    %68 = global.addr name=vec
+    %69 = addr.field %65 index=0 field=flags  [null=nonnull]
+    %70 = call %68 %69 %67  [mem=def:2<-1]
+    %71 = cast %70 name=_  [nonlocal]
+    %72 = global.addr name=slice
+    %73 = global.addr name=string
+    %74 = addr.field %71 index=0 field=name  [null=nonnull]
+    %75 = call %73 %74  [mem=def:3<-2]
+    %76 = global.addr name=string
+    %77 = addr.field %71 index=0 field=name  [null=nonnull]
+    %78 = call %76 %77  [mem=def:4<-3]
+    %79 = global.addr name=os
+    %80 = load.field %79 index=0 field=linux  [mem=use:0<-4]
+    %81 = call %80 %64  [mem=def:5<-4]
+    %82 = cast %81 name=i64  [w=64]
+    %83 = call %72 %75 %78 %64 %82  [mem=def:6<-5]
+    branch %83 b13 b14
+  end
+  block b11  ; pred=b12,b13
+    %84 = phi %61@b12 %71@b13  [nonlocal]
+    %85 = const.unit
+    ret %84
+  end
+  block b12  ; pred=b9
+    %86 = sigma %62 fact=ge origin=%62
+    jump b11
+  end
+  block b13  ; pred=b10
+    jump b11
+  end
+  block b14  ; pred=b10
+    %87 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %88 = bin %67 %87 op=add  [nonlocal]
+    jump b9
+  end
+endfunc
+    jump b0
+func argparser_find_flag_by_short entry=b15
+  block b15
+    %89 = mem.entry  [mem=entry:0<-0]
+    %90 = param name=_
+    %91 = load.field %90 index=0  [mem=use:0<-0 nonlocal]
+    %92 = load.field %90 index=1  [mem=use:0<-0 nonlocal]
+    %93 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    %94 = global.addr name=vec
+    %95 = addr.field %91 index=0 field=flags  [null=nonnull]
+    %96 = call %94 %95  [mem=def:1<-0 nonlocal]
+    %97 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %98 = cast %97 name=_  [nonlocal]
+    jump b16
+  end
+  block b16  ; pred=b15,b21
+    %99 = phi %93@b15 %115@b21  [nonlocal]
+    %100 = phi %96@b15 %100@b21  [nonlocal]
+    %101 = phi %92@b15 %101@b21  [nonlocal]
+    %102 = phi %91@b15 %102@b21  [nonlocal]
+    %103 = bin %99 %100 op=lt  [range=0..1 w=1]
+    branch %103 b17 b19
+  end
+  block b17  ; pred=b16
+    %104 = sigma %99 fact=lt  [nonlocal] origin=%99
+    %105 = global.addr name=vec
+    %106 = addr.field %102 index=0 field=flags  [null=nonnull]
+    %107 = call %105 %106 %104  [mem=def:2<-1]
+    %108 = cast %107 name=_  [nonlocal]
+    %109 = load.field %108 index=0 field=short_c  [mem=use:0<-2]
+    %110 = bin %109 %101 op=eq  [range=0..1 w=1]
+    branch %110 b20 b21
+  end
+  block b18  ; pred=b19,b20
+    %111 = phi %98@b19 %108@b20  [nonlocal]
+    %112 = const.unit
+    ret %111
+  end
+  block b19  ; pred=b16
+    %113 = sigma %99 fact=ge origin=%99
+    jump b18
+  end
+  block b20  ; pred=b17
+    jump b18
+  end
+  block b21  ; pred=b17
+    %114 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %115 = bin %104 %114 op=add  [nonlocal]
+    jump b16
+  end
+endfunc
+func argparser_parse_args entry=b22
+  block b22
+    %116 = mem.entry  [mem=entry:0<-0]
+    %117 = param name=_
+    %118 = load.field %117 index=0  [mem=use:0<-0 nonlocal]
+    %119 = load.field %117 index=1  [mem=use:0<-0 nonlocal]
+    %120 = load.field %117 index=2  [mem=use:0<-0 nonlocal]
+    %121 = global.addr name=ArgResult
+    %122 = global.addr name=vec
+    %123 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %124 = call %122 %123  [mem=def:1<-0]
+    %125 = global.addr name=vec
+    %126 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %127 = call %125 %126  [mem=def:2<-1]
+    %128 = struct %121 %124 %127 name=ArgResult  [nonlocal]
+    %129 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1 nonlocal]
+    jump b23
+  end
+  block b23  ; pred=b22,b28
+    %130 = phi %129@b22 %169@b28  [nonlocal]
+    %131 = phi %119@b22 %131@b28  [nonlocal]
+    %132 = phi %128@b22 %132@b28  [nonlocal]
+    %133 = phi %118@b22 %133@b28  [nonlocal]
+    %134 = phi %120@b22 %134@b28  [nonlocal]
+    %135 = bin %130 %131 op=lt  [range=0..1 w=1]
+    branch %135 b24 b26
+  end
+  block b24  ; pred=b23
+    %136 = sigma %130 fact=lt origin=%130
+    %137 = load.index %134 %136  [mem=use:0<-2 nonlocal mayfault]
+    %138 = pi %136 %137 fact=inbounds  [range=0..9223372036854775807 nonlocal] origin=%130
+    %139 = global.addr name=os
+    %140 = load.field %139 index=0 field=linux  [mem=use:0<-2]
+    %141 = call %140 %137  [mem=def:3<-2]
+    %142 = cast %141 name=i64  [w=64 nonlocal]
+    %143 = cast %137 name=_  [nonlocal]
+    %144 = const.int ival=2  [range=2..2 w=64 kb=18446744073709551613/2]
+    %145 = bin %142 %144 op=ge  [range=0..1 w=1]
+    %146 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %147 = load.index %143 %146  [mem=use:0<-3 mayfault]
+    %148 = pi %146 %147 fact=inbounds  [range=0..0 w=64 kb=18446744073709551615/0] origin=%146
+    %149 = const.int ival=45  [range=45..45 w=8 kb=18446744073709551570/45]
+    %150 = bin %147 %149 op=eq  [range=0..1 w=1]
+    %151 = bin %145 %150 op=land  [range=0..1 w=1]
+    %152 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %153 = load.index %143 %152  [mem=use:0<-3 mayfault]
+    %154 = pi %152 %153 fact=inbounds  [range=1..1 w=64 kb=18446744073709551614/1] origin=%152
+    %155 = const.int ival=45  [range=45..45 w=8 kb=18446744073709551570/45]
+    %156 = bin %153 %155 op=eq  [range=0..1 w=1]
+    %157 = bin %151 %156 op=land  [range=0..1 w=1]
+    branch %157 b27 b28
+  end
+  block b25  ; pred=b26
+    %158 = const.unit
+    ret %158
+  end
+  block b26  ; pred=b23
+    %159 = sigma %130 fact=ge origin=%130
+    jump b25
+  end
+  block b27  ; pred=b24
+    %160 = cast %137 name=i64  [w=64]
+    %161 = const.int ival=2  [range=2..2 w=64 kb=18446744073709551613/2]
+    %162 = bin %160 %161 op=add  [w=64]
+    %163 = cast %162 name=ptr
+    %164 = func.ref name=argparser_find_flag_by_name  [null=nonnull]
+    %165 = call %164 %133 %163  [mem=def:4<-3 nonlocal]
+    %166 = cast %165 name=i64  [w=64]
+    %167 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %168 = bin %166 %167 op=ne  [range=0..1 w=1]
+    branch %168 b29 b30
+  end
+  block b28  ; pred=b24,b30
+    %169 = phi %138@b24 %174@b30  [nonlocal]
+    jump b23
+  end
+  block b29  ; pred=b27
+    %170 = load.field %165 index=0 field=kind  [mem=use:0<-4]
+    %171 = global.addr name=flag
+    %172 = load.field %171 index=0 field=KIND_BOOL  [mem=use:0<-4]
+    %173 = bin %170 %172 op=eq  [range=0..1 w=1]
+    branch %173 b31 b32
+  end
+  block b30  ; pred=b27,b33
+    %174 = phi %138@b27 %180@b33  [nonlocal]
+    jump b28
+  end
+  block b31  ; pred=b29
+    %175 = const.bool ival=1  [range=0..1 w=1]
+    %176 = store.field %165 %175 index=0 field=b_val  [mem=def:5<-4]
+    jump b33
+  end
+  block b32  ; pred=b29
+    %177 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %178 = bin %138 %177 op=add
+    %179 = bin %178 %131 op=lt  [range=0..1 w=1]
+    branch %179 b34 b35
+  end
+  block b33  ; pred=b31,b36
+    %180 = phi %138@b31 %195@b36  [nonlocal]
+    jump b30
+  end
+  block b34  ; pred=b32
+    %181 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %182 = bin %138 %181 op=add  [nonlocal]
+    %183 = load.field %165 index=0 field=kind  [mem=use:0<-5]
+    %184 = global.addr name=flag
+    %185 = load.field %184 index=0 field=KIND_INT  [mem=use:0<-5]
+    %186 = bin %183 %185 op=eq  [range=0..1 w=1]
+    branch %186 b37 b38
+  end
+    %187 = const.int ival=2  [range=2..2 w=64 kb=18446744073709551613/2]
+    %188 = bin %142 %187 op=ge  [range=0..1 w=1]
+    %189 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %190 = load.index %143 %189  [mem=use:0<-5 mayfault]
+    %191 = pi %189 %190 fact=inbounds  [range=0..0 w=64 kb=18446744073709551615/0] origin=%189
+    %192 = const.int ival=45  [range=45..45 w=8 kb=18446744073709551570/45]
+    %193 = bin %190 %192 op=eq  [range=0..1 w=1]
+    %194 = bin %188 %193 op=land  [range=0..1 w=1]
+    branch %194 b44 b45
+  end
+  block b36  ; pred=b39,b45
+    %195 = phi %216@b39 %244@b45  [nonlocal]
+    jump b33
+  end
+  block b37  ; pred=b34
+    %196 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    %197 = load.index %134 %182  [mem=use:0<-5 mayfault]
+    %198 = pi %182 %197 fact=inbounds  [range=0..9223372036854775807] origin=%182
+    %199 = cast %197 name=_  [nonlocal]
+    %200 = global.addr name=os
+    %201 = load.field %200 index=0 field=linux  [mem=use:0<-5]
+    %202 = load.index %134 %198  [mem=use:0<-5 mayfault]
+    %203 = pi %198 %202 fact=inbounds  [range=0..9223372036854775807 nonlocal] origin=%182
+    %204 = call %201 %202  [mem=def:6<-5]
+    %205 = cast %204 name=i64  [w=64 nonlocal]
+    %206 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    jump b40
+  end
+  block b38  ; pred=b34
+    %207 = global.addr name=string
+    %208 = addr.field %165 index=0 field=s_val  [null=nonnull]
+    %209 = call %207 %208  [mem=def:7<-6]
+    %210 = global
+    %211 = load.index %134 %182  [mem=use:0<-7 mayfault]
+    %212 = pi %182 %211 fact=inbounds  [range=0..9223372036854775807 nonlocal] origin=%182
+    %213 = call %210 %211  [mem=def:8<-7]
+    %214 = store.field %165 %213 index=0 field=s_val  [mem=def:9<-8 nonlocal]
+    jump b39
+  end
+  block b39  ; pred=b42,b38
+    %215 = phi %234@b42 %214@b38  [nonlocal]
+    %216 = phi %203@b42 %212@b38  [range=0..9223372036854775807 nonlocal]
+    jump b36
+  end
+  block b40  ; pred=b37,b41
+    %217 = phi %206@b37 %232@b41  [nonlocal]
+    %218 = phi %205@b37 %218@b41  [nonlocal]
+    %219 = phi %199@b37 %219@b41  [nonlocal]
+    %220 = phi %196@b37 %230@b41  [nonlocal]
+    %221 = bin %217 %218 op=lt  [range=0..1 w=1]
+    branch %221 b41 b43
+  end
+  block b41  ; pred=b40
+    %222 = sigma %217 fact=lt origin=%217
+    %223 = const.int ival=10  [range=10..10 w=64 kb=18446744073709551605/10]
+    %224 = bin %220 %223 op=mul
+    %225 = load.index %219 %222  [mem=use:0<-9 mayfault]
+    %226 = pi %222 %225 fact=inbounds  [range=0..9223372036854775807] origin=%217
+    %227 = cast %225 name=i64  [w=64]
+    %228 = const.int ival=48  [range=48..48 w=64 kb=18446744073709551567/48]
+    %229 = bin %227 %228 op=sub  [w=64]
+    %230 = bin %224 %229 op=add  [nonlocal]
+    %231 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %232 = bin %226 %231 op=add  [nonlocal]
+    jump b40
+  end
+  block b42  ; pred=b43
+    %233 = const.unit
+    %234 = store.field %165 %220 index=0 field=i_val  [mem=def:10<-9 nonlocal]
+    jump b39
+  end
+  block b43  ; pred=b40
+    %235 = sigma %217 fact=ge origin=%217
+    jump b42
+  end
+  block b44  ; pred=b35
+    %236 = func.ref name=argparser_find_flag_by_short  [null=nonnull]
+    %237 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %238 = load.index %143 %237  [mem=use:0<-10 mayfault]
+    %239 = pi %237 %238 fact=inbounds  [range=1..1 w=64 kb=18446744073709551614/1] origin=%237
+    %240 = call %236 %133 %238  [mem=def:11<-10 nonlocal]
+    %241 = cast %240 name=i64  [w=64]
+    %242 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %243 = bin %241 %242 op=ne  [range=0..1 w=1]
+    branch %243 b46 b47
+  end
+  block b45  ; pred=b35,b48
+    %244 = phi %138@b35 %256@b48  [nonlocal]
+    jump b36
+  end
+  block b46  ; pred=b44
+    %245 = const.bool ival=1  [range=0..1 w=1]
+    %246 = store.field %240 %245 index=0 field=b_val  [mem=def:12<-11 nonlocal]
+    jump b48
+  end
+  block b47  ; pred=b44
+    %247 = global.addr name=string
+    %248 = call %247 %137  [mem=def:13<-12]
+    %249 = global.addr name=vec
+    %250 = addr.field %132 index=0 field=pos_args  [null=nonnull]
+    %251 = addr.of %248  [null=nonnull]
+    %252 = cast %251 name=ptr
+    %253 = call %249 %250 %252  [mem=def:14<-13 nonlocal]
+    jump b48
+  end
+  block b48  ; pred=b46,b47
+    %254 = phi %246@b46 %253@b47  [nonlocal]
+    %255 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %256 = bin %138 %255 op=add  [nonlocal]
+    jump b45
+  end
+endfunc

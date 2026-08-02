@@ -1,0 +1,249 @@
+; note: 16 front-end errors; lowering anyway
+module stdlib/crypto/sha256.pie
+func sha256_new entry=b1
+  block b1
+    %1 = mem.entry  [mem=entry:0<-0]
+    %2 = param name=_
+    %3 = global.addr name=os
+    %4 = load.field %3 index=0 field=linux  [mem=use:0<-0]
+    %5 = const.int ival=32  [range=32..32 w=64 kb=18446744073709551583/32]
+    %6 = call %4 %5  [mem=def:1<-0]
+    %7 = cast %6 name=_
+    %8 = const.int ival=1779033703  [range=1779033703..1779033703 w=32 kb=18446744071930517912/1779033703]
+    %9 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %10 = store.index %7 %8 %9  [mem=def:2<-1]
+    %11 = const.int ival=3144134277  [range=3144134277..3144134277 w=32 kb=18446744070565417338/3144134277]
+    %12 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %13 = store.index %7 %11 %12  [mem=def:3<-2]
+    %14 = const.int ival=1013904242  [range=1013904242..1013904242 w=32 kb=18446744072695647373/1013904242]
+    %15 = const.int ival=2  [range=2..2 w=64 kb=18446744073709551613/2]
+    %16 = store.index %7 %14 %15  [mem=def:4<-3]
+    %17 = const.int ival=2773480762  [range=2773480762..2773480762 w=32 kb=18446744070936070853/2773480762]
+    %18 = const.int ival=3  [range=3..3 w=64 kb=18446744073709551612/3]
+    %19 = store.index %7 %17 %18  [mem=def:5<-4]
+    %20 = const.int ival=1359893119  [range=1359893119..1359893119 w=32 kb=18446744072349658496/1359893119]
+    %21 = const.int ival=4  [range=4..4 w=64 kb=18446744073709551611/4]
+    %22 = store.index %7 %20 %21  [mem=def:6<-5]
+    %23 = const.int ival=2600822924  [range=2600822924..2600822924 w=32 kb=18446744071108728691/2600822924]
+    %24 = const.int ival=5  [range=5..5 w=64 kb=18446744073709551610/5]
+    %25 = store.index %7 %23 %24  [mem=def:7<-6]
+    %26 = const.int ival=528734635  [range=528734635..528734635 w=32 kb=18446744073180816980/528734635]
+    %27 = const.int ival=6  [range=6..6 w=64 kb=18446744073709551609/6]
+    %28 = store.index %7 %26 %27  [mem=def:8<-7]
+    %29 = const.int ival=1541459225  [range=1541459225..1541459225 w=32 kb=18446744072168092390/1541459225]
+    %30 = const.int ival=7  [range=7..7 w=64 kb=18446744073709551608/7]
+    %31 = store.index %7 %29 %30  [mem=def:9<-8]
+    %32 = global.addr name=os
+    %33 = load.field %32 index=0 field=linux  [mem=use:0<-9]
+    %34 = const.int ival=64  [range=64..64 w=64 kb=18446744073709551551/64]
+    %35 = call %33 %34  [mem=def:10<-9]
+endfunc
+    %36 = cast %35 name=_
+    %37 = global.addr name=os
+    %38 = load.field %37 index=0 field=linux  [mem=use:0<-10]
+    %39 = cast %36 name=ptr
+    %40 = const.int ival=0  [range=0..0 w=32 kb=18446744073709551615/0]
+    %41 = const.int ival=64  [range=64..64 w=64 kb=18446744073709551551/64]
+    %42 = call %38 %39 %40 %41  [mem=def:11<-10]
+    %43 = global.addr name=Sha256
+    %44 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %45 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %46 = struct %43 %7 %36 %44 %45 name=Sha256
+    %46 = struct %43 %7 %36 %44 %45 name=Sha256
+    ret %46
+  end
+endfunc
+func sha256_destroy entry=b2
+  block b2
+    %47 = mem.entry  [mem=entry:0<-0]
+    %48 = param name=ctx  [nonlocal]
+    %49 = load.field %48 index=0 field=state  [mem=use:0<-0]
+    %50 = cast %49 name=i64  [w=64]
+    %51 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %52 = bin %50 %51 op=ne  [range=0..1 w=1]
+    branch %52 b3 b4
+  end
+  block b3  ; pred=b2
+    %53 = global.addr name=os
+    %54 = load.field %53 index=0 field=linux  [mem=use:0<-0]
+    %55 = load.field %48 index=0 field=state  [mem=use:0<-0]
+    %56 = cast %55 name=ptr
+    %57 = call %54 %56  [mem=def:1<-0]
+    jump b4
+  end
+  block b4  ; pred=b2,b3
+  block b4  ; pred=b2,b3
+    %58 = load.field %48 index=0 field=block  [mem=use:0<-1]
+    %59 = cast %58 name=i64  [w=64]
+    %60 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %61 = bin %59 %60 op=ne  [range=0..1 w=1]
+    branch %61 b5 b6
+  end
+  block b5  ; pred=b4
+    %62 = global.addr name=os
+    %63 = load.field %62 index=0 field=linux  [mem=use:0<-1]
+    %64 = load.field %48 index=0 field=block  [mem=use:0<-1]
+    %65 = cast %64 name=ptr
+    %66 = call %63 %65  [mem=def:2<-1]
+    jump b6
+  end
+  block b6  ; pred=b4,b5
+    %67 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %68 = cast %67 name=_
+    %69 = store.field %48 %68 index=0 field=state  [mem=def:3<-2]
+    %70 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %71 = cast %70 name=_
+    %72 = store.field %48 %71 index=0 field=block  [mem=def:4<-3]
+    %73 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %74 = store.field %48 %73 index=0 field=block_len  [mem=def:5<-4]
+    %75 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0]
+    %76 = store.field %48 %75 index=0 field=total_len  [mem=def:6<-5]
+    ret %76
+  end
+endfunc
+func sha256_hash_bytes entry=b7
+  block b7
+    %77 = mem.entry  [mem=entry:0<-0]
+    %78 = param name=_
+    %79 = load.field %78 index=0  [mem=use:0<-0]
+    %80 = load.field %78 index=1  [mem=use:0<-0 nonlocal]
+    %81 = func.ref name=sha256_new  [null=nonnull]
+    %82 = call %81  [mem=def:1<-0 nonlocal]
+    %83 = global.addr name=os
+    %84 = load.field %83 index=0 field=linux  [mem=use:0<-1]
+    %85 = const.int ival=32  [range=32..32 w=64 kb=18446744073709551583/32]
+    %86 = call %84 %85  [mem=def:2<-1]
+    %87 = cast %86 name=_  [nonlocal]
+    %88 = global.addr name=os
+    %89 = load.field %88 index=0 field=linux  [mem=use:0<-2]
+    %90 = cast %87 name=ptr
+    %91 = const.int ival=0  [range=0..0 w=32 kb=18446744073709551615/0]
+    %92 = const.int ival=32  [range=32..32 w=64 kb=18446744073709551583/32]
+    %93 = call %89 %90 %91 %92  [mem=def:3<-2]
+    %94 = load.field %82 index=0 field=state  [mem=use:0<-3 nonlocal]
+    %95 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    %96 = cast %79 name=_  [nonlocal]
+    jump b8
+  end
+  block b8  ; pred=b7,b9
+    %97 = phi %95@b7 %125@b9  [nonlocal]
+    %98 = phi %80@b7 %98@b9  [nonlocal]
+    %99 = phi %96@b7 %99@b9  [nonlocal]
+    %100 = phi %94@b7 %100@b9  [nonlocal]
+    %101 = bin %97 %98 op=lt  [range=0..1 w=1]
+    branch %101 b9 b11
+  end
+  block b9  ; pred=b8
+    %102 = sigma %97 fact=lt origin=%97
+    %103 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %104 = bin %102 %103 op=mod  [range=-7..7 mayfault]
+    %105 = load.index %100 %104  [mem=use:0<-3 mayfault]
+    %106 = pi %104 %105 fact=inbounds  [range=0..7 mayfault] origin=%104
+    %107 = load.index %99 %102  [mem=use:0<-3 mayfault]
+    %108 = pi %102 %107 fact=inbounds  [range=0..9223372036854775807] origin=%97
+    %109 = cast %107 name=u32  [range=0..4294967295 w=32]
+    %110 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %111 = bin %109 %110 op=shl
+    %112 = bin %105 %111 op=xor
+    %113 = store.index %100 %112 %106  [mem=def:4<-3]
+    %114 = load.index %100 %106  [mem=use:0<-4 mayfault]
+    %115 = pi %106 %114 fact=inbounds  [range=0..7 mayfault] origin=%104
+    %116 = const.int ival=5  [range=5..5 w=64 kb=18446744073709551610/5]
+    %117 = bin %114 %116 op=shl
+    %118 = load.index %100 %115  [mem=use:0<-4 mayfault]
+    %119 = pi %115 %118 fact=inbounds  [range=0..7 mayfault] origin=%104
+    %120 = const.int ival=27  [range=27..27 w=64 kb=18446744073709551588/27]
+    %121 = bin %118 %120 op=shr
+    %122 = bin %117 %121 op=or
+    %123 = store.index %100 %122 %119  [mem=def:5<-4]
+    %124 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %125 = bin %108 %124 op=add  [nonlocal]
+    jump b8
+  end
+  block b10  ; pred=b11
+    %126 = const.unit
+    %127 = const.int ival=0  [range=0..0 w=64 kb=18446744073709551615/0 nonlocal]
+    jump b12
+  end
+  block b11  ; pred=b8
+    %128 = sigma %97 fact=ge origin=%97
+    jump b10
+  end
+  block b12  ; pred=b10,b13
+    %129 = phi %127@b10 %168@b13  [range=0..8 nonlocal]
+    %130 = phi %87@b10 %130@b13  [nonlocal]
+    %131 = phi %100@b10 %131@b13  [nonlocal]
+    %132 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %133 = bin %129 %132 op=lt  [range=0..1 w=1]
+    branch %133 b13 b15
+  end
+  block b13  ; pred=b12
+    %134 = sigma %129 fact=lt  [range=-9223372036854775808..7] origin=%129
+    %135 = load.index %131 %134  [mem=use:0<-5 mayfault]
+    %136 = pi %134 %135 fact=inbounds  [range=0..7] origin=%129
+    %137 = const.int ival=24  [range=24..24 w=64 kb=18446744073709551591/24]
+    %138 = bin %135 %137 op=shr
+    %139 = cast %138 name=u8  [range=0..255 w=8]
+    %140 = const.int ival=4  [range=4..4 w=64 kb=18446744073709551611/4]
+    %141 = bin %136 %140 op=mul  [range=0..28]
+    %142 = store.index %130 %139 %141  [mem=def:6<-5]
+    %143 = const.int ival=16  [range=16..16 w=64 kb=18446744073709551599/16]
+    %144 = bin %135 %143 op=shr
+    %145 = cast %144 name=u8  [range=0..255 w=8]
+    %146 = const.int ival=4  [range=4..4 w=64 kb=18446744073709551611/4]
+    %147 = bin %136 %146 op=mul  [range=0..28]
+    %148 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %149 = bin %147 %148 op=add  [range=1..29]
+    %150 = store.index %130 %145 %149  [mem=def:7<-6]
+    %151 = const.int ival=8  [range=8..8 w=64 kb=18446744073709551607/8]
+    %152 = bin %135 %151 op=shr
+    %153 = cast %152 name=u8  [range=0..255 w=8]
+    %154 = const.int ival=4  [range=4..4 w=64 kb=18446744073709551611/4]
+    %155 = bin %136 %154 op=mul  [range=0..28]
+    %156 = const.int ival=2  [range=2..2 w=64 kb=18446744073709551613/2]
+    %157 = bin %155 %15
+    %158 = store.index %130 %153 %157  [mem=def:8<-7]
+    %159 = const.int ival=255  [range=255..255 w=64 kb=18446744073709551360/255]
+    %160 = bin %135 %159 op=and  [range=0..255]
+    %161 = cast %160 name=u8  [range=0..255 w=8]
+    %162 = const.int ival=4  [range=4..4 w=64 kb=18446744073709551611/4]
+    %163 = bin %136 %162 op=mul  [range=0..28]
+    %164 = const.int ival=3  [range=3..3 w=64 kb=18446744073709551612/3]
+    %165 = bin %163 %164 op=add  [range=3..31]
+    %166 = store.index %130 %161 %165  [mem=def:9<-8]
+    %167 = const.int ival=1  [range=1..1 w=64 kb=18446744073709551614/1]
+    %168 = bin %136 %167 op=add  [range=1..8 nonlocal]
+    jump b12
+  end
+  block b14  ; pred=b15
+    %169 = const.unit
+    %170 = func.ref name=sha256_destroy  [null=nonnull]
+    %171 = addr.of %82  [null=nonnull]
+    %172 = call %170 %171  [mem=def:10<-9]
+    %173 = cast %130 name=ptr
+    ret %173
+  end
+  block b15  ; pred=b12
+    %174 = sigma %129 fact=ge  [range=8..9223372036854775807] origin=%129
+    jump b14
+  end
+endfunc
+func sha256_hash_str entry=b16
+  block b16
+    %175 = mem.entry  [mem=entry:0<-0]
+    %176 = param name=cstr
+    %177 = global.addr name=os
+    %178 = load.field %177 index=0 field=linux  [mem=use:0<-0]
+    %179 = call %178 %176  [mem=def:1<-0]
+    %180 = cast %179 name=i64  [w=64]
+    %181 = func.ref name=sha256_hash_bytes  [null=nonnull]
+    %182 = call %181 %176 %180  [mem=def:2<-1]
+    %183 = global.addr name=hex
+    %184 = const.int ival=32  [range=32..32 w=64 kb=18446744073709551583/32]
+    %185 = const.bool ival=0  [range=0..1 w=1]
+    %186 = call %183 %182 %184 %185  [mem=def:3<-2]
+    %187 = global.addr name=os
+    %188 = load.field %187 index=0 field=linux  [mem=use:0<-3]
+    ret %186
+  end
+endfunc

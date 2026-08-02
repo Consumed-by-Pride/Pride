@@ -1,0 +1,5 @@
+mod s
+dialect D
+  opcode o0
+  opcode o1
+  opcode o2

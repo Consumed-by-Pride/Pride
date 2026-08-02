@@ -1,0 +1,3 @@
+mod s
+struct S
+  f0 : i64

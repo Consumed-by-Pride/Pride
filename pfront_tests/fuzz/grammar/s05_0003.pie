@@ -1,0 +1,5 @@
+mod s
+irdl
+  D.o0 [a : i32] ↦ emit_asm("x")
+  D.o1 [a : i32] ↦ emit_asm("x")
+  D.o2 [a : i32] ↦ emit_asm("x")
