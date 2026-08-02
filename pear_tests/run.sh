@@ -850,6 +850,59 @@ else
   fail=$((fail+1)); note FAIL "fuzz_air_reader" "$af_bad crashes over $af_n files"
 fi
 
+# THE LOCK-FREE RING-BUFFER DELIVERABLE.
+#
+# A masked index must be PROVEN in [0,63] so the bounds check against the
+# ring size is discharged entirely -- no runtime compare, no dead arm.
+# This is the whole "bare-metal" claim in one function, and it is checked
+# end to end: the range on the masked value, the branch folded to a jump,
+# and the unreachable arm deleted.
+cat > /tmp/pear_t_ring.pie <<'PIE'
+mod t
+fn ring_get : (i64, i64) -> i64
+  | (head, slot) ->
+    let h = head & 63i64
+    if h < 64i64
+      h + slot
+    else
+      0i64
+PIE
+"$PEARC" /tmp/pear_t_ring.pie > /tmp/pear_t_ring.air 2>/dev/null
+rg=$("$A2" --stats /tmp/pear_t_ring.air 2>&1)
+rg_dec=$(echo "$rg" | grep -oE 'decided cmps  : [0-9]+' | grep -oE '[0-9]+$')
+rg_br=$(echo "$rg" | grep -oE 'branches   : [0-9]+' | grep -oE '[0-9]+$')
+rg_out=$("$A2" /tmp/pear_t_ring.air 2>/dev/null)
+if [ "${rg_dec:-0}" -ge 1 ] && [ "${rg_br:-0}" -ge 1 ] \
+   && ! echo "$rg_out" | grep -q 'op=lt'; then
+  pass=$((pass+1)); note PASS "a2_ring_bounds_discharged" "(mask proves [0,63], check deleted)"
+else
+  fail=$((fail+1)); note FAIL "a2_ring_bounds_discharged" "decided=$rg_dec folded=$rg_br; compare survived"
+fi
+
+# The loop form: head and tail advancing together, both masked, both
+# loop-carried. Their ranges must survive the back edge -- the case a
+# single forward pass cannot do and the one an SPSC queue actually has.
+cat > /tmp/pear_t_ring2.pie <<'PIE'
+mod t
+fn ring_advance : (i64, i64) -> i64
+  | (head, tail) ->
+    let mut h = head & 63i64
+    let mut t = tail & 63i64
+    let mut n = 0i64
+    while n < 64i64
+      h = (h + 1i64) & 63i64
+      t = (t + 1i64) & 63i64
+      n = n + 1i64
+    h + t
+PIE
+"$PEARC" /tmp/pear_t_ring2.pie > /tmp/pear_t_ring2.air 2>/dev/null
+r2=$("$A2" /tmp/pear_t_ring2.air 2>/dev/null | grep -c 'phi .*\[range=0\.\.63')
+if [ "${r2:-0}" -ge 2 ]; then
+  pass=$((pass+1)); note PASS "a2_ring_loop_carried" "($r2 loop-carried indices proven [0,63])"
+else
+  fail=$((fail+1)); note FAIL "a2_ring_loop_carried" "only $r2 of 2 indices bounded across the back edge"
+fi
+
 # D1: facts must SURVIVE. The honest measure is reachability -- an entry
 # still named by a live value -- because nothing ever removes table
 # entries, so counting entries would report 100% survival even on a pass
