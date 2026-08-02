@@ -1084,6 +1084,37 @@ if [ -x ./pearc ]; then
     fail=$((fail+1))
   fi
 
+  # GIVING UP MUST BE VISIBLE.
+  #
+  # The rewriter counts depth_exceeded when it abandons a subterm past
+  # TRS_MAX_DEPTH and fuel_exhausted when it runs out of budget. Both were
+  # recorded and never printed, so a rewrite that silently stopped early
+  # was indistinguishable from one that reached a normal form. Same class
+  # as D6's silent truncation, in a different file.
+  #
+  # Asserted in both directions: a term just inside the limit reports
+  # nothing, and one past it says so.
+  # Generated with awk rather than a nested heredoc: a heredoc inside a
+  # heredoc does not expand here and silently produced empty files, which
+  # made this check pass on nothing.
+  gen_deep() {
+    n=$1; out=$2
+    { printf 'mod t\nlet r : Rewrite = rewrite\n  | wrap(x) \xe2\x86\xa6 x\nfn wrap : i64 -> i64\n  | x -> x\nfn deep : i64 -> i64\n  | n -> '
+      awk -v k="$n" 'BEGIN{for(i=0;i<k;i++) printf "wrap("; printf "n"; for(i=0;i<k;i++) printf ")"; printf "\n"}'
+    } > "$out"
+  }
+  gen_deep 380 /tmp/pf_deep_ok.pie
+  gen_deep 450 /tmp/pf_deep_bad.pie
+  d_ok=$(./pfrontc /tmp/pf_deep_ok.pie 2>&1 | grep -c 'INCOMPLETE')
+  d_bad=$(./pfrontc /tmp/pf_deep_bad.pie 2>&1 | grep -c 'INCOMPLETE')
+  if [ "$d_ok" = "0" ] && [ "$d_bad" -ge 1 ]; then
+    printf '  PASS  %-26s %s\n' "trs_reports_giving_up" "(silent truncation is now reported)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "trs_reports_giving_up" "clean=$d_ok truncated=$d_bad (want 0 and >=1)"
+    fail=$((fail+1))
+  fi
+
   # No construct in the syntax suite may leave a lowering hole.
   sh=0
   for f in pfront_tests/syntax/x*.pie; do

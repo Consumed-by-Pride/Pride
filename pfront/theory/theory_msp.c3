@@ -438,7 +438,16 @@ fn void StageChecker.report(StageChecker* sc)
     printf("  stage soundness  : %d escapes, %d splices at stage 0, %d legal cross-stage\n",
            (int)sc.escapes, (int)sc.splice_at_zero, (int)sc.cross_stage_ok);
     printf("  quote sharing    : %d unique, %d deduplicated\n",
-           (int)sc.quotes.unique, (int)sc.quotes.shared);
+           (int)sc.quotes.unique, (int)sc.quotes.shared);    /*
+     A quotation nested past MSP_MAX_STAGE is REJECTED with E3200, but the
+     count of how many were rejected was recorded and never shown. Only
+     printed when non-zero.
+    */
+    if (sc.stage_overflow > 0)
+    {
+        printf("  stage overflow   : %d quotation(s) past the maximum stage\n",
+               (int)sc.stage_overflow);
+    }
 }
 
 // ── Open-code pattern matching ──────────────────────────────────────────────

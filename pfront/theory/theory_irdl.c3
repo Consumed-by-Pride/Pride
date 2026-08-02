@@ -371,6 +371,11 @@ fn void DialectTable.report(DialectTable* dt)
 {
     printf("  irdl dialects    : %d dialects, %d opcodes, %d uses validated\n",
            (int)dt.dialect_count, (int)dt.opcode_count, (int)dt.uses_validated);
+    if (dt.unknown_dialect > 0)
+    {
+        printf("  irdl unknown-dia : %d reference(s) to a dialect that is not declared\n",
+               (int)dt.unknown_dialect);
+    }
     printf("  irdl lowering    : %d lowered, %d unknown-op, %d arity errors\n",
            (int)dt.lowered, (int)dt.unknown_opcode, (int)dt.arity_mismatch);
 }

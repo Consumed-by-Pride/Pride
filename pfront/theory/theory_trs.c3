@@ -614,4 +614,21 @@ fn void Rewriter.report(Rewriter* rw)
            (int)rw.firings, (int)rw.match_failures, (int)rw.match_attempts);
     printf("  fuel             : %d / %d used, memo hits %d\n",
            rw.fuel_start - rw.fuel, rw.fuel_start, (int)rw.memo.hits);
+    /*
+     GIVING UP IS NOT A CLEAN RESULT.
+
+     Both of these mean the rewriter stopped early and the term it
+     returned is NOT a normal form. They were counted and never printed,
+     so a truncated rewrite was indistinguishable from a completed one --
+     which is the silent-truncation failure D6 exists to forbid, in a
+     different file.
+
+     Printed only when non-zero: a line of zeroes on every compilation
+     trains readers to skip the block.
+    */
+    if (rw.depth_exceeded > 0 || rw.fuel_exhausted > 0)
+    {
+        printf("  INCOMPLETE       : %d subterms past the depth limit, %d fuel stalls\n",
+               (int)rw.depth_exceeded, (int)rw.fuel_exhausted);
+    }
 }
