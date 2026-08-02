@@ -980,6 +980,26 @@ if [ -x ./pearc ]; then
     fail=$((fail+1))
   fi
 
+  # Quotations must SHARE structurally.
+  #
+  # Two identical `~Tree (a + b)` describe one tree and should be one
+  # object. The sigil path returned early -- correctly, to stop sigils
+  # being treated as a stage bump, since they are reification not staging
+  # -- and took quotes.intern with it. So "quote sharing: 0 unique, 0
+  # deduplicated" was printed for programs full of sigils, while the
+  # staging counter on the line above reported them.
+  printf 'mod t\nfn f : (i64,i64) -> i64\n  | (a,b) ->\n    let q1 = ~Tree (a + b)\n    let q2 = ~Tree (a + b)\n    let q3 = ~Tree (a * b)\n    a\n' > /tmp/pf_qs.pie
+  qs=$(./pfrontc /tmp/pf_qs.pie 2>&1 | grep -oE 'quote sharing    : [0-9]+ unique, [0-9]+ dedup')
+  qu=$(echo "$qs" | grep -oE ': [0-9]+ unique' | grep -oE '[0-9]+')
+  qd=$(echo "$qs" | grep -oE '[0-9]+ dedup' | grep -oE '[0-9]+')
+  if [ "${qu:-0}" = "2" ] && [ "${qd:-0}" = "1" ]; then
+    printf '  PASS  %-26s %s\n' "quote_sharing" "(3 quotes -> 2 unique, 1 shared)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "quote_sharing" "unique=$qu dedup=$qd (want 2/1)"
+    fail=$((fail+1))
+  fi
+
   # No construct in the syntax suite may leave a lowering hole.
   sh=0
   for f in pfront_tests/syntax/x*.pie; do

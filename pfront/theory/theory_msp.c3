@@ -290,6 +290,24 @@ fn void StageChecker.walk(StageChecker* sc, Node* n, int depth)
                 {
                     sc.walk(n.children[i], depth + 1);
                 }
+                /*
+                 A sigil does not BUMP the stage, but it is still a
+                 quotation and still shares structurally: two `~Tree (a+b)`
+                 in one function describe the same tree and should be one
+                 object.
+
+                 The early return here skipped quotes.intern, so "quote
+                 sharing: 0 unique, 0 deduplicated" was printed for a
+                 program full of sigils -- staging counted three quotes on
+                 the line above while the sharing table saw none. The
+                 return was added to stop sigils being treated as a stage
+                 bump (they are reification, not staging) and took the
+                 interning with it.
+
+                 Interned at the CURRENT stage, which is the stage the
+                 body was just walked at.
+                */
+                sc.quotes.intern(n, sc.lattice.current_stage);
                 return;
             }
 
