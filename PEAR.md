@@ -611,6 +611,39 @@ The pattern in all of them: a pass that is constructed, reported on, and
 never run reads exactly like a pass that works, and its report reads
 exactly like a real measurement of zero.
 
+### The actor-protocol pass
+
+`x11_actor_protocol.pie` writes a reliable-protocol actor — handshake
+state machine, session-typed channel, effect-based suspension, a TRS
+layer that erases local message passing, and a lock-free ring buffer —
+so the effect, refinement and rewriting machinery run against each other.
+It found the term rewriter had never converged:
+
+| Defect | Kind |
+|---|---|
+| **The rewriter rewrote its own rule definitions.** A `rewrite` block is an `N_DECL_FN + NF_SYNTHETIC` whose clauses *are* the rules; `normalize` walked them, matched its own left-hand sides, and rewrote the rules into their right-hand sides — corrupting the rule set each round | wrong output |
+| Every root rewrite re-normalised its already-normal children, doubling work per step. The memo meant to absorb it is keyed by node **pointer** while `instantiate` makes fresh nodes, so memo hits were 0 on every file in the project | exponential |
+| The key bands I added the previous pass sat at 1M/2M/3M, but `theory_trs` indexes a **1024-bucket** table with `top_key` and clamps — funnelling every literal, variant and call into one bucket. My own fix, reintroducing the collapse one layer down | self-inflicted |
+| Distinct calls shared one key, so nearly every rule set with more than one call-headed rule reported a false redundancy | false positive |
+
+Two-rule chain: **32,768 firings → 2**.
+
+**What this pass verified rather than fixed** — each was already correct:
+
+- the continuation trap. `| { state, fd, seq } -> ...` destructured
+  *inside* a handler arm binds all three fields where `k` is live, so a
+  resumed continuation reads real values, not garbage
+- both resume spellings (`k v` and `resume v`) lower to the same shape
+- **the ring-buffer deliverable**: `head & 63` proves `[0,63]`, `h < 64`
+  folds, the branch becomes a jump and the dead arm is deleted — the
+  bounds check fully discharged, and both indices stay bounded *across a
+  loop back edge*
+
+**Not testable yet, and not claimed:** the stackless state-machine
+conversion itself is a3, which does not exist; `emit.c3` is a5, still
+blocked on X. What is checked here is that the constructs lower with no
+holes and that the facts a3/a5 will need are proven and survive.
+
 ---|---|
 | `R` ranged | 15,624 → 18,766 |
 | `R` tightened | 3,887 |
