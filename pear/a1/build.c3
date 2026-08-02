@@ -266,6 +266,56 @@ struct Builder
     // by construct instead of as one opaque number.
     usz[256] miss_kind;
     usz      miss_undef_read;
+
+    /*
+     A GROWABLE operand scratch, used as a stack.
+
+     Every variadic construct -- a call, a struct literal, a tuple, an
+     array, `resume`, a handler's arm list -- used a `uint[16] ops` local
+     and a loop guarded by `k < 16`. Anything wider was silently dropped:
+     a 20-argument call emitted 16 operands and lost four arguments with
+     no diagnostic at all, which is a miscompile, and D6 exists precisely
+     to forbid it. `ssi_ir.c3` capped edges at 32 and that is recorded in
+     this file's own header as a defect worth not repeating.
+
+     A single shared buffer will not do, because lowering an operand
+     RECURSES: `f(g(1,2), h(3,4))` is lowering a call while already inside
+     one. So this is a stack -- each variadic site records the mark, pushes
+     its operands, emits, then pops back to the mark. Nested sites occupy
+     disjoint regions and cannot corrupt each other.
+    */
+    uint*  argbuf;
+    usz    arg_len;
+    usz    arg_cap;
+}
+
+/*
+ Reserve room for `want` more operands on the scratch stack.
+
+ Returns false only on allocation failure, which the callers treat the
+ same way they treat any other failure to build a value: emit nothing and
+ let the caller's AIR_UNKNOWN path record it. Silently writing fewer
+ operands is exactly the behaviour being removed.
+*/
+fn bool Builder.arg_reserve(Builder* b, usz want)
+{
+    usz need = b.arg_len + want;
+    if (need <= b.arg_cap) { return true; }
+    usz nc = b.arg_cap == 0 ? 64 : b.arg_cap;
+    while (nc < need) { nc = nc * 2; }
+    uint* p = (uint*)realloc((void*)b.argbuf, nc * uint::size);
+    if (p == null) { return false; }
+    b.argbuf = p;
+    b.arg_cap = nc;
+    return true;
+}
+
+fn bool Builder.arg_push(Builder* b, uint v)
+{
+    if (!b.arg_reserve(1)) { return false; }
+    b.argbuf[b.arg_len] = v;
+    b.arg_len = b.arg_len + 1;
+    return true;
 }
 
 fn void Builder.init(Builder* b, Air* m, pfront_core::Interner* it)
@@ -282,6 +332,7 @@ fn void Builder.init(Builder* b, Air* m, pfront_core::Interner* it)
     b.sigmas = 0; b.pis = 0; b.deferred = 0;
     for (usz i = 0; i < 256; i++) { b.miss_kind[i] = 0; }
     b.miss_undef_read = 0;
+    b.argbuf = null; b.arg_len = 0; b.arg_cap = 0;
 }
 
 fn void Builder.note_unsupported(Builder* b, Nk k)
@@ -295,6 +346,8 @@ fn void Builder.destroy(Builder* b)
     if (b.defs != null) { free((void*)b.defs); b.defs = null; }
     if (b.incomplete != null) { free((void*)b.incomplete); b.incomplete = null; }
     if (b.sealed != null) { free((void*)b.sealed); b.sealed = null; }
+    if (b.argbuf != null) { free((void*)b.argbuf); b.argbuf = null; }
+    b.arg_len = 0; b.arg_cap = 0;
 }
 
 fn void Builder.write_var(Builder* b, Node* binder, uint block, uint value)
@@ -485,20 +538,42 @@ fn uint Builder.fill_phi(Builder* b, uint phi, Node* binder, uint block)
     pear_air::AirBlock* blk = b.m.blk(block);
     if (blk == null) { return phi; }
 
-    uint[64] ops;
-    uint[64] incs;
+    /*
+     One operand per predecessor, however many there are.
+
+     This was `uint[64]` with `n < 64`, which is not a limit you reach by
+     accident -- and then x09_torture_scale.pie's 300-clause dispatch
+     produced a join block with 301 predecessors. The phi got 64 operands
+     and the verifier correctly rejected it: "phi has a different number
+     of operands than the block has predecessors". A phi that does not
+     cover every incoming edge reads an undefined value on the edges it
+     omits.
+
+     Two disjoint regions of the same growable stack: operands at `omark`,
+     incoming blocks immediately after at `imark`. Both are popped
+     together once pushed into the module.
+    */
+    usz omark = b.arg_len;
     usz n = 0;
-    for (usz i = 0; i < blk.pred_count && n < 64; i++)
+    for (usz i = 0; i < blk.pred_count; i++)
     {
         uint pv = b.read_var(binder, blk.pred[i]);
         if (pv == pear_air::AIR_NO_VALUE) { continue; }
-        ops[n] = pv;
-        incs[n] = blk.pred[i];
+        if (!b.arg_push(pv)) { break; }
         n = n + 1;
     }
+    usz imark = b.arg_len;
+    usz m2 = 0;
+    for (usz i = 0; i < blk.pred_count && m2 < n; i++)
+    {
+        if (b.read_var(binder, blk.pred[i]) == pear_air::AIR_NO_VALUE) { continue; }
+        if (!b.arg_push(blk.pred[i])) { break; }
+        m2 = m2 + 1;
+    }
 
-    usz ooff = b.m.push_operands(&ops[0], n);
-    usz ioff = b.m.push_phi_blocks(&incs[0], n);
+    usz ooff = b.m.push_operands(&b.argbuf[omark], n);
+    usz ioff = b.m.push_phi_blocks(&b.argbuf[imark], m2);
+    b.arg_len = omark;
     pear_air::AirValue* pv2 = b.m.val(phi);
     if (pv2 == null) { return phi; }
     pv2.op_off = ooff;
@@ -1321,13 +1396,15 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
                 // Module-qualified: children[0] is the module path.
                 first_arg = 1;
             }
-            for (usz i = first_arg; i < n.child_count && k < 16; i++)
+            usz mark = b.arg_len;
+            for (usz i = first_arg; i < n.child_count; i++)
             {
-                ops[k] = b.lower_operand(n.children[i]);
+                if (!b.arg_push(b.lower_operand(n.children[i]))) { break; }
                 k = k + 1;
             }
             uint id = b.emit(n.resolved != null ? Op.AIR_CALL_DIRECT : Op.AIR_CALL,
-                             &ops[0], k, n);
+                             &b.argbuf[mark], k, n);
+            b.arg_len = mark;
             if (id != pear_air::AIR_NO_VALUE) { b.m.values[id].p.name = n.name_id; }
             return id;
         }
@@ -1343,30 +1420,34 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
              with no runtime content of its own.
             */
             usz k = 0;
-            for (usz i = 0; i < n.child_count && k < 16; i++)
+            usz mark = b.arg_len;
+            for (usz i = 0; i < n.child_count; i++)
             {
                 Node* c = n.children[i];
                 if (c == null) { continue; }
+                uint fv;
                 if (c.kind == Nk.N_EXPR_FIELD_INIT)
                 {
                     // The init's value is its last child; a shorthand
                     // `S { x }` has none, and reads the variable instead.
                     if (c.child_count > 0)
                     {
-                        ops[k] = b.lower_operand(c.children[c.child_count - 1]);
+                        fv = b.lower_operand(c.children[c.child_count - 1]);
                     }
                     else
                     {
-                        ops[k] = b.lower_operand(c);
+                        fv = b.lower_operand(c);
                     }
                 }
                 else
                 {
-                    ops[k] = b.lower_operand(c);
+                    fv = b.lower_operand(c);
                 }
+                if (!b.arg_push(fv)) { break; }
                 k = k + 1;
             }
-            uint id = b.emit(Op.AIR_STRUCT, &ops[0], k, n);
+            uint id = b.emit(Op.AIR_STRUCT, &b.argbuf[mark], k, n);
+            b.arg_len = mark;
             if (id != pear_air::AIR_NO_VALUE) { b.m.values[id].p.name = n.name_id; }
             return id;
         }
@@ -1380,12 +1461,15 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
         case N_EXPR_FREE:
         {
             usz k = 0;
-            for (usz i = 0; i < n.child_count && k < 16; i++)
+            usz mark = b.arg_len;
+            for (usz i = 0; i < n.child_count; i++)
             {
-                ops[k] = b.lower_operand(n.children[i]);
+                if (!b.arg_push(b.lower_operand(n.children[i]))) { break; }
                 k = k + 1;
             }
-            return b.emit(Op.AIR_FREE, &ops[0], k, n);
+            uint fid = b.emit(Op.AIR_FREE, &b.argbuf[mark], k, n);
+            b.arg_len = mark;
+            return fid;
         }
 
         case N_EXPR_CALL:
@@ -1397,12 +1481,14 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
              is a miscompile.
             */
             usz n_args = 0;
-            for (usz i = 0; i < n.child_count && n_args < 16; i++)
+            usz mark = b.arg_len;
+            for (usz i = 0; i < n.child_count; i++)
             {
-                ops[n_args] = b.lower_operand(n.children[i]);
+                if (!b.arg_push(b.lower_operand(n.children[i]))) { break; }
                 n_args = n_args + 1;
             }
-            uint id = b.emit(Op.AIR_CALL, &ops[0], n_args, n);
+            uint id = b.emit(Op.AIR_CALL, &b.argbuf[mark], n_args, n);
+            b.arg_len = mark;
             return id;
         }
 
@@ -1518,34 +1604,42 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
         case N_EXPR_TUPLE:
         {
             usz k = 0;
-            for (usz i = 0; i < n.child_count && k < 16; i++)
+            usz mark = b.arg_len;
+            for (usz i = 0; i < n.child_count; i++)
             {
-                ops[k] = b.lower_operand(n.children[i]);
+                if (!b.arg_push(b.lower_operand(n.children[i]))) { break; }
                 k = k + 1;
             }
-            return b.emit(Op.AIR_TUPLE, &ops[0], k, n);
+            uint tid = b.emit(Op.AIR_TUPLE, &b.argbuf[mark], k, n);
+            b.arg_len = mark;
+            return tid;
         }
 
         case N_EXPR_ARRAY:
         {
             usz k = 0;
-            for (usz i = 0; i < n.child_count && k < 16; i++)
+            usz mark = b.arg_len;
+            for (usz i = 0; i < n.child_count; i++)
             {
-                ops[k] = b.lower_operand(n.children[i]);
+                if (!b.arg_push(b.lower_operand(n.children[i]))) { break; }
                 k = k + 1;
             }
-            return b.emit(Op.AIR_ARRAY, &ops[0], k, n);
+            uint tid = b.emit(Op.AIR_ARRAY, &b.argbuf[mark], k, n);
+            b.arg_len = mark;
+            return tid;
         }
 
         case N_EXPR_ALLOC:
         {
             usz k = 0;
-            for (usz i = 0; i < n.child_count && k < 16; i++)
+            usz mark = b.arg_len;
+            for (usz i = 0; i < n.child_count; i++)
             {
-                ops[k] = b.lower_operand(n.children[i]);
+                if (!b.arg_push(b.lower_operand(n.children[i]))) { break; }
                 k = k + 1;
             }
-            uint id = b.emit(Op.AIR_ALLOC, &ops[0], k, n);
+            uint id = b.emit(Op.AIR_ALLOC, &b.argbuf[mark], k, n);
+            b.arg_len = mark;
             if (id != pear_air::AIR_NO_VALUE)
             {
                 // A fresh allocation cannot alias anything existing: the
@@ -1570,11 +1664,12 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
              coverage number stops meaning anything.
             */
             usz k = 0;
-            for (usz i = 0; i < n.child_count && k < 16; i++)
+            usz mark = b.arg_len;
+            for (usz i = 0; i < n.child_count; i++)
             {
                 Node* c = n.children[i];
                 if (c == null || !pfront_core::is_expr(c.kind)) { continue; }
-                ops[k] = b.lower_operand(c);
+                if (!b.arg_push(b.lower_operand(c))) { break; }
                 k = k + 1;
             }
             uint id = b.emit(Op.AIR_ASM, &ops[0], k, n);
@@ -1601,15 +1696,17 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
              become operands.
             */
             usz k = 0;
-            for (usz i = 0; i < n.child_count && k < 16; i++)
+            usz mark = b.arg_len;
+            for (usz i = 0; i < n.child_count; i++)
             {
                 Node* c = n.children[i];
                 if (c == null) { continue; }
                 if (c.kind == Nk.N_MODULE_PATH || c.kind == Nk.N_PATH_SEG) { continue; }
-                ops[k] = b.lower_operand(c);
+                if (!b.arg_push(b.lower_operand(c))) { break; }
                 k = k + 1;
             }
-            uint id = b.emit(Op.AIR_PERFORM, &ops[0], k, n);
+            uint id = b.emit(Op.AIR_PERFORM, &b.argbuf[mark], k, n);
+            b.arg_len = mark;
             if (id != pear_air::AIR_NO_VALUE) { b.m.values[id].p.name = n.name_id; }
             return id;
         }
@@ -1625,12 +1722,15 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
         case N_EXPR_RESUME:
         {
             usz k = 0;
-            for (usz i = 0; i < n.child_count && k < 16; i++)
+            usz mark = b.arg_len;
+            for (usz i = 0; i < n.child_count; i++)
             {
-                ops[k] = b.lower_operand(n.children[i]);
+                if (!b.arg_push(b.lower_operand(n.children[i]))) { break; }
                 k = k + 1;
             }
-            return b.emit(Op.AIR_RESUME, &ops[0], k, n);
+            uint rid = b.emit(Op.AIR_RESUME, &b.argbuf[mark], k, n);
+            b.arg_len = mark;
+            return rid;
         }
 
         /*
@@ -1959,14 +2059,19 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
      answer about coverage instead of a crash.
     */
     usz k = 0;
-    for (usz i = 0; i < n.child_count && k < 16; i++)
+    usz mark = b.arg_len;
+    for (usz i = 0; i < n.child_count; i++)
     {
         uint c = b.lower_expr(n.children[i]);
-        if (c != pear_air::AIR_NO_VALUE) { ops[k] = c; k = k + 1; }
+        if (c == pear_air::AIR_NO_VALUE) { continue; }
+        if (!b.arg_push(c)) { break; }
+        k = k + 1;
     }
     b.unsupported = b.unsupported + 1;
     b.note_unsupported(n.kind);
-    return b.emit(Op.AIR_UNKNOWN, &ops[0], k, n);
+    uint uid = b.emit(Op.AIR_UNKNOWN, &b.argbuf[mark], k, n);
+    b.arg_len = mark;
+    return uid;
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -2830,9 +2935,23 @@ fn uint Builder.lower_match_arms(Builder* b, Node* owner, uint scrut,
     uint join = b.m.new_block(b.cur_func, 0);
     b.mark_sealed(join, false);   // predecessors accumulate as arms close
 
-    // One result/incoming pair per arm that reaches the join.
-    uint[64] res;
-    uint[64] from;
+    /*
+     One result/incoming pair per arm that reaches the join -- ALL of
+     them. These were `uint[64]` with an `if (nres < 64)` guard, so a
+     match with more than 64 reaching arms produced a join block with
+     hundreds of predecessors and a phi with 64 operands. The verifier
+     caught it as "phi has a different number of operands than the block
+     has predecessors" once the 300-clause function stopped being
+     truncated earlier in the pipeline; before that the two bugs hid each
+     other.
+
+     Growable, and on the heap rather than the arg stack because the loop
+     below calls back into lowering (each arm's body), which pushes and
+     pops the arg stack itself.
+    */
+    uint* res = null;
+    uint* from = null;
+    usz res_cap = 0;
     usz nres = 0;
 
     for (usz i = 0; i < arm_count; i++)
@@ -2944,7 +3063,16 @@ fn uint Builder.lower_match_arms(Builder* b, Node* owner, uint scrut,
         {
             b.m.set_term(b.cur_block, Term.TERM_JUMP, pear_air::AIR_NO_VALUE);
             b.m.add_edge(b.cur_block, join);
-            if (nres < 64)
+            if (nres == res_cap)
+            {
+                usz nc = res_cap == 0 ? 16 : res_cap * 2;
+                uint* r2 = (uint*)realloc((void*)res, nc * uint::size);
+                uint* f2 = (uint*)realloc((void*)from, nc * uint::size);
+                if (r2 != null) { res = r2; }
+                if (f2 != null) { from = f2; }
+                if (r2 != null && f2 != null) { res_cap = nc; }
+            }
+            if (nres < res_cap)
             {
                 res[nres] = v == pear_air::AIR_NO_VALUE
                           ? b.emit(Op.AIR_CONST_UNIT, &res[0], 0, arm)
@@ -2975,11 +3103,22 @@ fn uint Builder.lower_match_arms(Builder* b, Node* owner, uint scrut,
     b.seal_block(join);
     b.cur_block = join;
 
-    if (nres == 0) { return pear_air::AIR_NO_VALUE; }
-    if (nres == 1) { return res[0]; }
+    if (nres == 0)
+    {
+        if (res != null) { free((void*)res); }
+        if (from != null) { free((void*)from); }
+        return pear_air::AIR_NO_VALUE;
+    }
+    if (nres == 1)
+    {
+        uint only = res[0];
+        free((void*)res); free((void*)from);
+        return only;
+    }
 
     uint phi = b.m.new_phi(join, &res[0], &from[0], nres,
                            pear_air::AIR_NO_ORIGIN, owner.line, owner.col);
+    free((void*)res); free((void*)from);
     if (phi != pear_air::AIR_NO_VALUE)
     {
         b.phis_created = b.phis_created + 1;
@@ -2993,14 +3132,31 @@ fn uint Builder.lower_match(Builder* b, Node* n)
     if (n.child_count < 1) { return pear_air::AIR_NO_VALUE; }
     uint scrut = b.lower_operand(n.children[0]);
 
-    Node*[64] arms;
+    /*
+     Every arm. `Node*[64]` with `na < 64` silently discarded arm 65
+     onward -- x09_torture_scale.pie has a 500-arm match, and 436 of its
+     arms were simply not compiled. No diagnostic, no counter: the match
+     just did something else.
+    */
+    Node** arms = null;
+    usz acap = 0;
     usz na = 0;
-    for (usz i = 1; i < n.child_count && na < 64; i++)
+    for (usz i = 1; i < n.child_count; i++)
     {
         Node* c = n.children[i];
-        if (c != null && c.kind == Nk.N_MATCH_ARM) { arms[na] = c; na = na + 1; }
+        if (c == null || c.kind != Nk.N_MATCH_ARM) { continue; }
+        if (na == acap)
+        {
+            usz nc = acap == 0 ? 16 : acap * 2;
+            Node** p2 = (Node**)realloc((void*)arms, nc * (usz)8);
+            if (p2 == null) { break; }
+            arms = p2; acap = nc;
+        }
+        arms[na] = c; na = na + 1;
     }
-    return b.lower_match_arms(n, scrut, &arms[0], na);
+    uint mres = b.lower_match_arms(n, scrut, arms, na);
+    if (arms != null) { free((void*)arms); }
+    return mres;
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -3419,29 +3575,43 @@ fn void Builder.lower_function(Builder* b, Node* fn_node)
      guard handling, the same trap on fall-through. Writing a second
      dispatch here would be two implementations of one thing.
     */
-    Node*[64] clauses;
+    /*
+     Every clause, however many. This was a `Node*[64]` with the overflow
+     REPORTED as unsupported rather than silently dropped, which satisfied
+     the letter of D6 while still refusing to compile the function: a
+     300-clause dispatch lost 236 of its arms and the program behaved
+     differently. Reporting a miscompile is better than hiding one, but
+     the fix is to not have the limit.
+
+     pfront_tests/syntax/x09_torture_scale.pie has a 300-clause function
+     and a 500-arm match precisely to catch this, and it did -- as 237
+     `unsupported`, after the same file stopped segfaulting.
+    */
+    Node** clauses = null;
+    usz clause_cap = 0;
     usz clause_count = 0;
     Node* clause = null;
     for (usz i = 0; i < fn_node.child_count; i++)
     {
         Node* c = fn_node.children[i];
-        if (c != null && c.kind == Nk.N_CLAUSE)
+        if (c == null || c.kind != Nk.N_CLAUSE) { continue; }
+        if (clause_count == clause_cap)
         {
-            if (clause_count < 64) { clauses[clause_count] = c; }
-            clause_count = clause_count + 1;
-            if (clause == null) { clause = c; }
+            usz nc = clause_cap == 0 ? 16 : clause_cap * 2;
+            Node** np2 = (Node**)realloc((void*)clauses, nc * (usz)8);
+            if (np2 == null) { break; }
+            clauses = np2;
+            clause_cap = nc;
         }
-    }
-    if (clause_count > 64)
-    {
-        // D6: report, never silently truncate.
-        b.unsupported = b.unsupported + (clause_count - 64);
-        clause_count = 64;
+        clauses[clause_count] = c;
+        clause_count = clause_count + 1;
+        if (clause == null) { clause = c; }
     }
 
     if (clause == null)
     {
         // A declaration with no body (extern, interface method).
+        if (clauses != null) { free((void*)clauses); }
         b.m.set_term(entry, Term.TERM_RET, pear_air::AIR_NO_VALUE);
         return;
     }
@@ -3494,10 +3664,24 @@ fn void Builder.lower_function(Builder* b, Node* fn_node)
              TUPLE of them -- which is exactly what a clause like
              `| (a, 0) -> a` already expects, since its pattern is a
              tuple pattern.
+
+             MEASURED: this branch does not currently fire. `| (a, b) -> e`
+             parses as ONE tuple pattern, not two patterns, so `nparams` is
+             1 and the single-parameter branch above handles every clause
+             in the standard library and in the test suite -- instrumented
+             with a printf over all 258 modules, zero hits.
+
+             It is kept, and kept correct, because `nparams` is computed
+             from the clause's children rather than assumed, and a grammar
+             that ever admits two sibling patterns in one clause head would
+             reach it silently. It previously carried a `np < 16` cap and a
+             `uint[16]` buffer, so the day it did fire it would have
+             dropped parameters. Unreachable code that is wrong is worse
+             than unreachable code that is right, and this costs nothing.
             */
-            uint[16] pvals;
+            usz pmark = b.arg_len;
             usz np = 0;
-            for (usz i = 0; i < clause.child_count && np < 16; i++)
+            for (usz i = 0; i < clause.child_count; i++)
             {
                 Node* c = clause.children[i];
                 if (c == null || !pfront_core::is_pattern(c.kind)) { continue; }
@@ -3507,13 +3691,15 @@ fn void Builder.lower_function(Builder* b, Node* fn_node)
                 if (pv == pear_air::AIR_NO_VALUE) { continue; }
                 b.m.values[pv].p.name = c.name_id;
                 b.m.add_param(f, pv);
-                pvals[np] = pv;
+                if (!b.arg_push(pv)) { break; }
                 np = np + 1;
             }
-            scrut = np == 1 ? pvals[0]
-                            : b.m.new_value(entry, Op.AIR_TUPLE, &pvals[0], np,
+            scrut = np == 1 ? b.argbuf[pmark]
+                            : b.m.new_value(entry, Op.AIR_TUPLE,
+                                            &b.argbuf[pmark], np,
                                             pear_air::AIR_NO_ORIGIN,
                                             fn_node.line, fn_node.col);
+            b.arg_len = pmark;
         }
 
         if (scrut != pear_air::AIR_NO_VALUE)
@@ -3533,9 +3719,12 @@ fn void Builder.lower_function(Builder* b, Node* fn_node)
                 }
                 b.seal_block(af2.blocks[i]);
             }
+            if (clauses != null) { free((void*)clauses); }
             return;
         }
     }
+
+    if (clauses != null) { free((void*)clauses); clauses = null; }
 
     // Parameters, then the body.
     usz body_at = clause.child_count;

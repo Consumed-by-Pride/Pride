@@ -1137,12 +1137,70 @@ if [ -x ./pearc ]; then
   fi
 
   # No construct in the syntax suite may leave a lowering hole.
+  #
+  # The exit status is checked FIRST and separately. `${n:-0}` treats a
+  # missing number as zero, and a crash produces no number -- so this
+  # assertion read "0 holes, PASS" for a file that segfaulted. x09 did
+  # exactly that: pearc died with SIGSEGV on it and the suite called it
+  # clean. A crash is now its own failure, and it cannot be mistaken for
+  # coverage.
   sh=0
+  crashed=""
   for f in pfront_tests/syntax/x*.pie; do
     [ -e "$f" ] || continue
-    n=$(./pearc -I stdlib --stats "$f" 2>/dev/null | grep -oE 'unsupported      : [0-9]+' | grep -oE '[0-9]+$')
-    sh=$((sh + ${n:-0}))
+    out=$(./pearc -I stdlib --stats "$f" 2>/dev/null)
+    rc=$?
+    if [ "$rc" -ge 2 ]; then crashed="$crashed $(basename "$f")(rc=$rc)"; continue; fi
+    n=$(echo "$out" | grep -oE 'unsupported      : [0-9]+' | grep -oE '[0-9]+$')
+    if [ -z "$n" ]; then crashed="$crashed $(basename "$f")(no-stats)"; continue; fi
+    sh=$((sh + n))
   done
+  if [ -n "$crashed" ]; then
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "syntax_lowering_no_crash" "pearc failed on:$crashed"
+  else
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "syntax_lowering_no_crash" "(every syntax file lowers without crashing)"
+  fi
+  # WIDE CONSTRUCTS: no fixed-size buffer may silently drop operands.
+  #
+  # Asserting the WIDTHS, not just that the file compiles. Every one of
+  # these numbers is past a cap that used to be in a1, and each cap
+  # dropped its excess with no error: calls/structs/tuples/arrays at 16,
+  # clauses and match arms and phi operands at 64. A phi short of its
+  # block's predecessor count reads undefined values on the edges it
+  # omits, which is why the phi width is checked against the predecessor
+  # count rather than against a constant.
+  wc_air=$(./pearc -I stdlib pfront_tests/syntax/x13_wide_constructs.pie 2>/dev/null)
+  wc_call=$(echo "$wc_air" | awk '/= call /{n=gsub(/%[0-9]+/,"&"); if(n>m)m=n} END{print m+0}')
+  wc_struct=$(echo "$wc_air" | awk '/= struct /{n=gsub(/%[0-9]+/,"&"); if(n>m)m=n} END{print m+0}')
+  wc_phi=$(echo "$wc_air" | awk '/= phi /{n=gsub(/%[0-9]+@/,"&"); if(n>m)m=n} END{print m+0}')
+  wc_unsup=$(./pearc -I stdlib --stats pfront_tests/syntax/x13_wide_constructs.pie 2>/dev/null | grep -oE 'unsupported      : [0-9]+' | grep -oE '[0-9]+$')
+  wc_err=$(./pearc -I stdlib --verify pfront_tests/syntax/x13_wide_constructs.pie 2>/dev/null | grep 'errors / warnings' | grep -oE '[0-9]+ / [0-9]+' | cut -d' ' -f1)
+  if [ "${wc_call:-0}" -ge 21 ] && [ "${wc_struct:-0}" -ge 21 ] \
+     && [ "${wc_phi:-0}" -ge 81 ] && [ "${wc_unsup:-1}" = "0" ] && [ "${wc_err:-1}" = "0" ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "wide_constructs" "(call=$wc_call struct=$wc_struct phi=$wc_phi, 0 dropped)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "wide_constructs" "call=$wc_call struct=$wc_struct phi=$wc_phi unsup=$wc_unsup err=$wc_err"
+  fi
+
+  # A phi must have exactly one operand per predecessor, everywhere in the
+  # syntax suite. This is the property the 64-cap violated, and it is
+  # cheap enough to check over every file rather than one fixture.
+  pm_bad=0
+  for f in pfront_tests/syntax/x*.pie; do
+    [ -e "$f" ] || continue
+    ./pearc -I stdlib "$f" 2>/dev/null | awk '
+      /^func /{fn=$2}
+      /^  block /{blk=$2; np=0; if (match($0,/pred=[A-Za-z0-9,]+/)) {
+          s=substr($0,RSTART+5,RLENGTH-5); np=split(s,a,",") } preds[fn" "blk]=np }
+      /= phi /{n=gsub(/%[0-9]+@/,"&"); if (n != preds[fn" "blk]) print "BAD" }
+    ' | grep -q BAD && pm_bad=$((pm_bad+1))
+  done
+  if [ "$pm_bad" = "0" ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "phi_operand_arity" "(every phi covers every predecessor)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "phi_operand_arity" "$pm_bad syntax files have a phi short of its predecessors"
+  fi
+
   if [ "$sh" = "0" ]; then
     pass=$((pass+1)); printf '  PASS  %-26s %s\n' "syntax_no_lowering_holes" "(every syntax file lowers with 0 unknowns)"
   else
