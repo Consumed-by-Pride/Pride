@@ -1,0 +1,39 @@
+-- Width and signedness suffixes on numeric literals, especially in HEX.
+--
+-- read_num_suffix scanned FORWARD for the first `i`, `u` or `f` followed
+-- by a digit. In hex those are digits: `0x736f6d6570736575u64` has `f6d`
+-- at index 5, so the suffix was read as width 6, SIGNED, and the real
+-- `u64` at the end never seen. Every such constant then carried a width
+-- its own value could not fit.
+--
+-- Nothing rejected it, because Pride is untyped and the width is only
+-- metadata -- which is exactly why it survived: the wrong answer was
+-- invisible until a5 would have picked a register class from it.
+mod numeric_suffix_hex
+
+-- The literal that exposed it: an f before the suffix.
+fn sip_k0 : () -> u64
+  | () -> 0x736f6d6570736575u64
+
+-- An `i` inside the mantissa is impossible in hex, but `f` and `e` are
+-- not, and `e` starts no suffix -- so this must still read u64.
+fn feed : () -> u64
+  | () -> 0xdeadbeefu64
+
+-- A hex literal whose mantissa ENDS in f, with a signed suffix.
+fn mask : () -> i64
+  | () -> 0x1fi64
+
+-- No suffix at all: the default stays 64-bit.
+fn plain : () -> i64
+  | () -> 0xff
+
+-- Decimal suffixes must be unaffected.
+fn small : () -> u8
+  | () -> 200u8
+
+fn wide : () -> u32
+  | () -> 4294967295u32
+
+fn neg : () -> i32
+  | () -> 0i32 - 1i32

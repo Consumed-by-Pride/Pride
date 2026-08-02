@@ -86,6 +86,7 @@ declare -A EXPECT=(
   [73_soft_then_kw]=0        # soft keyword `then` vs. tail/handle/stage lookahead
   [74_hanging_indent_stack]=0 # lexer realign must not destroy enclosing levels
   [75_local_shadows_module]=0 # a local binding shadows a same-named module
+  [76_numeric_suffix_hex]=0   # width/sign suffixes on hex literals
 )
 
 # ---------------------------------------------------------------------------
@@ -1146,6 +1147,38 @@ if [ -x ./pearc ]; then
     pass=$((pass+1)); printf '  PASS  %-26s %s\n' "syntax_no_lowering_holes" "(every syntax file lowers with 0 unknowns)"
   else
     fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "syntax_no_lowering_holes" "$sh AIR_UNKNOWN across the syntax suite"
+  fi
+
+  # The width a literal DECLARES must be the width it CARRIES, and the
+  # value must fit it. Asserting the widths themselves, not just that the
+  # file parses: the hex bug parsed perfectly and produced w=6.
+  ns=$(./pearc -I stdlib pfront_tests/76_numeric_suffix_hex.pie 2>/dev/null)
+  ns_ok=1
+  echo "$ns" | grep -q 'ival=8317987319222330741 .*w=64' || ns_ok=0   # 0x..u64, f in mantissa
+  echo "$ns" | grep -q 'ival=3735928559 .*w=64'          || ns_ok=0   # 0xdeadbeefu64
+  echo "$ns" | grep -q 'ival=31 .*w=64'                  || ns_ok=0   # 0x1fi64
+  echo "$ns" | grep -q 'ival=200 .*w=8'                  || ns_ok=0   # 200u8
+  echo "$ns" | grep -q 'ival=4294967295 .*w=32'          || ns_ok=0   # 4294967295u32
+  if [ "$ns_ok" = "1" ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "numeric_suffix_widths" "(hex mantissa never mistaken for a suffix)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "numeric_suffix_widths" "a literal carries the wrong declared width"
+    echo "$ns" | grep -E 'ival=(8317987319222330741|3735928559|31|200|4294967295) ' | sed 's/^/      /'
+  fi
+
+  # And the whole standard library must be free of values that do not fit
+  # their own declared width. This was 4,969 before the suffix, boolean
+  # signedness and u64 representation fixes; it is the metric that says
+  # the width fact can actually be TRUSTED by a later stage.
+  wx=0
+  for f in $(find stdlib -name '*.pie' | sort); do
+    n=$(./pearc --verify "$f" 2>/dev/null | grep -oE 'width exceeded: [0-9]+' | grep -oE '[0-9]+$')
+    wx=$((wx + ${n:-0}))
+  done
+  if [ "$wx" = "0" ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "stdlib_width_sound" "(0 values exceed their declared width; was 4969)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "stdlib_width_sound" "$wx values exceed their own declared width"
   fi
 fi
 

@@ -923,6 +923,9 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
                 b.m.values[id].p.ival = (long)n.p.ival;
                 b.m.values[id].facts.range = pear_erm::r_range(0, 1);
                 b.m.values[id].facts.width = 1;
+                // Unsigned: 1-bit SIGNED holds [-1,0], so [0,1] would not
+                // fit its own declared width. See air_infer.c3 AIR_BIN.
+                b.m.values[id].facts.is_signed = false;
             }
             return id;
         }
@@ -1076,6 +1079,7 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
                             b.m.values[id].p.ival = (long)init.p.ival;
                             b.m.values[id].facts.range = pear_erm::r_range(0, 1);
                             b.m.values[id].facts.width = 1;
+                            b.m.values[id].facts.is_signed = false;
                         }
                         return id;
                     }
@@ -1207,6 +1211,7 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
                         b.interner.intern("pride_set_contains", 18);
                     b.m.values[mid].facts.range = pear_erm::r_range(0, 1);
                     b.m.values[mid].facts.width = 1;
+                    b.m.values[mid].facts.is_signed = false;
                 }
                 return mid;
             }

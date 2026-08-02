@@ -137,33 +137,38 @@ fn int main(String[] args)
     /*
      ONE pass of each analysis, in this order.
 
-     Iterating to a fixpoint is the obvious improvement and it is NOT
-     safe yet. Tried, measured, reverted:
+     ── On iterating to a fixpoint ──────────────────────────────────────
 
-       * a second round finds real work -- on stdlib/math/abs.pie round 2
-         folds 5 values where round 1 folds 2, and 59 of 233 stdlib
-         modules change on a second run
-       * but it also MISCOMPILES. `for i in 0..16 { s = s + i }` came out
-         as `return 0`: the exit σ's `[16,MAX]` reaches the loop header's
-         φ on the second round, SCCP folds `i < 16` to false, and DCE
-         deletes the body.
+     This comment used to say iteration was unsafe and blame a "second
+     channel": that a sigma's narrowed range is written onto the VALUE as
+     well as into the table, so guarding the table could not help. That
+     diagnosis was WRONG, and it was wrong in the expensive direction --
+     it described the bug as architectural and parked it.
 
-     The leak is that a σ's narrowed range is written onto the VALUE, and
-     the next round re-seeds the solver from those values. Blocking the
-     origin table in both directions (origin_local_only, below) was not
-     enough, because the inline fact is a second channel carrying the
-     same edge-local information.
+     The actual cause was two guards that never ran. origin_local_only was
+     being passed a BLOCK-relative index instead of a value id, and it
+     answered by looking at the opcode, which SCCP had already rewritten
+     from sigma to const.int. Both are fixed, with a falsifying test each.
 
-     Fixing it properly means the range solver must distinguish "the
-     range I proved for this name" from "the range that is true of this
-     name wherever it is live" -- a real change to the fact model, not a
-     guard. Left as the next piece of work rather than shipped half-done:
-     an optimiser that deletes a loop is worse than one that misses an
-     optimisation.
+     Iterating over the 258 lowered standard-library modules now reaches a
+     fixpoint on all 258 -- 165 after two rounds, 93 after three, none
+     slower, no crashes, no verify errors -- and the three functions whose
+     value count still moves between round one and the fixpoint move by
+     one or two values, each a one-operand phi collapsing to its operand.
 
-     What DID survive from that attempt, because each is independently
-     correct and verified, is kept: the mem-phi reuse, the mem-phi
-     liveness rule, and the placement guard on dead-predecessor phis.
+     a2 still runs SINGLE-pass, deliberately. What is proven is that
+     iteration no longer destroys code, which is not the same as proving
+     that every fact it computes on round three is sound. The remaining
+     risk is concentrated where the facts are weakest -- see the
+     `decided cmps` note in a2_range.c3 -- and the honest position is that
+     turning iteration ON is a separate change that needs its own
+     evidence, not a flag flipped on the strength of a bug fix.
+
+     The property that found this, and the one to keep using: a2 run on
+     its own output must produce its own output. It is the cheapest oracle
+     in the project, it caught what a clean 258/258 verify did not, and it
+     is now asserted in pear_tests/run.sh over real modules rather than
+     fixtures.
     */
     if (do_range) { pear_a2_range::run(m, &facts, &rs); }
     if (do_mem)   { pear_a2_memssa::run(m, &facts, &ms); }

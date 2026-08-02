@@ -242,6 +242,66 @@ fn pear_erm::Range range_mod(pear_erm::Range a, pear_erm::Range b)
  have — on a back edge that operand may still be top, and a1 accepts the
  weaker answer rather than looping. a2 is where the fixpoint happens.
 */
+/*
+ The width and signedness a Pride primitive type name denotes.
+
+ Pride is UNTYPED at the level that matters to the front end -- the
+ compiler must never reject a program over a type -- but `x as u8` is not
+ a type annotation, it is an OPERATION with a defined result. The cast
+ truncates, and what it truncates TO is written right there in the term.
+ Declining to read it does not make the compiler more permissive, it just
+ throws away the one range in the language that needs no inference at all.
+
+ Returns false for anything not a sized integer: `ptr`, `f64`, a struct
+ name, or the `_` a1 writes when the annotation was absent. Those keep the
+ conservative top that the cast already produced.
+*/
+fn bool prim_int_width(Air* m, uint name_id, int* out_bits, bool* out_signed)
+{
+    if (name_id == 0 || m.interner == null) { return false; }
+    char* t = m.interner.text(name_id);
+    usz   n = m.interner.text_len(name_id);
+    if (t == null || n < 2 || n > 3) { return false; }
+
+    bool sg;
+    if (t[0] == 'i') { sg = true; }
+    else if (t[0] == 'u') { sg = false; }
+    else { return false; }
+
+    int bits = 0;
+    for (usz i = 1; i < n; i++)
+    {
+        if (t[i] < '0' || t[i] > '9') { return false; }
+        bits = bits * 10 + (int)(t[i] - '0');
+    }
+    if (bits != 8 && bits != 16 && bits != 32 && bits != 64) { return false; }
+
+    *out_bits = bits;
+    *out_signed = sg;
+    return true;
+}
+
+/*
+ The full interval a `bits`-wide integer of that signedness can hold.
+
+ 64-bit signed is returned as the solver's own extremes rather than
+ computed: 1 << 63 overflows a signed long, and the whole point of this
+ function is to stop claiming values that do not fit.
+*/
+fn pear_erm::Range width_range(int bits, bool is_signed)
+{
+    if (bits >= 64)
+    {
+        if (is_signed) { return pear_erm::r_top(); }
+        // Unsigned 64 is representable in the solver's signed long only
+        // up to MAX; claiming [0,2^64-1] would be a lie in this domain.
+        return pear_erm::r_top();
+    }
+    long span = (long)1 << (long)bits;
+    if (is_signed) { return pear_erm::r_range(-(span / 2), span / 2 - 1); }
+    return pear_erm::r_range(0, span - 1);
+}
+
 fn void infer_value(Air* m, uint vid)
 {
     Val* v = m.val(vid);
@@ -259,8 +319,10 @@ fn void infer_value(Air* m, uint vid)
             }
 
         case AIR_CONST_BOOL:
+            // Unsigned, for the same reason as a comparison result below.
             v.facts.range = pear_erm::r_range(0, 1);
             v.facts.width = 1;
+            v.facts.is_signed = false;
 
         case AIR_CONST_NULL:
             v.facts.nullness = pear_erm::Nullness.NULL_ALWAYS;
@@ -281,6 +343,7 @@ fn void infer_value(Air* m, uint vid)
             */
             v.facts.is_signed = a.facts.is_signed && b.facts.is_signed;
             if (a.facts.width == b.facts.width) { v.facts.width = a.facts.width; }
+            bool width_from_operands = a.facts.width == b.facts.width;
 
             switch (v.p.op)
             {
@@ -337,10 +400,50 @@ fn void infer_value(Air* m, uint vid)
                 case ABO_GE:
                 case ABO_LAND:
                 case ABO_LOR:
+                    /*
+                     A comparison yields a BOOLEAN, and a boolean is
+                     unsigned: `w=1 signed` describes the interval [-1,0],
+                     so [0,1] does not fit it and the verifier's own
+                     `width exceeded` check counted every comparison in
+                     the program. 4,969 of the 4,970 warnings on the
+                     standard library were this one line -- the result
+                     width was set from the comparison but the SIGNEDNESS
+                     was left inherited from the operands, which for i64
+                     arithmetic is signed.
+                    */
                     v.facts.range = pear_erm::r_range(0, 1);
                     v.facts.width = 1;
+                    v.facts.is_signed = false;
+                    width_from_operands = false;
                 default:
                     break;
+            }
+
+            /*
+             A width inherited from the operands is a claim that the RESULT
+             fits it, and for anything that can grow it does not: two u8
+             values add to as much as 510, and `u8 + u8` was being labelled
+             `w=8` with `range=0..270` sitting next to it. The verifier's
+             own `width exceeded` counter catches exactly this, and it fired
+             the moment casts started supplying real widths -- the rule was
+             always wrong, there was simply never a narrow width in the IR
+             for it to be wrong about.
+
+             Widening to the range's own requirement rather than dropping
+             the width keeps the fact useful: the sum of two u8 is still
+             known to fit 16 bits, which is what a5 needs to pick a
+             register class. Only give up entirely if even 64 does not
+             hold it.
+            */
+            if (width_from_operands && v.facts.width != 0
+                && !v.facts.range.is_top && !v.facts.range.is_bottom
+                && !pear_erm::r_fits(&v.facts.range, (int)v.facts.width, v.facts.is_signed))
+            {
+                short grown = 0;
+                if (pear_erm::r_fits(&v.facts.range, 16, v.facts.is_signed)) { grown = 16; }
+                else if (pear_erm::r_fits(&v.facts.range, 32, v.facts.is_signed)) { grown = 32; }
+                else if (pear_erm::r_fits(&v.facts.range, 64, v.facts.is_signed)) { grown = 64; }
+                v.facts.width = grown;
             }
         }
 
@@ -494,6 +597,46 @@ fn void infer_value(Air* m, uint vid)
             */
             v.facts.range = pear_erm::r_top();
             v.facts.bits = pear_erm::kb_unknown();
+
+            /*
+             But dropping to top throws away the one thing the cast DOES
+             establish: the result fits the type it names. `x as u8` is in
+             [0,255] whatever x was, and that is a proof, not a guess.
+
+             Measured over the lowered standard library before writing
+             this: 447 casts name a type narrower than 64 bits (187 u8,
+             146 u32, 95 i32, 18 u16, 1 i8) and every one of them was
+             carrying no range and no width at all. Loads and calls stayed
+             unranged too, but those genuinely need memory or
+             inter-procedural analysis -- this one only needed reading the
+             operand that was already in the term.
+
+             If the SOURCE range already fits the target width, the cast
+             is value-preserving and the source's own interval is kept:
+             `(i & 15) as u8` stays [0,15] rather than widening to
+             [0,255]. Otherwise the value is truncated and the honest
+             answer is the target's full interval.
+            */
+            int cw; bool cs;
+            if (prim_int_width(m, v.p.name, &cw, &cs))
+            {
+                v.facts.width = (short)cw;
+                v.facts.is_signed = cs;
+                pear_erm::Range tr = width_range(cw, cs);
+                if (v.op_count >= 1)
+                {
+                    uint src = m.operands[v.op_off];
+                    Val* sv = m.val(src);
+                    if (sv != null && !sv.facts.range.is_top
+                        && !sv.facts.range.is_bottom
+                        && pear_erm::r_fits(&sv.facts.range, cw, cs))
+                    {
+                        v.facts.range = sv.facts.range;
+                    }
+                    else { v.facts.range = tr; }
+                }
+                else { v.facts.range = tr; }
+            }
         }
 
         default:

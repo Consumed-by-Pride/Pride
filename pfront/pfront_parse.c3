@@ -2362,33 +2362,64 @@ fn double parse_float_literal(char* s, usz len)
 }
 
 // Reads a trailing width suffix (i8/i16/i32/i64/u8/.../f32/f64) if present.
+/*
+ Read the width/signedness suffix off a numeric literal: the `u64` of
+ `123u64`, the `i32` of `-1i32`.
+
+ ── The hex trap ────────────────────────────────────────────────────────
+
+ This used to scan FORWARD for the first `i`, `u` or `f` followed by a
+ digit. In a hexadecimal literal those are all digits: `0x736f6d6570736575u64`
+ contains `f6d` at index 5, so the scan stopped there and reported width
+ 6, signed -- and the real `u64` at the end was never seen.
+
+ The damage was quiet but wide. `w=6` on a value of 8,317,987,319,222,330,741
+ is a value that does not fit its own declared width, which is exactly
+ what verify.c3's `width exceeded` counts; 574 of those warnings on the
+ standard library were this, every one of them a hex constant with an
+ a-f digit before the suffix. Nothing downstream had started TRUSTING the
+ width yet, which is the only reason it had not become a miscompile: a5
+ picking a register class from `w=6` would have truncated a 64-bit key.
+
+ The fix is to read the suffix from the END, which is where a suffix is,
+ and to skip a `0x`/`0b`/`0o` prefix so the base marker is never mistaken
+ for one. A suffix is `[iuf]` followed by digits and then end-of-token, so
+ it can only be matched at the tail.
+*/
 fn void read_num_suffix(char* s, usz len, char* out_width, bool* out_signed)
 {
     *out_width = 0;
     *out_signed = true;
-    usz i = 0;
-    while (i < len)
+    if (len == 0) { return; }
+
+    // Walk back over the trailing decimal digits of the suffix.
+    usz j = len;
+    while (j > 0 && s[j - 1] >= '0' && s[j - 1] <= '9') { j = j - 1; }
+
+    // Nothing consumed, or nothing before it: no suffix.
+    if (j == len || j == 0) { return; }
+
+    char c = s[j - 1];
+    if (c != 'i' && c != 'u' && c != 'f') { return; }
+
+    /*
+     Guard the base prefix. In `0x1f` the `f` is a digit, and after the
+     walk above j-1 would point at it with `1` behind. A suffix letter
+     must not be part of a hex mantissa, so require that what precedes it
+     is NOT a hex digit continuing from a `0x` prefix.
+    */
+    bool is_hex = len > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X');
+    if (is_hex && j - 1 >= 2)
     {
-        char c = s[i];
-        if (c == 'i' || c == 'u' || c == 'f')
-        {
-            // Only treat as a suffix when digits follow and we are past the mantissa.
-            if (i + 1 < len && s[i + 1] >= '0' && s[i + 1] <= '9')
-            {
-                *out_signed = c != 'u';
-                int w = 0;
-                usz j = i + 1;
-                while (j < len && s[j] >= '0' && s[j] <= '9')
-                {
-                    w = w * 10 + (int)(s[j] - '0');
-                    j = j + 1;
-                }
-                *out_width = (char)w;
-                return;
-            }
-        }
-        i = i + 1;
+        // Only `i` and `u` can end a hex mantissa's suffix; `f` is a hex
+        // digit, so a trailing `f<digits>` in hex is part of the number.
+        if (c == 'f') { return; }
     }
+
+    int w = 0;
+    for (usz k = j; k < len; k++) { w = w * 10 + (int)(s[k] - '0'); }
+    *out_signed = c != 'u';
+    *out_width = (char)w;
 }
 
 fn Node* Parser.parse_literal(Parser* p)

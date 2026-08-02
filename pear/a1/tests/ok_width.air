@@ -10,6 +10,9 @@ func f pub entry=b1
     %1 = const.int ival=300  [range=300..300 w=8]
     ; declared i8, range fits
     %2 = const.int ival=100  [range=100..100 w=8]
+    ; u8 + u8 can reach 510, so the SUM does not fit 8 bits either. a1
+    ; used to copy w=8 onto it anyway; it now widens to the smallest
+    ; width the range does fit, which is 16.
     %3 = bin %1 %2 op=add
     ret %3
   end

@@ -410,14 +410,27 @@ fi
 # The query is real: it is how a2 finds a truncated constant (`300 as u8`
 # folds to 44, and the IR must not claim otherwise) and how it decides an
 # overflow check cannot be elided.
+#
+# This used to expect TWO exceeded values: %1 (300 declared u8) and %3,
+# the sum, which inherited w=8 from its operands while holding 400. The
+# second was never a property worth asserting -- it was a1 copying the
+# operand width onto a result that provably does not fit it, and the test
+# had frozen the bug in place as an expectation.
+#
+# %3 now grows to w=16, which 400 does fit, so the honest expectation is
+# ONE genuine violation. Both halves are asserted: the declared-but-wrong
+# width is still caught, and the widened one is checked to be exactly 16
+# rather than merely absent -- dropping the width entirely would also
+# make the count 1, and would silently lose the fact.
 wd=$("$BIN" pear/a1/tests/ok_width.air 2>&1)
 w_n=$(echo "$wd" | grep -oE 'width exceeded: [0-9]+' | grep -oE '[0-9]+$')
 w_err=$(echo "$wd" | grep 'errors / warnings' | grep -oE '[0-9]+ / [0-9]+' | cut -d' ' -f1)
-# %1 (300 in 8 bits) and %3 (400 in 8 bits) exceed; %2 (100) fits.
-if [ "${w_n:-0}" = "2" ] && [ "${w_err:-1}" = "0" ]; then
-  pass=$((pass+1)); note PASS "erm_width_signedness" "(2 of 3 values exceed their declared width)"
+if [ "${w_n:-0}" = "1" ] && [ "${w_err:-1}" = "0" ] \
+   && echo "$wd" | grep -qE '%3 = bin .*range=400\.\.400 w=16'; then
+  pass=$((pass+1)); note PASS "erm_width_signedness" "(1 real violation; the sum grew u8+u8 -> w=16)"
 else
-  fail=$((fail+1)); note FAIL "erm_width_signedness" "exceeded=$w_n errors=$w_err (want 2/0)"
+  fail=$((fail+1)); note FAIL "erm_width_signedness" "exceeded=$w_n errors=$w_err (want 1/0, %3 w=16)"
+  echo "$wd" | grep -E '%3 = bin' | sed 's/^/      /'
 fi
 
 # ── THE REAL TEST: the whole standard library ───────────────────────────

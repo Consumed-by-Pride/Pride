@@ -139,8 +139,20 @@ fn bool r_fits(Range* r, int bits, bool is_signed)
         long min = -((long)1 << (bits - 1));
         return r.lo >= min && r.hi <= max;
     }
-    if (r.lo < 0) { return false; }
+    /*
+     A NEGATIVE lower bound in an unsigned range is not necessarily a
+     value out of range: at 64 bits the interval is stored in a signed
+     long, so `0xFFFFFFFFFFFFFFFF` is held as -1. Rejecting on the sign
+     alone reported 1,111 spurious `width exceeded` warnings on the
+     standard library -- every `u64` constant with the top bit set,
+     including plain `-1 as u64` masks.
+
+     At 64 bits every bit pattern is a valid u64 whichever way the long
+     is read, so the honest answer is true. Below 64 a negative bound
+     genuinely cannot be represented and is still rejected.
+    */
     if (bits == 64) { return true; }
+    if (r.lo < 0) { return false; }
     long umax = (long)(((ulong)1 << (ulong)bits) - 1);
     return r.hi <= umax;
 }
