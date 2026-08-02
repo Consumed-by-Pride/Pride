@@ -516,9 +516,9 @@ re-verify; 0 crashes.
 
 | | |
 |---|---|
-| `R` ranged | 15,590 → 18,868 |
-| `R` tightened | 3,998 |
-| `R` proven ≥ 0 | 17,849 |
+| `R` ranged | 15,590 → **25,002** |
+| `R` tightened | 4,078 |
+| `R` proven ≥ 0 | 22,776 |
 | `M` memory φ placed | 1,427 — a1 places **zero** |
 | `M` a1 versions corrected | 4,082 |
 | SCCP folded | 828 values, 54 branches |
@@ -531,12 +531,35 @@ re-verify; 0 crashes.
 
 **Unflattering, and left in deliberately:**
 
-- **19 of 2,892 comparisons decided (0.7%).** Two real precision bugs were
-  found and fixed while chasing this and it did not move. Counting what
-  feeds the undecided ones says why: the largest source of un-ranged
-  comparison operands is `load.field` — struct fields read from memory.
-  A scalar range analysis cannot bound those; it needs field-sensitive
-  memory analysis, which is not in this stage's plan.
+- **20 of 3,231 comparisons decided (0.6%).** Four real precision bugs have
+  now been found and fixed while chasing this number and it has still not
+  moved. It is reported as an absolute count for exactly that reason.
+
+  The most recent attempt made the width fact sound across the whole
+  library — 4,969 values did not fit their own declared width, now 0 — and
+  taught casts the range they establish. That added **6,134 ranged values**
+  and **4,927 more proven ≥ 0**, and decided exactly **one** more
+  comparison.
+
+  Root-cause attribution over every un-ranged comparison operand, walking
+  back to the ultimate source rather than blaming whatever propagated it:
+
+  | ultimate source | count |
+  |---|---|
+  | `load.field` | 1,740 |
+  | `call` | 539 |
+  | `param` | 494 |
+  | `load.index` | 458 |
+
+  Every one of those needs memory or inter-procedural knowledge, not
+  integer precision — which is why improving the integer side keeps not
+  helping. An earlier version of this note blamed un-ranged **φ** (998 of
+  them); that was measuring the propagator, not the cause. After a2
+  exactly **one** φ feeding a comparison has all of its operands ranged;
+  the rest are joins over a call or a load and are correctly unknown.
+
+  The honest conclusion is that this number is bounded by field-sensitive
+  memory analysis. No further work on the scalar side will move it.
 - **`noalias` and dead-store elimination report 0 on the stdlib.** Both are
   gated on allocation-rooted pointers and the stdlib has 1,509 stores and
   **zero** `alloc` sites. Rather than ship two untested paths,
@@ -550,6 +573,46 @@ re-verify; 0 crashes.
   over the whole library moves the ranged count by at most 55 values and
   scores identically to widening from the first pass. It is kept because
   it costs nothing, not because it was shown to pay.
+
+### Running a2 twice — the cheapest oracle in the project
+
+**a2 run on its own output must produce its own output.** Nothing enforces
+that automatically, and it is worth more than the verifier: verification
+answers "is this IR well-formed", and a miscompile that deletes a loop is
+perfectly well-formed. The whole standard library verified 258/258 clean
+while `kmp_search` was being reduced to `return 0`.
+
+Iterating found the worst bug a2 has had. It was previously recorded here
+as unfixable-without-a-redesign, blamed on facts travelling by a second
+channel — the value's inline range as well as the origin table. **That
+diagnosis was wrong**, and being wrong in the direction of "architectural,
+park it" is what kept it alive. The real cause was two guards that never
+ran at all:
+
+* `origin_local_only` was being handed a **block-relative index** where a
+  value id was expected, so it asked about an unrelated value and passed
+  for essentially every fold;
+* and it answered by reading the **opcode**, which SCCP had already
+  rewritten from `sigma` to `const.int`. `origin != id` is the durable
+  form of the same question, and it survives the rewrite.
+
+Iterating the 258 lowered modules to a fixpoint, after the fix:
+
+| | before | after |
+|---|---|---|
+| reach a fixpoint | 258 | 258 |
+| converge in 2 rounds | 147 | 165 |
+| converge in 3 | 59 | 93 |
+| need 4 or more | 52 | 0 |
+| crashes / verify errors | 0 / 0 | 0 / 0 |
+| functions losing values after round 1 | `kmp_search` 117 → 4 | 3 functions, by 1–2 values |
+
+The three remaining movers are all a one-operand φ collapsing to its
+operand, which is a real simplification rather than a loss.
+
+**a2 still runs single-pass.** What is proven is that iteration no longer
+destroys code — not that every fact it computes on round three is sound.
+Turning it on is a separate change that needs its own evidence.
 
 ### What the syntax suite found
 
