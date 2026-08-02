@@ -470,21 +470,45 @@ fn void MemBuild.place_phis(MemBuild* mb, MemStats* st)
      concerned. When DCE removes the dead predecessor it drops the matching
      operand with it, and the phi collapses on its own.
     */
-    for (usz i = 0; i < n; i++)
-    {
-        if (mb.needs_phi[i]) { continue; }
-        if (!mb.c.reachable((int)i)) { continue; }
-        Blk* b = mb.m.blk(mb.c.id_of[i]);
-        if (b == null || b.pred_count < 2) { continue; }
+    /*
+     ...but ONLY where memory is actually defined somewhere.
 
-        bool has_dead_pred = false;
-        for (usz k = 0; k < b.pred_count; k++)
+     The first version of this rule placed a phi in every reachable
+     multi-predecessor block with a dead predecessor, whether or not the
+     function touched memory at all. In a pure loop that produced
+
+         %7 = mem.phi %1 %1        both operands the entry token
+
+     at the loop header -- a phi merging one value with itself, wedged in
+     front of the scalar phis. It shifted every subsequent value's
+     position, the range solver then read the loop counter's phi as the
+     iteration count's, and `for i in 0..16 { s = s + i }` was compiled to
+     `return 0`.
+
+     A memory phi is only meaningful when some block defines memory. The
+     `defs` set is exactly that test and is already computed above.
+    */
+    bool any_def = false;
+    for (usz i = 0; i < n; i++) { if (mb.has_def[i]) { any_def = true; break; } }
+
+    if (any_def)
+    {
+        for (usz i = 0; i < n; i++)
         {
-            if ((usz)b.pred[k] >= mb.c.idx_cap) { continue; }
-            int p = mb.c.idx_of[b.pred[k]];
-            if (p == NO_IDX || !mb.c.reachable(p)) { has_dead_pred = true; break; }
+            if (mb.needs_phi[i]) { continue; }
+            if (!mb.c.reachable((int)i)) { continue; }
+            Blk* b = mb.m.blk(mb.c.id_of[i]);
+            if (b == null || b.pred_count < 2) { continue; }
+
+            bool has_dead_pred = false;
+            for (usz k = 0; k < b.pred_count; k++)
+            {
+                if ((usz)b.pred[k] >= mb.c.idx_cap) { continue; }
+                int p = mb.c.idx_of[b.pred[k]];
+                if (p == NO_IDX || !mb.c.reachable(p)) { has_dead_pred = true; break; }
+            }
+            if (has_dead_pred) { mb.needs_phi[i] = true; }
         }
-        if (has_dead_pred) { mb.needs_phi[i] = true; }
     }
 }
 
@@ -598,6 +622,38 @@ fn void MemBuild.rename(MemBuild* mb, MemStats* st)
 fn uint MemBuild.emit_phi(MemBuild* mb, int b, MemStats* st)
 {
     if (mb.phi_value[b] != pear_air::AIR_NO_VALUE) { return mb.phi_value[b]; }
+
+    /*
+     REUSE a memory phi this block already has.
+
+     `phi_value` is per-run scratch, so on a second invocation of the pass
+     it starts empty and emit_phi happily created a SECOND mem.phi beside
+     the one still in the block. DCE then deleted the now-unused old one,
+     the next round created another, and the two passes chased each other
+     forever: a2 reported 82 values removed on every round from the third
+     onward while the module had stopped changing, and never reached a
+     fixpoint.
+
+     Adopting the existing node keeps the version numbering stable and
+     makes the pass idempotent, which is what lets the driver's loop
+     terminate.
+    */
+    Blk* eb = mb.m.blk(mb.c.id_of[b]);
+    if (eb != null)
+    {
+        for (usz i = 0; i < eb.value_count; i++)
+        {
+            Val* ev = mb.m.val(eb.values[i]);
+            if (ev == null || ev.op != Op.AIR_MEM_PHI) { continue; }
+            mb.phi_value[b] = ev.id;
+            // Re-number it in this run's version space; refill_phis fixes
+            // the operands once every block has been walked.
+            ev.facts.mem.version = mb.next_version;
+            mb.next_version = mb.next_version + 1;
+            st.phis_placed = st.phis_placed + 1;
+            return ev.id;
+        }
+    }
 
     usz pc = mb.c.pred_count(b);
     if (pc == 0) { return pear_air::AIR_NO_VALUE; }
@@ -810,7 +866,10 @@ fn void run_function(Air* m, Fn* f, pear_a2_facts::Facts2* facts, MemStats* st)
             Val* v = m.val(b.values[k]);
             if (v == null || v.is_phi_hole) { continue; }
             if (v.facts.mem.kind == pear_erm::MemKind.MEM_NONE) { continue; }
-            facts.learn(v.origin, v.facts, pear_a2_facts::FactSource.FS_MEMSSA);
+            if (!pear_a2_facts::origin_local_only(m, (uint)i))
+            {
+                facts.learn(v.origin, v.facts, pear_a2_facts::FactSource.FS_MEMSSA);
+            }
         }
     }
 

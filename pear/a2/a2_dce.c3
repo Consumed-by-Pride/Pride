@@ -110,6 +110,22 @@ fn bool is_root(Air* m, uint vid)
         case AIR_MEM_ENTRY:
             // Version 0 must exist for any MemoryPhi that names it.
             return true;
+        case AIR_MEM_PHI:
+            /*
+             A memory phi is the M half of SP-ERM-e-SSI. Nothing names it
+             as an SSA operand -- loads reference a memory VERSION in
+             their fact record, not the phi node -- so ordinary liveness
+             sees it as dead and deleted it.
+
+             That is wrong twice. It throws away the one thing LLVM
+             cannot serialise, which is the whole capability claim for
+             `M`; and it made a2 oscillate, because memssa recreated the
+             phi on the next round and DCE deleted it again. On
+             stdlib/fmt.pie the loop reported 82 values removed on every
+             round from the third onward while the module had stopped
+             changing, and never reached a fixpoint.
+            */
+            return true;
         default:
             return false;
     }

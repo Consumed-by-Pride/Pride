@@ -672,7 +672,10 @@ fn void run_function(Air* m, Fn* f, pear_a2_facts::Facts2* facts, SccpStats* st)
             v.p.clear();
             m.set_const_int(vid, c.val, w, sg);
             st.folded = st.folded + 1;
-            facts.learn(v.origin, v.facts, pear_a2_facts::FactSource.FS_SCCP);
+            if (!pear_a2_facts::origin_local_only(m, (uint)i))
+            {
+                facts.learn(v.origin, v.facts, pear_a2_facts::FactSource.FS_SCCP);
+            }
 
             /*
              Folding a φ breaks the all-φ-come-first invariant.

@@ -1319,7 +1319,13 @@ fn void run(Air* m, pear_a2_facts::Facts2* f, RangeStats* st)
         if (before.is_top && !best.is_top) { st.improved = st.improved + 1; }
         if (!best.is_top && !best.is_bottom && best.lo >= 0) { st.nonneg = st.nonneg + 1; }
 
-        f.learn(v.origin, v.facts, pear_a2_facts::FactSource.FS_RANGE);
+        if (!pear_a2_facts::origin_local_only(m, (uint)i))
+
+        {
+
+            f.learn(v.origin, v.facts, pear_a2_facts::FactSource.FS_RANGE);
+
+        }
     }
 
     st.widened = s.widened;

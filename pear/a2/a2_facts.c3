@@ -134,6 +134,27 @@ fn void Facts2.count_source(Facts2* f, FactSource s)
  pear_erm::FactTable.refine already does this correctly, including the
  detail that nullness only tightens from unknown.
 */
+/*
+ Is this value's knowledge EDGE-LOCAL rather than true of its lineage?
+
+ A σ names the value on one outgoing edge of a branch and a π names it on
+ the non-faulting path of an operation. Both deliberately INHERIT their
+ source's origin (D1), so that a fact learned about the refined name can
+ still be attributed to the lineage. That is right for attribution and
+ wrong for the fact itself: `x` on the `x < 0` edge is in [MIN,-1], and
+ `x` before the branch is not.
+
+ Recorded here rather than filtered at each of the four learn() call
+ sites, because a fact that leaks from one of them is not recoverable
+ later -- the table has no record of which edge it came from.
+*/
+fn bool origin_local_only(Air* m, uint vid)
+{
+    Val* v = m.val(vid);
+    if (v == null) { return false; }
+    return v.op == pear_air::AirOp.AIR_SIGMA || v.op == pear_air::AirOp.AIR_PI;
+}
+
 fn void Facts2.learn(Facts2* f, uint origin, pear_erm::Facts fact, FactSource src)
 {
     if (origin == pear_air::AIR_NO_ORIGIN) { return; }
@@ -186,6 +207,18 @@ fn void seed_from_module(Air* m, Facts2* f)
         Val* v = &m.values[i];
         if (v.block == pear_air::AIR_NO_BLOCK) { continue; }
         if (v.is_phi_hole) { continue; }
+        /*
+         A σ/π refinement is true on ONE EDGE. Feeding it into the
+         origin-keyed table, which σ and π share with their source by
+         construction, made writeback() meet an edge-local range into the
+         unrefined value that is live on both edges.
+
+         Caught by running a2 twice: the second pass gave a call result
+         `range=MIN..-1` inherited from the `< 0` edge of a branch below
+         it, and then folded a branch on the strength of it. a2 was not
+         idempotent, which is the observable symptom of an unsound fact.
+        */
+        if (origin_local_only(m, (uint)i)) { continue; }
         f.learn(v.origin, v.facts, FactSource.FS_A1);
     }
 }
@@ -210,6 +243,25 @@ fn void writeback(Air* m, Facts2* f)
         Val* v = &m.values[i];
         if (v.block == pear_air::AIR_NO_BLOCK) { continue; }
         if (v.is_phi_hole) { continue; }
+
+        /*
+         A σ/π must not RECEIVE its lineage's facts either.
+
+         Blocking the write side alone was not enough. σ and π share their
+         source's origin by construction (D1), so a refinement placed on
+         one edge and the unrefined value on another are the same key. The
+         write guard stops the edge-local fact entering the table; this
+         guard stops the table's accumulated fact being met INTO an
+         edge-local name, which is the same unsoundness read backwards.
+
+         The two together are what make the meet below safe. Without this
+         half, `for i in 0..16` was miscompiled: the exit σ's
+         `[16,MAX]` reached the loop header's φ, SCCP folded `i < 16` to
+         false, and DCE deleted the entire loop body -- the function
+         returned 0 instead of 120. It only surfaced once a2 iterated to
+         a fixpoint, because a single pass never fed the fact back round.
+        */
+        if (origin_local_only(m, (uint)i)) { continue; }
 
         pear_erm::Facts lineage = f.get(v.origin);
         if (!pear_erm::facts_known(&lineage)) { continue; }

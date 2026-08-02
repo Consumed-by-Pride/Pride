@@ -129,20 +129,46 @@ fn int main(String[] args)
     pear_a2_facts::seed_from_module(m, &facts);
 
     pear_a2_range::RangeStats rs;
-    rs.init();
+    pear_a2_memssa::MemStats  ms;
+    pear_a2_sccp::SccpStats   cs;
+    pear_a2_dce::DceStats     ds;
+    rs.init(); ms.init(); cs.init(); ds.init();
+
+    /*
+     ONE pass of each analysis, in this order.
+
+     Iterating to a fixpoint is the obvious improvement and it is NOT
+     safe yet. Tried, measured, reverted:
+
+       * a second round finds real work -- on stdlib/math/abs.pie round 2
+         folds 5 values where round 1 folds 2, and 59 of 233 stdlib
+         modules change on a second run
+       * but it also MISCOMPILES. `for i in 0..16 { s = s + i }` came out
+         as `return 0`: the exit σ's `[16,MAX]` reaches the loop header's
+         φ on the second round, SCCP folds `i < 16` to false, and DCE
+         deletes the body.
+
+     The leak is that a σ's narrowed range is written onto the VALUE, and
+     the next round re-seeds the solver from those values. Blocking the
+     origin table in both directions (origin_local_only, below) was not
+     enough, because the inline fact is a second channel carrying the
+     same edge-local information.
+
+     Fixing it properly means the range solver must distinguish "the
+     range I proved for this name" from "the range that is true of this
+     name wherever it is live" -- a real change to the fact model, not a
+     guard. Left as the next piece of work rather than shipped half-done:
+     an optimiser that deletes a loop is worse than one that misses an
+     optimisation.
+
+     What DID survive from that attempt, because each is independently
+     correct and verified, is kept: the mem-phi reuse, the mem-phi
+     liveness rule, and the placement guard on dead-predecessor phis.
+    */
     if (do_range) { pear_a2_range::run(m, &facts, &rs); }
-
-    pear_a2_memssa::MemStats ms;
-    ms.init();
-    if (do_mem) { pear_a2_memssa::run(m, &facts, &ms); }
-
-    pear_a2_sccp::SccpStats cs;
-    cs.init();
-    if (do_sccp) { pear_a2_sccp::run(m, &facts, &cs); }
-
-    pear_a2_dce::DceStats ds;
-    ds.init();
-    if (do_dce) { pear_a2_dce::run(m, &ds); }
+    if (do_mem)   { pear_a2_memssa::run(m, &facts, &ms); }
+    if (do_sccp)  { pear_a2_sccp::run(m, &facts, &cs); }
+    if (do_dce)   { pear_a2_dce::run(m, &ds); }
 
     // D1: the table is the durable record, but the PRINTER reads the
     // inline copy, so what is not written back does not reach a3.
