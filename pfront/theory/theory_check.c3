@@ -729,6 +729,30 @@ fn Node* TheoryPipeline.run(TheoryPipeline* tp, Node* root)
     theory_verify::Snapshot before = theory_verify::snapshot(root);
 
     // 3. Term rewriting to a normal form.
+    /*
+     PGL DECISION TREES, built BEFORE the rewriter runs.
+
+     PgenCompiler was allocated, initialised and reported, and
+     build_from_clauses was called from nowhere -- so
+     "pgl trees: 0 built, 0 nodes" was printed on every compilation of
+     every file in the project and was structurally incapable of
+     printing anything else. The pass existed; nothing ran it. Found
+     by writing a static graph compiler, the program that is supposed
+     to lean on PGL hardest.
+
+     Placement is load-bearing. run_fixpoint REWRITES THE TREE IN
+     PLACE, so a rule set's own clause patterns have already been
+     rewritten by the time it returns: reading them afterwards gave
+     `x * 1 -> x` a pattern column of N_EXPR_IDENT (the rewritten
+     result) instead of N_EXPR_BINARY, every row looked like a bare
+     variable, and every rule after the first was reported as
+     unreachable. The decision tree has to be built from the patterns
+     as WRITTEN.
+    */
+    tp.build_pgen_trees(root, 0);
+    t0 = tp.tick("pgen-trees", t0);
+    tp.passes_run = tp.passes_run + 1;
+
     tp.rules.collect(root, 0);
     if (tp.rules.count > 0)
     {
@@ -852,6 +876,50 @@ fn Node* TheoryPipeline.run(TheoryPipeline* tp, Node* root)
     tp.passes_run = tp.passes_run + 1;
 
     return root;
+}
+
+/*
+ Build a PGL decision tree for every clause set in the program.
+
+ The tree is built for its ANALYSIS, not to replace the match: it is what
+ the redundancy and exhaustiveness reports are computed from, and a1
+ lowers matches independently as a sequential chain. Building it here
+ means those reports describe a real structure rather than an empty one.
+*/
+fn void TheoryPipeline.build_pgen_trees(TheoryPipeline* tp, Node* n, int depth)
+{
+    if (n == null || depth > CHECK_MAX_DEPTH) { return; }
+    /*
+     A `pgen` declaration is an N_DECL_FN carrying `p.aux == 2` (see
+     parse_pgen_decl), so the N_DECL_FN case already covers it -- there is
+     no separate node kind, and assuming one was a guess that did not
+     compile.
+    */
+    if (n.kind == Nk.N_EXPR_MATCH || n.kind == Nk.N_DECL_FN)
+    {
+        // Only build when there is more than one clause: a single arm has
+        // no decision to make, and counting it would inflate the report
+        // with trees that discriminate nothing.
+        usz clauses = 0;
+        for (usz i = 0; i < n.child_count; i++)
+        {
+            Node* c = n.children[i];
+            if (c == null) { continue; }
+            if (c.kind == Nk.N_CLAUSE || c.kind == Nk.N_MATCH_ARM)
+            {
+                clauses = clauses + 1;
+            }
+        }
+        if (clauses > 1)
+        {
+            tp.pgen.build_from_clauses(n);
+            tp.pgen.report_redundant(n);
+        }
+    }
+    for (usz i = 0; i < n.child_count; i++)
+    {
+        tp.build_pgen_trees(n.children[i], depth + 1);
+    }
 }
 
 fn void TheoryPipeline.check_handlers(TheoryPipeline* tp, Node* n, int depth)

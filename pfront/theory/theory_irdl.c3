@@ -420,6 +420,29 @@ struct PgenCompiler
     usz  leaves;
     usz  switches;
     usz  redundant_rows;
+    usz  last_redundant;   // redundancies found in the most recent tree
+    /*
+     Per-clause reachability, keyed by the clause's action node.
+
+     A clause is REDUNDANT only when it is shadowed on EVERY path. The
+     original code incremented a counter inside compile(), which recurses
+     once per constructor branch, so it was counting shadowings rather
+     than clauses -- and any shadowing at all was reported as redundancy.
+
+     Both halves were wrong on ordinary code. `match n | 1 | _` claimed
+     the catch-all could never match: inside the branch for `1` the
+     literal row always matches first, so the wildcard IS shadowed there
+     -- but it is the only thing that matches on the default path. And
+     `| 1 | 2 | ... | _` scored exactly one redundancy per literal arm,
+     because the wildcard is shadowed once per branch.
+
+     So both facts are recorded per clause and combined at the end:
+     shadowed somewhere AND emitted nowhere means genuinely unreachable.
+    */
+    Node*[PG_MAX_ROWS] clause_id;      // action node, the clause's identity
+    bool[PG_MAX_ROWS]  clause_emitted; // reached as a leaf on some path
+    bool[PG_MAX_ROWS]  clause_shadowed;// shadowed on some path
+    usz  clause_count;
     int  max_depth;
     usz  total_nodes;
 }
@@ -436,6 +459,8 @@ fn void PgenCompiler.init(PgenCompiler* c, Arena* a, pfront_core::DiagBag* d,
     c.leaves = 0;
     c.switches = 0;
     c.redundant_rows = 0;
+    c.last_redundant = 0;
+    c.clause_count = 0;
     c.max_depth = 0;
     c.total_nodes = 0;
 }
@@ -559,6 +584,57 @@ fn void default_matrix(PgMatrix* src, int col, PgMatrix* dst)
 }
 
 // The core of Maranget's algorithm.
+/*
+ Find (or create) the per-clause slot for an action node.
+
+ The action is the one field specialise_matrix copies unchanged into
+ every sub-matrix, so it is the stable identity of a source clause across
+ the whole recursion.
+*/
+fn int PgenCompiler.clause_slot(PgenCompiler* c, Node* action)
+{
+    if (action == null) { return -1; }
+    for (usz i = 0; i < c.clause_count; i++)
+    {
+        if (c.clause_id[i] == action) { return (int)i; }
+    }
+    if (c.clause_count >= PG_MAX_ROWS) { return -1; }
+    int id = (int)c.clause_count;
+    c.clause_id[id] = action;
+    c.clause_emitted[id] = false;
+    c.clause_shadowed[id] = false;
+    c.clause_count = c.clause_count + 1;
+    return id;
+}
+
+fn void PgenCompiler.note_emitted(PgenCompiler* c, Node* action)
+{
+    int i = c.clause_slot(action);
+    if (i >= 0) { c.clause_emitted[i] = true; }
+}
+
+fn void PgenCompiler.note_shadowed(PgenCompiler* c, Node* action)
+{
+    int i = c.clause_slot(action);
+    if (i >= 0) { c.clause_shadowed[i] = true; }
+    else { c.redundant_rows = c.redundant_rows + 1; }   // no identity: count it
+}
+
+/*
+ Combine the two facts. Called once the whole tree is built, because
+ "shadowed on every path" cannot be known until every path exists.
+*/
+fn void PgenCompiler.finish_redundancy(PgenCompiler* c)
+{
+    for (usz i = 0; i < c.clause_count; i++)
+    {
+        if (c.clause_shadowed[i] && !c.clause_emitted[i])
+        {
+            c.redundant_rows = c.redundant_rows + 1;
+        }
+    }
+}
+
 fn int PgenCompiler.compile(PgenCompiler* c, PgMatrix* m, int depth)
 {
     if (depth > 32) { return c.alloc_node(DtKind.DT_FAIL, depth); }
@@ -581,10 +657,13 @@ fn int PgenCompiler.compile(PgenCompiler* c, PgMatrix* m, int depth)
             c.pool[id].action = m.rows[first_live].action;
             c.leaves = c.leaves + 1;
         }
-        // Any row after an unconditionally-matching one can never fire.
+        // This clause fires on this path.
+        c.note_emitted(m.rows[first_live].action);
+        // Rows after an unconditionally-matching one cannot fire HERE.
+        // Whether they fire anywhere is decided in finish_redundancy.
         for (usz r = first_live + 1; r < m.row_count; r++)
         {
-            if (m.rows[r].live) { c.redundant_rows = c.redundant_rows + 1; }
+            if (m.rows[r].live) { c.note_shadowed(m.rows[r].action); }
         }
         return id;
     }
@@ -612,7 +691,25 @@ fn int PgenCompiler.compile(PgenCompiler* c, PgMatrix* m, int depth)
         for (usz i = 0; i < nk; i++) { if (keys[i] == k) { dup = true; break; } }
         if (dup || nk >= DT_MAX_CASES) { continue; }
         keys[nk] = k;
-        arities[nk] = p.child_count;
+        /*
+         A literal's child is its VALUE, not a sub-pattern.
+
+         `p.child_count` is the right arity for a constructor pattern --
+         `Some(x)` has one sub-pattern to match against a new column --
+         but N_PAT_LITERAL wraps the constant it compares to. Treating
+         that as arity 1 made specialise_matrix open a column for it, so
+         the sub-matrix had a column no row could discharge: the literal
+         row filled it with the constant and a wildcard row filled it with
+         null, and the wildcard was then reported as shadowing nothing
+         while itself being flagged redundant.
+
+         Concretely, `match n | 1 | _` claimed the catch-all could never
+         match, which is false for every n other than 1.
+
+         A literal is a leaf: matching it consumes the column and opens
+         none.
+        */
+        arities[nk] = p.kind == Nk.N_PAT_LITERAL ? 0 : p.child_count;
         nk = nk + 1;
     }
 
@@ -664,7 +761,14 @@ fn int PgenCompiler.build_from_clauses(PgenCompiler* c, Node* owner)
         m.add_row(&cols[0], 1, action);
     }
     if (m.row_count == 0) { free((void*)m); return -1; }
+    usz slots_before = c.clause_count;
+    usz red_before = c.redundant_rows;
     int root = c.compile(m, 0);
+    c.finish_redundancy();
+    c.last_redundant = c.redundant_rows - red_before;
+    // Each tree gets a fresh clause namespace: two matches in one file
+    // have unrelated clauses and must not share slots.
+    c.clause_count = slots_before;
     c.trees_built = c.trees_built + 1;
     free((void*)m);
     return root;
@@ -679,9 +783,18 @@ fn void PgenCompiler.report(PgenCompiler* c)
 }
 
 // Report clauses the decision tree proved unreachable.
+/*
+ Warn about the clause set just built.
+
+ Tests `last_redundant` -- the count from THIS tree -- not the running
+ total. Testing the total meant that once any match in the file had a
+ redundant clause, every clause set compiled afterwards was warned about
+ too, so a correct rewrite rule set two declarations later was blamed for
+ someone else's dead arm.
+*/
 fn void PgenCompiler.report_redundant(PgenCompiler* c, Node* owner)
 {
-    if (c.redundant_rows == 0 || owner == null) { return; }
+    if (c.last_redundant == 0 || owner == null) { return; }
     c.diags.warn(pfront_core::Phase.PH_RESOLVE, 4040, owner.line, owner.col,
                  "some clauses can never match (an earlier clause always succeeds)",
                  c.file);

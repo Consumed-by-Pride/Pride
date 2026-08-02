@@ -1,0 +1,164 @@
+-- A HIGH-PERFORMANCE STATIC GRAPH COMPILER.
+--
+-- The task this file exists to break: take a high-level math expression
+-- or a packet-matching rule at COMPILE TIME and turn it into an unboxed
+-- bare-metal loop. That is the load-bearing use of Pride's whole
+-- metaprogramming stack at once --
+--
+--   section 16  rewrite rules as first-class values, composed with ++,
+--               applied with |> and driven to a fixpoint with |> r*
+--   section 17  PGL, generating the instruction-selection matcher
+--   section 18  ~Tree / ~Data / ~Bytes reification of the graph
+--   section 19  IRDL, declaring the dialect the graph is lowered through
+--   section 20  comptime / stage / splice, the MSP staging layer
+--   section 13  quantifiers and refinement types on the tensor shapes
+--
+-- Nothing here is exercised by the standard library, which uses none of
+-- these constructs in anger, so every construct is a fresh surface.
+mod graph_compiler
+
+-- ── The graph dialect ───────────────────────────────────────────────────
+-- IRDL declares the ops the expression graph is built from. A static
+-- graph compiler needs the dialect to exist before the rules that
+-- rewrite it, so this comes first.
+
+dialect Tensor
+  opcode add
+  opcode mul
+  opcode fma
+  opcode splat
+  region entry
+  region exit
+
+-- The lowering half: each dialect op maps to the instruction that
+-- implements it. This is what makes the generated loop bare-metal
+-- rather than a call into a runtime.
+irdl
+  Tensor.add [a : i64, b : i64] ↦ emit_asm("addq %{b:reg}, %{a:reg}")
+  Tensor.mul [a : i64, b : i64] ↦ emit_asm("imulq %{b:reg}, %{a:reg}")
+  Tensor.fma [a : f64, b : f64, c : f64] ↦ emit_asm("vfmadd213sd %{c:reg}, %{b:reg}, %{a:reg}")
+  Tensor.splat [v : f64] ↦ emit_asm("vbroadcastsd %{v:reg}, %{v:reg}")
+
+-- ── Algebraic simplification ────────────────────────────────────────────
+-- Rules are values. These are the classic scalar identities that must
+-- fire before any lowering, or the generated loop carries dead work.
+
+let identities : Rewrite = rewrite
+  | x + 0i64 ↦ x
+  | 0i64 + x ↦ x
+  | x * 1i64 ↦ x
+  | 1i64 * x ↦ x
+  | x * 0i64 ↦ 0i64
+  | x - 0i64 ↦ x
+
+-- Strength reduction, guarded by a compile-time predicate. This is the
+-- rule form with a condition after the comma.
+let strength : Rewrite = rewrite
+  | x * 2i64 ↦ x << 1i64
+  | x * 4i64 ↦ x << 2i64
+  | x * 8i64 ↦ x << 3i64
+
+-- Fusion: the rule that makes the generated loop fast, by contracting a
+-- multiply-then-add into one op the hardware has.
+let fusion : Rewrite = rewrite
+  | a * b + c ↦ fma(a, b, c)
+
+-- Composition. A graph compiler runs the whole pipeline, not one rule.
+let simplify : Rewrite = identities ++ strength
+let full : Rewrite = simplify ++ fusion
+
+-- ── PGL: the instruction selector ───────────────────────────────────────
+-- Generated programmatically rather than written out, which is the whole
+-- point of section 17: the matcher for a dialect is derived from the
+-- dialect.
+
+pgen elim_add_zero<T : Numeric> →
+  [x : T] where [x + 0i64] ↦ x
+
+pgen mul_to_shift<T : Int> →
+  [x : T, n : T] where [x * n] ↦ x << n
+
+pgen select_fma<T : Float> →
+  [a : T, b : T, c : T] where [a * b + c] ↦ fma(a, b, c)
+
+-- ── Shape refinement ────────────────────────────────────────────────────
+-- Section 13: the unboxed loop is only safe when the shapes agree, and
+-- that is a refinement predicate, not a runtime check.
+
+type Dim = i64 ∩ (> 0)
+type Idx = i64 ∩ (>= 0)
+
+fn dot_len : (Dim, Dim) -> Dim
+  | (n, m) -> if n < m then n else m
+
+-- A quantified identity over any element type: the shape of the graph
+-- does not depend on what flows through it.
+fn graph_id : ∀ A . A -> A
+  | x -> x
+
+-- ── Reification ─────────────────────────────────────────────────────────
+-- ~Tree gives the graph as an AST to rewrite; ~Data gives it as raw
+-- addressable storage; ~Bytes gives the emitted machine code. All three
+-- describe the same expression and none of them evaluates it.
+
+fn build_graph : (i64, i64, i64) -> i64
+  | (a, b, c) ->
+    let g = ~Tree (a * b + c)
+    let raw = ~Data g
+    let code = ~Bytes g
+    a
+
+-- ── Staging ─────────────────────────────────────────────────────────────
+-- comptime evaluates now; stage/splice builds the specialised loop.
+
+fn table_size : i64 -> i64
+  | n ->
+    let sz = comptime 16i64 * 16i64
+    sz + n
+
+-- A comptime block's body must be computable NOW. `unroll * n` for a
+-- runtime `n` is correctly REJECTED (E3280) -- checked in
+-- pfront_tests/syntax/x11_comptime_reject.pie, because a staging layer
+-- that silently accepted it would defer the work to runtime and quietly
+-- lose the whole point of staging.
+fn specialise : i64 -> i64
+  | n ->
+    let unroll = comptime 4i64 * 8i64
+    unroll * n
+
+-- ── The generated kernel ────────────────────────────────────────────────
+-- What all of the above exists to produce: an unboxed loop with no
+-- allocation, no bounds check that the range analysis cannot discharge,
+-- and a fused inner operation.
+
+fn kernel_fma : (i64, i64) -> i64
+  | (n, seed) ->
+    let mut acc = 0i64
+    for i in 0i64..16i64
+      acc = acc + i * seed
+    acc
+
+-- The packet rule half of the task: a match over a header field,
+-- compiled to a decision chain the optimiser can turn into a switch.
+fn classify_packet : i64 -> i64
+  | proto ->
+    match proto
+      | 1i64 -> 100i64
+      | 6i64 -> 200i64
+      | 17i64 -> 300i64
+      | p, p > 200i64 -> 900i64
+      | _ -> 0i64
+
+-- Applying the rules. `|> r` fires once, `|> r*` to a fixpoint -- the
+-- distinction a graph compiler depends on, since fusion enables further
+-- identities and vice versa.
+--
+-- The star is a SUFFIX ON THE RULE SET (spec section 16: `expr |> arith*`),
+-- not on the pipe. Writing `e |>* full` parses -- as a DEREFERENCE of
+-- `full` -- and silently yields the once-only form, which is why
+-- x12_pipeline_star.pie asserts the two produce different callees.
+fn run_pipeline : i64 -> i64
+  | e ->
+    let once = e |> simplify
+    let fixed = e |> full*
+    once + fixed

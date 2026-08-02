@@ -127,6 +127,18 @@ const int TK_SIGIL_TREE  = (int)pfront_lex::TokenType.TOKEN_SIGIL_TREE.ordinal;
 const int TK_SIGIL_DATA  = (int)pfront_lex::TokenType.TOKEN_SIGIL_DATA.ordinal;
 const int TK_SIGIL_BYTES = (int)pfront_lex::TokenType.TOKEN_SIGIL_BYTES.ordinal;
 const int TK_KW_QUOTE    = (int)pfront_lex::TokenType.TOKEN_KW_QUOTE.ordinal;
+/*
+ `|>` applies a rewrite-rule set to a term (spec section 16). With a
+ trailing `*` it applies to a FIXPOINT, and the parser records which by
+ setting `p.aux = 1` on the binary node.
+
+ Both spellings lowered to AIR_UNKNOWN. The operator is section 16's
+ headline -- rules are values, composed with `++` and applied with `|>`
+ -- so a graph compiler that rewrites its expression tree produced a hole
+ exactly where its whole pipeline runs.
+*/
+const int TK_PIPELINE    = (int)pfront_lex::TokenType.TOKEN_PIPELINE.ordinal;
+const int TK_PLUSPLUS    = (int)pfront_lex::TokenType.TOKEN_PLUSPLUS.ordinal;
 const int TK_KW_OR     = (int)pfront_lex::TokenType.TOKEN_KW_OR.ordinal;
 const int TK_NEGATION  = (int)pfront_lex::TokenType.TOKEN_NEGATION.ordinal;
 const int TK_TILDE     = (int)pfront_lex::TokenType.TOKEN_TILDE.ordinal;
@@ -1140,6 +1152,51 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
              and it is the same lowering a method call gets. Before this
              it produced AIR_UNKNOWN, i.e. a silent hole.
             */
+            /*
+             `t |> rules` and `t |>* rules` -- apply a rewrite-rule set.
+
+             Lowered to a direct call rather than a new opcode, for the
+             same reason as `∈`: AIR has no rewrite primitive, the back
+             end could not emit one, and an opcode nothing can lower is
+             the "looks implemented" shape that hid AIR_ADDR_INDEX.
+
+             The fixpoint form is a DIFFERENT callee, not a flag on the
+             same one. `|>` applies the rule set once and `|>*` iterates
+             to stability; collapsing them would silently change a
+             one-shot simplification into an unbounded loop, or the
+             reverse, and neither is recoverable downstream.
+            */
+            if (n.p.op == TK_PIPELINE)
+            {
+                ops[0] = l; ops[1] = r;
+                uint pid = b.emit(Op.AIR_CALL_DIRECT, &ops[0], 2, n);
+                if (pid != pear_air::AIR_NO_VALUE)
+                {
+                    bool fix = n.p.aux == 1;
+                    b.m.values[pid].p.name = fix
+                        ? b.interner.intern("pride_rewrite_fix", 17)
+                        : b.interner.intern("pride_rewrite_once", 18);
+                }
+                return pid;
+            }
+
+            /*
+             `++` composes two rule sets into one (section 16). Also a
+             call: composition builds a new rule value at compile time,
+             and a5 emits whatever the MSP stage left behind.
+            */
+            if (n.p.op == TK_PLUSPLUS)
+            {
+                ops[0] = l; ops[1] = r;
+                uint cid = b.emit(Op.AIR_CALL_DIRECT, &ops[0], 2, n);
+                if (cid != pear_air::AIR_NO_VALUE)
+                {
+                    b.m.values[cid].p.name =
+                        b.interner.intern("pride_rewrite_compose", 21);
+                }
+                return cid;
+            }
+
             if (n.p.op == TK_ELEMENT)
             {
                 ops[0] = l; ops[1] = r;
@@ -3222,9 +3279,33 @@ fn void Builder.bind_pattern(Builder* b, Node* pat, uint val)
             break;
 
         default:
-            // A literal or variant pattern is a TEST, not a binding, and
-            // testing needs a match lowering that does not exist yet.
-            b.unsupported = b.unsupported + 1;
+            /*
+             Every other pattern -- struct, array, variant, literal, or,
+             range, ref -- BINDS through the same walker the match arms
+             use.
+
+             This used to be a counted hole, on the grounds that "testing
+             needs a match lowering that does not exist yet". It exists
+             now (lower_match_arms), and the two halves are separable
+             anyway: bind_pattern_vars does the BINDING, pattern_test does
+             the TESTING, and a single-clause function needs only the
+             first. Leaving this as a hole meant
+
+                 fn f : P -> i64
+                   | { x } -> x
+
+             bound nothing at all, so every use of `x` in the body was an
+             undefined read -- a wrong-code bug for one of the spec's own
+             destructuring forms, hidden behind an `unsupported` counter
+             that made it look merely unimplemented.
+
+             The single-clause path is IRREFUTABLE by construction: with
+             one clause there is nothing to fall through to. pfront warns
+             on a non-exhaustive clause set, and a1's job is to lower what
+             the program says, so the test is genuinely unnecessary here
+             rather than merely skipped.
+            */
+            b.bind_pattern_vars(pat, val);
     }
 }
 

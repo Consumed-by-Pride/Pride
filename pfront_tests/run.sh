@@ -936,6 +936,50 @@ if [ -x ./pearc ]; then
     fail=$((fail+1))
   fi
 
+  # PGL DECISION TREES must actually be BUILT, and must not cry wolf.
+  #
+  # PgenCompiler was allocated, initialised and reported, and
+  # build_from_clauses was called from nowhere: every compilation of every
+  # file printed "pgl trees: 0 built" and could not print anything else.
+  #
+  # Once wired up it reported redundant clauses on correct code, so both
+  # directions are asserted. A checker that flags valid matches is worse
+  # than one that runs never -- it trains readers to ignore it.
+  pgt=0; pgr=0
+  for f in stdlib/*.pie stdlib/*/*.pie; do
+    [ -e "$f" ] || continue
+    o=$(./pfrontc -I stdlib "$f" 2>/dev/null)
+    a=$(echo "$o" | grep -oE 'pgl trees        : [0-9]+' | grep -oE '[0-9]+$')
+    b=$(echo "$o" | grep -oE '[0-9]+ redundant' | grep -oE '[0-9]+')
+    pgt=$((pgt + ${a:-0})); pgr=$((pgr + ${b:-0}))
+  done
+  if [ "$pgt" -ge 5 ] && [ "$pgr" = "0" ]; then
+    printf '  PASS  %-26s %s\n' "pgl_trees_built" "($pgt trees over the stdlib, 0 false redundancies)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "pgl_trees_built" "trees=$pgt false_redundant=$pgr"
+    fail=$((fail+1))
+  fi
+
+  # ...and it must still catch a clause that genuinely cannot fire. Three
+  # shapes, because each needs a different key to be distinguished:
+  # a clause after a catch-all, a duplicate literal, a duplicate variant.
+  printf 'mod t\nfn f : i64 -> i64\n  | n ->\n    match n\n      | _ -> 1i64\n      | 2i64 -> 2i64\n' > /tmp/pf_red1.pie
+  printf 'mod t\nfn f : i64 -> i64\n  | n ->\n    match n\n      | 1i64 -> 1i64\n      | 1i64 -> 2i64\n      | _ -> 3i64\n' > /tmp/pf_red2.pie
+  printf 'mod t\nenum E\n  A\n  B\nfn f : E -> i64\n  | e ->\n    match e\n      | E.A -> 1i64\n      | E.A -> 2i64\n      | E.B -> 3i64\n' > /tmp/pf_red3.pie
+  caught=0
+  for rf in /tmp/pf_red1.pie /tmp/pf_red2.pie /tmp/pf_red3.pie; do
+    n=$(./pfrontc "$rf" 2>&1 | grep -oE '[0-9]+ redundant' | grep -oE '[0-9]+')
+    [ "${n:-0}" -ge 1 ] && caught=$((caught+1))
+  done
+  if [ "$caught" = "3" ]; then
+    printf '  PASS  %-26s %s\n' "pgl_catches_dead_clause" "(catch-all, dup literal, dup variant)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "pgl_catches_dead_clause" "only $caught of 3 dead clauses detected"
+    fail=$((fail+1))
+  fi
+
   # No construct in the syntax suite may leave a lowering hole.
   sh=0
   for f in pfront_tests/syntax/x*.pie; do

@@ -361,6 +361,30 @@ fn int term_depth(Node* n, int depth)
 // two or three rules that could possibly apply".
 const int OP_KEY_BASE = 512;
 
+/*
+ The key a decision tree switches on: two terms with DIFFERENT keys can
+ never match each other, so they belong in different branches.
+
+ Literals are keyed by their VALUE, not merely by node kind, which is the
+ same reasoning the operator case already applied. `1` and `2` are both
+ N_PAT_LITERAL, so returning the kind made them one constructor: the
+ matrix specialiser kept every literal row in every literal branch, the
+ wildcard was then reported shadowed once per branch, and
+ `match n | 1 | 2 | _` claimed 2 redundant clauses. Any N literal arms
+ plus a catch-all scored exactly N -- a count of reaches, not of
+ redundant clauses.
+
+ It also made the tree wrong, not just the report: switching on a key
+ shared by every literal cannot discriminate between them.
+
+ The value is folded into a distinct band so it cannot collide with a
+ node kind or an operator key.
+*/
+const int LIT_KEY_BASE = 1000000;
+// Variants live in their own band so a variant's name_id cannot collide
+// with a literal's value or with a node kind.
+const int VAR_KEY_BASE = 2000000;
+
 fn int top_key(Node* n)
 {
     if (n == null) { return 0; }
@@ -369,6 +393,42 @@ fn int top_key(Node* n)
     if (n.kind == Nk.N_EXPR_BINARY || n.kind == Nk.N_EXPR_UNARY)
     {
         return OP_KEY_BASE + n.p.op;
+    }
+    /*
+     A literal pattern wraps its constant as a child; a bare literal
+     expression carries it directly. Both are keyed by the value.
+
+     Only integer-shaped literals get a value key. A float would need its
+     bit pattern and a string its contents, and giving either a partial
+     key is worse than giving none: two strings would collide and be
+     treated as the same constructor, which is exactly the bug being
+     fixed. They keep the kind key and stay conservative -- more branches
+     merged than necessary, never fewer.
+    */
+    Node* lit = n;
+    if (n.kind == Nk.N_PAT_LITERAL && n.child_count > 0) { lit = n.children[0]; }
+    if (lit != null && (lit.kind == Nk.N_EXPR_INT || lit.kind == Nk.N_EXPR_CHAR
+                        || lit.kind == Nk.N_EXPR_BOOL))
+    {
+        return LIT_KEY_BASE + (int)lit.p.ival;
+    }
+    /*
+     A VARIANT is keyed by which variant it is, for exactly the reason a
+     literal is keyed by its value: `Some` and `None` are both
+     N_PAT_VARIANT, so returning the kind made them one constructor and
+     the decision tree could not tell them apart.
+
+     Every exhaustive two-arm variant match in the standard library was
+     then reported as having a dead clause -- nine of them in
+     stdlib/opt/option.pie alone, which is `match o | Some(_) | None`
+     written nine times.
+
+     name_id is the resolved variant's interned name, which is unique per
+     variant and stable across the whole compilation.
+    */
+    if (n.kind == Nk.N_PAT_VARIANT && n.name_id != 0)
+    {
+        return VAR_KEY_BASE + (int)n.name_id;
     }
     return (int)n.kind;
 }
