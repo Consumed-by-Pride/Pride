@@ -1,0 +1,15 @@
+; AIR_BIN's contract is "operands[0], operands[1]" -- this has ONE.
+;
+; Every opcode documents its operand layout on the enum and nothing
+; checked it: verify.c3 confirmed operands exist, are not the null id and
+; dominate their uses, but never that there were the right NUMBER. This
+; file parsed, verified clean and exited 0, while any consumer reading
+; operands[1] would read past the slice. 44 of 48 opcodes were unchecked.
+module bad_op_arity
+func f pub entry=e
+  block e
+    %1 = const.int ival=1
+    %2 = bin %1 op=add
+    ret %2
+  end
+endfunc

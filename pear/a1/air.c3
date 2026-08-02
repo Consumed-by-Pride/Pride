@@ -1471,6 +1471,84 @@ fn int term_arity(AirTerm t)
     }
 }
 
+/*
+ How many operands this opcode REQUIRES. -1 means variable.
+
+ The operand contract for each opcode is documented on the enum above and
+ was checked nowhere: verify.c3 confirmed that operands exist, are not
+ the null id, and dominate their uses, but never that there are the right
+ NUMBER of them. A `bin` with one operand parsed, verified clean and
+ exited 0, and every consumer that reads `operands[1]` would have read
+ past the slice.
+
+ Stated here rather than at the check site for the same reason
+ term_arity is: adding an opcode must not be able to leave a stale check
+ behind. A new opcode with no entry here defaults to -1 (unchecked),
+ which is the honest answer for one whose contract has not been decided.
+*/
+fn int op_arity(AirOp op)
+{
+    switch (op)
+    {
+        // Leaves: a value with no operands at all.
+        case AIR_CONST_INT:
+        case AIR_CONST_FLOAT:
+        case AIR_CONST_BOOL:
+        case AIR_CONST_STR:
+        case AIR_CONST_NULL:
+        case AIR_CONST_UNIT:
+        case AIR_PARAM:
+        case AIR_GLOBAL_ADDR:
+        case AIR_FUNC_REF:
+        case AIR_CONST_REF:
+        case AIR_VARIANT_REF:
+        case AIR_MEM_ENTRY:
+        case AIR_POISON:
+        case AIR_SIZEOF:
+        case AIR_ALIGNOF:
+        case AIR_OFFSETOF:
+            return 0;
+
+        // One operand.
+        case AIR_UN:
+        case AIR_CAST:
+        case AIR_TRANSMUTE:
+        case AIR_FREEZE:
+        case AIR_ASSUME:
+        case AIR_LOAD_FIELD:
+        case AIR_LOAD_PTR:
+        case AIR_ADDR_FIELD:
+        case AIR_ADDR_OF:
+        case AIR_FREE:
+        case AIR_ALLOC:
+        case AIR_SIGMA:
+        case AIR_HANDLE_ARM:
+            return 1;
+
+        // Two.
+        case AIR_BIN:
+        case AIR_LOAD_INDEX:
+        case AIR_ADDR_INDEX:
+        case AIR_STORE_PTR:
+        case AIR_STORE_FIELD:
+        case AIR_PI:
+            return 2;
+
+        // Three.
+        case AIR_STORE_INDEX:
+            return 3;
+
+        /*
+         Variable. A call takes any number of arguments, an aggregate any
+         number of elements, a phi one per predecessor (checked separately
+         against the block's pred_count), and a handler any number of
+         arms. AIR_UNKNOWN keeps whatever operands a1 preserved.
+        */
+        default:
+            return -1;
+    }
+}
+
 // ── mnemonics, shared by the printer and the parser ─────────────────────
 
 fn String op_name(AirOp o)      { return o.mnemonic; }

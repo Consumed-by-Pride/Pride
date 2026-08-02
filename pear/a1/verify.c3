@@ -483,6 +483,25 @@ fn void check_function(Air* m, Fn* f, Report* r)
              has to dominate the edge it arrives on. Every correct memory φ
              on a loop header was therefore reported as a dominance error.
             */
+            /*
+             STRUCTURAL: the operand count matches the opcode's contract.
+
+             Each opcode documents its operand layout on the enum, and
+             nothing checked it. A `bin` with one operand parsed, verified
+             clean and exited 0 -- and every consumer that reads
+             operands[1] would then read past the slice. 44 of the 48
+             opcodes had no arity check of any kind.
+
+             op_arity returns -1 for the genuinely variadic ones (calls,
+             aggregates, handlers) and for phi, which is checked against
+             the block's predecessor count a few lines below.
+            */
+            int want_ops = pear_air::op_arity(v.op);
+            if (want_ops >= 0 && v.op_count != (usz)want_ops)
+            {
+                r.err("operand count disagrees with the opcode's arity", vid);
+            }
+
             bool is_any_phi = v.op == Op.AIR_PHI || v.op == Op.AIR_MEM_PHI;
 
             if (is_any_phi)
