@@ -671,6 +671,11 @@ fn Node* TheoryPipeline.run(TheoryPipeline* tp, Node* root)
     // 1. Registration: dialects and effect operations must exist before any
     //    use of them can be validated.
     tp.dialects.register_dialects(root, 0);
+    /*
+     Validate dialect USES against the source tree, before any pass
+     rewrites it. See the note at the lowering step below.
+    */
+    tp.dialects.validate_uses(root, 0);
     tp.effects.register_effects(root, 0);
     t0 = tp.tick("register", t0);
     tp.passes_run = tp.passes_run + 2;
@@ -778,10 +783,21 @@ fn Node* TheoryPipeline.run(TheoryPipeline* tp, Node* root)
         tp.passes_run = tp.passes_run + 1;
     }
 
-    // 4. Dialect validation and lowering (after rewriting, so lowered actions
-    //    are already simplified).
-    tp.dialects.validate_uses(root, 0);
-    t0 = tp.tick("dialect-validate", t0);
+    /*
+     4. Dialect LOWERING, after rewriting so the actions it substitutes
+        are already simplified.
+
+     Validation does NOT happen here. It moved up to just after
+     registration, because by this point the rewriter, comptime folding
+     and partial evaluation have all rebuilt parts of the tree and a
+     dialect call written in the source may no longer be present in the
+     shape validate_uses recognises. On the graph-compiler test that
+     showed as "2 dialects, 6 opcodes, 0 uses validated" for a file whose
+     every dialect call was still there in the AST dump -- arity checking
+     and unknown-opcode diagnosis were simply not reaching them.
+
+     Lowering stays late; diagnosing the user's source stays early.
+    */
     if (tp.dialects.opcode_count > 0)
     {
         root = tp.dialects.lower_tree(root, 0);

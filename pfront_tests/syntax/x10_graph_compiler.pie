@@ -149,6 +149,22 @@ fn classify_packet : i64 -> i64
       | p, p > 200i64 -> 900i64
       | _ -> 0i64
 
+-- ── Using the dialect ───────────────────────────────────────────────────
+-- Declaring a dialect is not enough: the point is to BUILD the graph out
+-- of its opcodes, so `irdl lowering` has something to lower and
+-- `validate_uses` has something to check. Each call is validated against
+-- the declared opcode and then replaced by its emit_asm lowering.
+
+fn emit_add : (i64, i64) -> i64
+  | (a, b) -> Tensor.add(a, b)
+
+fn emit_mul : (i64, i64) -> i64
+  | (a, b) -> Tensor.mul(a, b)
+
+-- The fused form the whole rewrite pipeline exists to produce.
+fn emit_fused : (i64, i64, i64) -> i64
+  | (a, b, c) -> Tensor.fma(a, b, c)
+
 -- Applying the rules. `|> r` fires once, `|> r*` to a fixpoint -- the
 -- distinction a graph compiler depends on, since fusion enables further
 -- identities and vice versa.

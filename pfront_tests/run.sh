@@ -1000,6 +1000,32 @@ if [ -x ./pearc ]; then
     fail=$((fail+1))
   fi
 
+  # IRDL dialect USES must be recognised and checked.
+  #
+  # split_dialect_call only matched N_EXPR_CALL over N_EXPR_FIELD, and the
+  # parser builds N_EXPR_METHOD for `T.add(a, b)` -- it cannot tell a
+  # method call on a value from a call to a dialect member, so it always
+  # emits a method node. Every dialect call written the ordinary way was
+  # therefore invisible: "6 opcodes, 0 uses validated", with arity
+  # checking, unknown-opcode diagnosis and emit_asm lowering all
+  # unreachable for real source.
+  #
+  # Validation also ran AFTER the rewriter, comptime folding and partial
+  # evaluation had rebuilt the tree, so calls that survived the shape
+  # check were still missed. It runs against the source tree now.
+  printf 'mod t\ndialect T\n  opcode add\n  opcode mul\nfn f : (i64,i64) -> i64\n  | (a,b) -> T.add(a, b)\nfn g : (i64,i64) -> i64\n  | (a,b) -> T.mul(a, b)\n' > /tmp/pf_irdl.pie
+  iu=$(./pfrontc /tmp/pf_irdl.pie 2>&1 | grep -oE '[0-9]+ uses validated' | grep -oE '[0-9]+')
+  # ...and an opcode the dialect does not declare must be REJECTED.
+  printf 'mod t\ndialect T\n  opcode add\nfn f : (i64,i64) -> i64\n  | (a,b) -> T.nosuch(a, b)\n' > /tmp/pf_irdl2.pie
+  ib=$(./pfrontc /tmp/pf_irdl2.pie 2>&1 | grep -c 'E3210')
+  if [ "${iu:-0}" -ge 2 ] && [ "$ib" -ge 1 ]; then
+    printf '  PASS  %-26s %s\n' "irdl_uses_validated" "($iu uses seen, unknown opcode rejected)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "irdl_uses_validated" "validated=$iu unknown_rejected=$ib (want >=2 and >=1)"
+    fail=$((fail+1))
+  fi
+
   # No construct in the syntax suite may leave a lowering hole.
   sh=0
   for f in pfront_tests/syntax/x*.pie; do

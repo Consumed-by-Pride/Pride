@@ -232,9 +232,44 @@ fn bool DialectTable.add_lowering(DialectTable* dt, uint dialect_name,
 }
 
 // Recognise a call whose callee is a dialect-qualified path `D.op(...)`.
+/*
+ Recognise `Dialect.opcode(args...)`.
+
+ TWO shapes, because the parser produces different trees for what looks
+ like one syntax:
+
+   N_EXPR_METHOD          `T.add(a, b)` written directly. Child 0 is the
+                          receiver, the rest are arguments, and the
+                          opcode is the node's own name_id. This is what
+                          the parser ACTUALLY builds -- it cannot tell a
+                          method call on a value from a call to a module
+                          or dialect member, so it always emits a method
+                          node and lets the resolver decide.
+
+   N_EXPR_CALL of         the shape this function originally handled, and
+   N_EXPR_FIELD           only reachable when something else has already
+                          rewritten the method node.
+
+ Only the second was matched, so `irdl dialects: 2 dialects, 6 opcodes,
+ 0 uses validated` was printed for a program whose every dialect call was
+ written the ordinary way. Arity checking, unknown-opcode diagnosis and
+ the lowering to emit_asm were all unreachable for real source.
+*/
 fn bool split_dialect_call(Node* call, uint* out_dialect, uint* out_opcode)
 {
-    if (call == null || call.kind != Nk.N_EXPR_CALL || call.child_count == 0) { return false; }
+    if (call == null) { return false; }
+
+    if (call.kind == Nk.N_EXPR_METHOD)
+    {
+        if (call.child_count == 0) { return false; }
+        Node* recv = call.children[0];
+        if (recv == null || recv.kind != Nk.N_EXPR_IDENT) { return false; }
+        *out_dialect = recv.name_id;
+        *out_opcode = call.name_id;
+        return true;
+    }
+
+    if (call.kind != Nk.N_EXPR_CALL || call.child_count == 0) { return false; }
     Node* callee = call.children[0];
     if (callee == null || callee.kind != Nk.N_EXPR_FIELD) { return false; }
     Node* base = callee.child(0);
