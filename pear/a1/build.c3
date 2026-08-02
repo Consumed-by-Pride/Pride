@@ -2577,7 +2577,16 @@ fn uint Builder.lower_handler_arm(Builder* b, Node* arm)
 
 fn uint Builder.lower_handle(Builder* b, Node* n)
 {
-    uint[32] ops;
+    /*
+     Scrutinee plus one operand per handler arm, however many.
+
+     This was `uint[32]` with `nops < 32` on the arm loop, so a handler
+     with more than 31 arms dropped the rest silently. An effect with 40
+     operations is not exotic -- x11_actor_protocol.pie is already at a
+     dozen -- and the dropped arms simply did not exist in the IR.
+    */
+    uint[1] unit_none;
+    usz mark = b.arg_len;
     usz nops = 0;
 
     // The computation is the first non-arm child.
@@ -2600,8 +2609,8 @@ fn uint Builder.lower_handle(Builder* b, Node* n)
      have to undo.
     */
     uint cv = comp != null ? b.lower_operand(comp)
-                           : b.emit(Op.AIR_CONST_UNIT, &ops[0], 0, n);
-    ops[0] = cv;
+                           : b.emit(Op.AIR_CONST_UNIT, &unit_none[0], 0, n);
+    if (!b.arg_push(cv)) { return pear_air::AIR_NO_VALUE; }
     nops = 1;
 
     /*
@@ -2626,15 +2635,16 @@ fn uint Builder.lower_handle(Builder* b, Node* n)
      into a real continuation. a1 records the structure without lying
      about the edges.
     */
-    for (usz i = 0; i < n.child_count && nops < 32; i++)
+    for (usz i = 0; i < n.child_count; i++)
     {
         Node* c = n.children[i];
         if (c == null || c.kind != Nk.N_HANDLER_ARM) { continue; }
-        ops[nops] = b.lower_handler_arm(c);
+        if (!b.arg_push(b.lower_handler_arm(c))) { break; }
         nops = nops + 1;
     }
 
-    uint id = b.emit(Op.AIR_HANDLE, &ops[0], nops, n);
+    uint id = b.emit(Op.AIR_HANDLE, &b.argbuf[mark], nops, n);
+    b.arg_len = mark;
     if (id != pear_air::AIR_NO_VALUE) { b.m.values[id].p.name = n.name_id; }
     return id;
 }

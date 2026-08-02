@@ -690,9 +690,21 @@ fn void Parse.parse_value_line(Parse* p, uint block)
     Op op = pear_air::op_from_name(w, n, &ok1);
     if (!ok1) { p.err("unknown opcode"); }
 
-    // Operands, plus the `@label` suffix a φ uses.
-    uint[64] ops;
-    uint[64] incs;
+    /*
+     Operands, plus the `@label` suffix a φ uses.
+
+     GROWABLE. These were `uint[64]` with an explicit "operand list
+     exceeds reader capacity" error, which is honest but still refuses
+     the input -- and D3 says every IR must be printable AND re-readable.
+     Once a1 stopped capping phi operands at 64 it began EMITTING
+     81-operand phis that its own reader rejected, and a2 could not load
+     the file at all. A printer and a parser that disagree about the
+     maximum arity make the round-trip property untestable exactly where
+     it matters most.
+    */
+    uint* ops = null;
+    uint* incs = null;
+    usz ocap = 0;
     usz nops = 0;
     bool is_phi = op == Op.AIR_PHI;
 
@@ -701,11 +713,19 @@ fn void Parse.parse_value_line(Parse* p, uint block)
         usz save = p.sc.pos;
         uint r;
         if (!p.sc.value_ref(&r)) { p.sc.pos = save; break; }
-        if (nops >= 64)
+        if (nops == ocap)
         {
-            // D6: report, never truncate silently.
-            p.err("operand list exceeds reader capacity");
-            break;
+            usz nc = ocap == 0 ? 16 : ocap * 2;
+            uint* o2 = (uint*)realloc((void*)ops, nc * uint::size);
+            uint* i2 = (uint*)realloc((void*)incs, nc * uint::size);
+            if (o2 != null) { ops = o2; }
+            if (i2 != null) { incs = i2; }
+            if (o2 == null || i2 == null)
+            {
+                p.err("out of memory reading operand list");
+                break;
+            }
+            ocap = nc;
         }
         ops[nops] = p.resolve_value(r);
         incs[nops] = pear_air::AIR_NO_BLOCK;
@@ -728,7 +748,7 @@ fn void Parse.parse_value_line(Parse* p, uint block)
     {
         vid = existing;
         pear_air::AirValue* v = p.m.val(vid);
-        usz off = p.m.push_operands(&ops[0], nops);
+        usz off = nops == 0 ? 0 : p.m.push_operands(&ops[0], nops);
         v = p.m.val(vid);              // push_operands may realloc
         v.op = op;
         v.block = block;
@@ -748,18 +768,22 @@ fn void Parse.parse_value_line(Parse* p, uint block)
     }
     else
     {
-        vid = p.m.new_value(block, op, &ops[0], nops, pear_air::AIR_NO_ORIGIN,
-                            p.sc.line, 1);
+        uint[1] empty;
+        vid = p.m.new_value(block, op, nops == 0 ? &empty[0] : &ops[0], nops,
+                            pear_air::AIR_NO_ORIGIN, p.sc.line, 1);
         p.ids.put(text_id, vid);
     }
 
-    if (is_phi)
+    if (is_phi && nops > 0)
     {
         usz ioff = p.m.push_phi_blocks(&incs[0], nops);
         pear_air::AirValue* v = p.m.val(vid);
         v.inc_off = ioff;
         v.inc_count = nops;
     }
+
+    if (ops != null)  { free((void*)ops); }
+    if (incs != null) { free((void*)incs); }
 
     p.parse_attrs(vid);
     p.parse_facts(vid);

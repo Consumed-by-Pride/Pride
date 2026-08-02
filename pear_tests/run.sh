@@ -710,6 +710,35 @@ else
   echo "$f2" | grep -E 'load\.index|op=add|op=lt' | sed 's/^/      /' | head -4
 fi
 
+# D3 over WIDE operand lists: what a1 prints, a1 must read back.
+#
+# a1's printer had no arity limit but its READER capped an operand list
+# at 64 and reported "operand list exceeds reader capacity". That was
+# invisible while the builder also capped phi operands at 64. The moment
+# the builder was fixed, a1 began emitting 81-operand phis that its own
+# parser rejected and that a2 could not load at all -- printable but not
+# re-readable, which is precisely what D3 forbids.
+#
+# x13 has an 81-predecessor join and 21-operand calls. The assertion is
+# the full D3 loop: lower it, read it back, print it again, and require
+# the two printings to be identical.
+if [ -f pfront_tests/syntax/x13_wide_constructs.pie ]; then
+  "$PEARC" -I stdlib pfront_tests/syntax/x13_wide_constructs.pie > /tmp/pear_rt1.air 2>/dev/null
+  rt_read=$("$BIN" /tmp/pear_rt1.air 2>&1)
+  "$BIN" /tmp/pear_rt1.air 2>/dev/null | sed -n '/^module\|^func/,$p' > /tmp/pear_rt2.air
+  rt_shape1=$(grep -cE '^(func|  block|    %)' /tmp/pear_rt1.air)
+  if echo "$rt_read" | grep -q 'parse ok (0 errors)' \
+     && ! echo "$rt_read" | grep -qi 'capacity' \
+     && [ "$rt_shape1" -gt 0 ] \
+     && diff -q <(grep -E '^(func|  block|    %|    ret|    jump|    branch|endfunc)' /tmp/pear_rt1.air) \
+                <(grep -E '^(func|  block|    %|    ret|    jump|    branch|endfunc)' /tmp/pear_rt2.air) >/dev/null; then
+    pass=$((pass+1)); note PASS "d3_wide_roundtrip" "(81-operand phi survives print->parse->print)"
+  else
+    fail=$((fail+1)); note FAIL "d3_wide_roundtrip" "wide operand list does not round-trip"
+    echo "$rt_read" | grep -iE 'capacity|error' | sed 's/^/      /' | head -3
+  fi
+fi
+
 # The guard must survive the sigma LOSING ITS SHAPE.
 #
 # a2's own output can contain a constant that carries a foreign origin:
