@@ -586,6 +586,31 @@ against measurement rather than deleted: a fabricated SCC cycle cited as
 justification for delayed widening, a "26 of 211" σ count that was really
 8, and a stale "53%" semi-pruned figure that is 83%.
 
+### The graph-compiler pass
+
+`x10_graph_compiler.pie` writes the canonical hard task — take a math
+expression or packet rule at compile time and turn it into an unboxed
+bare-metal loop — as one program, so that rewrite rules, PGL, quotation,
+IRDL, CMTT and staging all run against each other rather than in
+isolation. That found the passes that were never wired up at all:
+
+| Defect | Kind |
+|---|---|
+| **PGL decision-tree compiler was never called.** Allocated, initialised, reported; `build_from_clauses` invoked from nowhere. Every file ever compiled printed `pgl trees: 0 built` | dead pass |
+| ...then reported redundancy on correct code, because literals all shared one key (`1` and `2` were the same constructor) | false positive |
+| ...and variants all shared one key: every exhaustive two-arm variant match in the stdlib was called dead, nine in `opt/option.pie` alone | false positive |
+| ...and a literal's arity was its `child_count`, so `match n \| 1 \| _` claimed the catch-all could never match | false positive |
+| ...and "redundant" meant "shadowed on *some* path" rather than every path | wrong semantics |
+| ...and the warning tested the running total, blaming later clause sets for earlier ones | wrong scope |
+| **IRDL never saw a single dialect use.** `split_dialect_call` matched the wrong node shape (`N_EXPR_METHOD` is what the parser builds) *and* ran after three passes had rebuilt the tree | dead pass |
+| Sigil quotations were never interned, so `quote sharing` read 0 while `staging` counted the same quotes on the line above | dead path |
+| `\|>` and `\|>*` lowered to `AIR_UNKNOWN` — section 16's headline operator, a hole exactly where a graph compiler runs its pipeline | hole |
+| A single-clause function with a destructuring pattern bound **nothing** | miscompile |
+
+The pattern in all of them: a pass that is constructed, reported on, and
+never run reads exactly like a pass that works, and its report reads
+exactly like a real measurement of zero.
+
 ---|---|
 | `R` ranged | 15,624 → 18,766 |
 | `R` tightened | 3,887 |
