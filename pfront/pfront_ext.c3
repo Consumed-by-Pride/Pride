@@ -459,7 +459,33 @@ fn Node* Parser.parse_irdl_decl(Parser* p)
          parse_pgen_decl; irdl was the one block-scanner without it.
         */
         if (starts_declaration(p.ct())) { break; }
+        /*
+         PROGRESS GUARD.
+
+         Every other block scanner in this file ends its dispatch with an
+         `else { break; }`, so a token it does not recognise terminates
+         the block. This loop had no such arm: if parse_module_path
+         consumed nothing -- which it does for any token that cannot begin
+         a path -- the iteration ended exactly where it started and the
+         `while` spun forever, allocating an N_CLAUSE per turn.
+
+         `irdl` followed by `{ *` is eight characters and hung the
+         compiler until the OOM killer took it: 3.7 million iterations in
+         five seconds, all on the same token (line 2, col 3). Found by
+         fuzzing, not by review.
+
+         Checking the TOKEN rather than trusting the sub-parser's return
+         is deliberate: parse_module_path returns a node for a partial
+         path too, so a null check would not have caught this.
+        */
+        Tok before = p.cur();
         Node* head = p.parse_module_path();
+        if (p.cur().line == before.line && p.cur().col == before.col
+            && p.ct() == before.type)
+        {
+            p.err(1263, "expected a dialect operation name in irdl block");
+            break;
+        }
         Node* rule = p.mk(Nk.N_CLAUSE, head == null ? t.line : head.line,
                                         head == null ? t.col : head.col);
         p.add(rule, head);

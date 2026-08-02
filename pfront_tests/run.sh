@@ -1160,6 +1160,33 @@ if [ -x ./pearc ]; then
   else
     pass=$((pass+1)); printf '  PASS  %-26s %s\n' "syntax_lowering_no_crash" "(every syntax file lowers without crashing)"
   fi
+  # PROGRESS: no block scanner may loop without consuming a token.
+  #
+  # `irdl` followed by `{ *` is eight characters and hung pfrontc until
+  # the OOM killer took it -- 3.7 million iterations in five seconds, all
+  # on the same token, allocating an AST node each time. parse_irdl_decl
+  # was the one block scanner without an `else { break; }`, so a token
+  # that parse_module_path could not consume left the loop exactly where
+  # it started.
+  #
+  # Found by fuzzing, so the fuzz input that found it is kept alongside
+  # the minimal case. Both are run under a MEMORY CAP as well as a
+  # timeout: an infinite loop that allocates shows up as rc=137 rather
+  # than rc=124 depending on which limit it hits first, and either is a
+  # failure.
+  pg_bad=""
+  for f in pfront_tests/fuzz/f_irdl_minimal.pie pfront_tests/fuzz/f_irdl_progress.pie; do
+    [ -e "$f" ] || continue
+    ( ulimit -v 2000000; timeout 15 ./pfrontc "$f" -I stdlib --plain --quiet >/dev/null 2>&1 )
+    rc=$?
+    [ "$rc" -ge 124 ] && pg_bad="$pg_bad $(basename "$f")(rc=$rc)"
+  done
+  if [ -z "$pg_bad" ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "parser_makes_progress" "(irdl block cannot spin on one token)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "parser_makes_progress" "hung or OOMed on:$pg_bad"
+  fi
+
   # DEEP INPUT MUST NOT CRASH THE COMPILER.
   #
   # A left-associative chain `a + b + c + ...` is FLAT to the parser --
