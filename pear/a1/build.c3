@@ -1770,6 +1770,71 @@ fn uint Builder.lower_expr(Builder* b, Node* n)
             return id;
         }
 
+        case N_EXPR_LAMBDA:
+        {
+            /*
+             `fn | x -> e` — an anonymous function used as a value.
+
+             It parsed, resolved and type-checked, and a1 had no rule for
+             it: N_EXPR_LAMBDA appeared in build.c3 only as a scope
+             boundary in is_module_level, never as a lowering case. A
+             `let g = fn | x -> x + 1` produced three holes -- the lambda,
+             its clause, and its binder -- and the call through `g` then
+             invoked an AIR_UNKNOWN.
+
+             The nested-fn case one arm below carries a comment saying
+             "the spec has no lambda form", which is what the parser
+             disproved: parse_lambda has been there the whole time.
+
+             Lowered exactly like a nested `fn`: a lambda's body is a
+             clause list, which lower_function already handles, so it
+             becomes its own AirFunc and the expression yields a
+             reference to it. That reuses the multi-clause dispatch, the
+             guard handling and the pattern binding rather than growing a
+             second, subtly different copy.
+
+             ── What this does NOT do ───────────────────────────────────
+
+             It does not capture an enclosing local. `fn | x -> x + k`
+             for an outer `k` lowers the body as an ordinary function, so
+             `k` resolves to a free name rather than to a captured slot.
+             Closure conversion is a4's job by name in PEAR.md, and doing
+             it here would mean inventing an environment layout four
+             stages before the one that decides layout. What matters now
+             is that the construct is IN the IR with its body lowered, so
+             a4 has something to convert and DCE cannot delete it.
+            */
+            uint saved_f = b.cur_func;
+            uint saved_b = b.cur_block;
+            bool saved_loop = b.in_loop;
+            uint saved_h = b.loop_header;
+            uint saved_e = b.loop_exit;
+
+            uint before = (uint)b.m.func_count;
+            b.lower_function(n);
+            bool made = (uint)b.m.func_count > before;
+
+            b.cur_func = saved_f;
+            b.cur_block = saved_b;
+            b.in_loop = saved_loop;
+            b.loop_header = saved_h;
+            b.loop_exit = saved_e;
+
+            uint id = b.emit(Op.AIR_FUNC_REF, &ops[0], 0, n);
+            if (id != pear_air::AIR_NO_VALUE)
+            {
+                if (made)
+                {
+                    // Name the lambda after the function it became, so the
+                    // reference and the definition agree in the text.
+                    b.m.values[id].p.name = b.m.funcs[before].name;
+                }
+                // A function address is never null.
+                b.m.values[id].facts.nullness = pear_erm::Nullness.NULL_NEVER;
+            }
+            return id;
+        }
+
         case N_EXPR_QUOTE:
         {
             /*
@@ -3189,11 +3254,16 @@ fn uint Builder.lower_stmt(Builder* b, Node* n)
             /*
              A function declared inside another function's body.
 
-             Pride has no closures over a nested `fn` (the spec has no
-             lambda form and generics are monomorphised), so a nested fn is
-             an ordinary top-level function that merely happens to be
-             written inside another. Lower it as one, restoring the outer
-             function's cursor afterwards.
+             A nested fn does not close over the enclosing scope
+             (generics are monomorphised and there is no environment to
+             capture), so it is an ordinary top-level function that merely
+             happens to be written inside another. Lower it as one,
+             restoring the outer function's cursor afterwards.
+
+             An earlier version of this comment also claimed "the spec has
+             no lambda form". The parser has had parse_lambda the whole
+             time and `fn | x -> e` is accepted; the N_EXPR_LAMBDA case
+             above lowers it the same way.
 
              Emitting a hole here would have been the easy path and would
              have silently dropped 18 real functions from the stdlib.

@@ -1115,6 +1115,26 @@ if [ -x ./pearc ]; then
     fail=$((fail+1))
   fi
 
+  # An anonymous function is a VALUE and must lower to a real function.
+  #
+  # `fn | x -> e` parsed, resolved and type-checked, and a1 had no rule
+  # for it: N_EXPR_LAMBDA appeared in build.c3 only as a scope boundary,
+  # never as a lowering case. `let g = fn | x -> x + 1` produced three
+  # holes and the call through `g` invoked an AIR_UNKNOWN.
+  printf 'mod t\nfn f : i64 -> i64\n  | n ->\n    let g = fn | x -> x + 1i64\n    g(n)\n' > /tmp/pf_lam.pie
+  lam_h=$(./pearc --stats /tmp/pf_lam.pie 2>/dev/null | grep -oE 'unsupported      : [0-9]+' | grep -oE '[0-9]+$')
+  lam_o=$(./pearc /tmp/pf_lam.pie 2>/dev/null)
+  # The lambda must become its own function with a lowered body, and the
+  # use site must hold a reference to it -- not an opaque unknown.
+  if [ "${lam_h:-9}" = "0" ] && echo "$lam_o" | grep -q 'func.ref' \
+     && echo "$lam_o" | grep -q 'op=add'; then
+    printf '  PASS  %-26s %s\n' "lambda_lowers" "(anonymous fn becomes a real function)"
+    pass=$((pass+1))
+  else
+    printf '  FAIL  %-26s %s\n' "lambda_lowers" "holes=$lam_h; lambda did not lower"
+    fail=$((fail+1))
+  fi
+
   # No construct in the syntax suite may leave a lowering hole.
   sh=0
   for f in pfront_tests/syntax/x*.pie; do
