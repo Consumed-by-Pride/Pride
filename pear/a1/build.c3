@@ -287,7 +287,66 @@ struct Builder
     uint*  argbuf;
     usz    arg_len;
     usz    arg_cap;
+
+    /*
+     Recursion depth of the lowering walk.
+
+     a1 lowers an expression by recursing on its children, so a deeply
+     right-nested term recurses once per level. `n + n + ... + n` with
+     1,200 terms is one such tree, and a1 SEGFAULTED on it -- rc=139,
+     stack exhausted, no diagnostic. pfront parses the same file happily
+     because it has had a MAX_DEPTH guard since the beginning; a1 had
+     none, so the crash landed one stage later on input the front end had
+     already accepted.
+
+     Measured on this build at the default 8 MB stack: the walk survives
+     850 levels and dies at 900. The real standard library peaks at 401,
+     and the deepest file in the whole suite -- x09_torture_scale.pie,
+     whose 800-term chain exists to be unreasonable -- reaches 800. The
+     crash margin over real input was about 12%.
+
+     The limit is 850: above everything the suite contains, below the
+     measured crash. Deliberately NOT generous -- a bigger number would
+     need a bigger stack to be honest, and a limit that only holds when
+     `ulimit -s` happens to be large is not a limit.
+
+     The depth counted here is about one level per operand in a chain,
+     NOT pfront's parser nesting: `a + b + c` is flat to the parser
+     (MAX_DEPTH 400 never fires on it) and three levels to this walk,
+     which is why the front end accepts files a1 then has to refuse.
+
+     Exceeding it yields AIR_UNKNOWN plus a printed diagnostic, so the
+     module stays well-formed and the gap is counted, instead of the
+     process dying on a signal with no output.
+    */
+    int    depth;
+    bool   depth_reported;
 }
+
+const int LOWER_MAX_DEPTH = 850;
+
+/*
+ Enter one level of the lowering recursion. False means "too deep, do not
+ recurse" -- the caller emits AIR_UNKNOWN, which keeps the module
+ well-formed and countable rather than crashing.
+*/
+fn bool Builder.enter(Builder* b, Node* n)
+{
+    b.depth = b.depth + 1;
+    if (b.depth > LOWER_MAX_DEPTH)
+    {
+        if (!b.depth_reported)
+        {
+            printf("pear/a1: expression nests too deeply to lower (limit %d)\n",
+                   LOWER_MAX_DEPTH);
+            b.depth_reported = true;
+        }
+        return false;
+    }
+    return true;
+}
+
+fn void Builder.leave(Builder* b) { b.depth = b.depth - 1; }
 
 /*
  Reserve room for `want` more operands on the scratch stack.
@@ -333,6 +392,7 @@ fn void Builder.init(Builder* b, Air* m, pfront_core::Interner* it)
     for (usz i = 0; i < 256; i++) { b.miss_kind[i] = 0; }
     b.miss_undef_read = 0;
     b.argbuf = null; b.arg_len = 0; b.arg_cap = 0;
+    b.depth = 0; b.depth_reported = false;
 }
 
 fn void Builder.note_unsupported(Builder* b, Nk k)
@@ -983,6 +1043,21 @@ fn void Builder.place_sigma(Builder* b, Node* cond, uint cond_val,
 fn uint Builder.lower_expr(Builder* b, Node* n)
 {
     if (n == null) { return pear_air::AIR_NO_VALUE; }
+    if (!b.enter(n))
+    {
+        b.leave();
+        uint[1] deep;
+        b.unsupported = b.unsupported + 1;
+        b.note_unsupported(n.kind);
+        return b.emit(Op.AIR_UNKNOWN, &deep[0], 0, n);
+    }
+    uint r_deep = b.lower_expr_inner(n);
+    b.leave();
+    return r_deep;
+}
+
+fn uint Builder.lower_expr_inner(Builder* b, Node* n)
+{
     uint[16] ops;
 
     switch (n.kind)

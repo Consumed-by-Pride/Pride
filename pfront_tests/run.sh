@@ -1160,6 +1160,38 @@ if [ -x ./pearc ]; then
   else
     pass=$((pass+1)); printf '  PASS  %-26s %s\n' "syntax_lowering_no_crash" "(every syntax file lowers without crashing)"
   fi
+  # DEEP INPUT MUST NOT CRASH THE COMPILER.
+  #
+  # A left-associative chain `a + b + c + ...` is FLAT to the parser --
+  # MAX_DEPTH never fires -- and a tree N deep to every walker that
+  # recurses on children. Both pfront's resolver (resolve_expr /
+  # resolve_stmt, mutually recursive) and a1's lowering walk had no guard
+  # at all, and both died on a signal with no diagnostic: pfrontc
+  # segfaulted at ~5,000 terms, pearc at ~900.
+  #
+  # Generated here rather than committed as a fixture because the sizes
+  # are the point and a 20,000-term file is not worth versioning. The
+  # requirement is not that these COMPILE -- refusing them is fine -- but
+  # that the compiler always exits cleanly and says why.
+  dc_bad=""
+  for n in 900 1500 5000 20000; do
+    awk -v n="$n" 'BEGIN{
+      printf "mod deepchain\nfn f : (i64) -> i64\n  | n -> n";
+      for (i = 1; i < n; i++) printf " + n";
+      printf "\n" }' > /tmp/pf_deepchain.pie
+    ./pfrontc /tmp/pf_deepchain.pie --plain --quiet >/dev/null 2>&1
+    rc1=$?
+    ./pearc /tmp/pf_deepchain.pie >/dev/null 2>&1
+    rc2=$?
+    [ "$rc1" -ge 128 ] && dc_bad="$dc_bad pfront@$n(rc=$rc1)"
+    [ "$rc2" -ge 128 ] && dc_bad="$dc_bad pearc@$n(rc=$rc2)"
+  done
+  if [ -z "$dc_bad" ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "deep_chain_no_crash" "(900..20000 terms: no signal, always a diagnostic)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "deep_chain_no_crash" "crashed on:$dc_bad"
+  fi
+
   # WIDE CONSTRUCTS: no fixed-size buffer may silently drop operands.
   #
   # Asserting the WIDTHS, not just that the file compiles. Every one of

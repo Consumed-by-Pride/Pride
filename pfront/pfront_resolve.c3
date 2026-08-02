@@ -403,7 +403,33 @@ struct Resolver
     usz                    resolved_count;
     usz                    unresolved_count;
     usz                    builtin_hits;
+
+    /*
+     Depth of the resolve_expr / resolve_stmt mutual recursion.
+
+     The PARSER's MAX_DEPTH does not cover this. `a + b + c + ...` is a
+     LEFT-associative chain: flat to the parser, which never nests more
+     than a couple of levels on it, but a tree 5,000 deep to any walker
+     that recurses on children. pfrontc segfaulted on a 5,000-term chain
+     with the stack trace alternating resolve_expr / resolve_stmt all the
+     way down, having reported no error at all.
+    */
+    int                    expr_depth;
+    bool                   depth_reported;
 }
+
+/*
+ Hard ceiling on the resolver's recursion.
+
+ Measured at the default 8 MB stack: this walk dies somewhere between
+ 4,000 and 5,000 levels. 2,000 is comfortably under that and far above
+ anything real -- the standard library's deepest expression is 401 levels
+ and the torture-scale test file reaches 800.
+
+ Hitting it is reported once, as an error, and the subtree is left
+ unresolved rather than crashing the process.
+*/
+const int MAX_EXPR_DEPTH = 2000;
 
 fn bool Resolver.init(Resolver* r, Arena* a, pfront_core::Interner* it,
                       pfront_core::DiagBag* d, Loader* l)
@@ -418,6 +444,8 @@ fn bool Resolver.init(Resolver* r, Arena* a, pfront_core::Interner* it,
     r.cur_file = null;
     r.cur_fn = null;
     r.loop_depth = 0;
+    r.expr_depth = 0;
+    r.depth_reported = false;
     r.handler_depth = 0;
     r.resolved_count = 0;
     r.unresolved_count = 0;
@@ -1394,6 +1422,25 @@ fn void mark_chain_resolved(Node* n)
 
 // ── Expression resolution ───────────────────────────────────────────────────
 fn void Resolver.resolve_expr(Resolver* r, Node* e)
+{
+    r.expr_depth = r.expr_depth + 1;
+    if (r.expr_depth > MAX_EXPR_DEPTH)
+    {
+        if (!r.depth_reported)
+        {
+            r.diags.error(pfront_core::Phase.PH_RESOLVE, 1002,
+                          e == null ? 0 : e.line, e == null ? 0 : e.col,
+                          "expression nests too deeply to resolve", r.cur_file);
+            r.depth_reported = true;
+        }
+        r.expr_depth = r.expr_depth - 1;
+        return;
+    }
+    r.resolve_expr_inner(e);
+    r.expr_depth = r.expr_depth - 1;
+}
+
+fn void Resolver.resolve_expr_inner(Resolver* r, Node* e)
 {
     if (e == null) { return; }
     switch (e.kind)
