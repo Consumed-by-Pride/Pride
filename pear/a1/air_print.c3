@@ -241,13 +241,94 @@ fn void Numbering.build(Numbering* nb, Air* m)
  reader, which is exactly the kind of round-trip failure D3 exists to make
  impossible.
 */
+/*
+ Is this byte safe to emit RAW inside a name?
+
+ Deliberately wider than air_parse.c3's `is_word`, and the difference is
+ the point. Two separate questions were being conflated:
+
+   1. which bytes can the SCANNER read back as one token, and
+   2. which bytes would corrupt the STRUCTURE of the line.
+
+ Only (2) needs escaping. A name is a whitespace-delimited field followed
+ by `key=value` attributes, so the bytes that actually break parsing are
+ whitespace (ends the field early), `=` (starts an attribute), `;` (starts
+ a comment) and control characters. Everything else -- `~`, `/`, `"`,
+ `-`, `[`, `:` -- is inert in this position.
+
+ The first version escaped anything outside `is_word` and produced
+ `name=$22a$20b$20c$22` for the string "a b c" and `$7eTree` for the
+ `~Tree` sigil: correct, round-trippable, and unreadable. 1,500 escapes
+ across the standard library where 80 were needed. Since the IR is meant
+ to be read by a person -- that is half of why D3 exists -- an encoding
+ that obscures every string literal in the program is the wrong trade.
+*/
+fn bool name_char_ok(char c)
+{
+    if (c == (char)' ' || c == (char)9 || c == (char)10 || c == (char)13)
+    {
+        return false;
+    }
+    if (c == '=' || c == ';' || c == '$') { return false; }
+    // Control bytes have no business in a single-line field.
+    if ((uint)c < 32u) { return false; }
+    return true;
+}
+
+/*
+ Print an interned name, ESCAPING anything the reader could not read back.
+
+ Pride is untyped and permissive, and pfront will happily hand a1 a
+ declaration whose name is an operator: error recovery on hostile input
+ produced `func => entry=b1`. The printer emitted those bytes verbatim,
+ and then the reader's `word()` -- which stops at any non-word character
+ -- consumed NOTHING for the name, so the `=` of `entry=` was taken as
+ the `=` of a `name=value` attribute and `entry=b1` was swallowed as the
+ name's value. The function came back with no entry block, which
+ verify.c3 reports as "function has no entry block", and the parse still
+ claimed "0 errors".
+
+ Nine of 508 fuzzed files hit this. It is a D3 failure of the worst kind:
+ not a crash, not a diagnostic, just a silently different program on the
+ far side of a round trip.
+
+ The escape is `$xx` hex per offending byte, chosen because `$` is not in
+ `is_word` so the encoding is unambiguous, and the result is still a
+ single whitespace-free token. A name that is entirely unprintable still
+ prints as something, so no name can ever collapse to nothing and shift
+ the fields after it.
+*/
 fn void print_name(Out* o, Air* m, uint id)
 {
     if (id == 0 || m.interner == null) { o.str("_"); return; }
     char* t = m.interner.text(id);
     usz   n = m.interner.text_len(id);
     if (t == null || n == 0) { o.str("_"); return; }
-    o.raw(t, n);
+
+    bool clean = true;
+    for (usz i = 0; i < n; i++)
+    {
+        if (!name_char_ok(t[i])) { clean = false; break; }
+    }
+    if (clean) { o.raw(t, n); return; }
+
+    // `$` prefix marks an escaped name; each bad byte becomes $xx.
+    for (usz i = 0; i < n; i++)
+    {
+        char c = t[i];
+        if (name_char_ok(c)) { o.raw(&t[i], 1); continue; }
+        char[3] esc;
+        esc[0] = '$';
+        esc[1] = hex_digit((int)(((uint)c >> 4) & 0xF));
+        esc[2] = hex_digit((int)((uint)c & 0xF));
+        o.raw(&esc[0], 3);
+    }
+}
+
+fn char hex_digit(int v)
+{
+    if (v < 10) { return (char)('0' + v); }
+    return (char)('a' + (v - 10));
 }
 
 // A block label. Named blocks print their name; anonymous ones print `b<id>`.

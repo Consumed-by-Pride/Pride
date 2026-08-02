@@ -188,10 +188,53 @@ fn char Scan.cur(Scan* s)    { return s.pos < s.len ? s.src[s.pos] : (char)0; }
 
 fn bool is_space(char c) { return c == ' ' || c == '\t' || c == '\r'; }
 
+/*
+ Characters that may appear inside a NAME token.
+
+ `$` is here because the printer escapes any byte it cannot emit safely
+ as `$xx` (see print_name in air_print.c3). Without `$` in this set the
+ escape would split the name in two and the field after it would be
+ misread -- which is the exact failure the escape exists to prevent.
+
+ Must stay in lock-step with `name_char_ok` in air_print.c3.
+*/
 fn bool is_word(char c)
 {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-        || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '?';
+        || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '?'
+        || c == '$';
+}
+
+/*
+ Characters that may appear inside a NAME field specifically.
+
+ Wider than is_word, and matched to `name_char_ok` in air_print.c3: a
+ name runs to whitespace, `=` or `;`, so a `~` or a quote or a slash in
+ the middle of one is unambiguous and is read verbatim. `$` introduces a
+ hex escape for the handful of bytes that are not safe.
+
+ Keeping this separate from is_word matters: is_word also governs
+ keywords and attribute KEYS, where the narrow set is correct.
+*/
+fn bool is_name_char(char c)
+{
+    if (c == (char)' ' || c == (char)9 || c == (char)10 || c == (char)13)
+    {
+        return false;
+    }
+    if (c == '=' || c == ';') { return false; }
+    if ((uint)c < 32u) { return false; }
+    return true;
+}
+
+// Read a NAME field: everything up to whitespace, `=` or `;`.
+fn usz Scan.name_word(Scan* s, char** start)
+{
+    s.skip_inline();
+    *start = s.src + s.pos;
+    usz n = 0;
+    while (!s.at_end() && is_name_char(s.cur())) { s.pos = s.pos + 1; n = n + 1; }
+    return n;
 }
 
 // Skip spaces and a trailing comment, but never a newline.
@@ -352,13 +395,69 @@ fn void Parse.err(Parse* p, char* what)
     printf("air_parse: line %d: %s\n", p.sc.line, what);
 }
 
+fn int hex_val(char c)
+{
+    if (c >= '0' && c <= '9') { return (int)(c - '0'); }
+    if (c >= 'a' && c <= 'f') { return 10 + (int)(c - 'a'); }
+    if (c >= 'A' && c <= 'F') { return 10 + (int)(c - 'A'); }
+    return -1;
+}
+
+/*
+ Intern a name read from the text, DECODING the printer's `$xx` escapes.
+
+ The printer escapes any byte that is not a legal name character, because
+ a raw `=` or `"` or space in a name breaks the field structure of the
+ line (see print_name). Decoding here, at the single point where every
+ name the reader stores passes through, is what makes the escape a
+ TRANSPORT encoding rather than a change to the name itself.
+
+ Without the decode the escape is not idempotent and that is worse than
+ the bug it fixes: `"a b c"` printed as `$22a$20b$20c$22`, which read
+ back as the literal 18-character name `$22a$20b$20c$22` and then
+ re-printed as `$2422a$2420b$2420c$2422`, growing on every pass. D3 asks
+ for print/parse to be the identity, not merely to survive.
+
+ A malformed escape -- `$` not followed by two hex digits -- is kept
+ verbatim. It cannot come from this printer, and silently dropping bytes
+ from a name a human wrote by hand would be its own small betrayal.
+*/
 fn uint Parse.intern(Parse* p, char* s, usz n)
 {
     if (p.m.interner == null || n == 0) { return 0; }
     // `_` is the writer's placeholder for "no name"; map it back to 0 so a
     // round trip does not turn an absent name into a literal underscore.
     if (n == 1 && s[0] == '_') { return 0; }
-    return p.m.interner.intern(s, n);
+
+    bool has_esc = false;
+    for (usz i = 0; i < n; i++) { if (s[i] == '$') { has_esc = true; break; } }
+    if (!has_esc) { return p.m.interner.intern(s, n); }
+
+    char* buf = (char*)malloc(n + 1);
+    if (buf == null) { return p.m.interner.intern(s, n); }
+    usz w = 0;
+    usz i2 = 0;
+    while (i2 < n)
+    {
+        if (s[i2] == '$' && i2 + 2 < n)
+        {
+            int hi = hex_val(s[i2 + 1]);
+            int lo = hex_val(s[i2 + 2]);
+            if (hi >= 0 && lo >= 0)
+            {
+                buf[w] = (char)((hi << 4) | lo);
+                w = w + 1;
+                i2 = i2 + 3;
+                continue;
+            }
+        }
+        buf[w] = s[i2];
+        w = w + 1;
+        i2 = i2 + 1;
+    }
+    uint id = w == 0 ? 0 : p.m.interner.intern(buf, w);
+    free((void*)buf);
+    return id;
 }
 
 /*
@@ -401,7 +500,7 @@ fn void Parse.pass1(Parse* p)
 
         if (p.sc.eat_word("module"))
         {
-            char* w; usz n = p.sc.word(&w);
+            char* w; usz n = p.sc.name_word(&w);
             p.m.name = p.intern(w, n);
             p.sc.next_line();
             continue;
@@ -409,7 +508,13 @@ fn void Parse.pass1(Parse* p)
 
         if (p.sc.eat_word("func"))
         {
-            char* w; usz n = p.sc.word(&w);
+            // name_word, not word: a function name comes straight from
+            // Pride source and error recovery can make it an operator.
+            // `func => entry=b1` read the name as EMPTY with word(), then
+            // took the `=` of `entry=` as an attribute separator and
+            // swallowed `entry=b1` as its value -- the function came back
+            // with no entry block and the parse still said "0 errors".
+            char* w; usz n = p.sc.name_word(&w);
             uint nm = p.intern(w, n);
             cur_func = p.m.new_func(nm, p.sc.line, 1);
             // `pub` and `entry=` are read in pass 2, once labels exist.
@@ -618,7 +723,7 @@ fn void Parse.parse_attrs(Parse* p, uint vid)
         }
         else if (pear_air::str_eq_n(k, kn, "name"))
         {
-            char* w; usz n = p.sc.word(&w);
+            char* w; usz n = p.sc.name_word(&w);
             p.m.val(vid).p.name = p.intern(w, n);
         }
         else if (pear_air::str_eq_n(k, kn, "index"))
@@ -632,7 +737,7 @@ fn void Parse.parse_attrs(Parse* p, uint vid)
             // The field NAME on a load/store/addr of a struct field. See
             // the note in air_print.c3: printing only the slot index lost
             // it on every round trip.
-            char* w; usz n = p.sc.word(&w);
+            char* w; usz n = p.sc.name_word(&w);
             p.m.val(vid).p.name = p.intern(w, n);
         }
         else if (pear_air::str_eq_n(k, kn, "op"))
@@ -911,7 +1016,7 @@ fn void Parse.pass2(Parse* p)
             // each header with the function it made.
             func_seq = func_seq + 1;
             cur_func = func_seq;
-            char* w; p.sc.word(&w);      // name, already interned in pass 1
+            char* w; p.sc.name_word(&w); // name, already interned in pass 1
             pear_air::AirFunc* f = p.m.fun(cur_func);
             while (!p.sc.at_eol())
             {

@@ -752,6 +752,76 @@ else
   fail=$((fail+1)); note FAIL "roundtrip_converges" "$rt_never fixtures never reach a stable rendering"
 fi
 
+# A name that is not a plain word must survive the round trip.
+#
+# Pride is untyped and permissive, and pfront's error recovery will hand
+# a1 a declaration whose NAME is an operator. The printer emitted those
+# bytes verbatim, so `func => entry=b1` was produced -- and the reader's
+# word scanner stops at `=`, so it read the name as EMPTY, then took the
+# `=` of `entry=` as an attribute separator and swallowed `entry=b1` as
+# that attribute's value. The function came back with NO ENTRY BLOCK,
+# verify reported "function has no entry block", and the parse still
+# claimed "0 errors". Nine of 508 fuzzed files hit it.
+#
+# The printer now escapes only the bytes that break the line's field
+# structure -- whitespace, `=`, `;`, `$`, control characters -- as `$xx`,
+# and Parse.intern decodes them. Everything else, including `~` and `"`
+# and `/`, stays raw so the IR is still readable.
+#
+# Three things are asserted, because each fails differently:
+#   1. a hand-written `func =>` still yields a function with an entry;
+#   2. the escape DECODES, so print->parse->print is stable rather than
+#      growing `$3d` into `$243d` on every pass;
+#   3. an ordinary sigil name is NOT escaped, so the fix did not make the
+#      output unreadable.
+#
+# NOTE ON SCOPE. The guarantee is over a1's OWN OUTPUT -- print then
+# parse -- not over arbitrary hand-written text. A file containing the
+# literal bytes `func => entry=b1` is still misread, because `=` cannot
+# be a name character without making `name=value` ambiguous, and no
+# escape can help text that was never escaped. That is a real limit and
+# it is stated rather than papered over: the D3 property is
+# parse(print(x)) == x, and print(x) never emits a bare `=` in a name.
+#
+# So the test drives it end to end from PRIDE SOURCE, which is where the
+# operator name actually came from, rather than from a hand-written .air.
+# The fixture is the fuzz input that found it, kept verbatim, because a
+# hand-written reduction would not reproduce the error recovery that
+# names a function `=>` in the first place.
+if [ -f pfront_tests/fuzz/f_operator_name.pie ]; then
+  "$PEARC" pfront_tests/fuzz/f_operator_name.pie > /tmp/pear_opname.air 2>/dev/null
+  on1=$("$BIN" /tmp/pear_opname.air 2>&1)
+  on_err=$(echo "$on1" | grep 'errors / warnings' | sed -E 's/.*: *([0-9]+) *\/.*/\1/')
+  on_esc=$(grep -c '^func \$3d' /tmp/pear_opname.air)
+  if [ "${on_err:-1}" = "0" ] && ! echo "$on1" | grep -q 'no entry block' \
+     && [ "${on_esc:-0}" -ge 1 ]; then
+    pass=$((pass+1)); note PASS "operator_named_func" "(=> printed escaped, entry block survives)"
+  else
+    fail=$((fail+1)); note FAIL "operator_named_func" "errors=$on_err escaped-names=$on_esc"
+    echo "$on1" | grep -i 'entry block' | sed 's/^/      /' | head -2
+  fi
+fi
+
+# The escape must be an ENCODING, not a mutation: stable under repetition.
+printf 'mod q\nfn f : () -> i64\n  | () -> "a b c"\n' > /tmp/pear_esc.pie
+"$PEARC" /tmp/pear_esc.pie > /tmp/pear_esc1.air 2>/dev/null
+"$BIN" /tmp/pear_esc1.air 2>/dev/null | sed -n '/^module\|^func/,$p' > /tmp/pear_esc2.air
+e1=$(grep 'const\.str' /tmp/pear_esc1.air | head -1)
+e2=$(grep 'const\.str' /tmp/pear_esc2.air | head -1)
+if [ -n "$e1" ] && [ "$e1" = "$e2" ]; then
+  pass=$((pass+1)); note PASS "name_escape_idempotent" "(escaped name is stable across a round trip)"
+else
+  fail=$((fail+1)); note FAIL "name_escape_idempotent" "escape grew on re-print: '$e1' -> '$e2'"
+fi
+
+# And the escape must not fire on names that are merely unusual.
+printf 'mod t\nfn f : (i64,i64) -> i64\n  | (x,y) ->\n    let node = ~Tree (x + y)\n    x\n' > /tmp/pear_sig.pie
+if "$PEARC" /tmp/pear_sig.pie 2>&1 | grep -q 'name=~Tree'; then
+  pass=$((pass+1)); note PASS "name_escape_minimal" "(~Tree prints raw; only structural bytes escape)"
+else
+  fail=$((fail+1)); note FAIL "name_escape_minimal" "a harmless sigil name was escaped"
+fi
+
 # A MEMORY phi must round-trip its incoming blocks.
 #
 # The printer emitted `@label` only for AIR_PHI, so a memory phi printed
