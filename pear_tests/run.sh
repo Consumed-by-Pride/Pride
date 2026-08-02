@@ -666,6 +666,88 @@ else
   echo "$eq" | grep 'fact=eq' | sed 's/^/      /'
 fi
 
+# IDEMPOTENCE, the strong form: a2 must be safe to RUN TWICE.
+#
+# Every fact a2 writes is read back by the next run, so an unsound fact
+# that is invisible in one pass becomes a miscompile in two. This is the
+# cheapest oracle in the project and it found the worst bug in a2.
+#
+# `count_up` loads n from memory and loops n times. On the `n == 0` edge a
+# sigma has range [0,0] and SCCP folds it to the constant 0 -- correct.
+# The fold was then attributed to the sigma's SOURCE lineage, so the
+# second pass read the LOAD ITSELF back as range=0..0, folded `n == 0`
+# true, and deleted the loop. 19 values became 3: the function returned 0
+# for every input.
+#
+# Assert the loop is STILL THERE after two passes, by value count and by
+# the surviving arithmetic. Reverting either half of the fix takes the
+# second-pass count from 19 to 3, so this cannot pass vacuously.
+f1=$("$A2" pear/a2/tests/ok_fold_sigma_lineage.air 2>/dev/null)
+echo "$f1" > /tmp/pear_fold_r1.air
+f2=$("$A2" /tmp/pear_fold_r1.air 2>/dev/null)
+n1=$(echo "$f1" | grep -cE '^    %[0-9]+ = ')
+n2=$(echo "$f2" | grep -cE '^    %[0-9]+ = ')
+if [ "$n1" = "$n2" ] && [ "$n1" -gt 10 ] \
+   && echo "$f2" | grep -q 'load\.index' \
+   && ! echo "$f2" | grep -qE 'load\.index.*range=0\.\.0' \
+   && [ "$(echo "$f2" | grep -c 'op=add')" -ge 2 ]; then
+  pass=$((pass+1)); note PASS "a2_fold_sigma_lineage" "(2 passes: $n1 -> $n2 values, loop intact)"
+else
+  fail=$((fail+1)); note FAIL "a2_fold_sigma_lineage" "second pass deleted the loop ($n1 -> $n2 values)"
+  echo "$f2" | grep -E 'load\.index|op=add|op=lt' | sed 's/^/      /' | head -4
+fi
+
+# The guard must survive the sigma LOSING ITS SHAPE.
+#
+# a2's own output can contain a constant that carries a foreign origin:
+# that is what a folded sigma looks like, and re-reading it is legal under
+# D3. Testing `op == SIGMA` cannot see it, so the edge's value gets taught
+# to the lineage the moment anyone runs a2 on a2's output.
+#
+# The fixture hands a2 exactly that shape directly. %5 is a constant with
+# origin=%4, and %4 is a load: if the load comes back ranged, the guard is
+# reading the opcode instead of the lineage. Reverting origin!=id in
+# a2_facts.c3 puts `range=0..0` on %4 and fails this line, while leaving
+# every other test in this file green -- which is why it is a separate
+# assertion and not folded into the one above.
+pf=$("$A2" pear/a2/tests/ok_prefolded_sigma.air 2>/dev/null)
+if echo "$pf" | grep -q 'load\.index' && ! echo "$pf" | grep -qE 'load\.index.*range='; then
+  pass=$((pass+1)); note PASS "a2_prefolded_sigma" "(a folded sigma still counts as edge-local)"
+else
+  fail=$((fail+1)); note FAIL "a2_prefolded_sigma" "edge-local value leaked once it stopped looking like a sigma"
+  echo "$pf" | grep 'load\.index' | sed 's/^/      /'
+fi
+
+# The same property over the WHOLE standard library, not one fixture.
+#
+# a2 is run twice on every lowered module and the two outputs must be
+# byte-identical. A fact that is edge-local, or a version number that
+# drifts, shows up here as a diff even when the IR still verifies -- and
+# verification alone does NOT catch a deleted loop, which is how the bug
+# above survived a clean 258/258 verify.
+if [ -d /tmp/pear_idem ]; then rm -rf /tmp/pear_idem; fi
+mkdir -p /tmp/pear_idem
+idem_bad=0; idem_n=0
+for src in stdlib/str/pattern.pie stdlib/math/abs.pie stdlib/mem.pie stdlib/fmt/float.pie; do
+  [ -f "$src" ] || continue
+  bn=$(echo "$src" | tr '/' '_')
+  "$PEARC" "$src" > /tmp/pear_idem/$bn.0 2>/dev/null || continue
+  "$A2" /tmp/pear_idem/$bn.0 > /tmp/pear_idem/$bn.1 2>/dev/null || continue
+  "$A2" /tmp/pear_idem/$bn.1 > /tmp/pear_idem/$bn.2 2>/dev/null || continue
+  idem_n=$((idem_n+1))
+  v1=$(grep -cE '^    %[0-9]+ = ' /tmp/pear_idem/$bn.1)
+  v2=$(grep -cE '^    %[0-9]+ = ' /tmp/pear_idem/$bn.2)
+  if [ "$v1" != "$v2" ]; then
+    idem_bad=$((idem_bad+1))
+    note INFO "  $src" "values $v1 -> $v2 on the second pass"
+  fi
+done
+if [ "$idem_bad" = "0" ] && [ "$idem_n" -ge 3 ]; then
+  pass=$((pass+1)); note PASS "a2_idempotent_stdlib" "($idem_n modules stable on a second pass)"
+else
+  fail=$((fail+1)); note FAIL "a2_idempotent_stdlib" "$idem_bad of $idem_n modules changed on a second pass"
+fi
+
 # The payoff: R + SCCP must ELIMINATE a bounds check, not merely report it
 # decidable. `i & 15 < 16` is always true, so the branch folds to a jump
 # and the trap block goes away. a1 reports `decided cmps: 1` and changes

@@ -663,6 +663,13 @@ fn void run_function(Air* m, Fn* f, pear_a2_facts::Facts2* facts, SccpStats* st)
             if (v.op == Op.AIR_MEM_PHI || v.op == Op.AIR_MEM_ENTRY) { continue; }
 
             bool was_phi = v.op == Op.AIR_PHI;
+            /*
+             Captured BEFORE the rewrite below, exactly like `was_phi`.
+             origin_local_only asks "is this value a sigma or a pi", which
+             is a question about v.op -- and three lines from here v.op
+             becomes AIR_CONST_INT. Asking afterwards always answers "no".
+            */
+            bool was_edge_local = pear_a2_facts::origin_local_only(m, vid);
 
             int w = v.facts.width;
             bool sg = v.facts.is_signed;
@@ -672,7 +679,28 @@ fn void run_function(Air* m, Fn* f, pear_a2_facts::Facts2* facts, SccpStats* st)
             v.p.clear();
             m.set_const_int(vid, c.val, w, sg);
             st.folded = st.folded + 1;
-            if (!pear_a2_facts::origin_local_only(m, (uint)i))
+            /*
+             `vid`, NOT `i`. `i` is the index of the value WITHIN THE BLOCK
+             (0,1,2...), so this asked "is the i'th value of the module a
+             sigma", which is a different value in a different function and
+             usually a low-numbered entry instruction that is never a sigma.
+             The guard therefore passed for essentially every fold and the
+             edge-local constant went straight into the shared table.
+
+             What that cost, measured on stdlib/str/pattern.pie: a sigma on
+             the `len == 0` edge folded to 0 and was learned against its
+             SOURCE's origin -- the `load.field %2 index=3` that the sigma
+             refines. On the next pass that load came back as `range=0..0`,
+             a memory read claiming to be a known constant. `len == 0` then
+             folded true, the real search body became unreachable, and
+             `kmp_search` went from 117 values to 4: `return 0`.
+
+             The answer is also captured BEFORE the rewrite (see
+             `was_edge_local` above): by this line `v.op` is already
+             AIR_CONST_INT, so asking the shape question here would answer
+             "not a sigma" every time and the guard would still be inert.
+            */
+            if (!was_edge_local)
             {
                 facts.learn(v.origin, v.facts, pear_a2_facts::FactSource.FS_SCCP);
             }

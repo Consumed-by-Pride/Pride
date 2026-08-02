@@ -863,10 +863,26 @@ fn void run_function(Air* m, Fn* f, pear_a2_facts::Facts2* facts, MemStats* st)
         if (b == null) { continue; }
         for (usz k = 0; k < b.value_count; k++)
         {
-            Val* v = m.val(b.values[k]);
+            uint vid = b.values[k];
+            Val* v = m.val(vid);
             if (v == null || v.is_phi_hole) { continue; }
             if (v.facts.mem.kind == pear_erm::MemKind.MEM_NONE) { continue; }
-            if (!pear_a2_facts::origin_local_only(m, (uint)i))
+            /*
+             `vid`, NOT `i`. Here `i` indexes the BLOCK list of the
+             component, so the guard was asking whether the i'th VALUE of
+             the module is edge-local while about to learn a fact from the
+             k'th value of the i'th block -- two unrelated values. Same
+             defect as the one in a2_sccp.c3; found by grepping every
+             origin_local_only call site after the first one turned out to
+             be reading the wrong index.
+
+             This one leaks memory facts rather than ranges, so it is much
+             quieter: a sigma of a pointer carries the same MemKind as its
+             source, so the wrong answer is usually the right answer by
+             accident. It is fixed because "usually right by accident" is
+             not a property that survives a4 introducing new sigma shapes.
+            */
+            if (!pear_a2_facts::origin_local_only(m, vid))
             {
                 facts.learn(v.origin, v.facts, pear_a2_facts::FactSource.FS_MEMSSA);
             }

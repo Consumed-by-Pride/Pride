@@ -148,11 +148,49 @@ fn void Facts2.count_source(Facts2* f, FactSource s)
  sites, because a fact that leaks from one of them is not recoverable
  later -- the table has no record of which edge it came from.
 */
+/*
+ ── Why this is a question about ORIGIN and not about the opcode ────────
+
+ The obvious test is `v.op == AIR_SIGMA || v.op == AIR_PI`, and that is
+ what this was. It is wrong the moment a pass REWRITES a σ, because the
+ property "the knowledge here is true on one edge only" is a fact about
+ where the value's knowledge CAME FROM, and the opcode stops recording
+ that as soon as the opcode changes.
+
+ SCCP folds a σ whose value it has pinned down into a plain const.int and
+ leaves origin pointing at the σ's source, which is correct and required
+ by D1 -- the constant really is that lineage, on that edge. But it is now
+ shaped like an ordinary constant, so the shape test answered "not
+ edge-local" and the next run of a2 seeded the edge's constant into the
+ lineage's fact as though it were true everywhere.
+
+ Measured, on stdlib/str/pattern.pie: `%65 = sigma %41 fact=eq [0,0]
+ origin=%35` folded to `%61 = const.int ival=0 origin=%35`. On the next
+ pass `%34`, the loop-carried index whose lineage that is, came back as
+ `range=0..0` -- a φ whose own back-edge operand was provably ≥ 1. From
+ there SCCP folded the loop test and DCE removed the body.
+
+ `origin != id` is the durable form of the same question. a1 makes every
+ value its own origin and only σ/π point elsewhere; the parser defaults
+ `origin = vid` for anything that does not say otherwise; and a rewrite
+ copies origin forward rather than inventing one (D1). So a value whose
+ origin is not itself is exactly a value that inherited another value's
+ lineage, which is exactly the set whose facts are edge-local -- and it
+ stays true across an opcode rewrite, which is the whole point.
+
+ Checked against the standard library before relying on it: of 74,098
+ values, all 4,039 σ/π carry a foreign origin and NO other value does.
+*/
 fn bool origin_local_only(Air* m, uint vid)
 {
     Val* v = m.val(vid);
     if (v == null) { return false; }
-    return v.op == pear_air::AirOp.AIR_SIGMA || v.op == pear_air::AirOp.AIR_PI;
+    if (v.op == pear_air::AirOp.AIR_SIGMA || v.op == pear_air::AirOp.AIR_PI)
+    {
+        return true;
+    }
+    // A value that descends from another value's lineage: a folded σ/π.
+    return v.origin != pear_air::AIR_NO_ORIGIN && v.origin != v.id;
 }
 
 fn void Facts2.learn(Facts2* f, uint origin, pear_erm::Facts fact, FactSource src)
