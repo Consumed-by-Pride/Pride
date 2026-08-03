@@ -853,6 +853,55 @@ that the reported counter was zero — which is trivially true when the
 counter is deleted. It now asserts the surviving parameter first, and the
 counter merely corroborates.
 
+### Status of pfront / a1 / a2
+
+Verified from a clean rebuild at the end of the hardening pass:
+
+| suite | result |
+|---|---|
+| `pfront_tests/run.sh` | **161 / 161** |
+| stdlib self-clean | **258 / 258** (baseline before the rewrite: 4) |
+| `pear_tests/run.sh` | **79 / 79** |
+| `pear/a1` self-test | **20 / 20** |
+| `experiments/run.sh` | **14 / 14** |
+| a1 lowering | 0 `AIR_UNKNOWN`, 0 verify errors on valid input |
+| a2 over 258 modules | 0 verify errors, 258/258 reach a fixpoint |
+| fuzz | 2,000 grammar files + 168-file corpus + 46 malformed `.air`: **0 crashes, 0 hangs** |
+| fault injection | 14 mutations, 11 caught, 1 real gap found and fixed, 2 proven unreachable |
+
+**No known unfixed defect.** `pfront_tests/known_issues/` existed briefly
+and is gone — the one entry in it (the TRS non-termination below) was
+fixed rather than documented away.
+
+What the last pass found, in the order the evidence appeared:
+
+* **A rewrite rule that matches everything and grows it.** `pgen _ -> x`
+  registers `_ -> x`: var-headed, so it matches every term, and
+  size-increasing, so each firing leaves a larger one. Fuel bounded the
+  firings (200,000 on a four-line file) but not the memory. 77 MB on four
+  lines; ~1.4 GB and OOM-killed on 2 KB. Now refused at registration —
+  2.6 MB, 0 firings. I looked in `PgenCompiler` for a long time because
+  the file said `pgen`; `--time-passes` put 98% of the runtime in
+  `trs-rewrite` in about ten seconds.
+* **Struct field types never reached the IR** — see the section above.
+  Four defects in a chain, each disabling the next.
+* **The parameter list was never rebuilt by the reader**, so every
+  parameter check in `verify.c3` was dead code on any file loaded from
+  disk, and a2 could delete a live argument with the whole suite green.
+* **Names that are not plain words broke the line.** `func => entry=b1`
+  read the name as empty and swallowed `entry=b1` as an attribute, so the
+  function came back with no entry block — and the parse reported 0
+  errors.
+* **Memory φ lost their incoming blocks on every round trip** — 1,585
+  verify errors, invisible because only a2 produces them.
+
+Two rules are documented as **unreachable rather than tested**, because a
+fixture that passes for the wrong reason is worse than an acknowledged
+hole: `verify.c3`'s `inc_count != op_count` (the reader sets them equal
+unconditionally; it guards the in-memory builders) and `a2_sccp`'s
+`op_has_effect` fold guard (the lattice never assigns a constant to a
+call or a load).
+
 ## 10. Testing
 
 Mirrors `pfront_tests/run.sh`, which is at 61/61 and asserts behaviour rather
