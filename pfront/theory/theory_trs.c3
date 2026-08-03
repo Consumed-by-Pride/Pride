@@ -82,6 +82,7 @@ struct RuleSet
 
     usz overlaps;         // critical pairs found
     usz size_increasing;
+    usz rejected_nonterminating;   // var-headed AND growing: cannot terminate
 }
 
 fn void RuleSet.init(RuleSet* rs)
@@ -91,6 +92,7 @@ fn void RuleSet.init(RuleSet* rs)
     rs.catch_all_len = 0;
     rs.overlaps = 0;
     rs.size_increasing = 0;
+    rs.rejected_nonterminating = 0;
 }
 
 fn bool RuleSet.add(RuleSet* rs, Node* lhs, Node* rhs, Node* guard, uint name)
@@ -110,6 +112,40 @@ fn bool RuleSet.add(RuleSet* rs, Node* lhs, Node* rhs, Node* guard, uint name)
     r.fire_count = 0;
     r.size_increasing = r.rhs_size > r.lhs_size;
     if (r.size_increasing) { rs.size_increasing = rs.size_increasing + 1; }
+
+    /*
+     A VAR-HEADED, SIZE-INCREASING rule cannot terminate.
+
+     `_ -> x` matches every term there is, and rewrites each one to
+     something strictly larger, so every rewrite creates more work than
+     it removes. The engine burned all 200,000 units of fuel on a
+     four-line file and the growing terms took the process from 2.8 MB to
+     77 MB; a 2 KB fuzzed file reached ~1.4 GB and was OOM-killed. Found
+     by fuzzing, then by reading `--time-passes`, which put 98% of the
+     time in trs-rewrite -- not in the pgen tree builder the file
+     appeared to be about.
+
+     Fuel already bounded the FIRINGS. It did not bound the MEMORY,
+     because each firing leaves a bigger term behind. The rule is
+     rejected at registration instead, which is the only point where the
+     property is cheap to see and where refusing costs nothing that was
+     ever going to work.
+
+     Narrow on purpose. A var-headed rule that does NOT grow (`_ -> 0`)
+     is still accepted: it terminates, and refusing it would break
+     `x |> simplify` idioms. A size-increasing rule with a real
+     constructor at its head is also still accepted: it only fires where
+     that constructor appears.
+    */
+    if (r.var_headed && r.size_increasing)
+    {
+        // Counted here and REPORTED by print_stats, because add() has no
+        // DiagBag: a counter that is printed is the same contract as a
+        // warning, and inventing a parameter for one call site is worse.
+        rs.rejected_nonterminating = rs.rejected_nonterminating + 1;
+        return false;
+    }
+
     rs.count = rs.count + 1;
 
     if (r.var_headed)
@@ -606,6 +642,11 @@ fn void RuleSet.report(RuleSet* rs)
 {
     printf("  rewrite rules    : %d (%d size-increasing, %d overlapping pairs)\n",
            (int)rs.count, (int)rs.size_increasing, (int)rs.overlaps);
+    if (rs.rejected_nonterminating > 0)
+    {
+        printf("  rules REJECTED   : %d   (match any term and grow it: cannot terminate)\n",
+               (int)rs.rejected_nonterminating);
+    }
 }
 
 fn void Rewriter.report(Rewriter* rw)

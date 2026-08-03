@@ -1239,20 +1239,23 @@ if [ -x ./pearc ]; then
     fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "grammar_fuzz_corpus" "signals=$gf_sig verify_errors=$gf_verr holes_on_clean=$gf_hole of $gf_n"
   fi
 
-  # RESOURCE CEILING: measured PEAK RSS, not a ulimit.
+  # A NON-TERMINATING rewrite rule must be refused, not merely fuelled.
   #
-  # `ulimit -v` does NOT constrain this binary in this environment -- a
-  # 24 MB compile succeeds with the limit set to 20 MB, because the
-  # kernel is not enforcing RLIMIT_AS for these mappings. A test built on
-  # it passes no matter what, which is worse than no test. Measured from
-  # /proc/<pid>/status instead, which cannot be fooled.
+  # `pgen _ -> x` registers the rule `_ -> x`: it matches EVERY term and
+  # rewrites each to something strictly larger, so every firing creates
+  # more work than it removes. Fuel bounded the FIRINGS (200,000 of them
+  # on a four-line file) but not the MEMORY, because each firing leaves a
+  # bigger term behind: 2.8 MB -> 77 MB on four lines, and ~1.4 GB then
+  # OOM-killed on a 2 KB fuzzed file.
   #
-  # KNOWN OPEN ISSUE this bounds: a four-line `pgen` block with a
-  # wildcard peaks around 77 MB against 2.8 MB for a trivial file, and a
-  # 2 KB fuzzed file reaches ~1.4 GB and is OOM-killed. See
-  # pfront_tests/known_issues/README.md for what has been ruled out.
-  # This assertion pins REAL modules so the number cannot drift; it does
-  # not pretend the pgen case is fixed.
+  # Found by fuzzing, then located with --time-passes, which put 98% of
+  # the time in trs-rewrite -- NOT in the pgen tree builder the file
+  # looked like it was about. Var-headed AND size-increasing rules are
+  # now rejected at registration.
+  #
+  # Measured with peak RSS from /proc, not `ulimit -v`: that limit is not
+  # enforced for this binary here, so a ulimit-based test passes no
+  # matter what.
   peak_of() {
     "$@" >/dev/null 2>&1 &
     local pid=$! peak=0 cur
@@ -1263,14 +1266,17 @@ if [ -x ./pearc ]; then
     done
     echo "$peak"
   }
-  rc_small=$(peak_of ./pfrontc pfront_tests/known_issues/pgen_memory_min.pie -I stdlib --plain --quiet)
-  rc_io=$(peak_of ./pfrontc stdlib/io.pie -I stdlib --plain --quiet)
-  # 120 MB: io.pie measures ~24 MB, so this is 5x headroom for machine
-  # variation while still catching an order-of-magnitude regression.
-  if [ "${rc_io:-999999}" -lt 120000 ]; then
-    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "resource_ceiling" "(stdlib/io.pie peak ${rc_io} kB; pgen known-heavy ${rc_small} kB)"
+  nt_min=$(peak_of ./pfrontc pfront_tests/fuzz/f_trs_nonterminating_min.pie -I stdlib --plain --quiet)
+  nt_big=$(peak_of ./pfrontc pfront_tests/fuzz/f_trs_nonterminating.pie -I stdlib --plain --quiet)
+  nt_rej=$(./pfrontc pfront_tests/fuzz/f_trs_nonterminating_min.pie -I stdlib 2>&1 | grep -c 'rules REJECTED')
+  nt_fire=$(./pfrontc pfront_tests/fuzz/f_trs_nonterminating_min.pie -I stdlib 2>&1 | grep -oE 'rewriting        : [0-9]+' | grep -oE '[0-9]+$')
+  io_peak=$(peak_of ./pfrontc stdlib/io.pie -I stdlib --plain --quiet)
+  if [ "${nt_min:-999999}" -lt 20000 ] && [ "${nt_big:-999999}" -lt 20000 ] \
+     && [ "${nt_rej:-0}" = "1" ] && [ "${nt_fire:-1}" = "0" ] \
+     && [ "${io_peak:-999999}" -lt 120000 ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "trs_rejects_nonterminating" "(${nt_min} kB / ${nt_big} kB, 0 firings; io.pie ${io_peak} kB)"
   else
-    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "resource_ceiling" "stdlib/io.pie now peaks at ${rc_io} kB (was ~24000)"
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "trs_rejects_nonterminating" "min=${nt_min}kB big=${nt_big}kB rejected=$nt_rej firings=$nt_fire io=${io_peak}kB"
   fi
 
   # PROGRESS: no block scanner may loop without consuming a token.
