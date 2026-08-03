@@ -1040,6 +1040,32 @@ fn void Builder.place_sigma(Builder* b, Node* cond, uint cond_val,
 // EXPRESSIONS
 // ════════════════════════════════════════════════════════════════════════
 
+
+/*
+ Apply a DECLARED type's width/signedness/range to a value.
+
+ Shared by field loads and anything else that knows its type from a
+ declaration rather than from arithmetic. Only sized integer types say
+ anything useful; a pointer or a struct leaves the value untouched.
+*/
+fn void Builder.set_decl_type_facts(Builder* b, uint vid, Node* decl)
+{
+    if (decl == null) { return; }
+    Node* ty = decl.type_ann;
+    if (ty == null) { return; }
+    // Follow a name to whatever it denotes only one step: a field
+    // declared with a sized integer type names it directly.
+    if (ty.kind != Nk.N_TY_NAME) { return; }
+    int bits; bool sg;
+    if (!pear_infer::prim_int_width(b.m, ty.name_id, &bits, &sg)) { return; }
+    pear_air::AirValue* v = b.m.val(vid);
+    if (v == null) { return; }
+    v.facts.width = (short)bits;
+    v.facts.is_signed = sg;
+    pear_erm::Range r = pear_infer::width_range(bits, sg);
+    if (!r.is_top) { v.facts.range = pear_erm::r_meet(v.facts.range, r); }
+}
+
 fn uint Builder.lower_expr(Builder* b, Node* n)
 {
     if (n == null) { return pear_air::AIR_NO_VALUE; }
@@ -1572,7 +1598,28 @@ fn uint Builder.lower_expr_inner(Builder* b, Node* n)
             if (n.child_count < 1) { break; }
             ops[0] = b.lower_operand(n.children[0]);
             uint id = b.emit(Op.AIR_LOAD_FIELD, &ops[0], 1, n);
-            if (id != pear_air::AIR_NO_VALUE) { b.m.values[id].p.name = n.name_id; }
+            if (id != pear_air::AIR_NO_VALUE)
+            {
+                b.m.values[id].p.name = n.name_id;
+                /*
+                 A struct field has a DECLARED type, and that type bounds
+                 every value ever loaded from it: a `u8` field is in
+                 [0,255] however it got there.
+
+                 `n.resolved` is the N_DECL_FIELD, attached by
+                 pfront_check.c3 -- which could not do it until the
+                 parameter patterns carried the signature's types and the
+                 inferencer stopped overwriting the tuple-index marker.
+                 Before that chain was fixed this was unreachable: the
+                 whole standard library performed 4,321 field accesses and
+                 resolved exactly none of them.
+
+                 This is the fact `decided cmps` was starved of --
+                 load.field was the single largest source of un-ranged
+                 comparison operands, 1,740 of them.
+                */
+                b.set_decl_type_facts(id, n.resolved);
+            }
             return id;
         }
 

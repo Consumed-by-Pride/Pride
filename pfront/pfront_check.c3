@@ -604,6 +604,36 @@ fn void AccessChecker.init(AccessChecker* a, Types* t, TraitTable* tt,
     a.mut_violations = 0;
 }
 
+
+/*
+ Follow a TYPE node to the declaration it names, stepping through pointers.
+
+ `p : *S` gives the pattern a `ty-ptr` whose child is the `ty-name` the
+ resolver already linked to `struct S`. Field access through a pointer is
+ the normal case in Pride -- almost every method in the standard library
+ takes `*Self` -- so a lookup that cannot see past one `*` sees nothing.
+
+ Bounded, because a malformed or recursive type must not spin.
+*/
+fn Node* type_decl_of(Node* ty)
+{
+    Node* cur = ty;
+    int hops = 0;
+    while (cur != null && hops < 8)
+    {
+        hops = hops + 1;
+        if (cur.resolved != null) { return cur.resolved; }
+        if (cur.kind == Nk.N_TY_PTR || cur.kind == Nk.N_TY_REF
+            || cur.kind == Nk.N_TY_SLICE || cur.kind == Nk.N_TY_ARRAY)
+        {
+            cur = cur.child(0);
+            continue;
+        }
+        break;
+    }
+    return null;
+}
+
 // Resolve a field on a nominal type, following pointers automatically. Auto-
 // deref is what makes `p.field` work when `p : *Struct`, and it must be
 // bounded so a cyclic type cannot loop.
@@ -633,9 +663,20 @@ fn Node* AccessChecker.lookup_field(AccessChecker* a, Node* type_decl,
             // A newtype forwards field access to its underlying type.
             break;
         }
-        if (cur.kind == Nk.N_DECL_NEWTYPE && cur.type_ann != null)
+        /*
+         A newtype forwards field access to its underlying type, and so
+         does a plain type ALIAS. The alias case was missing, and a
+         qualified cross-module type resolves to one: `f : fs.file.File`
+         gave an N_DECL_TYPE whose type_ann names the struct, so `f.fd`
+         was reported as a miss on the one and only real occurrence in
+         the standard library.
+        */
+        if ((cur.kind == Nk.N_DECL_NEWTYPE || cur.kind == Nk.N_DECL_TYPE)
+            && cur.type_ann != null)
         {
-            cur = cur.type_ann.resolved;
+            Node* nxt = type_decl_of(cur.type_ann);
+            if (nxt == null || nxt == cur) { break; }
+            cur = nxt;
             a.auto_derefs = a.auto_derefs + 1;
             hops = hops + 1;
             continue;
@@ -1056,13 +1097,28 @@ fn void Checker.check_expr(Checker* ck, Node* e, int depth)
             Node* base = e.child(0);
             ck.check_expr(base, depth + 1);
             if (e.p.aux == 1) { return; }   // numeric tuple index
-            // Resolve the field when the base's type is known.
-            if (base != null && base.type_ann != null
-                && base.type_ann.resolved != null)
+            /*
+             Resolve the field when the base's type is known.
+
+             The base of `p.b` resolves to the PATTERN that binds `p`, and
+             the pattern now carries the type the signature declared for
+             it (see attach_param_types in pfront_resolve.c3). Reading
+             `base.type_ann` alone found nothing, because the annotation
+             lives on the declaration the base refers to, not on the
+             reference itself -- so this whole branch never executed and
+             `field access` reported 0 lookups on all 258 stdlib modules.
+            */
+            Node* bty = null;
+            if (base != null)
+            {
+                if (base.type_ann != null) { bty = base.type_ann; }
+                else if (base.resolved != null) { bty = base.resolved.type_ann; }
+            }
+            Node* bdecl = type_decl_of(bty);
+            if (bdecl != null)
             {
                 usz idx = 0;
-                Node* f = ck.access.lookup_field(base.type_ann.resolved,
-                                                 e.name_id, &idx);
+                Node* f = ck.access.lookup_field(bdecl, e.name_id, &idx);
                 if (f != null) { e.resolved = f; }
                 else if (ck.strict)
                 {

@@ -87,6 +87,7 @@ declare -A EXPECT=(
   [74_hanging_indent_stack]=0 # lexer realign must not destroy enclosing levels
   [75_local_shadows_module]=0 # a local binding shadows a same-named module
   [76_numeric_suffix_hex]=0   # width/sign suffixes on hex literals
+  [77_field_types]=0          # struct field types reach the IR
 )
 
 # ---------------------------------------------------------------------------
@@ -1160,6 +1161,49 @@ if [ -x ./pearc ]; then
   else
     pass=$((pass+1)); printf '  PASS  %-26s %s\n' "syntax_lowering_no_crash" "(every syntax file lowers without crashing)"
   fi
+  # FIELD TYPES must reach the IR, and the pass must actually RUN.
+  #
+  # `field access` reported 0 lookups on all 258 stdlib modules -- not
+  # merely unwired but actively switched off, because the inferencer
+  # cached a TypeId in the same integer that marks a numeric tuple index.
+  # Assert the lookups happen, that a narrow field bounds the value, that
+  # a wide one does not over-claim, and that a tuple index still works.
+  ft_out=$(./pfrontc pfront_tests/77_field_types.pie -I stdlib 2>&1)
+  ft_look=$(echo "$ft_out" | grep -oE 'field access     : [0-9]+' | grep -oE '[0-9]+$')
+  ft_miss=$(echo "$ft_out" | grep -oE '[0-9]+ miss' | grep -oE '[0-9]+')
+  ft_air=$(./pearc pfront_tests/77_field_types.pie 2>/dev/null)
+  ft_hit=$(echo "$ft_out" | grep -oE '\([0-9]+ hit' | grep -oE '[0-9]+')
+  ft_ok=1
+  [ "${ft_look:-0}" -ge 4 ] || ft_ok=0
+  [ "${ft_hit:-0}" -ge 3 ] || ft_ok=0
+  # An UNKNOWN field must be looked up and MISSED, not skipped. This is
+  # the half the p.aux collision destroyed: it made the checker return
+  # before looking anything up, so the miss was invisible.
+  [ "${ft_miss:-0}" = "1" ] || ft_ok=0
+  echo "$ft_air" | grep -q 'field=b .*range=0\.\.255 w=8'   || ft_ok=0
+  echo "$ft_air" | grep -q 'field=h .*range=0\.\.65535 w=16' || ft_ok=0
+  echo "$ft_air" | grep -qE 'field=big .*range='             && ft_ok=0
+  if [ "$ft_ok" = "1" ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "field_types_reach_ir" "($ft_look lookups, $ft_hit hit, $ft_miss miss; u8 -> [0,255])"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "field_types_reach_ir" "lookups=$ft_look hit=$ft_hit miss=$ft_miss (want >=4 / >=3 / 1)"
+    echo "$ft_air" | grep 'load\.field' | sed 's/^/      /' | head -4
+  fi
+
+  # And over the REAL library, where the number is what makes it credible.
+  ftl=0; ftm=0
+  for f in $(find stdlib -name '*.pie' | sort); do
+    o=$(./pfrontc "$f" -I stdlib 2>&1)
+    l=$(echo "$o" | grep -oE 'field access     : [0-9]+' | grep -oE '[0-9]+$')
+    m=$(echo "$o" | grep -oE '[0-9]+ miss' | grep -oE '[0-9]+')
+    ftl=$((ftl + ${l:-0})); ftm=$((ftm + ${m:-0}))
+  done
+  if [ "$ftl" -ge 4000 ] && [ "$ftm" = "0" ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "stdlib_fields_resolve" "($ftl lookups, $ftm misses; was 0 lookups)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "stdlib_fields_resolve" "lookups=$ftl misses=$ftm (want >=4000 / 0)"
+  fi
+
   # GRAMMAR FUZZ CORPUS: 168 files of hostile but token-shaped input.
   #
   # Kept in the tree rather than regenerated, because a corpus that

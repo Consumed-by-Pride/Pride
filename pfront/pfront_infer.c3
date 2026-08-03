@@ -199,9 +199,10 @@ fn void Inferencer.cache_type(Inferencer* inf, Node* n, int ty)
     if (n == null) { return; }
     if (n.type_slot == null)
     {
-        // Borrow the node itself as its own marker when no slot exists yet by
-        // storing the id in the payload's aux channel.
-        n.p.aux = ty;
+        // Its own field, NOT p.aux: aux is a shared discriminant and
+        // overwriting it silently disabled the tuple-index marker on
+        // field accesses. See the note on PNode.type_id.
+        n.type_id = ty;
         n.flags = n.flags | pfront_core::NF_TYPED;
         return;
     }
@@ -214,7 +215,7 @@ fn int Inferencer.cached_type(Inferencer* inf, Node* n)
     if (n == null) { return pfront_types::NO_TYPE; }
     if ((n.flags & pfront_core::NF_TYPED) == 0) { return pfront_types::NO_TYPE; }
     if (n.type_slot != null) { return (int)n.type_slot.p.ival; }
-    return n.p.aux;
+    return n.type_id;
 }
 
 // ── Synthesis ───────────────────────────────────────────────────────────────

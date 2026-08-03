@@ -397,6 +397,9 @@ struct Resolver
     Mod*                   cur_module;
     char*                  cur_file;
     Node*                  cur_fn;
+    // The type ALIAS currently being resolved, so its right-hand side
+    // cannot resolve to the alias itself. See resolve_path_type.
+    Node*                  cur_type_decl;
     int                    loop_depth;
     int                    handler_depth;
 
@@ -443,6 +446,7 @@ fn bool Resolver.init(Resolver* r, Arena* a, pfront_core::Interner* it,
     r.cur_module = null;
     r.cur_file = null;
     r.cur_fn = null;
+    r.cur_type_decl = null;
     r.loop_depth = 0;
     r.expr_depth = 0;
     r.depth_reported = false;
@@ -1024,6 +1028,73 @@ fn void Resolver.resolve_type(Resolver* r, Node* t)
     }
 }
 
+
+/*
+ Resolve `base.field` to the field's declaration, when the base's type is
+ known from a declaration.
+
+ Deliberately shallow: it follows the base to whatever declared it, then
+ one type-alias or newtype hop, then looks the field up by name. Anything
+ it cannot see through is left unresolved, which is the status quo -- an
+ untyped language must not reject on a field it cannot prove.
+*/
+fn Node* resolver_type_decl_of(Node* ty)
+{
+    Node* cur = ty;
+    int hops = 0;
+    while (cur != null && hops < 8)
+    {
+        hops = hops + 1;
+        if (cur.resolved != null) { return cur.resolved; }
+        if (cur.kind == Nk.N_TY_PTR || cur.kind == Nk.N_TY_REF
+            || cur.kind == Nk.N_TY_SLICE || cur.kind == Nk.N_TY_ARRAY)
+        {
+            cur = cur.child(0);
+            continue;
+        }
+        break;
+    }
+    return null;
+}
+
+fn void Resolver.resolve_field_access(Resolver* r, Node* e)
+{
+    if (e == null || e.name_id == 0) { return; }
+    if (e.resolved != null) { return; }
+    if (e.p.aux == 1) { return; }              // numeric tuple index
+    Node* base = e.child(0);
+    if (base == null) { return; }
+
+    Node* bty = base.type_ann;
+    if (bty == null && base.resolved != null) { bty = base.resolved.type_ann; }
+    Node* decl = resolver_type_decl_of(bty);
+
+    int hops = 0;
+    while (decl != null && hops < 8)
+    {
+        hops = hops + 1;
+        if (decl.kind == Nk.N_DECL_STRUCT || decl.kind == Nk.N_DECL_UNION)
+        {
+            for (usz i = 0; i < decl.child_count; i++)
+            {
+                Node* f = decl.children[i];
+                if (f == null || f.kind != Nk.N_DECL_FIELD) { continue; }
+                if (f.name_id == e.name_id) { e.resolved = f; return; }
+            }
+            return;
+        }
+        if ((decl.kind == Nk.N_DECL_TYPE || decl.kind == Nk.N_DECL_NEWTYPE)
+            && decl.type_ann != null)
+        {
+            Node* nxt = resolver_type_decl_of(decl.type_ann);
+            if (nxt == null || nxt == decl) { return; }
+            decl = nxt;
+            continue;
+        }
+        return;
+    }
+}
+
 fn void Resolver.resolve_path_type(Resolver* r, Node* path, Node* site)
 {
     if (path == null) { return; }
@@ -1080,11 +1151,47 @@ fn void Resolver.resolve_path_type(Resolver* r, Node* path, Node* site)
                       "this module does not export that type", r.cur_file);
         return;
     }
-    // Fall back to resolving the final segment in the current scope.
+    /*
+     Fall back to resolving the final segment in the current scope.
+
+     NEVER to the declaration we are inside. `type File = fs.file.File`
+     puts `File` in scope as a type, so looking up the LAST segment of
+     the right-hand side finds the alias being defined and makes it point
+     at itself. Following that later is an infinite regress, and the one
+     place it mattered -- `f.fd` on a value of that alias in
+     stdlib/io.pie -- reported a field miss on a struct that plainly has
+     the field.
+
+     `r.cur_type_decl` is the declaration whose right-hand side is being
+     resolved, and skipping it makes the lookup fall through to the outer
+     scope, which is where a genuinely different type of the same name
+     would live.
+    */
     Node* last2 = path.children[path.child_count - 1];
     if (last2 != null && last2.name_id != 0)
     {
         Sym* s = r.scopes == null ? null : r.scopes.lookup(last2.name_id, pfront_core::NS_TYPE);
+        /*
+         `next` is the raw BUCKET chain, so it holds unrelated names that
+         merely hash together -- walking it blindly resolved `File` to a
+         function called `iov_total_len`. Filter on the name and the type
+         namespace, and if nothing else matches, leave the site
+         unresolved rather than pointing it at the wrong declaration.
+        */
+        if (s != null && s.decl != null && s.decl == r.cur_type_decl)
+        {
+            Sym* alt = s.next;
+            while (alt != null)
+            {
+                if (alt.name_id == last2.name_id && alt.ns == pfront_core::NS_TYPE
+                    && alt.decl != r.cur_type_decl)
+                {
+                    break;
+                }
+                alt = alt.next;
+            }
+            s = alt;
+        }
         if (s != null)
         {
             site.resolved = s.decl;
@@ -1508,6 +1615,19 @@ fn void Resolver.resolve_expr_inner(Resolver* r, Node* e)
             // treat it as a genuine field access on a value.
             if (r.try_resolve_module_chain(e)) { break; }
             r.resolve_expr(e.child(0));
+            /*
+             Link the access to the FIELD DECLARATION when the base's type
+             is known.
+
+             pfront_check.c3 already does this, but pearc does not run the
+             checker -- it runs loader, parser and resolver, then hands the
+             AST to a1. So a fact established only in the checker is
+             invisible to lowering, and `load.field` came out with no type
+             at all. Doing it here makes it available to BOTH consumers,
+             and the checker's own lookup then finds `resolved` already
+             set and agrees with it.
+            */
+            r.resolve_field_access(e);
         }
 
         case N_EXPR_METHOD:
@@ -1925,6 +2045,7 @@ fn void Resolver.resolve_fn(Resolver* r, Node* f)
             {
                 r.push_scope(c);
                 r.bind_pattern(c.child(0));
+                attach_param_types(f, c);
                 for (usz j = 1; j < c.child_count; j++)
                 {
                     Node* cc = c.children[j];
@@ -1946,6 +2067,96 @@ fn void Resolver.resolve_fn(Resolver* r, Node* f)
     }
     r.pop_scope();
     r.cur_fn = saved_fn;
+}
+
+
+/*
+ Give each parameter PATTERN the type the SIGNATURE declares for it.
+
+ Pride writes parameter types in the signature -- `fn f : (*S, i64) -> u8`
+ -- and the names in a separate clause head -- `| (p, n) -> ...`. The two
+ were never connected, so a `pat-ident` carried no type at all.
+
+ That is why pfront_check.c3's field resolution was DEAD: it asks for
+ `base.type_ann.resolved`, the base of `p.b` resolves to the `pat-ident`
+ for `p`, and that pattern had no type_ann. Measured before this change:
+ `field access : 0 lookups (0 hit, 0 miss)` on EVERY one of the 258
+ standard-library modules, while stdlib/io.pie alone performs 325 field
+ accesses. A pass that has never run once is not a pass.
+
+ The shapes are regular, which is what makes this safe to do positionally:
+
+   ty-fn                      clause
+     <param type>               <pattern>
+     ty-constraint              <body...>
+       <result type>
+
+ and for several parameters the param type is a `ty-tuple` whose children
+ line up one-for-one with a `pat-tuple`'s children.
+
+ Deliberately CONSERVATIVE. It attaches nothing unless the arity matches
+ exactly, and it never overwrites a type_ann that is already there. Pride
+ is untyped by design and the compiler must not start rejecting programs
+ over a mismatch -- a clause whose pattern count disagrees with the
+ signature is legal and simply gets no types, exactly as before.
+*/
+fn void attach_one_param_type(Node* pat, Node* ty)
+{
+    if (pat == null || ty == null) { return; }
+    if (pat.type_ann != null) { return; }      // never overwrite
+    pat.type_ann = ty;
+}
+
+fn void attach_param_types(Node* f, Node* clause)
+{
+    if (f == null || clause == null) { return; }
+    if (f.type_ann == null || f.type_ann.kind != Nk.N_TY_FN) { return; }
+    if (f.type_ann.child_count < 1) { return; }
+
+    Node* ptype = f.type_ann.child(0);
+    if (ptype == null || ptype.kind == Nk.N_TY_CONSTRAINT) { return; }
+
+    // The clause's leading children are its patterns.
+    usz npat = 0;
+    for (usz i = 0; i < clause.child_count; i++)
+    {
+        Node* c = clause.children[i];
+        if (c == null || !pfront_core::is_pattern(c.kind)) { break; }
+        npat = npat + 1;
+    }
+    if (npat == 0) { return; }
+
+    if (npat == 1)
+    {
+        Node* only = clause.child(0);
+        if (only == null) { return; }
+        /*
+         `| (p, q) -> e` is ONE pat-tuple, and the signature's `(A, B)` is
+         one ty-tuple. Line the two up element-wise when both are tuples
+         of the same width; otherwise the single pattern takes the whole
+         parameter type, which is right for `| p -> e` with `: *S -> u8`.
+        */
+        if (only.kind == Nk.N_PAT_TUPLE && ptype.kind == Nk.N_TY_TUPLE
+            && only.child_count == ptype.child_count)
+        {
+            for (usz i = 0; i < only.child_count; i++)
+            {
+                attach_one_param_type(only.children[i], ptype.children[i]);
+            }
+            return;
+        }
+        attach_one_param_type(only, ptype);
+        return;
+    }
+
+    // Several sibling patterns against a ty-tuple of the same width.
+    if (ptype.kind == Nk.N_TY_TUPLE && ptype.child_count == npat)
+    {
+        for (usz i = 0; i < npat; i++)
+        {
+            attach_one_param_type(clause.children[i], ptype.children[i]);
+        }
+    }
 }
 
 // ── Top-level driver ────────────────────────────────────────────────────────
@@ -2037,7 +2248,13 @@ fn void Resolver.resolve_module(Resolver* r, Mod* m)
                                   pfront_core::NS_TYPE, tp, false);
                     }
                 }
+                // Mark the alias so its own right-hand side cannot resolve
+                // back to it: `type File = fs.file.File` otherwise makes
+                // File point at File. See resolve_path_type.
+                Node* saved_td = r.cur_type_decl;
+                r.cur_type_decl = d;
                 if (d.type_ann != null) { r.resolve_type(d.type_ann); }
+                r.cur_type_decl = saved_td;
                 r.pop_scope();
             }
             case N_DECL_EFFECT:

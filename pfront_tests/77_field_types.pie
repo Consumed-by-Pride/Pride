@@ -1,0 +1,65 @@
+-- FIELD TYPES: the chain that connects a struct declaration to a load.
+--
+-- Four separate defects had to be fixed for `p.small` to be known to be
+-- a u8, and each of them silently disabled the next:
+--
+--   1. parameter patterns carried no type at all -- Pride writes types in
+--      the signature (`fn f : (*S) -> i64`) and names in the clause head
+--      (`| p -> ...`), and nothing connected the two;
+--   2. the inferencer cached a TypeId in `p.aux`, a SHARED discriminant
+--      that already meant "this field access is a numeric tuple index"
+--      when it was 1 -- so caching a type switched the field lookup off;
+--   3. a local alias `type File = fs.file.File` resolved its own
+--      right-hand side back to itself, so following it went nowhere;
+--   4. field resolution lived only in the checker, which pearc does not
+--      run, so a1 saw nothing even once the checker worked.
+--
+-- Before: `field access : 0 lookups` on every one of the 258 standard
+-- library modules, while io.pie alone performs 166 field accesses.
+mod field_types
+
+struct Small
+  b     : u8
+  h     : u16
+  w     : u32
+  big   : i64
+  flag  : bool
+
+-- A narrow field bounds every value loaded from it, so this comparison
+-- is decidable without knowing anything about the program.
+fn always_true : (*Small) -> i64
+  | p ->
+    if p.b < 300i64
+      1i64
+    else
+      0i64
+
+-- Wider fields say less, and must not be over-claimed.
+fn wide : (*Small) -> i64
+  | p -> p.big
+
+-- Through a type ALIAS, which is what a qualified cross-module type
+-- becomes. This is the shape that made `f.fd` a miss in stdlib/io.pie.
+type Alias = Small
+
+fn via_alias : (*Alias) -> i64
+  | p -> p.h
+
+-- A tuple index must still be a tuple index: `aux == 1` means that, and
+-- the inferencer must not clobber it with a TypeId.
+fn tuple_index : ((i64, i64)) -> i64
+  | t -> t.0
+
+-- An UNKNOWN field must still be LOOKED UP, and reported as a miss.
+--
+-- This is the case the `p.aux` collision destroyed: the inferencer cached
+-- a TypeId of 1 on the access, the checker read 1 as "numeric tuple
+-- index" and returned before looking anything up, so the lookup counter
+-- never moved and the miss was never seen. Asserting a MISS is what
+-- makes that observable -- a suite that only ever checks hits cannot
+-- tell "resolved correctly" from "never asked".
+--
+-- Pride is untyped, so this is not an error. It is a lint, and the
+-- compiler still compiles the program.
+fn unknown_field : (*Small) -> i64
+  | p -> p.nosuchfield

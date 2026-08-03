@@ -312,6 +312,28 @@ struct PNode
 
     PNode*   type_ann;     // declared/annotated type
     PNode*   type_slot;    // inferred type (filled by a later pass)
+
+    /*
+     The INFERRED TypeId, when no `type_slot` marker node exists.
+
+     This used to be stored in `p.aux`, which is a shared discriminant
+     channel already carrying, among other things, "this field access is
+     a NUMERIC TUPLE INDEX" (aux == 1). Caching a type therefore silently
+     destroyed that marker whenever the TypeId happened to be 1 -- and
+     TypeId 1 is common.
+
+     The damage was not a crash. `p.zz` on a struct got aux = 1 from the
+     inferencer, the checker then read it as "numeric tuple index" and
+     returned early, and the field was never looked up. That is why
+     `field access` reported 0 lookups on all 258 standard-library
+     modules: it was not merely unwired, it was being switched off by an
+     unrelated pass writing to the same integer.
+
+     PEAR.md decision D2 is exactly this rule -- no sentinel overloading
+     -- written about ssi_ir.c3 packing six meanings into one field. The
+     same mistake was already here, in the front end, one pass earlier.
+    */
+    int      type_id;
     PNode*   resolved;     // the declaration this name refers to
     PNode*   parent;
     Symbol*  sym;          // symbol table slot, for decls and resolved idents
@@ -423,6 +445,7 @@ fn PNode* Arena.node(Arena* a, NodeKind k, int line, int col)
     n.effects = EFF_PURE;
     n.type_ann = null;
     n.type_slot = null;
+    n.type_id = 0;
     n.resolved = null;
     n.parent = null;
     n.sym = null;
