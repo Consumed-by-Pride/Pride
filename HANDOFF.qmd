@@ -1,0 +1,316 @@
+---
+title: "PEAR — Open Problems Handoff"
+subtitle: "What is unfixed, what I could not locate, and what I would not touch"
+date: 2026-08-03
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-overflow: wrap
+---
+
+## How to read this
+
+Everything below is a **real, reproduced defect or gap**. Nothing here is
+speculative. Where I could not find a root cause I say so plainly and list what
+I already ruled out, so nobody repeats the search.
+
+Three categories, and they are deliberately separated because they need
+different people:
+
+- **A. Known bug, root cause NOT found** — reproducible, isolated to a pass, but
+  I could not point at the line.
+- **B. Known gap, root cause found, not fixed** — I know exactly what to do; it
+  is scope, not mystery.
+- **C. Structurally unverifiable here** — cannot be tested in this environment
+  at all.
+
+### Current state (clean rebuild, verified)
+
+| suite | result |
+|---|---|
+| `pfront_tests/run.sh` | 161 / 161 |
+| stdlib self-clean | 258 / 258 |
+| `pear_tests/run.sh` | 79 / 79 |
+| `pear/a1` self-test | 20 / 20 |
+| `experiments/run.sh` | 14 / 14 |
+| fuzz (2,214 inputs) | 0 crashes, 0 hangs |
+
+`HEAD` = `1003101`, working tree clean. **`pear/a3/` is empty** (`.gitkeep`
+only) — never started, by instruction.
+
+### Environment, before anything else
+
+`/tmp` does not persist. Every session, first:
+
+```sh
+curl -sSL --max-time 300 -o /tmp/c3.tar.gz \
+  https://github.com/c3lang/c3c/releases/download/v0.8.1/c3-linux-static.tar.gz
+tar xzf /tmp/c3.tar.gz -C /tmp          # -> /tmp/c3/c3c
+cd /home/user/pride
+git checkout -- stdlib/                 # restores 4 vanishing stdlib/target/*.pie
+git config user.name "…"; git config user.email "…"
+chmod +x pfrontc pearc pear_a1_test pear_a2   # snapshots drop the exec bit
+/tmp/c3/c3c compile pfront/*.c3 pfront/theory/*.c3 -o pfrontc && chmod +x pfrontc
+bash pear/build.sh && chmod +x pearc pear_a1_test pear_a2
+```
+
+**`ulimit -v` is NOT enforced for these binaries on this kernel.** A 24 MB
+compile succeeds with the limit set to 20 MB. Any memory test written against
+it passes unconditionally — measure `VmHWM` from `/proc/<pid>/status` instead.
+I shipped a broken test this way once before catching it.
+
+---
+
+## A. Known bug, root cause NOT found
+
+### A1. SSI property 4 is never exercised — 2,856 σ, 0 checks
+
+**Severity: high.** This is an unverified core invariant, not a missing
+optimisation.
+
+`verify.c3::check_sigma_edges` implements SSI property 4 (single
+upward-exposed use): two σ from the same origin must not both be live out of
+one block. It reports `sigma-edge checks: N` specifically so a suite cannot
+claim the property holds vacuously.
+
+```
+$ for a in /tmp/air7/*.air; do ./pear_a1_test "$a" | grep -oE 'sigma-edge checks: [0-9]+'; done
+# summed over all 258 modules: 0
+# total sigmas in the same corpus:  2,856
+```
+
+The check scans for two σ **in the same block** sharing an origin. a1 places the
+two σ of a two-way branch in the two *successor* blocks, so the inner loop never
+finds a pair and the counter never moves.
+
+**What I do not know:** whether the check is (a) correctly written for a σ
+placement that does not yet exist (the comment says "before `split_sigma.c3`
+exists there are no σ to check"), or (b) simply looking in the wrong scope and
+should compare σ across a block's successors. If (b), property 4 has never been
+verified on any program this compiler has compiled.
+
+**Where to start:** `pear/a1/verify.c3:810` (`check_sigma_edges`). Decide the
+intended σ placement first, then fix either the placement or the check. Do not
+"fix" the counter.
+
+### A2. `decided cmps` = 20 of 3,275 — five precision fixes have not moved it
+
+**Severity: medium.** The headline number for `R` in SP-ERM-e-SSI.
+
+Root-cause attribution, walking every un-ranged comparison operand back to its
+ultimate source (not the propagator):
+
+| ultimate source | count |
+|---|---|
+| `load.field` | 1,656 |
+| `call` | 530 |
+| `param` | 494 |
+| `load.index` | 459 |
+| `bin` | 418 |
+| `sigma` | 234 |
+
+I fixed the whole field-type chain — `field access` went 0 → 4,321 lookups,
+`ranged` 18,868 → 25,250 — and `decided cmps` moved from 19 to 20. Only 150 of
+10,243 field loads gain a range, because the stdlib's struct fields are 419
+`i64` + 96 `ptr` against ~146 narrow ones, and a declared `i64` bounds nothing.
+
+**What I do not know:** whether this number *can* move on this corpus, or
+whether 20 is simply what the standard library supports. Nobody has established
+a ceiling. Before more precision work, someone should compute the theoretical
+maximum: how many of the 3,275 comparisons are decidable *in principle* given
+perfect field-, call- and index-sensitivity. If that number is ~30, the work is
+done and the metric should be retired.
+
+**Do not** chase this with more scalar precision. Three separate attempts
+(widths, casts, field types) each added thousands of ranged values and moved
+this by ≤1.
+
+---
+
+## B. Known gap, root cause found, not fixed
+
+### B1. a2 runs single-pass although iteration is proven safe
+
+`pear/a2/a2_main.c3` runs each analysis **once**. Iterating to a fixpoint is
+measured safe on the whole corpus:
+
+```
+258 / 258 reach a fixpoint · 0 crashes · 0 verify errors
+152 converge in 2 rounds · 93 in 3 · none slower
+```
+
+Round 2 finds real work (extra SCCP folds). It is off because "no module is
+destroyed" is not the same as "every fact computed on round 3 is sound", and I
+would not flip it on the strength of a bug fix. Turning it on needs its own
+evidence — ideally a differential test that the program's *observable behaviour*
+is unchanged, which needs a working backend (see C1).
+
+**Cost:** one flag plus a soundness argument. Low risk, high value.
+
+### B2. Capabilities that report exactly zero on the whole stdlib
+
+Measured across all 258 modules:
+
+| capability | count | why |
+|---|---|---|
+| `M: noalias` | 0 | gated on allocation-rooted pointers; stdlib has 1,509 stores and **zero** `alloc` sites |
+| `DCE: dead stores` | 0 | same gate |
+| `DCE: phi holes` | 0 | a1 no longer emits neutralised φ, so there is nothing to reap |
+| `SCCP: dead blocks` | 0 | unreachable blocks are removed earlier by DCE |
+
+Only exercised by `pear/a2/tests/ok_alloc_deadstore.air` (3 noalias, 1 dead
+store). These are *plausibly correct but essentially untested*. Either find real
+programs that use `alloc`, or accept the synthetic fixture as the only coverage
+and say so.
+
+### B3. Alias analysis is shallow
+
+Distinguishes distinct allocations, and distinct fields of one base. **No**
+inter-procedural analysis, **no** escape analysis, **no** disambiguation of two
+indices into the same array. Directly limits B2 and the `load.index` row of A2.
+
+### B4. Liveness is intra-procedural only
+
+Nothing crosses a call boundary. Combined with B3, this is why `call` is the
+second-largest source of un-ranged operands (530).
+
+### B5. CSE and block flattening do not exist in a2
+
+They existed in the legacy backend (`ssi_ir.c3`/`codegen.c3`). They were never
+ported. `grep -i cse pear/a2/*.c3` returns nothing. Earlier notes describing CSE
+as "reports but does not rewrite" refer to the **legacy** code, not a2 — that
+was a stale claim and this file supersedes it.
+
+### B6. Lambda closure capture not implemented
+
+`fn | x -> x + k` lowers `k` as a free name, not a captured slot
+(`pear/a1/build.c3:2027`). Closure conversion is a4's job by name in PEAR.md, so
+this is correct-for-now, but **a3 will hit it**: capturing an environment inside
+a continuation is exactly Task 2's stated trap.
+
+### B7. `defer` multi-exit ordering not implemented
+
+`pear/a1/build.c3:3372` — the body is lowered in place only. A `defer` inside a
+loop that `break`s runs in the wrong order. Explicitly a3's territory
+(delimited continuation), and **a3 must handle it or it is a miscompile**.
+
+### B8. D13 pending — IRDL lowering still in pfront
+
+`pfront/theory/theory_irdl.c3` (29 KB) and `theory_irdlverify.c3` (24 KB) are
+still in the front end. PEAR.md D13 says the *lowering* and *verification traits*
+belong in `pear/a2/`, because they check "SSA form, dominance, purity,
+termination" — properties that only exist once there is a real CFG. `pear/a2/`
+contains no IRDL file. e-graph saturation and TRS were to follow the same path.
+
+### B9. 13 `AIR_POISON` values remain in the lowered stdlib
+
+Genuine unreachable code, deletable by a2, not lowering gaps. Was 5 in an older
+note; it is 13 now (`grep -c poison /tmp/air7/*.air`). Nobody has checked why it
+grew.
+
+### B10. Two verifier rules are unreachable and deliberately untested
+
+Documented in-code rather than given fixtures, because a fixture that passes for
+the wrong reason is worse than an acknowledged hole:
+
+- `verify.c3` `inc_count != op_count` — the reader sets the two equal
+  unconditionally, so no `.air` file can trigger it. It guards the *in-memory*
+  builders (a1, and a3/a4 when they exist). **It is what caught the memory-φ
+  bug**, so it earns its place. When a3 lands, give it a real fixture.
+- `a2_sccp.c3` `op_has_effect` fold guard — the lattice never assigns
+  `LAT_CONST` to a call or a load, so the guard has no case to catch. Becomes
+  load-bearing the moment a2 learns callee return values.
+
+---
+
+## C. Structurally unverifiable in this environment
+
+### C1. The legacy backend has not been run — no LLVM 22
+
+`conformance/run.sh` (last known **261/262**) and `tests/run_exec.sh` (last known
+**44/47**) have **not been executed in many sessions**. LLVM 22 is absent and
+`apt.llvm.org` installation was never completed here.
+
+This is the single biggest hole in the whole project's evidence: `ssi_ir.c3`
+(7,290 lines) and `codegen.c3` (9,718 lines) are frozen and **unproven**. Every
+"X/Y passing" number for them is historical.
+
+It also means **no end-to-end execution test exists** for anything a1/a2 produce.
+All PEAR correctness claims are structural (verifier, round-trip, fixpoint) —
+none is "the compiled program computed the right answer".
+
+```sh
+curl -sSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --batch --yes --dearmor -o /etc/apt/keyrings/llvm.gpg
+echo "deb [signed-by=/etc/apt/keyrings/llvm.gpg] http://apt.llvm.org/trixie/ llvm-toolchain-trixie-22 main" | sudo tee /etc/apt/sources.list.d/llvm22.list
+sudo apt-get update && sudo apt-get install -y llvm-22 llvm-22-dev clang-22 lld-22
+export PATH=/usr/lib/llvm-22/bin:$PATH
+```
+
+**Highest-value next task for anyone with network access.** Until this runs, the
+`decided cmps` work in A2 cannot be validated as *behaviour-preserving* either.
+
+### C2. X is still unspecified
+
+`a5`'s emission target was never revealed. Blocks `a5/emit.c3` only.
+
+---
+
+## What NOT to do
+
+Hard-won; each cost real time.
+
+1. **Do not trust a passing test without breaking it first.** Three tests in
+   this repo were vacuous when written: one asserted a counter that is zero when
+   the counter is deleted; one asserted an exit code where `1` means *warnings*;
+   one used `ulimit -v`, which this kernel ignores. All three passed. All three
+   proved nothing.
+
+2. **Do not treat a crash as coverage.** `x09_torture_scale.pie` was scored PASS
+   while `pearc` **segfaulted** on it, because `${n:-0}` turned a missing number
+   into zero. Check exit status separately, always.
+
+3. **Do not read the pass name and believe it.** A 4-line `pgen` file burning
+   77 MB was a **TRS** bug, not a pgen bug. I instrumented `PgenCompiler` — pool,
+   matrices, recursion depth — for a long time before running `--time-passes`,
+   which pointed at `trs-rewrite` (98% of runtime) in ten seconds. **Profile
+   first.**
+
+4. **Do not assume a metric that reads 0 is fine.** `field access: 0 lookups`
+   across 258 modules looked like "no fields used". It was a pass that had never
+   run once, switched off by an unrelated pass writing to the same integer.
+
+5. **Do not add a sentinel to a shared field.** PEAR.md D2 forbids it, and the
+   front end violated it anyway: the inferencer cached a `TypeId` in `p.aux`,
+   which already meant "numeric tuple index" when it was 1.
+
+6. **`a2` run on its own output must reproduce its own output.** Cheapest oracle
+   here. It found the worst a2 bug, which a clean 258/258 verify did not — the
+   verifier cannot see "a live loop was deleted".
+
+---
+
+## Suggested order for a parallel swarm
+
+Roughly dependency-ordered; the first three are independent.
+
+| # | task | blocks | difficulty |
+|---|---|---|---|
+| 1 | **C1** — install LLVM 22, re-run conformance + exec | everything's ground truth | low, needs network |
+| 2 | **A1** — decide σ placement, make property 4 real | correctness claim | medium |
+| 3 | **B8** — D13, move IRDL lowering into a2 | e-graph and TRS follow it | medium |
+| 4 | **B1** — turn on the a2 fixpoint with evidence | needs #1 for behavioural proof | low |
+| 5 | **A2** — establish the decidability ceiling *before* more precision work | — | medium |
+| 6 | **B3/B4** — inter-procedural alias + liveness | unblocks B2, part of A2 | high |
+| 7 | **a3** — CPS. B6 and B7 land here | a4, a5 | high |
+
+`a3` is unstarted and specified in PEAR.md §9 step 7: `cps.c3`,
+`cps_print.c3`/`cps_parse.c3` (D3 applies — print/parse must round-trip),
+`to_cps.c3` (Kelsey), `delimit.c3`, `cont_dce.c3`, `contract.c3`. The driving
+test case is `pfront_tests/syntax/x11_actor_protocol.pie`.
+
+Whoever takes a3: the D3 round-trip property is not optional and is not free.
+Two separate bugs this session were printers and parsers disagreeing — memory φ
+losing their labels, and operator-shaped names swallowing the next field. Write
+`cps_print`/`cps_parse` together, and assert `parse(print(x)) == x` from the
+first commit.
