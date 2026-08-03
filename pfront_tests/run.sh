@@ -1239,6 +1239,40 @@ if [ -x ./pearc ]; then
     fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "grammar_fuzz_corpus" "signals=$gf_sig verify_errors=$gf_verr holes_on_clean=$gf_hole of $gf_n"
   fi
 
+  # RESOURCE CEILING: measured PEAK RSS, not a ulimit.
+  #
+  # `ulimit -v` does NOT constrain this binary in this environment -- a
+  # 24 MB compile succeeds with the limit set to 20 MB, because the
+  # kernel is not enforcing RLIMIT_AS for these mappings. A test built on
+  # it passes no matter what, which is worse than no test. Measured from
+  # /proc/<pid>/status instead, which cannot be fooled.
+  #
+  # KNOWN OPEN ISSUE this bounds: a four-line `pgen` block with a
+  # wildcard peaks around 77 MB against 2.8 MB for a trivial file, and a
+  # 2 KB fuzzed file reaches ~1.4 GB and is OOM-killed. See
+  # pfront_tests/known_issues/README.md for what has been ruled out.
+  # This assertion pins REAL modules so the number cannot drift; it does
+  # not pretend the pgen case is fixed.
+  peak_of() {
+    "$@" >/dev/null 2>&1 &
+    local pid=$! peak=0 cur
+    while kill -0 $pid 2>/dev/null; do
+      cur=$(awk '/VmHWM/{print $2}' /proc/$pid/status 2>/dev/null)
+      [ -n "$cur" ] && [ "$cur" -gt "$peak" ] && peak=$cur
+      sleep 0.02
+    done
+    echo "$peak"
+  }
+  rc_small=$(peak_of ./pfrontc pfront_tests/known_issues/pgen_memory_min.pie -I stdlib --plain --quiet)
+  rc_io=$(peak_of ./pfrontc stdlib/io.pie -I stdlib --plain --quiet)
+  # 120 MB: io.pie measures ~24 MB, so this is 5x headroom for machine
+  # variation while still catching an order-of-magnitude regression.
+  if [ "${rc_io:-999999}" -lt 120000 ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "resource_ceiling" "(stdlib/io.pie peak ${rc_io} kB; pgen known-heavy ${rc_small} kB)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "resource_ceiling" "stdlib/io.pie now peaks at ${rc_io} kB (was ~24000)"
+  fi
+
   # PROGRESS: no block scanner may loop without consuming a token.
   #
   # `irdl` followed by `{ *` is eight characters and hung pfrontc until
