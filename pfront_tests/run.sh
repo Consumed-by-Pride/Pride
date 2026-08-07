@@ -1204,6 +1204,46 @@ if [ -x ./pearc ]; then
     fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "stdlib_fields_resolve" "lookups=$ftl misses=$ftm (want >=4000 / 0)"
   fi
 
+  # examples/everything.pie -- one program using the WHOLE language.
+  #
+  # Written against the spec, not against the implementation, which is
+  # how it found two real gaps: `rule name = lhs -> rhs` (spec 16) was
+  # lexed as a keyword and had no parser at all, and `splice` (spec 20)
+  # had no lowering rule in a1 and became AIR_UNKNOWN.
+  #
+  # The assertion is not "it parses". Every theory pass must actually
+  # ENGAGE -- a file that mentions a feature without exercising it is
+  # exactly the kind of coverage that reads well and proves nothing.
+  ev=$(./pfrontc examples/everything.pie -I stdlib 2>&1)
+  # The summary line only appears with --plain --quiet; the stats run
+  # above prints the per-pass report instead.
+  ev_err=$(./pfrontc examples/everything.pie -I stdlib --plain --quiet 2>&1 | grep -oE 'errors=[0-9]+' | grep -oE '[0-9]+')
+  ev_rules=$(echo "$ev" | grep -oE 'rewrite rules    : [0-9]+' | grep -oE '[0-9]+$')
+  ev_fire=$(echo "$ev"  | grep -oE 'rewriting        : [0-9]+' | grep -oE '[0-9]+$')
+  ev_pgl=$(echo "$ev"   | grep -oE 'pgl trees        : [0-9]+' | grep -oE '[0-9]+$')
+  ev_irdl=$(echo "$ev"  | grep -oE '[0-9]+ uses validated' | grep -oE '^[0-9]+')
+  ev_scoped=$(echo "$ev"| grep -oE '\([0-9]+ scoped' | grep -oE '[0-9]+')
+  ev_ho=$(echo "$ev"    | grep -oE '[0-9]+ higher-order' | grep -oE '[0-9]+')
+  ev_cmtt=$(echo "$ev"  | grep -oE 'cmtt judgments   : [0-9]+' | grep -oE '[0-9]+$')
+  ev_quote=$(echo "$ev" | grep -oE 'staging          : [0-9]+' | grep -oE '[0-9]+$')
+  ev_unsup=$(./pearc --stats -I stdlib examples/everything.pie 2>/dev/null | grep -oE 'unsupported      : [0-9]+' | grep -oE '[0-9]+$')
+  ev_ok=1
+  [ "${ev_err:-1}" = "0" ]        || ev_ok=0   # compiles clean
+  [ "${ev_unsup:-1}" = "0" ]      || ev_ok=0   # lowers with no holes
+  [ "${ev_rules:-0}" -ge 10 ]     || ev_ok=0   # TRS: rules registered
+  [ "${ev_fire:-0}" -ge 1 ]       || ev_ok=0   # TRS: rules actually FIRE
+  [ "${ev_pgl:-0}" -ge 4 ]        || ev_ok=0   # PGL: decision trees built
+  [ "${ev_irdl:-0}" -ge 5 ]       || ev_ok=0   # IRDL: dialect ops USED
+  [ "${ev_scoped:-0}" -ge 1 ]     || ev_ok=0   # HOSE: a scoped operation
+  [ "${ev_ho:-0}" -ge 1 ]         || ev_ok=0   # HOSE: a higher-order one
+  [ "${ev_cmtt:-0}" -ge 100 ]     || ev_ok=0   # CMTT: judgments checked
+  [ "${ev_quote:-0}" -ge 4 ]      || ev_ok=0   # MSP: quotations staged
+  if [ "$ev_ok" = "1" ]; then
+    pass=$((pass+1)); printf '  PASS  %-26s %s\n' "everything_example" "(rules=$ev_rules fired=$ev_fire pgl=$ev_pgl irdl=$ev_irdl hose=$ev_scoped/$ev_ho cmtt=$ev_cmtt)"
+  else
+    fail=$((fail+1)); printf '  FAIL  %-26s %s\n' "everything_example" "err=$ev_err unsup=$ev_unsup rules=$ev_rules fired=$ev_fire pgl=$ev_pgl irdl=$ev_irdl hose=$ev_scoped/$ev_ho cmtt=$ev_cmtt quotes=$ev_quote"
+  fi
+
   # GRAMMAR FUZZ CORPUS: 168 files of hostile but token-shaped input.
   #
   # Kept in the tree rather than regenerated, because a corpus that

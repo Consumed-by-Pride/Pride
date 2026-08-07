@@ -65,6 +65,7 @@ fn bool starts_declaration(Tk t)
         case TOKEN_KW_LET:
         case TOKEN_KW_MACRO:
         case TOKEN_KW_REWRITE:
+        case TOKEN_KW_RULE:
         case TOKEN_KW_DIALECT:
         case TOKEN_KW_PGEN:
         case TOKEN_KW_IRDL:
@@ -324,6 +325,65 @@ fn Node* Parser.parse_rewrite_decl(Parser* p)
     }
     if (indented) { while (p.accept(Tk.TOKEN_DEDENT)) {} }
     if (braced) { p.expect(Tk.TOKEN_RBRACE, 1230, "expected '}' to close rewrite block"); }
+    return n;
+}
+
+/*
+ `rule name = lhs ↦ rhs` — a SINGLE named rewrite rule.
+
+ Spec §16 lists this beside the `rewrite` block form, and it was lexed as
+ a keyword (TOKEN_KW_RULE) but had no parser at all: `rule` fell through
+ to expression position, parsed as a bare identifier, and then choked on
+ the `↦` with "expected an expression" plus an unresolved name. Found by
+ writing examples/everything.pie against the spec rather than against the
+ implementation.
+
+ It builds exactly the node a `rewrite` block builds -- an N_DECL_FN
+ carrying N_CLAUSE children -- so everything downstream (RuleSet.collect,
+ the rewriter, the non-termination guard) sees one rule set of size one
+ and needs no special case.
+*/
+fn Node* Parser.parse_rule_decl(Parser* p)
+{
+    Tok t = p.advance();
+    Node* n = p.mk_at(Nk.N_DECL_FN, t);
+    n.flags = n.flags | pfront_core::NF_SYNTHETIC;
+    if (pfront_parse::tok_is_member_name(p.ct()))
+    {
+        Tok nm = p.advance();
+        n.name_id = p.interner.intern(nm.start, nm.len);
+        n.p.sptr = nm.start;
+        n.p.slen = nm.len;
+    }
+    // The `=` is part of the surface syntax; a rule without one is still
+    // accepted so a typo degrades to one bad rule, not a cascade.
+    p.accept(Tk.TOKEN_EQ);
+
+    /*
+     in_fn_sig, exactly as parse_rewrite_decl sets it: a rule's left-hand
+     side is a PATTERN in expression clothing, and without this the `|`
+     of an alternation is taken as bitwise-or.
+    */
+    bool sv_bar = p.in_fn_sig;
+    p.in_fn_sig = true;
+    Node* lhs = p.parse_expr();
+    p.in_fn_sig = sv_bar;
+
+    if (p.accept(Tk.TOKEN_MAPSTO) || p.accept(Tk.TOKEN_ARROW)
+     || p.accept(Tk.TOKEN_ARROW_ASCII) || p.accept(Tk.TOKEN_FATARROW))
+    {
+        Node* rhs = p.parse_arm_body();
+        Node* rule = p.mk(Nk.N_CLAUSE, lhs == null ? t.line : lhs.line,
+                                        lhs == null ? t.col : lhs.col);
+        p.add(rule, lhs);
+        p.add(rule, rhs);
+        p.add(n, rule);
+    }
+    else
+    {
+        p.err(1264, "expected '\u21a6' after the rule's left-hand side");
+        if (lhs != null) { p.add(n, lhs); }
+    }
     return n;
 }
 

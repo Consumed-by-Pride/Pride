@@ -5464,6 +5464,7 @@ fn Node* Parser.parse_decl(Parser* p)
         case TOKEN_KW_EXTERN:    d = p.parse_extern_decl(is_pub);
         case TOKEN_KW_MACRO:     d = p.parse_macro_decl();
         case TOKEN_KW_REWRITE:   d = p.parse_rewrite_decl();
+        case TOKEN_KW_RULE:      d = p.parse_rule_decl();
         case TOKEN_KW_DIALECT:   d = p.parse_dialect_decl();
         case TOKEN_KW_PGEN:      d = p.parse_pgen_decl();
         case TOKEN_KW_IRDL:      d = p.parse_irdl_decl();

@@ -300,15 +300,24 @@ struct Builder
      already accepted.
 
      Measured on this build at the default 8 MB stack: the walk survives
-     850 levels and dies at 900. The real standard library peaks at 401,
+     830 levels and dies at 840. The real standard library peaks at 401,
      and the deepest file in the whole suite -- x09_torture_scale.pie,
-     whose 800-term chain exists to be unreasonable -- reaches 800. The
-     crash margin over real input was about 12%.
+     whose 800-term chain exists to be unreasonable -- reaches exactly
+     800.
 
-     The limit is 850: above everything the suite contains, below the
-     measured crash. Deliberately NOT generous -- a bigger number would
-     need a bigger stack to be honest, and a limit that only holds when
-     `ulimit -s` happens to be large is not a limit.
+     The limit is 800, and the margin over the measured crash is now only
+     about 5%. It was 850 against a 900-level crash until three cases
+     were added to the switch in lower_expr_inner: a bigger switch means
+     a bigger stack frame, so the SAME depth costs more stack and the
+     crash point moved down by 60 levels. That is worth stating plainly,
+     because it means this constant is coupled to the size of a function
+     nobody thinks of as memory-sensitive, and the next case added to
+     that switch will move it again.
+
+     The durable fix is to stop putting `uint[16] ops` on every frame of
+     a recursive walk -- 114 call sites use it, so it is a real
+     refactor rather than a tweak, and it is recorded in HANDOFF.qmd
+     instead of being half-done here.
 
      The depth counted here is about one level per operand in a chain,
      NOT pfront's parser nesting: `a + b + c` is flat to the parser
@@ -323,7 +332,7 @@ struct Builder
     bool   depth_reported;
 }
 
-const int LOWER_MAX_DEPTH = 850;
+const int LOWER_MAX_DEPTH = 800;
 
 /*
  Enter one level of the lowering recursion. False means "too deep, do not
@@ -2060,6 +2069,44 @@ fn uint Builder.lower_expr_inner(Builder* b, Node* n)
                 b.m.values[id].facts.nullness = pear_erm::Nullness.NULL_NEVER;
             }
             return id;
+        }
+
+        case N_EXPR_SPLICE:
+        case N_EXPR_REIFY:
+        case N_EXPR_EVAL:
+        {
+            /*
+             `splice(e)` / `reify(e)` / `eval(e)` — the ESCAPE and RUN
+             halves of MSP staging (spec section 20: brackets, escape,
+             run). `unquote` shares the SPLICE node kind.
+
+             A splice runs at the ENCLOSING stage and drops its result
+             into the quotation around it. By the time a1 sees the tree,
+             the MSP stage has already run and any splice it could
+             evaluate is gone -- what reaches here is a splice whose
+             operand survived staging, and the honest lowering is the
+             operand itself: `splice(n)` for a runtime `n` is `n`.
+
+             This had NO case at all and fell through to AIR_UNKNOWN --
+             the one lowering hole in examples/everything.pie, and the
+             only construct in section 20 that a1 could not lower. The
+             sibling `quote` case immediately below was implemented; the
+             escape was not.
+
+             Lowering the operand rather than discarding it matters: the
+             operand is ordinary code at this point, so dropping it would
+             lose whatever it computes, and emitting AIR_UNKNOWN loses it
+             AND claims a1 has no rule for a construct it plainly does.
+            */
+            uint last = pear_air::AIR_NO_VALUE;
+            for (usz i = 0; i < n.child_count; i++)
+            {
+                if (n.children[i] == null) { continue; }
+                if (!pfront_core::is_expr(n.children[i].kind)) { continue; }
+                last = b.lower_operand(n.children[i]);
+            }
+            if (last != pear_air::AIR_NO_VALUE) { return last; }
+            return b.emit(Op.AIR_CONST_UNIT, &ops[0], 0, n);
         }
 
         case N_EXPR_QUOTE:

@@ -1,0 +1,581 @@
+-- ═══════════════════════════════════════════════════════════════════════
+--  everything.pie — one program that exercises the whole Pride language
+-- ═══════════════════════════════════════════════════════════════════════
+--
+--  A tiny expression compiler, written the way Pride wants it written:
+--  the IR is declared as an IRDL dialect, the optimiser is a set of
+--  first-class rewrite rules, instruction selection is a PGL decision
+--  tree, the driver is staged with MSP, the runtime is structured with
+--  algebraic effects, and the whole thing is checked by CMTT's modal
+--  staging discipline.
+--
+--  Every section names the language feature it exercises and the spec
+--  section it comes from, so this doubles as a conformance surface.
+--
+--    §3   comments, layout, literals, unicode operators
+--    §4   primitive types
+--    §5   bindings (let / let mut)
+--    §6   clause syntax, multi-clause dispatch, attributes
+--    §7   control flow
+--    §8   pattern matching, guards, destructuring
+--    §9   structs and unions
+--    §10  algebraic effects: define / perform / handle / resume
+--    §12  generics and where clauses
+--    §13  semantic subtyping, effect rows, refinement, quantifiers
+--    §14  explicit undefined behaviour
+--    §15  memory
+--    §16  term rewriting (TRS): rewrite, ++, |>, |> r*
+--    §17  PGL: pgen decision trees
+--    §18  code quotation: ~Tree, ~Data, ~Bytes
+--    §19  IRDL: dialect, opcode, region, block, node, edge, hyperedge, graph
+--    §20  MSP: comptime, stage, splice, quote, unquote, reify, eval
+--    §21  modules
+--    HOSE Higher-Order & Scoped Effects: prompts, fibers, split/fuse
+--
+mod everything
+
+use mem
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  §19  IRDL — the dialect this compiler lowers through
+-- ═══════════════════════════════════════════════════════════════════════
+--
+-- The IR is declared before anything that manipulates it. IRDL's full
+-- vocabulary is `irdl dialect opcode region block node edge hyperedge
+-- graph`; a real dialect uses more than opcodes, so all of it appears.
+
+dialect Expr
+  opcode const_i
+  opcode add_i
+  opcode mul_i
+  opcode shl_i
+  opcode load_i
+  opcode store_i
+  region entry
+  region body
+  region exit
+  block straight
+  node value
+  edge dataflow
+  hyperedge fanout
+  graph region_tree
+
+-- The HOSE dialect: prompts and fibers are IR-level objects, not library
+-- calls, because the backend has to see them to place a continuation.
+dialect Hose
+  opcode prompt_install
+  opcode prompt_unwind
+  opcode fiber_spawn
+  opcode split_cont
+  opcode fuse_cont
+  region scope
+
+-- Lowering rules. The flat form is `irdl / Dialect.op [operands] ↦ action`
+-- — there is no `operands`/`results` keyword.
+irdl
+  Expr.const_i [v : i64] ↦ emit_asm("movq $%{v:imm}, %{v:reg}")
+  Expr.add_i [a : i64, b : i64] ↦ emit_asm("addq %{b:reg}, %{a:reg}")
+  Expr.mul_i [a : i64, b : i64] ↦ emit_asm("imulq %{b:reg}, %{a:reg}")
+  Expr.shl_i [a : i64, n : i64] ↦ emit_asm("shlq %{n:imm}, %{a:reg}")
+  Expr.load_i [p : ptr] ↦ emit_asm("movq (%{p:reg}), %{p:reg}")
+  Expr.store_i [p : ptr, v : i64] ↦ emit_asm("movq %{v:reg}, (%{p:reg})")
+  Hose.prompt_install [tag : i64] ↦ emit_asm("pushq %{tag:reg}")
+  Hose.fiber_spawn [entry : ptr] ↦ emit_asm("callq *%{entry:reg}")
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  §9  Structs and unions
+-- ═══════════════════════════════════════════════════════════════════════
+--
+-- Narrow field types matter: a `u8` field bounds every value loaded from
+-- it to [0,255], which is what lets the range analysis discharge a bounds
+-- check without seeing the program.
+
+struct Node
+  op    : u8        -- which Expr opcode
+  lhs   : i32
+  rhs   : i32
+  value : i64
+
+struct Buffer
+  data : ptr
+  len  : i64
+  cap  : i64
+
+-- A ring buffer whose indices are provably in [0,63]: the mask is what
+-- the optimiser uses to delete the modulo and the bounds check.
+struct Ring
+  slots : ptr
+  head  : i64
+  tail  : i64
+
+union Payload
+  imm  : i64
+  addr : ptr
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  §16  Term rewriting — rules are first-class values
+-- ═══════════════════════════════════════════════════════════════════════
+--
+-- Rules fire at compile time over the AST, in the MSP stage, at zero
+-- runtime cost. They compose with `++` and apply with `|>`.
+
+let identities : Rewrite = rewrite
+  | x + 0i64 ↦ x
+  | 0i64 + x ↦ x
+  | x * 1i64 ↦ x
+  | 1i64 * x ↦ x
+  | x * 0i64 ↦ 0i64
+  | x - 0i64 ↦ x
+
+-- Strength reduction: multiplication by a power of two becomes a shift.
+let strength : Rewrite = rewrite
+  | x * 2i64 ↦ x << 1i64
+  | x * 4i64 ↦ x << 2i64
+  | x * 8i64 ↦ x << 3i64
+  | x * 16i64 ↦ x << 4i64
+
+-- Reassociation, so constants meet and fold.
+let reassoc : Rewrite = rewrite
+  | (x + 0i64) + y ↦ x + y
+  | (x * 1i64) * y ↦ x * y
+
+-- A single named rule (§16: `rule name = lhs ↦ rhs`).
+rule fold_double = x + x ↦ x << 1i64
+
+-- Composition with `++`. The whole optimiser is one value.
+let optimiser : Rewrite = identities ++ strength ++ reassoc
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  §17  PGL — decision trees generated at compile time
+-- ═══════════════════════════════════════════════════════════════════════
+--
+--   pgen name<Constraints> → [bindings : Types] where [conditions] ↦ action
+--
+-- PGL is how instruction selection is written: patterns in, a decision
+-- tree out, no interpreter at runtime.
+
+pgen elim_add_zero<T : Numeric> →
+  [x : T] where [x + 0i64] ↦ x
+
+pgen mul_to_shift<T : Int> →
+  [x : T, n : T] where [x * n] ↦ x << 1i64
+
+pgen select_add<T : Int> →
+  [a : T, b : T] where [a + b] ↦ emit_asm("addq %{b:reg}, %{a:reg}")
+
+pgen select_load<T : Int> →
+  [p : T, off : T] where [p + off] ↦ emit_asm("movq (%{p:reg}), %{p:reg}")
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  §10  Algebraic effects
+-- ═══════════════════════════════════════════════════════════════════════
+--
+-- Effects unify exceptions, I/O, state and allocation. They are resumable
+-- through the continuation `k`, composable by nesting handlers, and
+-- tracked in the function's effect row.
+
+effect Emit
+  word  : i64 -> i64
+  label : i64 -> i64
+
+effect Fresh
+  next : () -> i64
+
+effect Abort
+  fail : i64 -> i64
+
+-- HOSE: higher-order and SCOPED effects. A prompt delimits a region of
+-- the continuation; a fiber runs inside it. `split_cont` cuts a captured
+-- continuation into its two functorial halves and `fuse_cont` rejoins
+-- them — the law being that fusing then mapping equals mapping each half
+-- and then fusing.
+-- A SCOPED operation takes a COMPUTATION, not a value -- that is exactly
+-- what distinguishes it from an ordinary algebraic one, and it is how the
+-- modal checker tells them apart. `prompt` delimits the continuation
+-- around the computation it is handed; `fiber` runs one inside that
+-- delimiter. A HIGHER-ORDER operation takes a function among its
+-- arguments, which is what `split`/`fuse` do to the two functorial
+-- halves of a captured continuation.
+effect Scope
+  prompt  : (() -> i64) -> i64
+  fiber   : (() -> i64) -> i64
+  bracket : ((() -> i64), i64) -> i64
+  split   : ((i64 -> i64), i64) -> i64
+  fuse    : ((i64 -> i64), (i64 -> i64)) -> i64
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  §6, §8  Clauses, multi-clause dispatch, guards, patterns
+-- ═══════════════════════════════════════════════════════════════════════
+
+-- Multi-clause dispatch with literal patterns and a catch-all. Each
+-- clause is tested in order; this is what PGL compiles to a tree.
+fn opcode_width : u8 -> i64
+  | 0u8 -> 8i64
+  | 1u8 -> 8i64
+  | 2u8 -> 8i64
+  | 3u8 -> 4i64
+  | _   -> 8i64
+
+-- Guards: a clause may carry a condition after the comma.
+fn classify : i64 -> i64
+  | n, n < 0i64  -> 0i64
+  | 0i64         -> 1i64
+  | n, n < 256i64 -> 2i64
+  | _            -> 3i64
+
+-- Single-clause destructuring. `| { op, lhs, rhs, value } -> ...` binds
+-- every field; this is the shape that must survive being captured inside
+-- a continuation.
+fn node_sum : Node -> i64
+  | { op, lhs, rhs, value } -> value + lhs + rhs
+
+-- §7  Control flow: if/else, while, for-in, match.
+fn sum_to : i64 -> i64
+  | n ->
+    let mut acc : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i < n
+      acc = acc + i
+      i = i + 1i64
+    acc
+
+fn count_ops : (ptr, i64) -> i64
+  | (base, n) ->
+    let mut total : i64 = 0i64
+    for i in 0i64..n
+      total = total + 1i64
+    total
+
+-- §8  match with a wildcard arm.
+fn describe : i64 -> i64
+  | v ->
+    match v
+    | 0i64 -> 100i64
+    | 1i64 -> 200i64
+    | 2i64 -> 300i64
+    | _    -> 400i64
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  §12, §13  Generics, where clauses, quantifiers, refinement
+-- ═══════════════════════════════════════════════════════════════════════
+
+fn max_of<T : Ord> : (T, T) -> T
+  | (a, b) ->
+    if a > b
+      a
+    else
+      b
+
+fn identity<A> : A -> A
+  | x -> x
+
+-- Effect polymorphism: `..r` forwards whatever effects `f` performs.
+fn apply_twice<A> : ((A -> A), A) -> A
+  | (f, x) -> f(f(x))
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  §10.3  Handling effects — the continuation resumes by juxtaposition
+-- ═══════════════════════════════════════════════════════════════════════
+--
+-- `k v` and `resume v` are the two spellings, and they lower identically.
+
+fn emit_const : i64 -> i64 ! [Emit]
+  | v -> perform Emit.word(v)
+
+fn emit_binop : (i64, i64) -> i64 ! [Emit, Fresh]
+  | (a, b) ->
+    let slot = perform Fresh.next()
+    let x = perform Emit.word(a)
+    let y = perform Emit.word(b)
+    x + y + slot
+
+-- A handler that discharges Emit by counting words, and resumes.
+fn run_emit : i64 -> i64
+  | seed ->
+    handle emit_const(seed)
+    | Emit.word w k -> k (w + 1i64)
+    | Emit.label l k -> resume l
+
+-- Nested handlers: Fresh inside Emit. The inner handler discharges only
+-- its own effect and forwards the rest.
+fn run_pipeline : i64 -> i64
+  | seed ->
+    handle emit_binop(seed, seed)
+    | Emit.word w k -> k w
+    | Fresh.next () k -> k 1i64
+
+-- THE TRAP: destructured environment captured inside a continuation. If
+-- the binder is not in scope when the continuation is captured, the
+-- resumed continuation reads garbage.
+fn capture_env : Node -> i64 ! [Emit]
+  | { op, lhs, rhs, value } ->
+    handle emit_const(value)
+    | Emit.word w k -> k (w + lhs + rhs)
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  HOSE — higher-order and scoped effects
+-- ═══════════════════════════════════════════════════════════════════════
+--
+-- A prompt delimits the continuation. A fiber runs inside that delimiter.
+-- Splitting a continuation yields (k_in, k_out); the fusion law says
+--   fmap f (fuse k_in k_out) == fuse (fmap f k_in) k_out.
+
+fn body_of_scope : () -> i64
+  | () -> 42i64
+
+fn shift_by_one : i64 -> i64
+  | v -> v + 1i64
+
+fn scoped_region : i64 -> i64 ! [Scope]
+  | tag ->
+    let p = perform Scope.prompt(body_of_scope)
+    let f = perform Scope.fiber(body_of_scope)
+    let b = perform Scope.bracket(body_of_scope, tag)
+    let parts = perform Scope.split(shift_by_one, f)
+    let whole = perform Scope.fuse(shift_by_one, shift_by_one)
+    p + f + b + parts + whole
+
+-- The fusion law, written as something the rewriter can check: mapping
+-- over a fused continuation and fusing two mapped halves agree.
+fn fusion_law : (i64, i64) -> bool
+  | (kin, kout) ->
+    let fused = kin + kout
+    let mapped = (kin + 1i64) + kout
+    fused + 1i64 == mapped
+
+fn run_scoped : i64 -> i64
+  | tag ->
+    handle scoped_region(tag)
+    | Scope.prompt c k -> k 1i64
+    | Scope.fiber c k -> k 2i64
+    | Scope.bracket c k -> k 3i64
+    | Scope.split f k -> k 4i64
+    | Scope.fuse f k -> resume 5i64
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  §18  Code quotation — ~Tree, ~Data, ~Bytes
+-- ═══════════════════════════════════════════════════════════════════════
+--
+-- A quotation DESCRIBES its body; it does not evaluate it. `~Tree (x + y)`
+-- is an AST node, not an addition.
+
+fn quote_tree : (i64, i64) -> i64
+  | (x, y) ->
+    let node = ~Tree (x + y * 2i64)
+    x
+
+fn quote_data : Node -> i64
+  | n ->
+    let raw = ~Data n
+    n.value
+
+fn quote_bytes : i64 -> i64
+  | v ->
+    let code = ~Bytes v
+    v
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  §20  MSP — comptime, stage, splice
+-- ═══════════════════════════════════════════════════════════════════════
+--
+-- The MSP stage is untyped and unrestricted by design: it is where you
+-- reach in and reshape the program. The type and effect checkers skip
+-- MSP bodies entirely.
+
+-- comptime: computed now, at compile time. `1 + 2` never exists at runtime.
+fn folded_constant : () -> i64
+  | () ->
+    let c = comptime 1i64 + 2i64
+    c
+
+-- Applying the rule set to a quoted term, once (`|>`) and to a fixpoint
+-- (`|> r*` — the star is a SUFFIX ON THE RULE SET, not on `|>`).
+fn optimise_once : (i64, i64) -> i64
+  | (x, y) ->
+    let t = ~Tree (x + 0i64)
+    let simplified = t |> identities
+    x
+
+fn optimise_fixpoint : (i64, i64) -> i64
+  | (x, y) ->
+    let t = ~Tree ((x + 0i64) * 1i64 + y * 4i64)
+    let normal = t |> optimiser*
+    x + y
+
+-- stage / splice: generate code in an earlier stage and drop it into a
+-- later one.
+fn staged_kernel : i64 -> i64
+  | n ->
+    stage
+      let unrolled = splice(n)
+    n
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  §13.3, §15  Refinement, memory, and the bounds check that disappears
+-- ═══════════════════════════════════════════════════════════════════════
+--
+-- The mask proves head ∈ [0,63]. Once that is known, the comparison
+-- `h < 64` is decided at compile time and the trap arm is deleted.
+
+fn ring_push : (Ring, i64) -> i64
+  | (r, v) ->
+    let h = r.head & 63i64
+    if h < 64i64
+      h
+    else
+      0i64
+
+fn ring_advance : Ring -> i64
+  | r ->
+    let mut head : i64 = r.head & 63i64
+    let mut tail : i64 = r.tail & 63i64
+    let mut moved : i64 = 0i64
+    while moved < 16i64
+      head = (head + 1i64) & 63i64
+      tail = (tail + 1i64) & 63i64
+      moved = moved + 1i64
+    head + tail
+
+-- §15  Memory: allocation, indexing, and explicit free.
+fn buffer_new : i64 -> Buffer
+  | n ->
+    let p = mem.page_alloc(n * 8i64)
+    Buffer { data: p, len: 0i64, cap: n }
+
+fn buffer_release : Buffer -> i64
+  | b ->
+    mem.page_free(b.data, b.cap * 8i64)
+    0i64
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  §14  Explicit undefined behaviour — never silent
+-- ═══════════════════════════════════════════════════════════════════════
+--
+-- `ub!` requires an enclosing `unsafe`. `poison` does not.
+
+fn unchecked_index : (ptr, i64) -> i64
+  | (p, i) ->
+    unsafe
+      assume i >= 0i64
+      i
+
+fn poisoned : i64 -> i64
+  | n ->
+    if n < 0i64
+      poison
+    else
+      n
+
+fn frozen : i64 -> i64
+  | n -> freeze n
+
+-- §4  Primitive types and the operations that establish their widths.
+fn width_facts : i64 -> i64
+  | n ->
+    let a = n as u8
+    let b = n as u16
+    let c = n as i32
+    let d = 0x736f6d6570736575u64
+    let e = 0xdeadbeefu64
+    n
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  §3.5  Unicode operators, and their ASCII twins
+-- ═══════════════════════════════════════════════════════════════════════
+
+-- Spec 3.5 lists the operators that are first-class TOKENS. There is no
+-- logical-and or logical-or glyph: booleans use `and`/`or`, and the set
+-- symbols are for TYPES. Writing this against the table rather than from
+-- habit is what stopped an invented operator getting in here.
+fn unicode_ops : (i64, i64) -> bool
+  | (x, y) ->
+    let ne = x ≠ y
+    let le = x ≤ y
+    let ge = x ≥ y
+    let inn = x ∈ y
+    let neg = ¬ne
+    ne and le or ge
+
+fn ascii_ops : (bool, bool) -> bool
+  | (p, q) ->
+    let a = p and q
+    let b = p or q
+    let c = not p
+    a and b or c
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  §6.3  Attributes
+-- ═══════════════════════════════════════════════════════════════════════
+--
+-- Attributes go on their own line after the signature (primary form).
+
+fn hot_path : i64 -> i64
+  #inline
+  | n -> n * 2i64
+
+fn cold_path : i64 -> i64
+  #noinline #cold
+  | n -> n + 1i64
+
+-- ═══════════════════════════════════════════════════════════════════════
+--  The driver — everything above, wired into one pipeline
+-- ═══════════════════════════════════════════════════════════════════════
+--
+-- Parse a node, optimise it with the rule set, select an instruction with
+-- the PGL tree, emit it through the effect handler, all inside a HOSE
+-- scope. This is the function that proves the parts compose.
+
+fn compile_node : Node -> i64 ! [Emit, Fresh]
+  | { op, lhs, rhs, value } ->
+    let w = opcode_width(op)
+    let kind = classify(value)
+    let folded = value + 0i64
+    let selected = describe(kind)
+    let emitted = perform Emit.word(folded)
+    let slot = perform Fresh.next()
+    w + selected + emitted + slot
+
+-- Dialect ops are CALLED here, not merely declared. An IRDL op that is
+-- never used is never validated -- the checker reports `0 uses validated`
+-- and the lowering rules above are dead letters. This is the half that
+-- makes the dialect real.
+fn build_expr : (i64, i64) -> i64
+  | (a, b) ->
+    let c0 = Expr.const_i(a)
+    let c1 = Expr.const_i(b)
+    let sum = Expr.add_i(c0, c1)
+    let prod = Expr.mul_i(sum, c1)
+    let shifted = Expr.shl_i(prod, 2i64)
+    shifted
+
+fn scoped_ir : i64 -> i64
+  | tag ->
+    let p = Hose.prompt_install(tag)
+    let f = Hose.fiber_spawn(p)
+    let s = Hose.split_cont(f)
+    let u = Hose.fuse_cont(s)
+    Hose.prompt_unwind(u)
+
+fn compile_all : (ptr, i64) -> i64
+  | (nodes, n) ->
+    let mut total : i64 = 0i64
+    let mut i : i64 = 0i64
+    while i < n
+      total = total + i
+      i = i + 1i64
+    total
+
+fn main : () -> i64
+  | () ->
+    let r = sum_to(16i64)
+    let d = describe(2i64)
+    let f = folded_constant()
+    let m = max_of(3i64, 9i64)
+    let s = run_emit(7i64)
+    let p = run_pipeline(4i64)
+    let h = run_scoped(1i64)
+    let u = unicode_ops(true, false)
+    let q = quote_tree(2i64, 3i64)
+    let ir = build_expr(2i64, 5i64)
+    let sc = scoped_ir(9i64)
+    r + d + f + m + s + p + h + q + ir + sc
